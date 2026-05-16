@@ -1,0 +1,127 @@
+% mathpreview.sty — minimal companion style file.
+%
+% Lets pdflatex/tectonic accept the [role=...] optional arg on theorem-like
+% environments. Roles drive proof visibility in mathpreview and (with the
+% `proofs=` package option) selective proof rendering in the PDF.
+%
+% Usage:
+%   \usepackage[proofs=main]{mathpreview}              % submission version
+%   \usepackage[proofs=main+supporting]{mathpreview}   % tech report
+%   \usepackage[proofs=all]{mathpreview}               % everything
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{mathpreview}[2026/05/15 v0.1 mathpreview companion style]
+
+\RequirePackage{amsthm}
+\RequirePackage{amsmath}
+\RequirePackage{xparse}
+\RequirePackage{xkeyval}
+
+% Default: render all proofs in the PDF.
+\newif\ifmp@show@main        \mp@show@maintrue
+\newif\ifmp@show@supporting  \mp@show@supportingtrue
+\newif\ifmp@show@standard    \mp@show@standardtrue
+\newif\ifmp@show@omitted     \mp@show@omittedfalse
+\newif\ifmp@proof@visible
+\def\mp@last@role{standard}
+
+\DeclareOptionX{proofs}[all]{%
+  \mp@show@mainfalse
+  \mp@show@supportingfalse
+  \mp@show@standardfalse
+  \mp@show@omittedfalse
+  \def\mp@proofs@opt{#1}%
+  \in@{all}{\mp@proofs@opt}\ifin@
+    \mp@show@maintrue\mp@show@supportingtrue\mp@show@standardtrue\mp@show@omittedtrue
+  \fi
+  \in@{main}{\mp@proofs@opt}\ifin@        \mp@show@maintrue       \fi
+  \in@{supporting}{\mp@proofs@opt}\ifin@  \mp@show@supportingtrue \fi
+  \in@{standard}{\mp@proofs@opt}\ifin@    \mp@show@standardtrue   \fi
+  \in@{omitted}{\mp@proofs@opt}\ifin@     \mp@show@omittedtrue    \fi
+}
+\def\mp@all{all}
+\def\mp@main{main}
+\def\mp@supporting{supporting}
+\def\mp@standard{standard}
+\def\mp@omitted{omitted}
+
+\ProcessOptionsX
+
+% The role= optional argument is consumed but not visually rendered in PDF.
+% mathpreview reads it from the source; pdflatex just needs to swallow it.
+\define@key{mp@thm}{role}{\def\mp@thm@role{#1}}
+\define@key{mp@thm}{name}{\def\mp@thm@name{#1}}
+
+\newcommand{\mpSetProofVisibility}[1]{%
+  \mp@proof@visiblefalse
+  \edef\mp@role@tmp{#1}%
+  \ifx\mp@role@tmp\mp@main
+    \ifmp@show@main\mp@proof@visibletrue\fi
+  \fi
+  \ifx\mp@role@tmp\mp@supporting
+    \ifmp@show@supporting\mp@proof@visibletrue\fi
+  \fi
+  \ifx\mp@role@tmp\mp@standard
+    \ifmp@show@standard\mp@proof@visibletrue\fi
+  \fi
+  \ifx\mp@role@tmp\mp@omitted
+    \ifmp@show@omitted\mp@proof@visibletrue\fi
+  \fi
+}
+
+% Wrap a theorem-like environment so [role=...] is accepted.
+\newcommand{\mpDeclareTheoremLike}[1]{%
+  \expandafter\let\csname mp@orig@#1\expandafter\endcsname\csname #1\endcsname
+  \expandafter\let\csname mp@orig@end#1\expandafter\endcsname\csname end#1\endcsname
+  \RenewDocumentEnvironment{#1}{ O{} g +b }{%
+    \def\mp@thm@role{standard}\def\mp@thm@name{}%
+    \def\mp@opt{##1}%
+    \ifx\mp@opt\@empty\else
+      \in@{=}{\mp@opt}\ifin@
+        \setkeys{mp@thm}{##1}%
+      \else
+        \def\mp@thm@name{##1}%
+      \fi
+    \fi
+    \IfValueT{##2}{\def\mp@thm@name{##2}}%
+    \global\let\mp@last@role\mp@thm@role
+    \ifx\mp@thm@name\@empty
+      \csname mp@orig@#1\endcsname
+    \else
+      \csname mp@orig@#1\endcsname[\mp@thm@name]%
+    \fi
+    ##3%
+    \csname mp@orig@end#1\endcsname
+  }{}%
+}
+
+\let\mp@orig@proof\proof
+\let\mp@orig@endproof\endproof
+\RenewDocumentEnvironment{proof}{ o +b }{%
+  \mpSetProofVisibility{\mp@last@role}%
+  \ifmp@proof@visible
+    \IfNoValueTF{#1}{\mp@orig@proof}{\mp@orig@proof[#1]}%
+    #2%
+    \mp@orig@endproof
+  \fi
+}{}
+
+% Common theorem-likes. Users can declare their own with \newtheorem before
+% \usepackage{mathpreview} and call \mpDeclareTheoremLike{name} after.
+\AtBeginDocument{%
+  \@ifundefined{theorem}{\newtheorem{theorem}{Theorem}}{}%
+  \@ifundefined{lemma}{\newtheorem{lemma}{Lemma}}{}%
+  \@ifundefined{proposition}{\newtheorem{proposition}{Proposition}}{}%
+  \@ifundefined{corollary}{\newtheorem{corollary}{Corollary}}{}%
+  \@ifundefined{definition}{\newtheorem{definition}{Definition}}{}%
+  \mpDeclareTheoremLike{theorem}%
+  \mpDeclareTheoremLike{lemma}%
+  \mpDeclareTheoremLike{proposition}%
+  \mpDeclareTheoremLike{corollary}%
+  \mpDeclareTheoremLike{definition}%
+}
+
+% \omitref{...} — visible citation for proofs that were intentionally omitted.
+\newcommand{\omitref}[1]{\par\noindent\textit{See: #1}}
+
+\endinput

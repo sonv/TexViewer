@@ -1,0 +1,22 @@
+[package]
+name = "mathpreview-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mathpreview-cli"
+path = "src/main.rs"
+
+[dependencies]
+mathpreview-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+axum.workspace = true
+tokio.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
+futures-util.workspace = true
+memory-stats.workspace = true
+libc.workspace = true

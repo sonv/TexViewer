@@ -1,0 +1,101 @@
+\documentclass{article}
+
+% Project-specific macros — exercise the extractor on the patterns we care about.
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{cleveref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\inner}[2]{\langle #1, #2 \rangle}
+\DeclareMathOperator{\Tr}{Tr}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\providecommand{\eps}{\varepsilon}
+\def\Z{\mathbb{Z}}
+
+\usepackage{mathpreview}
+
+\title{Convergence of $\sum 1/n^s$}
+\author{TexViewer Demo}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+\label{sec:intro}
+We study the convergence of the series $\sum_{n=1}^{\infty} 1/n^s$ over the
+real numbers $s \in \R$. The result is classical, but the proof exercises a
+handful of standard inequalities that we collect in \cref{sec:lemmas}.
+
+\section{Main result}
+\label{sec:main}
+
+\begin{theorem}[role=main]{Convergence of the zeta-like series}
+\label{thm:main}
+For every $s \in \R$, the series
+\[
+  \zeta(s) \;=\; \sum_{n=1}^{\infty} \frac{1}{n^s}
+\]
+converges if and only if $s > 1$.
+\end{theorem}
+
+\begin{proof}[of \cref{thm:main}]
+By \cref{lem:harmonic} the partial sums $H_N$ diverge for $s = 1$, so the
+series cannot converge there. For $s > 1$ the integral test
+(\cref{lem:integral-test}) gives a finite bound. For $s < 1$ comparison with
+the harmonic series settles it. \cite{Rudin1976}
+\end{proof}
+
+\section{Supporting lemmas}
+\label{sec:lemmas}
+
+\begin{lemma}[role=supporting]{Harmonic divergence}
+\label{lem:harmonic}
+For every $N \ge 1$, $H_N := \sum_{n=1}^{N} 1/n \ge \log(N+1)$. In
+particular $H_N \to \infty$.
+\end{lemma}
+
+\begin{proof}
+The function $1/x$ is decreasing on $(0,\infty)$, so for each integer
+$n \ge 1$,
+\[
+  \frac{1}{n} \;\ge\; \int_{n}^{n+1} \frac{dx}{x}.
+\]
+Summing $n = 1, \dots, N$ yields $H_N \ge \int_1^{N+1} \frac{dx}{x} = \log(N+1)$. The
+right-hand side diverges as $N \to \infty$.
+\end{proof}
+
+\begin{lemma}[role=standard]{Integral test}
+\label{lem:integral-test}
+Let $f \colon [1, \infty) \to (0, \infty)$ be continuous and decreasing.
+Then $\sum_{n=1}^{\infty} f(n)$ converges iff $\int_1^{\infty} f(x)\,dx$
+converges.
+\end{lemma}
+
+\begin{proof}
+Standard; see any first-year analysis text.
+\end{proof}
+
+\begin{theorem}[role=omitted]{Cauchy condensation}
+\label{thm:cauchy-cond}
+Let $(a_n)$ be a non-increasing sequence of non-negative reals. Then
+$\sum a_n$ converges iff $\sum 2^k a_{2^k}$ converges.
+\omitref{Rudin, \emph{Principles of Mathematical Analysis}, §3.27}
+\end{theorem}
+
+\section{An assorted identity}
+
+A toy display to exercise custom macros:
+\begin{equation}
+\label{eq:innerprod}
+  \norm{x}^2 \;=\; \inner{x}{x}, \qquad \Tr(AB) = \Tr(BA), \qquad
+  \argmin_{x \in \R^n} \norm{Ax - b}^2 = (A^\top A)^{-1} A^\top b.
+\end{equation}
+
+We will refer back to \eqref{eq:innerprod} in passing, and use $\eps > 0$ as
+a convergence tolerance. Note that $\Z \subset \R$.
+
+\end{document}

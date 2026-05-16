@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sonv/mathpreview"
+
+[workspace.dependencies]
+anyhow    = "1"
+thiserror = "1"
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex     = "1"
+walkdir   = "2"
+clap      = { version = "4", features = ["derive"] }
+axum      = { version = "0.7", features = ["ws"] }
+tokio     = { version = "1", features = ["full"] }
+notify    = "6"
+notify-debouncer-full = "0.3"
+futures-util = "0.3"
+memory-stats = "1"
+libc = "0.2"
+mathpreview-core = { path = "crates/core" }
