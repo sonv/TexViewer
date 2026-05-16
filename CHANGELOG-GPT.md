@@ -12,6 +12,15 @@
 - Kept Unicode text preservation by decoding UTF-8 only for non-ASCII bytes instead of every byte in normal LaTeX prose and math scans.
 - Verified cached `/buffer` timing on `examples/paper.tex` at 1 ms locally after an initial 8 ms preamble-cache miss.
 
+### Added
+
+- Added first-pass nvim-to-HTML source sync: rendered block and paragraph wrappers now carry `data-src="file:line:col"` metadata and are registered in the `SyncIndex`.
+- Added `POST /cursor` so the nvim plugin can send the current source cursor; the daemon maps it to the nearest rendered element and broadcasts a `source-cursor` WebSocket event that scrolls and highlights the preview.
+- Added HTML-to-nvim inverse sync: double-clicking or Alt/Cmd-clicking rendered content posts the nearest source location to `POST /jump`, and the nvim plugin polls `GET /jump?after=...` to move the editor cursor.
+- Added `CursorMoved` / `CursorMovedI` integration, `:MathpreviewSync`, sync status counters, and configurable `/cursor` and `/jump` URLs to `examples/mathpreview.lua`.
+- Added source-word anchors for prose text, plus exact `data-src` anchors for rendered refs and citation groups, so forward and inverse search can target words instead of only paragraphs or environments.
+- Added per-block source-anchor metadata to websocket patches so reused blocks can retag inner word/math/ref anchors after source lines shift without forcing a full block replacement.
+
 ### Fixed
 
 - Tightened the default viewer typography and spacing toward LaTeX/AMS PDF output: corrected section heading selectors, reduced title spacing, restored paragraph indentation, compacted display math/list spacing, and kept theorem/lemma blocks compact.
@@ -24,7 +33,15 @@
 - Made A4 mode scale a fixed A4-width sheet on browser resize instead of reflowing the document into a narrower page.
 - Added a viewer topbar restart button backed by `POST /restart`; it launches a replacement server process with the same arguments, exits the old daemon, polls for readiness, and reloads the page.
 - Added a viewer topbar stop button backed by `POST /stop`; it exits the daemon manually, turns into a start button after the intentional shutdown, and prevents the browser from reconnecting until start is clicked.
+- Added a viewer topbar hide/restore toggle, persisted in local storage, so the control banner can stay out of the reading view while leaving a small restore button available.
+- Added Vim-style viewer keyboard navigation: `h`/`j`/`k`/`l`, `Ctrl-d`/`Ctrl-u`, `gg`/`G`, `/` search, `n`/`N` search repeat, and `Ctrl-o` to return to the previous recorded place.
 - Made rendered MathJax SVG equations selectable/copyable as LaTeX by storing the original TeX on math nodes, selecting exactly one math node on click, and substituting TeX into the clipboard when the selection includes math.
+- Added a viewer topbar `keys` toggle for LaTeX refkeys on labeled sections, theorem boxes, display equations, floats, and loose or secondary labels; the setting persists and is re-applied after websocket updates.
+- Rendered refkeys for multi-row `align`/`gather`-style displays as row-level chips instead of one combined display label, so labels appear on separate lines when the key overlay is enabled.
+- Suppressed duplicate refkey chips for boxed theorem-like environments by assigning the primary `\label{...}` to the outer theorem/proposition/lemma box and removing that label command from the rendered theorem body.
+- Moved visible refkey chips into the page margin instead of placing them in the text/equation column, and kept row-level equation refkeys from wrapping below the display.
+- Bumped the websocket shell protocol so already-open tabs reload once and pick up the new refkey toggle and align-numbering CSS.
+- Made source-sync scrolling less jumpy: the browser now leaves the page still while the active source element is between 25% and 75% of the viewport, and scrolls to the 25% line only when it leaves that band.
 - Preserved blank-line separators between inline math nodes, e.g. `$a^2$\n\n$b^2$`, by grouping top-level inline runs into real paragraph blocks instead of loose inline nodes.
 - Preserved LaTeX paragraph semantics for blank lines: they no longer render as visible `<br><br>` gaps, but still start an indented paragraph after display math and inside proof/theorem text.
 - Preserved LaTeX inter-word spacing when a single source newline separates inline math/refs from following prose, avoiding joined output such as math immediately followed by `and`.
@@ -43,6 +60,9 @@
 - Rendered `\includegraphics` assets in the live viewer: raster/SVG figures use `<img>`, PDF figures use cached, trimmed PNG previews generated through ImageMagick, and the server exposes guarded project-local assets under `/assets/...`.
 - Preserved common `\includegraphics` sizing options in the live viewer: `width=0.8\textwidth` maps to `width: 80%`, absolute TeX units map to CSS units, `scale=...` is respected, and images keep their natural aspect ratio unless explicit width and height ask otherwise.
 - Numbered subsections hierarchically, so Section 2 subsections render as `2.1`, `2.2`, etc. instead of repeating `2`.
+- Numbered top-level rows in `align`, `gather`, `alignat`, and `eqnarray` separately, while respecting `\notag` / `\nonumber`, so labels and visible equation numbers match multi-line LaTeX displays.
+- Preserved `subequations` as a numbered group: the group label resolves to the parent number, while numbered child equations/rows render and reference as `a`, `b`, `c` suffixes such as `(1.1a)`.
+- Resolved `\ref`, `\eqref`, `\cref`, `\autoref`, and related reference commands inside MathJax math bodies before typesetting, so references embedded in displays such as `\text{... \eqref{H3}}` show the Rust-computed number instead of MathJax's unresolved reference output.
 - Loaded bibliography files referenced by `\bibliography{...}` in the document body, resolving them relative to the main `.tex` file directory just like preamble `\addbibresource{...}` entries.
 - Honored body-level `\bibliographystyle{plain}` declarations and rendered numeric references closer to BibTeX plain: sorted bibliography order, renumbered citations, first-name-first author/editor names, italic journal/book titles, cleaned protective braces, and arXiv/DOI metadata formatting.
 - Relaxed the live `/buffer` renderability guard so ordinary in-progress LaTeX with unmatched braces or open environments still updates; it now defers only unclosed math delimiters.
@@ -50,6 +70,10 @@
 - Discarded stale out-of-order `/buffer` and file-watch render completions before they can update `current` or broadcast websocket patches, so older editor buffers cannot overwrite the latest preview.
 - Replaced unsafe id-based websocket patches with positional range patches plus block-id resync, so inserting paragraphs above existing content preserves order without forcing a full body update.
 - Added a websocket protocol version query so already-open tabs with old patch JavaScript receive a one-time `full-reload` after the daemon restarts.
+- Fixed the protocol-version gate after the source-sync protocol bump: the server now accepts WebSocket shell protocol 7, preventing a reload loop where every reconnect received `full-reload`.
+- Bumped the websocket shell protocol to 8 so already-open tabs reload once and pick up the topbar hide/restore controls.
+- Bumped the websocket shell protocol to 9 so already-open tabs reload once and pick up Vim navigation/search bindings.
+- Added source-space anchors for blank paragraph-break lines inside environments, so cursor sync on an empty proof/theorem line scrolls to that whitespace position instead of the top of the enclosing environment.
 - Updated live-server file watching so newly introduced include directories are added to the watcher set after renders.
 - Cleared the live-server preamble cache after file-watch renders so later buffer pushes do not reuse stale preamble or bibliography state.
 - Made `examples/mathpreview.sty` actually honor `proofs=...` by capturing proof bodies and rendering them only when the preceding theorem role is enabled.
@@ -67,7 +91,10 @@
 - Regression test for source-order `abstract` placement after `\maketitle`.
 - Regression tests for manual proof roles in the parser and renderer.
 - Regression test for the viewer index/pages rail and A4 page-guide shell.
+- Regression coverage for the viewer topbar hide/restore shell controls and persisted state.
+- Regression coverage for the viewer shell's Vim navigation, search prompt, and previous-place jump-list hooks.
 - Regression test for math copy metadata in rendered inline and display equations.
+- Regression test for labeled item refkey metadata and the viewer refkey toggle shell.
 - Regression tests for blank-line paragraph indentation in top-level text, display-math continuations, and proof/theorem text.
 - Regression test for single-newline spacing after inline math.
 - Regression test for transparent `subequations` parsing.
@@ -75,23 +102,41 @@
 - Regression tests for numbered `\step`, `\case`, `\restartsteps`, `proofsteps`, and `proofcases` flow-marker rendering.
 - Regression tests for `\includegraphics` width/ratio options and body-level `\bibliography{...}` resolution relative to the main file directory.
 - Regression test for body-level `\bibliographystyle{plain}` sorting, citation renumbering, and BibTeX-plain reference formatting.
+- Regression tests for per-row `align` numbering, `\notag` rows, and row-level `\eqref` resolution.
+- Regression tests for `subequations` group labels, alphabetic child equation labels, unnumbered starred children, and post-group equation counter restoration.
+- Regression test for resolving `\eqref` inside display/inline math bodies while keeping original LaTeX copy metadata.
+- Regression coverage for row-level align refkeys and for suppressing duplicate boxed theorem refkeys.
+- Regression test ensuring display label-only edits change the math reuse hash, so live refkey overlays cannot keep stale labels.
 - Expanded regression coverage for hierarchical subsection numbering and rendered PDF figure assets.
 - Regression test for the live buffer guard so it defers unclosed math without blocking ordinary partial LaTeX edits.
 - Regression test for render-attempt sequencing so newer live renders invalidate older in-flight renders.
 - Regression tests for shifted block insertions/deletions, shifted source metadata, generated display-math ids, and single-block edits using compact websocket range patches.
+- Regression test ensuring the server accepts the current WebSocket shell protocol version and only reloads missing/old versions.
+- Regression test ensuring a blank line inside an environment resolves to a whitespace source-sync anchor rather than the enclosing environment.
+- Regression tests for `SyncIndex` lookup by source file/line/column, including smallest containing span and nearest previous fallback behavior.
+- Regression test ensuring split paragraph blocks and source words are source-sync targets with independent `data-src` anchors.
+- Viewer shell regression coverage for `source-cursor`, dynamic source scrolling, source highlighting, `/jump` posting, and `data-src` / source-anchor preservation across websocket patches.
 
 ### Documentation
 
-- Updated `DESIGN.md` with the completed viewer work, current remaining work, a TODO checklist that crosses out completed items, and a plain-language explanation of the live-update race/id-shift bug plus the final range-patch solution.
+- Updated `DESIGN.md` with the completed viewer work, current remaining work, a TODO checklist that crosses out completed items, a refkey-toggle status item, and a plain-language explanation of the live-update race/id-shift bug plus the final range-patch solution.
+- Documented the first-pass nvim/HTML source sync design, endpoints, plugin behavior, word-level anchors, dynamic scroll band, and remaining precision tradeoffs.
+- Expanded `README.md` with current viewer controls, restart/stop/start behavior, A4/dynamic layout controls, refkey overlays, toolbar hide/restore, Vim navigation/search bindings, selectable SVG math copy, bibliography/figure support, and blank-line source-sync behavior.
+- Extended `DESIGN.md` with the toolbar hide/restore persistence behavior and the `source-space` strategy for syncing empty lines inside environments.
+- Documented Vim-style viewer navigation, search, and `Ctrl-o` previous-place behavior in `DESIGN.md`.
 
 ### Verified
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` - 7 CLI tests and 47 core tests passing
+- `cargo test` - 8 CLI tests and 57 core tests passing
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `git diff --check`
+- `nvim --headless -u NONE -i NONE +'luafile examples/mathpreview.lua' +'qall!'`
+- LargeTimeLangevin live-server smoke test for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` confirmed `GET /` returns 200, rendered prose contains `src-word` anchors, the viewer serves WebSocket protocol 9, dynamic source-scroll JS is present, `POST /cursor` returns 204, and `/jump` posts/polls a source location.
+- KFP live-server source-sync smoke test confirmed `POST /cursor` returns 204, `POST /jump` returns 202, `GET /jump?after=0` returns the pending source jump, and rendered blocks carry `data-src` anchors.
 - KFP render smoke test for `/Users/tsv/Work/KFP/main.tex` confirmed no warning panel, no rendered opaque environment blocks, no raw `subequations` blocks, no sampled unresolved equation refs, and resolved Figure/Table refs.
+- KFP render smoke test confirmed multi-row displays include per-row refkey chips and theorem/proposition/lemma boxes do not emit duplicate loose refkey anchors.
 - KFP live-server smoke test confirmed `/assets/figures/comparison-longtime.png` returns `image/png`, `/assets/figures/2025-01-08_g_u_weak_cos_bsinxsint.pdf` returns `application/pdf`, and Section 2 subsections render as `2.1` and `2.2`.
 - KFP live-server smoke test confirmed `/assets/figures/2025-01-08_g_u_weak_cos_bsinxsint.pdf?preview=png` returns a cached `image/png` preview and `POST /buffer` for the root file returns `204 No Content`.
 - KFP render smoke test confirmed `\bibliography{bibo}` in the document body loads entries from `/Users/tsv/Work/KFP/bibo.bib`, producing 34 bibliography entries, and figure previews carry `width=0.8\textwidth` / `width=0.95\textwidth` as 80% / 95% CSS widths.

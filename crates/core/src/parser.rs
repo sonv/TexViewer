@@ -205,6 +205,7 @@ impl<'a> Parser<'a> {
                         env: None,
                         label: None,
                         number: None,
+                        row_numbers: Vec::new(),
                     },
                     span: self.span_from(start),
                     children: vec![],
@@ -274,6 +275,7 @@ impl<'a> Parser<'a> {
                                 env: None,
                                 label: None,
                                 number: None,
+                                row_numbers: Vec::new(),
                             }
                         } else {
                             NodeKind::InlineMath(body)
@@ -516,6 +518,7 @@ impl<'a> Parser<'a> {
                     env: Some(env),
                     label,
                     number: None,
+                    row_numbers: Vec::new(),
                 },
                 span: self.span_from(start),
                 children: vec![],
@@ -555,7 +558,7 @@ impl<'a> Parser<'a> {
         }
 
         if env == "subequations" {
-            self.parse_transparent_env(out, env);
+            self.parse_subequations(out, start, env);
             return;
         }
 
@@ -592,6 +595,34 @@ impl<'a> Parser<'a> {
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
         out.extend(children);
+    }
+
+    fn parse_subequations(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
+        let body_end = self.find_matching_end(&env);
+        let inner_src = &self.src[self.byte..body_end];
+        let (label, child_src) = match initial_label_span(inner_src) {
+            Some((label, label_start, label_end)) => {
+                let mut child_src = inner_src.to_string();
+                child_src
+                    .replace_range(label_start..label_end, &" ".repeat(label_end - label_start));
+                (Some(label), child_src)
+            }
+            None => (None, inner_src.to_string()),
+        };
+
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos());
+        sub.parse_block_into(&mut children, None);
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.push(Node {
+            kind: NodeKind::Subequations {
+                label,
+                number: None,
+            },
+            span: self.span_from(start),
+            children,
+        });
     }
 
     fn parse_abstract(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
@@ -669,17 +700,29 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
 
-        // Pre-scan inside for \label{...} and \omitref{...}.
-        let label = find_first_label(inner_src);
+        // Pre-scan inside for \label{...} and \omitref{...}. The primary
+        // theorem label belongs to the outer box, so remove that command from
+        // the parsed child stream to avoid a second loose label chip.
+        let label_span = first_label_span(inner_src);
+        let label = label_span.as_ref().map(|(label, _, _)| label.clone());
         let omit_ref = if matches!(role, Role::Omitted) {
             find_first_omitref(inner_src)
         } else {
             None
         };
 
+        let child_src = match label_span {
+            Some((_, label_start, label_end)) => {
+                let mut child_src = inner_src.to_string();
+                child_src
+                    .replace_range(label_start..label_end, &" ".repeat(label_end - label_start));
+                child_src
+            }
+            None => inner_src.to_string(),
+        };
         let mut children = Vec::new();
         // Parse inner content with a sub-parser so nested commands work.
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos());
         sub.parse_block_into(&mut children, None);
 
         self.advance_to(body_end);
@@ -1161,13 +1204,84 @@ fn split_list_items(src: &str) -> Vec<(Option<String>, usize, usize)> {
     items
 }
 
-static LABEL_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"\\label\s*\{\s*([^}]+?)\s*\}").unwrap());
-
 fn find_first_label(src: &str) -> Option<String> {
-    LABEL_RE
-        .captures(src)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+    first_label_span(src).map(|(label, _, _)| label)
+}
+
+fn first_label_span(src: &str) -> Option<(String, usize, usize)> {
+    let needle = "\\label";
+    let mut search_from = 0usize;
+    while let Some(found) = src[search_from..].find(needle) {
+        let i = search_from + found;
+        if let Some(span) = label_span_at(src, i) {
+            return Some(span);
+        }
+        search_from = i + needle.len();
+    }
+    None
+}
+
+fn initial_label_span(src: &str) -> Option<(String, usize, usize)> {
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) == Some(&b'%') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        break;
+    }
+
+    if !src[i..].starts_with("\\label") {
+        return None;
+    }
+    label_span_at(src, i)
+}
+
+fn label_span_at(src: &str, i: usize) -> Option<(String, usize, usize)> {
+    let bytes = src.as_bytes();
+    let after = i + "\\label".len();
+    if bytes
+        .get(after)
+        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'*')
+    {
+        return None;
+    }
+
+    let mut j = after;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    if bytes.get(j) != Some(&b'{') {
+        return None;
+    }
+
+    let label_start = j + 1;
+    let mut depth = 1i32;
+    let mut k = label_start;
+    while k < bytes.len() {
+        match bytes[k] {
+            b'\\' if k + 1 < bytes.len() => {
+                k += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((src[label_start..k].trim().to_string(), i, k + 1));
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
 }
 
 fn find_first_omitref(src: &str) -> Option<String> {
@@ -1279,15 +1393,20 @@ mod tests {
     }
 
     #[test]
-    fn subequations_parse_as_transparent_math_blocks() {
+    fn subequations_preserve_group_boundary_and_label() {
         let n = parse(
             "\\begin{subequations}\n\\label{eq:group}\n\\begin{equation}\na=b\n\\end{equation}\nwith data\n\\begin{equation*}\nc=d\n\\end{equation*}\n\\end{subequations}",
         );
 
-        assert!(!n.iter().any(
-            |node| matches!(node.kind, NodeKind::OpaqueEnv { ref env, .. } if env == "subequations")
+        let NodeKind::Subequations { label, .. } = &n[0].kind else {
+            panic!("got {:?}", n[0].kind);
+        };
+        assert_eq!(label.as_deref(), Some("eq:group"));
+        assert!(!n[0].children.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "label" && raw.contains("eq:group"))
         ));
-        let displays: Vec<_> = n
+        let displays: Vec<_> = n[0]
+            .children
             .iter()
             .filter_map(|node| match &node.kind {
                 NodeKind::DisplayMath { env, label, .. } => {
@@ -1299,10 +1418,8 @@ mod tests {
         assert_eq!(displays.len(), 2);
         assert_eq!(displays[0], (Some("equation"), None));
         assert_eq!(displays[1], (Some("equation*"), None));
-        assert!(n.iter().any(
-            |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "label" && raw.contains("eq:group"))
-        ));
-        assert!(n
+        assert!(n[0]
+            .children
             .iter()
             .any(|node| matches!(&node.kind, NodeKind::Text(s) if s.contains("with data"))));
     }
@@ -1326,6 +1443,9 @@ mod tests {
             }
             other => panic!("got {:?}", other),
         }
+        assert!(!n[0].children.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "label" && raw.contains("thm:main"))
+        ));
     }
 
     #[test]

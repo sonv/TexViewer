@@ -10,10 +10,11 @@
 //! * Theorem-like environments share one counter, reset at each `\section`,
 //!   printed as `{section}.{n}`. So in §2 you get `Theorem 2.1`, `Lemma 2.2`,
 //!   `Theorem 2.3`. With no section, you get `1, 2, 3, …`.
-//! * Numbered display math (`equation`, `align`, `gather`, `multline`,
-//!   `alignat`, `eqnarray`, `displaymath`) gets its own counter, also
-//!   section-scoped, printed as `{section}.{n}`. Starred forms (`equation*`
-//!   etc.) are unnumbered.
+//! * Numbered display math is section-scoped, printed as `{section}.{n}`.
+//!   Single-display environments (`equation`, `multline`) get one number.
+//!   Row environments (`align`, `gather`, `alignat`, `eqnarray`) get one
+//!   number per top-level row unless that row has `\notag` / `\nonumber`.
+//!   Starred forms (`equation*` etc.) are unnumbered.
 
 use std::collections::HashMap;
 
@@ -189,10 +190,16 @@ struct State {
     section_counters: [u32; 7],
     thm_in_section: u32,
     eq_in_section: u32,
+    subequations: Vec<SubequationState>,
     figure: u32,
     table: u32,
     labels: LabelTable,
     pending_labels: Vec<String>,
+}
+
+struct SubequationState {
+    parent: String,
+    child_index: u32,
 }
 
 fn walk(nodes: &mut [Node], state: &mut State) {
@@ -244,19 +251,66 @@ fn walk(nodes: &mut [Node], state: &mut State) {
                 // Recurse into theorem body so equations inside still count.
                 walk(&mut node.children, state);
             }
+            NodeKind::Subequations { label, number } => {
+                state.eq_in_section += 1;
+                let n = format_with_section(state.section, state.eq_in_section);
+                *number = Some(n.clone());
+                if let Some(l) = label {
+                    record_label(&mut state.labels, l.clone(), &n, "Equation");
+                }
+                let pending = std::mem::take(&mut state.pending_labels);
+                for l in pending {
+                    record_label(&mut state.labels, l, &n, "Equation");
+                }
+                state.subequations.push(SubequationState {
+                    parent: n,
+                    child_index: 0,
+                });
+                walk(&mut node.children, state);
+                state.subequations.pop();
+            }
             NodeKind::DisplayMath {
                 body,
                 env,
                 label,
                 number,
+                row_numbers,
             } => {
+                row_numbers.clear();
                 let numbered = match env.as_deref() {
                     Some(e) => is_numbered_math_env(e),
                     None => false,
                 };
-                if numbered {
-                    state.eq_in_section += 1;
-                    let n = format_with_section(state.section, state.eq_in_section);
+                if numbered && env.as_deref().is_some_and(is_multirow_numbered_math_env) {
+                    let rows = split_math_rows(body);
+                    let mut first_numbered_row = true;
+                    for row in rows {
+                        if row_is_unnumbered(row) {
+                            row_numbers.push(None);
+                            continue;
+                        }
+
+                        let n = next_equation_number(state);
+                        row_numbers.push(Some(n.clone()));
+                        *number = Some(n.clone());
+
+                        if first_numbered_row {
+                            if let Some(l) = label {
+                                record_label(&mut state.labels, l.clone(), &n, "Equation");
+                            }
+                            let pending = std::mem::take(&mut state.pending_labels);
+                            for l in pending {
+                                record_label(&mut state.labels, l, &n, "Equation");
+                            }
+                            first_numbered_row = false;
+                        }
+
+                        for l in labels_from_latex(row) {
+                            record_label(&mut state.labels, l, &n, "Equation");
+                        }
+                    }
+                } else if numbered {
+                    let n = next_equation_number(state);
                     *number = Some(n.clone());
                     if let Some(l) = label {
                         record_label(&mut state.labels, l.clone(), &n, "Equation");
@@ -322,6 +376,33 @@ fn record_label(labels: &mut LabelTable, label: String, number: &str, kind: &str
     labels.kind.insert(label, kind.to_string());
 }
 
+fn next_equation_number(state: &mut State) -> String {
+    if let Some(subequations) = state.subequations.last_mut() {
+        subequations.child_index += 1;
+        return format!(
+            "{}{}",
+            subequations.parent,
+            alphabetic_suffix(subequations.child_index)
+        );
+    }
+
+    state.eq_in_section += 1;
+    format_with_section(state.section, state.eq_in_section)
+}
+
+fn alphabetic_suffix(mut n: u32) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let mut chars = Vec::new();
+    while n > 0 {
+        n -= 1;
+        chars.push((b'a' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    chars.iter().rev().collect()
+}
+
 fn label_from_raw(raw: &str) -> Option<String> {
     labels_from_latex(raw).into_iter().next()
 }
@@ -368,6 +449,142 @@ fn labels_from_latex(src: &str) -> Vec<String> {
     labels
 }
 
+fn split_math_rows(src: &str) -> Vec<&str> {
+    let bytes = src.as_bytes();
+    let mut rows = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut brace_depth = 0i32;
+    let mut env_depth = 0i32;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if src[i..].starts_with("\\begin") {
+            if let Some(end) = latex_env_command_end(src, i + "\\begin".len()) {
+                env_depth += 1;
+                i = end;
+                continue;
+            }
+        }
+        if src[i..].starts_with("\\end") {
+            if let Some(end) = latex_env_command_end(src, i + "\\end".len()) {
+                if env_depth > 0 {
+                    env_depth -= 1;
+                }
+                i = end;
+                continue;
+            }
+        }
+
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() && bytes[i + 1] == b'\\' => {
+                if brace_depth == 0 && env_depth == 0 {
+                    rows.push(src[start..i].trim());
+                    i += 2;
+                    i = skip_row_separator_spacing(src, i);
+                    start = i;
+                    continue;
+                }
+                i += 2;
+                continue;
+            }
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'{' => brace_depth += 1,
+            b'}' if brace_depth > 0 => brace_depth -= 1,
+            _ => {}
+        }
+
+        let ch = src[i..].chars().next().unwrap_or('\0');
+        i += ch.len_utf8();
+    }
+
+    rows.push(src[start..].trim());
+    rows
+}
+
+fn latex_env_command_end(src: &str, mut i: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'}' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_row_separator_spacing(src: &str, mut i: usize) -> usize {
+    let bytes = src.as_bytes();
+    let before_ws = i;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r') {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'[') {
+        return before_ws;
+    }
+
+    let mut j = i + 1;
+    let mut depth = 1i32;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' if j + 1 < bytes.len() => {
+                j += 2;
+                continue;
+            }
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    before_ws
+}
+
+fn row_is_unnumbered(row: &str) -> bool {
+    has_latex_command(row, "notag") || has_latex_command(row, "nonumber")
+}
+
+fn has_latex_command(src: &str, command: &str) -> bool {
+    let needle = format!("\\{command}");
+    let bytes = src.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(found) = src[search_from..].find(&needle) {
+        let start = search_from + found;
+        let after = start + needle.len();
+        if bytes
+            .get(after)
+            .is_none_or(|b| !b.is_ascii_alphabetic() && *b != b'*')
+        {
+            return true;
+        }
+        search_from = after;
+    }
+    false
+}
+
 fn format_with_section(section: u32, n: u32) -> String {
     if section == 0 {
         n.to_string()
@@ -395,6 +612,10 @@ fn is_numbered_math_env(env: &str) -> bool {
             env,
             "equation" | "align" | "gather" | "multline" | "alignat" | "eqnarray"
         )
+}
+
+fn is_multirow_numbered_math_env(env: &str) -> bool {
+    !env.ends_with('*') && matches!(env, "align" | "gather" | "alignat" | "eqnarray")
 }
 
 fn is_float_env(env: &str) -> bool {
@@ -479,6 +700,68 @@ mod tests {
         // equation* is unnumbered
         assert!(labels.display.get("eq:a").unwrap().contains("Equation 1.1"));
         assert_eq!(labels.number.get("eq:b").unwrap(), "1.2");
+    }
+
+    #[test]
+    fn align_rows_get_separate_numbers() {
+        let mut ns = nodes(
+            "\\section{S}\n\
+             \\begin{align}\n\
+             a &= b \\label{eq:a}\\\\\n\
+             c &= d \\label{eq:b}\\\\[3pt]\n\
+             e &= f \\notag\\\\\n\
+             g &= h \\label{eq:c}\n\
+             \\end{align}\n\
+             See \\eqref{eq:a}, \\eqref{eq:b}, \\eqref{eq:c}.\n",
+        );
+        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        assert_eq!(labels.number.get("eq:a").unwrap(), "1.1");
+        assert_eq!(labels.number.get("eq:b").unwrap(), "1.2");
+        assert_eq!(labels.number.get("eq:c").unwrap(), "1.3");
+
+        let align = ns
+            .iter()
+            .find_map(|node| match &node.kind {
+                NodeKind::DisplayMath { row_numbers, .. } if !row_numbers.is_empty() => {
+                    Some(row_numbers)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            align,
+            &vec![
+                Some("1.1".to_string()),
+                Some("1.2".to_string()),
+                None,
+                Some("1.3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn subequations_use_parent_number_and_alphabetic_children() {
+        let mut ns = nodes(
+            "\\section{S}\n\
+             \\begin{subequations}\n\
+             \\label{eq:group}\n\
+             \\begin{equation}\\label{eq:a}a=b\\end{equation}\n\
+             \\begin{align}\n\
+             c &= d \\label{eq:b}\\\\\n\
+             e &= f \\notag\\\\\n\
+             g &= h \\label{eq:c}\n\
+             \\end{align}\n\
+             \\begin{equation*}\\label{eq:star}x=y\\end{equation*}\n\
+             \\end{subequations}\n\
+             \\begin{equation}\\label{eq:after}z=w\\end{equation}\n",
+        );
+        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        assert_eq!(labels.number.get("eq:group").unwrap(), "1.1");
+        assert_eq!(labels.number.get("eq:a").unwrap(), "1.1a");
+        assert_eq!(labels.number.get("eq:b").unwrap(), "1.1b");
+        assert_eq!(labels.number.get("eq:c").unwrap(), "1.1c");
+        assert!(!labels.number.contains_key("eq:star"));
+        assert_eq!(labels.number.get("eq:after").unwrap(), "1.2");
     }
 
     #[test]

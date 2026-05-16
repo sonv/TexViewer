@@ -29,7 +29,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket},
-        Path as AxumPath, Query, State, WebSocketUpgrade,
+        Json, Path as AxumPath, Query, State, WebSocketUpgrade,
     },
     http::{header, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
@@ -39,6 +39,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::new_debouncer;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
 use mathpreview_core::{
@@ -48,6 +49,8 @@ use mathpreview_core::{
     sync::SyncIndex,
     HtmlOptions, RenderOutput, RenderedBlock,
 };
+
+const WS_PROTOCOL_VERSION: &str = "9";
 
 #[derive(Clone)]
 struct AppState {
@@ -66,6 +69,8 @@ struct AppState {
     /// Monotonic render attempt id. Buffer pushes can complete out of order;
     /// only the newest attempt is allowed to update the preview.
     render_seq: Arc<AtomicU64>,
+    jump_seq: Arc<AtomicU64>,
+    pending_jump: Arc<RwLock<Option<SourceJump>>>,
 }
 
 struct PreambleCache {
@@ -73,6 +78,21 @@ struct PreambleCache {
     preamble: ExtractedPreamble,
     bib: HashMap<String, BibEntry>,
     bib_style: BibStyle,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceRequest {
+    file: PathBuf,
+    line: u32,
+    col: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SourceJump {
+    seq: u64,
+    file: PathBuf,
+    line: u32,
+    col: u32,
 }
 
 /// Resident memory of the daemon process in MiB, or `None` if unavailable.
@@ -168,6 +188,8 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
         preamble_cache: Arc::new(RwLock::new(None)),
         last_blocks: Arc::new(RwLock::new(last_blocks)),
         render_seq: Arc::new(AtomicU64::new(0)),
+        jump_seq: Arc::new(AtomicU64::new(0)),
+        pending_jump: Arc::new(RwLock::new(None)),
     };
 
     spawn_watcher(state.clone(), watch_rx);
@@ -177,6 +199,8 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
         .route("/assets/*path", get(serve_asset))
         .route("/ws", get(serve_ws))
         .route("/buffer", axum::routing::post(serve_buffer_push))
+        .route("/cursor", post(serve_cursor))
+        .route("/jump", get(serve_jump_poll).post(serve_jump))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
@@ -361,8 +385,80 @@ async fn serve_ws(
     State(state): State<AppState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let needs_reload = query.get("v").is_none_or(|v| v != "2");
+    let needs_reload = websocket_needs_reload(&query);
     ws.on_upgrade(move |socket| handle_ws(socket, state, needs_reload))
+}
+
+fn websocket_needs_reload(query: &HashMap<String, String>) -> bool {
+    query.get("v").is_none_or(|v| v != WS_PROTOCOL_VERSION)
+}
+
+async fn serve_cursor(
+    State(state): State<AppState>,
+    Json(req): Json<SourceRequest>,
+) -> axum::http::StatusCode {
+    let file = normalize_source_path(req.file);
+    let line = req.line.max(1);
+    let col = req.col.unwrap_or(1).max(1);
+    let element_id = {
+        let current = state.current.read().await;
+        current
+            .sync
+            .lookup_by_source_position(&file, line, col)
+            .map(|entry| entry.element_id.clone())
+    };
+    let payload = serde_json::json!({
+        "event": "source-cursor",
+        "file": file,
+        "line": line,
+        "col": col,
+        "element_id": element_id,
+    })
+    .to_string();
+    let _ = state.tx.send(payload);
+    axum::http::StatusCode::NO_CONTENT
+}
+
+async fn serve_jump(
+    State(state): State<AppState>,
+    Json(req): Json<SourceRequest>,
+) -> axum::http::StatusCode {
+    let seq = state.jump_seq.fetch_add(1, Ordering::AcqRel) + 1;
+    let jump = SourceJump {
+        seq,
+        file: normalize_source_path(req.file),
+        line: req.line.max(1),
+        col: req.col.unwrap_or(1).max(1),
+    };
+    *state.pending_jump.write().await = Some(jump.clone());
+    let payload = serde_json::json!({
+        "event": "source-jump",
+        "file": jump.file,
+        "line": jump.line,
+        "col": jump.col,
+    })
+    .to_string();
+    let _ = state.tx.send(payload);
+    axum::http::StatusCode::ACCEPTED
+}
+
+async fn serve_jump_poll(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let after = query
+        .get("after")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let jump = state.pending_jump.read().await.clone();
+    match jump.filter(|jump| jump.seq > after) {
+        Some(jump) => Json(jump).into_response(),
+        None => axum::http::StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+fn normalize_source_path(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
 }
 
 async fn serve_restart() -> axum::http::StatusCode {
@@ -672,6 +768,8 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
                 serde_json::json!({
                     "id": block.id,
                     "hash": block.hash,
+                    "src": block.src,
+                    "anchors": block.source_anchors,
                 })
             })
             .collect();
@@ -924,7 +1022,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, is_buffer_renderable, is_latest_render_attempt,
-        AppState, PatchOp,
+        websocket_needs_reload, AppState, PatchOp, WS_PROTOCOL_VERSION,
     };
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},
@@ -935,6 +1033,18 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{atomic::AtomicU64, mpsc as std_mpsc, Arc};
     use tokio::sync::{broadcast, RwLock};
+
+    #[test]
+    fn websocket_protocol_accepts_current_shell_version() {
+        let query =
+            std::collections::HashMap::from([("v".to_string(), WS_PROTOCOL_VERSION.to_string())]);
+
+        assert!(!websocket_needs_reload(&query));
+        assert!(websocket_needs_reload(&std::collections::HashMap::from([
+            ("v".to_string(), "old".to_string(),)
+        ])));
+        assert!(websocket_needs_reload(&std::collections::HashMap::new()));
+    }
 
     #[test]
     fn buffer_guard_only_defers_unclosed_math() {
@@ -1105,6 +1215,8 @@ mod tests {
             preamble_cache: Arc::new(RwLock::new(None)),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
+            jump_seq: Arc::new(AtomicU64::new(0)),
+            pending_jump: Arc::new(RwLock::new(None)),
         };
 
         let older = begin_render_attempt(&state);
@@ -1121,6 +1233,8 @@ mod tests {
         RenderedBlock {
             id: id.to_string(),
             hash: html.to_string(),
+            src: None,
+            source_anchors: Vec::new(),
             diff_hash: diff_hash.to_string(),
             html: html.to_string(),
         }

@@ -40,10 +40,18 @@ What's built:
   total on the test paper when the edited math is unchanged.
 - **Paper-like viewer layout.** The browser shell has A4 page mode,
   dynamic page mode, page dividers, a toggleable index/pages rail, and
-  responsive controls for narrow browser widths.
+  responsive controls for narrow browser widths. The top control banner
+  can also be hidden and restored when the reader needs more vertical
+  space.
+- **Keyboard navigation.** The viewer has Vim-style reading bindings:
+  `h`/`j`/`k`/`l`, `Ctrl-d`/`Ctrl-u`, `gg`/`G`, `/`, `n`/`N`, and
+  `Ctrl-o` for the previous recorded place.
 - **LaTeX paragraph semantics.** Blank lines create paragraph breaks
   with indentation instead of visible `<br><br>` gaps, including around
   display math and inside theorem/proof text.
+- **Equation numbering closer to LaTeX.** Multi-row `align`-style
+  environments number rows separately, and `subequations` groups produce
+  parent refs plus alphabetic child suffixes.
 - **Proof-flow macros.** KFP-style `\step`, `\case`,
   `\restartsteps`, `proofsteps`, and `proofcases` render as numbered
   proof markers with LaTeX-like resets and no-indent flow.
@@ -56,6 +64,17 @@ What's built:
 - **Equation copy path.** Inline and display SVG equations can be
   selected as a single math node and copied as their original LaTeX
   source.
+- **Refkey overlay.** The viewer can toggle visible LaTeX refkeys for
+  labeled sections, theorem boxes, display equations, floats, and loose
+  or secondary labels without changing the document text. Multi-row
+  display environments place refkeys on their owning row, and boxed
+  theorem-like labels are shown only on the outer box. Visible chips sit
+  in the page margin instead of consuming text/equation column space.
+- **First-pass nvim/HTML source sync.** Rendered blocks, source words,
+  math nodes, refs, and citation groups carry `data-src="file:line:col"`
+  metadata. nvim cursor movement can scroll and highlight the
+  corresponding preview word/element, and double-click or Alt/Cmd-click
+  in the preview can move nvim back to the source.
 - **Project-local bibliography and figure sizing.** `\bibliography{...}`
   and `\addbibresource{...}` are resolved relative to the main `.tex`
   file directory, including bibliography commands in the document body.
@@ -83,19 +102,26 @@ What's built:
 - [x] ~~Manual proof roles and companion `mathpreview.sty` proof filtering.~~
 - [x] ~~Numbered `\step` / `\case` proof-flow macros with counter resets.~~
 - [x] ~~LaTeX-like paragraph, display, and blank-line spacing.~~
+- [x] ~~Per-row align/gather numbering and subequations a/b/c suffixes.~~
 - [x] ~~A4/dynamic page layout, page dividers, and index/pages rail.~~
 - [x] ~~Viewer restart and stop/start buttons.~~
+- [x] ~~Hide/restore toggle for the viewer top banner.~~
+- [x] ~~Vim-style viewer navigation, search, and previous-place jump list.~~
 - [x] ~~Selectable/copyable SVG MathJax equations that copy LaTeX.~~
+- [x] ~~Viewer toggle for LaTeX refkeys on labeled rendered items.~~
+- [x] ~~Row-level align/gather refkeys and deduplicated boxed theorem refkeys.~~
+- [x] ~~First-pass forward / inverse source sync between preview and nvim.~~
+- [x] ~~Source-word anchors and dynamic 25%/75% sync scrolling.~~
 - [ ] Margin / popup reference previews with click-to-pin and nested references.
-- [ ] Forward / inverse search between preview and editor.
+- [ ] SyncTeX-style display-row and glyph-level source sync.
 - [ ] Vendored/offline MathJax distribution.
 - [ ] Better parser coverage for more LaTeX text constructs and packages.
 - [ ] Browser-level interaction tests for copy/selection, page layout, and proof filters.
 
-What's not built yet — sections §8, §9 below describe these as forward
-goals:
+Remaining forward goals:
 
-- Forward / inverse search (preview ↔ editor cursor jump).
+- Higher-precision SyncTeX-style source sync for exact display rows and
+  glyph positions, beyond the current source-word/element target.
 - Margin / popup cross-references with hover and click-to-pin.
 - Vendored MathJax for offline distribution.
 - Broader browser-level interaction testing for the viewer controls.
@@ -166,6 +192,8 @@ file picker, no settings UI beyond a small toolbar.
                        │   │   GET  /        (shell HTML)    │   │
                        │   │   GET  /ws      (broadcast)──┐  │   │
                        │   │   POST /buffer  (push)       │  │   │
+                       │   │   POST /cursor  (source sync)│  │   │
+                       │   │   GET/POST /jump (inverse)   │  │   │
                        │   └──────────────────────────────┼──┘   │
                        └──────────────────────────────────┼──────┘
                                                           │ WS text frames
@@ -185,13 +213,17 @@ One process, many possible frontends. The daemon talks to the frontend
 over WebSocket text frames carrying JSON events:
 
 - `{event: "patch", ops: [{type: "range", index, remove, insert, html}, …],
-  blocks: [{id, hash}, …]}` — the common case for keystroke edits.
+  blocks: [{id, hash, src, anchors}, …]}` — the common case for keystroke edits.
   Each range op replaces `remove` top-level render blocks starting at
   `index` with the already-rendered `html`. The `blocks` list lets the
-  browser retag shifted DOM blocks after insertion/deletion edits.
+  browser retag shifted DOM blocks and their inner source anchors after
+  insertion/deletion edits.
 - `{event: "body-updated", html: …}` — full-body re-render, sent when
   the block diff would be larger than ~50% of the document anyway
   (typical for a structural edit that shifts every block's position).
+- `{event: "source-cursor", element_id, file, line, col}` — editor
+  cursor sync; the frontend scrolls to and highlights the matching
+  rendered word or element.
 - `{event: "full-reload"}` and `{event: "error", message}` for rare
   cases where in-place patching can't recover.
 
@@ -461,7 +493,7 @@ full re-render would cost.
 
 For implementation, `texlab`'s parser (the LaTeX language server's grammar) is a defensible choice. A hand-rolled Lezer-style grammar gives finer control. Either way, ensure source-position metadata survives to every leaf.
 
-**Renderer.** AST → HTML. Each block-level element emits with `data-src="file:line:col"` and a unique `id`. Math expressions are left as `\(...\)` and `\[...\]` for MathJax to typeset in the webview. Theorem environments render with their role as a CSS class and a small pill indicating the role. References render as `<span class="ref" data-target="thm:main">Theorem 3</span>`, with click handlers attached after MathJax completes.
+**Renderer.** AST → HTML. Each block-level element emits with `data-src="file:line:col"` and a unique `id`; prose words, math nodes, refs, and citation groups also carry source anchors for word-level sync. Math expressions are left as `\(...\)` and `\[...\]` for MathJax to typeset in the webview. Theorem environments render with their role as a CSS class and a small pill indicating the role. References render as anchored `<a class="ref" data-target="thm:main">Theorem 3</a>` nodes, with click handlers attached after MathJax completes.
 
 **Frontend.** Plain HTML/CSS/JS, no framework. The page is a static shell with `<div id="page">` for the rendered document and `<aside id="margin">` for the cross-reference cards. When `document-updated` arrives, replace contents, run MathJax, swap, attach handlers. The render-into-hidden-then-swap pattern eliminates flicker that would otherwise occur during MathJax's async typesetting.
 
@@ -522,23 +554,33 @@ resolves the root, opens HTTP on `127.0.0.1:23636`, and accepts both
 disk-watch (any editor) and buffer-push (nvim plugin) sources of
 truth.
 
-**Planned: forward / inverse search over the same WebSocket.** Both
-directions ride the existing WS connection — no separate Unix socket
-needed.
+**Built: first-pass forward / inverse source sync.** This uses HTTP for
+editor commands plus the existing WebSocket for browser updates, so the
+nvim plugin stays dependency-light and does not need an
+`NVIM_LISTEN_ADDRESS` RPC socket.
 
-- **Forward search path** (vimtex keybind → preview): nvim plugin
-  sends `{event: "forward-search", file, line, col}` to the daemon
-  over either an existing `/ws` connection or a fresh fire-and-forget
-  POST. Daemon looks up the sync index, broadcasts
-  `{event: "flash-element", id, ...}` to every connected client.
-  Frontend scrolls to and briefly highlights the element.
-- **Inverse search path** (preview click → nvim cursor): frontend
-  click handler reads `data-src="file:line:col"` from the clicked
-  block, sends `{event: "jump-to-source", file, line, col}` over WS.
-  Daemon dispatches via `nvim-rs` to the running nvim's listen socket
-  (`NVIM_LISTEN_ADDRESS` or `--nvim-socket`).
-
-This is unbuilt as of writing — see §11 Step 6.
+- **Forward search path** (nvim cursor → preview): `CursorMoved` and
+  `CursorMovedI` in `examples/mathpreview.lua` debounce and POST
+  `{file,line,col}` to `/cursor`. The daemon looks up the best matching
+  `SyncIndex` entry, broadcasts
+  `{event:"source-cursor", file, line, col, element_id}` to every
+  connected browser, and the frontend scrolls to and highlights that
+  rendered word or element. The browser uses a dynamic scroll band:
+  it does nothing while the target is between 25% and 75% of the
+  viewport, and otherwise scrolls it to the 25% line.
+  `:MathpreviewSync` forces one cursor sync manually.
+- **Inverse search path** (preview → nvim cursor): double-clicking or
+  Alt/Cmd-clicking rendered content finds the nearest ancestor with
+  `data-src="file:line:col"` and POSTs it to `/jump`. The daemon stores
+  it with a monotonic sequence number; the nvim plugin polls
+  `GET /jump?after=N` and opens the file/cursor when a newer jump is
+  available.
+- **Current precision.** This is not full SyncTeX precision yet, but it
+  is below environment/block level for normal prose: source words, math
+  nodes, refs, and citation groups are individually indexed. Exact
+  display-row and glyph-level targets remain future work. The public
+  protocol is already shaped so renderer-backed coordinates can replace
+  the lookup internals later.
 
 ## 10. Project layout
 
@@ -711,21 +753,43 @@ workflow-polish items landed before the interactive reference work:
   is ready; stop exits the daemon, turns into a start button, and leaves
   the browser in an intentional stopped state until the server is
   available again.
+- The same toolbar can be hidden for reading. The hidden state is stored
+  in browser local storage, a small fixed `toolbar` restore button stays
+  available, and page/index jump offsets stop reserving header space
+  while the banner is hidden.
+- Vim-style browser bindings support reading without leaving the
+  keyboard: `h`/`j`/`k`/`l` scroll, `Ctrl-d`/`Ctrl-u` move by half pages,
+  `gg`/`G` jump to top/bottom, `/` opens an in-viewer search prompt,
+  `n`/`N` repeat the search, and `Ctrl-o` returns to the previous place
+  recorded before search results, page/index jumps, source-sync jumps,
+  top/bottom jumps, and in-page reference clicks.
 
 **Step 4 ⏳ Interactive references.** Margin column, click-to-pin,
 hover previews, nested expansion, citation previews. All frontend work
 on top of the rendered DOM; the data is already there (refs carry
 `data-target`, citations carry `data-key`, sync index is populated).
 
-**Step 5 ⏳ Inverse search.** `nvim-rs` connection to the editor's
-listen socket. Frontend click handler sends
-`{event:"jump-to-source", file, line, col}` over the existing
-WebSocket; daemon dispatches `nvim_command(...)` to move the cursor.
+**Step 5 ✅ First-pass nvim/HTML source sync.** Rendered blocks, split
+paragraphs, source words, math nodes, refs, and citation groups now
+carry `data-src` anchors and are registered in the `SyncIndex`. The
+nvim plugin sends debounced `/cursor` updates on `CursorMoved`, the
+daemon broadcasts `source-cursor` over WebSocket, and the browser
+scrolls/highlights the matching rendered element using the 25%/75%
+comfort band. The inverse path uses double-click or Alt/Cmd-click in
+the browser, `POST /jump`, and nvim-side polling of
+`GET /jump?after=N` to move the editor cursor. WebSocket patch metadata
+also carries per-block source anchors so reused DOM blocks can retag
+their inner word/math/ref anchors when source line numbers shift.
+Blank paragraph-break lines inside theorem/proof environments get
+invisible `source-space` anchors, so placing the editor cursor on an
+empty line scrolls to that whitespace instead of falling back to the top
+of the enclosing environment.
 
-**Step 6 ⏳ Forward search.** vimtex keybind → nvim plugin sends
-`{event:"forward-search", ...}` → daemon looks up the sync index → WS
-broadcast `{event:"flash-element", id, ...}` → frontend scrolls and
-briefly highlights.
+**Step 6 ⏳ Higher-precision source sync.** The current sync is correct
+at source-word granularity for prose and element granularity for math
+and refs, but it is not yet SyncTeX-level. The next iteration should
+attach exact display-row and glyph coordinates without changing the
+`/cursor` and `/jump` protocol.
 
 **Step 7 ⏳ Distribution polish.** Vendored MathJax (no CDN). Margin
 warnings UI for filtered macros. Multi-buffer push (editing an

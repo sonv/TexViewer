@@ -101,6 +101,14 @@ pub enum NodeKind {
         env: Option<String>,
         label: Option<String>,
         number: Option<String>,
+        row_numbers: Vec<Option<String>>,
+    },
+    /// `\begin{subequations}` ... `\end{subequations}`. The environment owns
+    /// one parent equation number; numbered child equations get alphabetic
+    /// suffixes such as `1a`, `1b`.
+    Subequations {
+        label: Option<String>,
+        number: Option<String>,
     },
     /// `\ref{key}` / `\eqref{key}` / `\cref{key}` / `\autoref{key}`.
     Ref { kind: RefKind, key: String },

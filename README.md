@@ -14,6 +14,9 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   push. Browser tab reflects edits within ~5–10 ms of a keystroke pause.
 - **nvim integration** via a small Lua file: `TextChanged` autocmd → curl
   POST → daemon. No disk writes, no git pollution.
+- **nvim ↔ HTML source sync**: cursor movement in nvim can scroll and
+  highlight the matching rendered word/math/ref element, and double-click
+  or Alt/Cmd-click in the browser can jump nvim back to the source line.
 - **Macro extraction** from real preambles — `\newcommand`,
   `\DeclareMathOperator`, `\NewDocumentCommand`, `\def`, `\let`,
   `\DeclarePairedDelimiter`, and the `\newdelim` wrapper. Multi-file scan
@@ -24,20 +27,37 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   (`[SV06]` / `[BGL14]`), and `authoryear`. `\addbibresource` and
   `\bibliography{...}` both work; entries are sorted by author/year for
   alphabetic and author-year styles.
+- **Bibliography and figure handling for real projects**:
+  body-level `\bibliographystyle{plain}` is honored, `.bib` files are
+  resolved relative to the main `.tex` file, and `\includegraphics`
+  renders project-local raster/SVG assets plus cached PNG previews for
+  PDF figures while preserving common width/height/scale options.
 - **Numbering** for sections, theorem-likes (shared counter scoped to
-  section, AMS-modern style), and equation envs.
+  section, AMS-modern style), equation envs, multi-row `align`/`gather`
+  displays, and `subequations` groups with alphabetic child suffixes.
 - **Cross-references** resolve to their friendly form: `\cref{thm:main}`
   becomes "Theorem 2.1", `\eqref{eq:foo}` becomes "(3.1)".
 - **`\title` / `\author` / `\date` / `\maketitle`** produce a centered
-  title block.
+  title block. Repeated authors, `\and`, `\address`, `\curraddr`,
+  `\email`, and `abstract` are handled for AMS-style front matter.
 - **Lists** (enumerate / itemize / description / paralist variants) parse
   to `<ol>` / `<ul>` / `<dl>` with each `\item` recursively re-parsed.
 - **Role-tagged theorems** (`[role=main|supporting|standard|omitted]`)
   with per-proof fold/unfold and a toolbar that bulk-sets fold state by
   role. Default: "all expanded".
+- **Paper-like browser viewer** with A4 and dynamic page modes, generated
+  page dividers, an Index/Pages side pane, restart and stop/start daemon
+  controls, a hideable top toolbar, and a `keys` overlay for LaTeX labels
+  in the margin.
+- **Selectable SVG MathJax equations**: click an inline or display
+  equation to select only that math node; copying returns the original
+  LaTeX source instead of SVG text.
 - **Inline LaTeX** in titles / theorem names / `\omitref` payloads:
   `\emph`, `\textbf`, `\textit`, `\texttt`, `\textsc`, `\ref`/`\cref`/
   `\eqref`/`\autoref`, and accent commands (`\'e` → é, `\"o` → ö, etc.).
+- **LaTeX paragraph semantics**: blank source lines create paragraph
+  breaks with indentation, not visible `<br><br>` gaps, including inside
+  theorem/proof environments and around display math.
 - **Mid-edit guard**: while you're typing inside an open `$$…$$` or
   `\begin{…}` and the buffer is unbalanced, the daemon defers the push.
   Page keeps the last well-formed render instead of flashing a broken one.
@@ -50,13 +70,15 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   edit on a 40 KB paper renders in ~5 ms on the daemon side.
 - **Block-level diffing on the wire**: every top-level block is wrapped
   in `<article class="blk" id="blk-N" data-blockhash="…">`. The server
-  keeps the last broadcast's block sequence and pushes only the changed
-  blocks as `{event: "patch", ops: [{type: "replace", id, html}, …]}`.
-  A one-character edit inside a paragraph becomes a single `replace`
-  op; the client just sets that block's `outerHTML` and never touches
-  the surrounding blocks or any of their typeset math. Brings
-  end-to-end keystroke latency on a 300-equation paper from ~250 ms
-  (full body swap + 324 math transplants) to single-digit milliseconds.
+  keeps the last broadcast's block sequence and pushes compact range
+  patches as `{event: "patch", ops: [{type: "range", index, remove, html},
+  …]}`. A one-character edit inside a paragraph becomes a single-block
+  range patch; an inserted paragraph is applied at its child position
+  and the browser retags shifted block ids from server metadata. The
+  same patch metadata retags inner source anchors for word-level sync.
+  The client never touches surrounding blocks or their typeset math. This
+  brings end-to-end keystroke latency on a 300-equation paper from
+  ~250 ms to single-digit milliseconds for normal text edits.
 
 ## Quick start
 
@@ -75,6 +97,37 @@ open out.html
 The toolbar shows a status pill that reports timing on each update.
 The format depends on whether the daemon could send a patch or had to
 fall back to a full body re-render.
+
+### Viewer controls
+
+The browser toolbar is intentionally small and all controls work without
+a Rust roundtrip unless they are controlling the daemon itself.
+
+- `toc` toggles the left navigation pane. The pane has `Index` and
+  `Pages` tabs; the page list is generated from A4/dynamic page dividers.
+- `A4` / `dynamic` switches between a fixed A4-ratio sheet that scales
+  with the browser width and a wider readable flow layout.
+- `keys` toggles LaTeX refkeys for labeled sections, theorem boxes,
+  floats, display equations, and loose labels. Visible keys sit in the
+  page margin, and multi-row displays show row-level keys.
+- `restart` calls `POST /restart`, relaunches the daemon with the same
+  command-line arguments, polls until the replacement server is ready,
+  then reloads the page.
+- `stop` calls `POST /stop`, intentionally exits the daemon, and turns
+  into `start`. `start` waits for a daemon to become available again and
+  reloads the page.
+- `main only` / `+ supporting` / `all` filters proofs by theorem/proof
+  role. Proof roles can be inferred from nearby or postponed "Proof of
+  ..." headings, or set explicitly with proof options such as
+  `\begin{proof}[role=main]`.
+- `hide` hides the top banner and persists that preference in the
+  browser. A small `toolbar` button appears at the top right to restore
+  the banner.
+- Vim-style keyboard navigation works in the viewer: `h`/`j`/`k`/`l`
+  scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages,
+  `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
+  between search matches, and `Ctrl-o` returns to the previous recorded
+  place. These bindings are ignored while typing in editable controls.
 
 **Patch path** (small change, the common case):
 
@@ -144,6 +197,7 @@ and POSTs the buffer to the daemon, debounced at 40 ms. nvim 0.10+ uses
 ```
 :MathpreviewStatus    -- push count, last error, autocmd state, filetype
 :MathpreviewPush      -- force one push now (bypasses debounce / filter)
+:MathpreviewSync      -- force one cursor-to-preview sync now
 :MathpreviewDisable   -- pause auto-pushes
 :MathpreviewEnable    -- resume
 ```
@@ -151,6 +205,18 @@ and POSTs the buffer to the daemon, debounced at 40 ms. nvim 0.10+ uses
 If `MathpreviewStatus` shows zero `autocmds_count`, the file wasn't
 loaded. If `last_error` is set, that's the curl side (server not running,
 wrong URL, etc.).
+
+With the default config, `CursorMoved` / `CursorMovedI` also POST the
+current source position to `/cursor`. The browser scrolls to and flashes
+the nearest rendered word/math/ref element. It does not scroll while that
+element is between 25% and 75% of the viewport; once it leaves that band,
+it lands the element at the 25% line. To jump the other direction,
+double-click or Alt/Cmd-click rendered content in the browser; the nvim
+plugin polls `/jump` and moves the editor cursor to that source location.
+Blank paragraph-separator lines inside theorem/proof environments also
+have invisible source anchors, so placing the cursor on an empty line
+syncs to that whitespace instead of jumping to the top of the enclosing
+environment.
 
 ## How it stays fast
 
@@ -187,10 +253,10 @@ DESIGN.md     full design document
 
 ## What's not done yet
 
-- **Forward/inverse search.** No editor-cursor ↔ preview-element jumps yet.
-  The sync index is populated server-side and every rendered block carries
-  a `data-src="file:line:col"` attribute, so adding it is a frontend +
-  small protocol extension on the existing WebSocket.
+- **Higher-precision source sync.** Editor-cursor ↔ preview jumps work at
+  source-word granularity for prose and element granularity for math/refs.
+  Full SyncTeX-style precision for exact display rows or glyph-level
+  positions is still future work.
 - **Margin/popup cross-references.** Clicking a ref currently jumps to
   the target via `<a href="#id">`. The "pin into the margin" interaction
   from DESIGN §8 isn't built.
@@ -200,14 +266,11 @@ DESIGN.md     full design document
   content; if you edit a `\input`-ed child, you'd need the editor plugin
   to send each buffer keyed by path. The server-side substitution map
   exists in the architecture but isn't exercised.
-- **Insertion in the middle of the document falls back to a full body
-  re-render.** The position-based block diff treats every block after an
-  insertion point as "changed" because their IDs shift. We fall back to
-  full-body for any push where ops would touch >50% of blocks, which
-  catches that case but pays the full-body cost (~40–250 ms depending on
-  paper size). Fix is a real keyed-LCS diff with explicit move/insert
-  ops — see DESIGN §11 ⏳ for the proper approach and the gotchas of the
-  naive heuristic.
+- **Keyed-LCS block matching.** The current range-patch protocol fixes
+  ordinary insertions without stale ordering, but it is still position
+  based. A real keyed-LCS diff with explicit move/insert ops would reduce
+  large structural edits further; see DESIGN §11 for the proper approach
+  and the gotchas of the naive heuristic.
 - **Tauri shell as a native window option.** WebSocket was picked as the
   starting transport because it decouples backend from frontend — not as
   a permanent rejection of Tauri. The intended destination is to add a

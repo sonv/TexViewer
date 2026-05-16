@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use std::collections::HashMap;
 
-use crate::ast::{ListKind, Node, NodeKind, RefKind, Role, Span};
+use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span};
 use crate::bibtex::{BibEntry, BibStyle};
 use crate::macros::ExtractedPreamble;
 use crate::numbering::LabelTable;
@@ -73,9 +73,17 @@ pub struct RenderedHtml {
 pub struct RenderedBlock {
     pub id: String,
     pub hash: String,
+    pub src: Option<String>,
+    pub source_anchors: Vec<SourceAnchor>,
     #[serde(skip)]
     pub diff_hash: String,
     pub html: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceAnchor {
+    pub id: String,
+    pub src: String,
 }
 
 pub fn render(
@@ -97,6 +105,7 @@ pub fn render(
         preamble,
         step_counter: 0,
         case_counter: 0,
+        source_anchors: Vec::new(),
     };
 
     // Top-level inline runs become paragraph blocks. Structural nodes
@@ -105,26 +114,13 @@ pub fn render(
     // visual layout — it exists purely so the diff/patch path can find and
     // replace blocks by id.
     let mut blocks: Vec<RenderedBlock> = Vec::with_capacity(nodes.len());
-    let mut paragraph = String::new();
-    let mut paragraph_start: Option<usize> = None;
-    let mut paragraph_force_indent = false;
-    let mut paragraph_no_indent = false;
-    let mut paragraph_flow_marker = false;
-    let mut paragraph_trim_after_flow_marker = false;
+    let mut paragraph = ParagraphState::default();
     let mut previous_block_was_display = false;
     let mut blank_after_display = false;
     let ordered = front_matter_order(nodes);
     for (i, node) in ordered.iter().enumerate() {
         if is_blank_separator_node(node) {
-            flush_paragraph(
-                &mut blocks,
-                &mut paragraph,
-                &mut paragraph_start,
-                &mut paragraph_force_indent,
-                &mut paragraph_no_indent,
-                &mut paragraph_flow_marker,
-                &mut paragraph_trim_after_flow_marker,
-            );
+            flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
             if previous_block_was_display {
                 blank_after_display = true;
             }
@@ -137,21 +133,14 @@ pub fn render(
                 write_node(&mut sink, node, &mut ctx);
                 continue;
             }
-            flush_paragraph(
-                &mut blocks,
-                &mut paragraph,
-                &mut paragraph_start,
-                &mut paragraph_force_indent,
-                &mut paragraph_no_indent,
-                &mut paragraph_flow_marker,
-                &mut paragraph_trim_after_flow_marker,
-            );
-            paragraph_start = Some(i);
-            paragraph_force_indent = false;
-            paragraph_no_indent = true;
-            paragraph_flow_marker = true;
-            paragraph_trim_after_flow_marker = true;
-            write_node(&mut paragraph, node, &mut ctx);
+            flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
+            paragraph.start = Some(i);
+            extend_paragraph_span(&mut paragraph.span, node.span.clone());
+            paragraph.force_indent = false;
+            paragraph.no_indent = true;
+            paragraph.flow_marker = true;
+            paragraph.trim_after_flow_marker = true;
+            write_node(&mut paragraph.html, node, &mut ctx);
             previous_block_was_display = false;
             blank_after_display = false;
             continue;
@@ -164,9 +153,12 @@ pub fn render(
             if let NodeKind::Text(s) = &node.kind {
                 for part in paragraph_text_parts(s) {
                     match part {
-                        ParagraphTextPart::Text(segment) => {
-                            let text = if paragraph.trim().is_empty()
-                                || paragraph_trim_after_flow_marker
+                        ParagraphTextPart::Text {
+                            text: segment,
+                            start,
+                        } => {
+                            let text = if paragraph.html.trim().is_empty()
+                                || paragraph.trim_after_flow_marker
                             {
                                 trim_leading_paragraph_space(segment)
                             } else {
@@ -175,35 +167,40 @@ pub fn render(
                             if text.is_empty() {
                                 continue;
                             }
-                            if paragraph_start.is_none() {
-                                paragraph_start = Some(i);
-                                paragraph_force_indent =
+                            if paragraph.start.is_none() {
+                                paragraph.start = Some(i);
+                                paragraph.span = Some(text_segment_span(
+                                    &node.span,
+                                    s,
+                                    start,
+                                    start + segment.len(),
+                                ));
+                                paragraph.force_indent =
                                     previous_block_was_display && blank_after_display;
-                                paragraph_no_indent = false;
-                                paragraph_flow_marker = false;
+                                paragraph.no_indent = false;
+                                paragraph.flow_marker = false;
                             }
-                            if !paragraph.trim().is_empty()
+                            extend_paragraph_span(
+                                &mut paragraph.span,
+                                text_segment_span(&node.span, s, start, start + segment.len()),
+                            );
+                            if !paragraph.html.trim().is_empty()
                                 && !starts_with_blank_line(text)
                                 && text.starts_with(char::is_whitespace)
-                                && !paragraph.ends_with(char::is_whitespace)
+                                && !paragraph.html.ends_with(char::is_whitespace)
                             {
-                                paragraph.push(' ');
+                                paragraph.html.push(' ');
                             }
-                            write_text(&mut paragraph, text, ctx.labels);
-                            paragraph_trim_after_flow_marker = false;
+                            let text_start = start + (segment.len() - text.len());
+                            let text_span =
+                                text_segment_span(&node.span, s, text_start, start + segment.len());
+                            write_text_with_span(&mut paragraph.html, text, &text_span, &mut ctx);
+                            paragraph.trim_after_flow_marker = false;
                             previous_block_was_display = false;
                             blank_after_display = false;
                         }
-                        ParagraphTextPart::Break => {
-                            flush_paragraph(
-                                &mut blocks,
-                                &mut paragraph,
-                                &mut paragraph_start,
-                                &mut paragraph_force_indent,
-                                &mut paragraph_no_indent,
-                                &mut paragraph_flow_marker,
-                                &mut paragraph_trim_after_flow_marker,
-                            );
+                        ParagraphTextPart::Break { .. } => {
+                            flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
                             if previous_block_was_display {
                                 blank_after_display = true;
                             }
@@ -212,49 +209,36 @@ pub fn render(
                 }
                 continue;
             }
-            if paragraph_start.is_none() {
-                paragraph_start = Some(i);
-                paragraph_force_indent = previous_block_was_display && blank_after_display;
-                paragraph_no_indent = false;
-                paragraph_flow_marker = false;
+            if paragraph.start.is_none() {
+                paragraph.start = Some(i);
+                paragraph.span = Some(node.span.clone());
+                paragraph.force_indent = previous_block_was_display && blank_after_display;
+                paragraph.no_indent = false;
+                paragraph.flow_marker = false;
             }
-            write_node(&mut paragraph, node, &mut ctx);
-            paragraph_trim_after_flow_marker = false;
+            extend_paragraph_span(&mut paragraph.span, node.span.clone());
+            write_node(&mut paragraph.html, node, &mut ctx);
+            paragraph.trim_after_flow_marker = false;
             previous_block_was_display = false;
             blank_after_display = false;
             continue;
         }
 
-        flush_paragraph(
-            &mut blocks,
-            &mut paragraph,
-            &mut paragraph_start,
-            &mut paragraph_force_indent,
-            &mut paragraph_no_indent,
-            &mut paragraph_flow_marker,
-            &mut paragraph_trim_after_flow_marker,
-        );
+        flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
         let mut inner = String::new();
         write_node(&mut inner, node, &mut ctx);
         // Skip empty emissions (e.g. discarded comments, no-op opaque cmds)
         // so we don't pollute the block sequence with phantoms whose hash
         // would still match across renders but waste id space.
         if inner.trim().is_empty() {
+            ctx.source_anchors.clear();
             continue;
         }
-        push_block(&mut blocks, i, inner);
+        push_block(&mut blocks, i, inner, Some(&node.span), &mut ctx);
         previous_block_was_display = matches!(&node.kind, NodeKind::DisplayMath { .. });
         blank_after_display = false;
     }
-    flush_paragraph(
-        &mut blocks,
-        &mut paragraph,
-        &mut paragraph_start,
-        &mut paragraph_force_indent,
-        &mut paragraph_no_indent,
-        &mut paragraph_flow_marker,
-        &mut paragraph_trim_after_flow_marker,
-    );
+    flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
 
     let body: String = blocks.iter().map(|b| b.html.as_str()).collect();
     let full = wrap_in_shell(&body, preamble, opts);
@@ -292,58 +276,87 @@ fn front_matter_order(nodes: &[Node]) -> Vec<&Node> {
     ordered
 }
 
+#[derive(Default)]
+struct ParagraphState {
+    html: String,
+    start: Option<usize>,
+    span: Option<Span>,
+    force_indent: bool,
+    no_indent: bool,
+    flow_marker: bool,
+    trim_after_flow_marker: bool,
+}
+
 fn flush_paragraph(
     blocks: &mut Vec<RenderedBlock>,
-    paragraph: &mut String,
-    paragraph_start: &mut Option<usize>,
-    paragraph_force_indent: &mut bool,
-    paragraph_no_indent: &mut bool,
-    paragraph_flow_marker: &mut bool,
-    paragraph_trim_after_flow_marker: &mut bool,
+    paragraph: &mut ParagraphState,
+    ctx: &mut RenderCtx<'_>,
 ) {
-    let Some(start) = paragraph_start.take() else {
+    let Some(start) = paragraph.start.take() else {
         return;
     };
-    if paragraph.trim().is_empty() {
-        paragraph.clear();
-        *paragraph_force_indent = false;
-        *paragraph_no_indent = false;
-        *paragraph_flow_marker = false;
-        *paragraph_trim_after_flow_marker = false;
+    let span = paragraph.span.take();
+    if paragraph.html.trim().is_empty() {
+        paragraph.html.clear();
+        paragraph.force_indent = false;
+        paragraph.no_indent = false;
+        paragraph.flow_marker = false;
+        paragraph.trim_after_flow_marker = false;
         return;
     }
     let mut classes = vec!["para"];
-    if *paragraph_force_indent && !*paragraph_no_indent {
+    if paragraph.force_indent && !paragraph.no_indent {
         classes.push("para-indent");
     }
-    if *paragraph_no_indent {
+    if paragraph.no_indent {
         classes.push("para-noindent");
     }
-    if *paragraph_flow_marker {
+    if paragraph.flow_marker {
         classes.push("para-flow");
     }
     let class = classes.join(" ");
-    let inner = format!(r#"<p class="{class}">{}</p>"#, std::mem::take(paragraph));
-    *paragraph_force_indent = false;
-    *paragraph_no_indent = false;
-    *paragraph_flow_marker = false;
-    *paragraph_trim_after_flow_marker = false;
-    push_block(blocks, start, inner);
+    let inner = format!(
+        r#"<p class="{class}">{}</p>"#,
+        std::mem::take(&mut paragraph.html)
+    );
+    paragraph.force_indent = false;
+    paragraph.no_indent = false;
+    paragraph.flow_marker = false;
+    paragraph.trim_after_flow_marker = false;
+    push_block(blocks, start, inner, span.as_ref(), ctx);
 }
 
-fn push_block(blocks: &mut Vec<RenderedBlock>, index: usize, inner: String) {
-    let id = format!("blk-{}", index + 1);
+fn push_block(
+    blocks: &mut Vec<RenderedBlock>,
+    _index: usize,
+    inner: String,
+    span: Option<&Span>,
+    ctx: &mut RenderCtx<'_>,
+) {
+    let id = format!("blk-{}", blocks.len() + 1);
     let hash = fnv_hash(&inner);
     let diff_hash = fnv_hash(&stable_block_diff_source(&inner));
+    let source_anchors = std::mem::take(&mut ctx.source_anchors);
+    let src_value = span.map(data_src);
+    let src_attr = src_value
+        .as_deref()
+        .map(|src| format!(r#" data-src="{}""#, escape_attr(src)))
+        .unwrap_or_default();
+    if let Some(span) = span {
+        record_sync(ctx, &id, span, None);
+    }
     let html = format!(
-        r#"<article class="blk" id="{id}" data-blockhash="{hash}">{inner}</article>"#,
+        r#"<article class="blk" id="{id}" data-blockhash="{hash}"{src}>{inner}</article>"#,
         id = id,
         hash = hash,
+        src = src_attr,
         inner = inner,
     );
     blocks.push(RenderedBlock {
         id,
         hash,
+        src: src_value,
+        source_anchors,
         diff_hash,
         html,
     });
@@ -368,7 +381,7 @@ fn stable_block_diff_source(s: &str) -> String {
 }
 
 fn starts_generated_id_attr(rest: &str) -> bool {
-    const PREFIXES: [&str; 7] = [
+    const PREFIXES: [&str; 11] = [
         r#" id="im-"#,
         r#" id="dm-"#,
         r#" id="eq-"#,
@@ -376,6 +389,10 @@ fn starts_generated_id_attr(rest: &str) -> bool {
         r#" id="thm-"#,
         r#" id="proof-"#,
         r#" id="fn-"#,
+        r#" id="ref-"#,
+        r#" id="cite-"#,
+        r#" id="srcs-"#,
+        r#" id="srcw-"#,
     ];
     PREFIXES.iter().any(|prefix| {
         rest.starts_with(prefix)
@@ -454,8 +471,8 @@ fn starts_with_blank_line(s: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParagraphTextPart<'a> {
-    Text(&'a str),
-    Break,
+    Text { text: &'a str, start: usize },
+    Break { start: usize, end: usize },
 }
 
 fn paragraph_text_parts(s: &str) -> Vec<ParagraphTextPart<'_>> {
@@ -467,9 +484,12 @@ fn paragraph_text_parts(s: &str) -> Vec<ParagraphTextPart<'_>> {
         if bytes[i] == b'\n' {
             if let Some(end) = paragraph_break_end(bytes, i) {
                 if start < i {
-                    parts.push(ParagraphTextPart::Text(&s[start..i]));
+                    parts.push(ParagraphTextPart::Text {
+                        text: &s[start..i],
+                        start,
+                    });
                 }
-                parts.push(ParagraphTextPart::Break);
+                parts.push(ParagraphTextPart::Break { start: i, end });
                 i = end;
                 start = end;
                 continue;
@@ -483,9 +503,70 @@ fn paragraph_text_parts(s: &str) -> Vec<ParagraphTextPart<'_>> {
         }
     }
     if start < s.len() {
-        parts.push(ParagraphTextPart::Text(&s[start..]));
+        parts.push(ParagraphTextPart::Text {
+            text: &s[start..],
+            start,
+        });
     }
     parts
+}
+
+fn text_segment_span(node_span: &Span, text: &str, start: usize, end: usize) -> Span {
+    Span {
+        file: node_span.file.clone(),
+        start: offset_pos(text, node_span.start, start),
+        end: offset_pos(text, node_span.start, end),
+    }
+}
+
+fn paragraph_break_span(node_span: &Span, text: &str, start: usize, end: usize) -> Span {
+    let mut anchor_start = start;
+    let bytes = text.as_bytes();
+    if bytes.get(anchor_start) == Some(&b'\n') {
+        anchor_start += 1;
+    }
+    let mut anchor_end = anchor_start;
+    while anchor_end < end && anchor_end < bytes.len() {
+        match bytes[anchor_end] {
+            b'\n' | b'\r' => break,
+            _ => anchor_end += 1,
+        }
+    }
+    text_segment_span(node_span, text, anchor_start, anchor_end)
+}
+
+fn offset_pos(src: &str, start: Pos, byte: usize) -> Pos {
+    let mut line = start.line;
+    let mut col = start.col;
+    for ch in src[..byte.min(src.len())].chars() {
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    Pos {
+        line,
+        col,
+        byte: start.byte + byte as u32,
+    }
+}
+
+fn extend_paragraph_span(current: &mut Option<Span>, span: Span) {
+    match current {
+        Some(existing) if existing.file == span.file => {
+            if span_ends_after(span.end, existing.end) {
+                existing.end = span.end;
+            }
+        }
+        Some(_) => {}
+        None => *current = Some(span),
+    }
+}
+
+fn span_ends_after(candidate: Pos, current: Pos) -> bool {
+    candidate.line > current.line || (candidate.line == current.line && candidate.col > current.col)
 }
 
 fn paragraph_break_end(bytes: &[u8], start: usize) -> Option<usize> {
@@ -504,11 +585,147 @@ fn paragraph_break_end(bytes: &[u8], start: usize) -> Option<usize> {
     (newlines >= 2).then_some(j)
 }
 
-fn write_text(out: &mut String, s: &str, labels: &LabelTable) {
+fn write_text_with_span(out: &mut String, s: &str, span: &Span, ctx: &mut RenderCtx<'_>) {
     if is_blank_line_separator(s) {
         out.push_str(r#"<div class="para-break" aria-hidden="true"></div>"#);
     } else {
-        out.push_str(&render_inline_latex(s, labels));
+        out.push_str(&render_inline_latex_with_source_spans(s, span, ctx));
+    }
+}
+
+fn write_source_space_anchor(out: &mut String, span: &Span, ctx: &mut RenderCtx<'_>) {
+    let id = ctx.idgen.next("srcs");
+    record(ctx, &id, span, None);
+    write!(
+        out,
+        r#"<span class="source-space" id="{id}" data-src="{src}" aria-hidden="true"></span>"#,
+        id = escape_attr(&id),
+        src = escape_attr(&data_src(span)),
+    )
+    .unwrap();
+}
+
+fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < s.len() {
+        let Some(ch) = s[i..].chars().next() else {
+            break;
+        };
+        if ch.is_whitespace() {
+            let start = i;
+            i += ch.len_utf8();
+            while i < s.len() {
+                let Some(next) = s[i..].chars().next() else {
+                    break;
+                };
+                if !next.is_whitespace() {
+                    break;
+                }
+                i += next.len_utf8();
+            }
+            out.push_str(&render_inline_latex(&s[start..i], ctx.labels));
+            continue;
+        }
+
+        let token_end = if ch == '\\' {
+            latex_source_token_end(s, i).unwrap_or_else(|| i + ch.len_utf8())
+        } else if is_source_word_char(ch) {
+            source_word_end(s, i)
+        } else {
+            let start = i;
+            i += ch.len_utf8();
+            out.push_str(&render_inline_latex(&s[start..i], ctx.labels));
+            continue;
+        };
+
+        let token = &s[i..token_end];
+        let rendered = render_inline_latex(token, ctx.labels);
+        if !rendered.is_empty() {
+            let token_span = span_for_text_range(span, s, i, token_end);
+            let id = ctx.idgen.next("srcw");
+            record(ctx, &id, &token_span, None);
+            write!(
+                out,
+                r#"<span class="src-word" id="{id}" data-src="{src}">{rendered}</span>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&token_span)),
+                rendered = rendered,
+            )
+            .unwrap();
+        }
+        i = token_end;
+    }
+    out
+}
+
+fn source_word_end(s: &str, start: usize) -> usize {
+    let mut i = start;
+    while i < s.len() {
+        let Some(ch) = s[i..].chars().next() else {
+            break;
+        };
+        if !is_source_word_char(ch) {
+            break;
+        }
+        i += ch.len_utf8();
+    }
+    i
+}
+
+fn is_source_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '\'' | '’' | '-')
+}
+
+fn latex_source_token_end(s: &str, start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.get(start) != Some(&b'\\') {
+        return None;
+    }
+    let mut i = start + 1;
+    if i >= bytes.len() {
+        return Some(i);
+    }
+    if bytes[i].is_ascii_alphabetic() {
+        while i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'*') {
+            i += 1;
+        }
+        loop {
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            let group = match bytes.get(i).copied() {
+                Some(b'[') => balanced_group_end(s, i, b'[', b']'),
+                Some(b'{') => balanced_group_end(s, i, b'{', b'}'),
+                _ => None,
+            };
+            let Some(end) = group else {
+                break;
+            };
+            i = end;
+        }
+        return Some(i);
+    }
+    let punct = s[i..].chars().next()?;
+    i += punct.len_utf8();
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b'{') {
+        return balanced_group_end(s, i, b'{', b'}');
+    }
+    if i < s.len() {
+        let arg = s[i..].chars().next()?;
+        i += arg.len_utf8();
+    }
+    Some(i)
+}
+
+fn span_for_text_range(span: &Span, text: &str, start: usize, end: usize) -> Span {
+    Span {
+        file: span.file.clone(),
+        start: offset_pos(text, span.start, start),
+        end: offset_pos(text, span.start, end),
     }
 }
 
@@ -544,6 +761,7 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
     <button data-page-mode="a4" class="active" type="button">A4</button>
     <button data-page-mode="dynamic" type="button">dynamic</button>
   </span>
+  <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
   <button class="server-restart" id="server-restart" type="button" title="restart preview server">restart</button>
   <button class="server-stop" id="server-stop" type="button" title="stop preview server">stop</button>
   <span class="proof-toggle" data-mode="all">
@@ -551,7 +769,14 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
     <button data-mode="supporting">+ supporting</button>
     <button data-mode="all" class="active">all</button>
   </span>
+  <button class="topbar-hide" id="topbar-hide" type="button" aria-pressed="false" title="hide top banner">hide</button>
 </header>
+<button class="topbar-restore" id="topbar-restore" type="button" title="show top banner">toolbar</button>
+<div class="search-panel" id="search-panel" hidden>
+  <label for="search-input">/</label>
+  <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
+  <span class="search-help">Enter next · Shift+Enter previous · Esc close</span>
+</div>
 {warnings_html}
 <aside class="side-panel" id="viewer-side" aria-label="document navigation">
   <div class="side-tabs" role="tablist" aria-label="navigation mode">
@@ -562,7 +787,7 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
   <nav class="side-list" id="side-pages" aria-label="A4 pages" hidden></nav>
 </aside>
 <div id="page-shell">
-  <main id="page" data-proof-mode="all">
+  <main id="page" data-proof-mode="all" data-refkeys="hidden">
 {body}
   </main>
 </div>
@@ -599,9 +824,18 @@ struct RenderCtx<'a> {
     preamble: &'a ExtractedPreamble,
     step_counter: usize,
     case_counter: usize,
+    source_anchors: Vec<SourceAnchor>,
 }
 
 fn record(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
+    record_sync(ctx, id, span, label);
+    ctx.source_anchors.push(SourceAnchor {
+        id: id.to_string(),
+        src: data_src(span),
+    });
+}
+
+fn record_sync(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
     ctx.sync.record(
         id.to_string(),
         span.file.clone(),
@@ -620,6 +854,93 @@ fn data_src(span: &Span) -> String {
     )
 }
 
+fn refkey_attr(label: Option<&str>) -> String {
+    label
+        .map(|label| format!(r#" data-refkey="{}""#, escape_attr(label)))
+        .unwrap_or_default()
+}
+
+fn equation_number_html(number: Option<&str>, row_numbers: &[Option<String>]) -> String {
+    if row_numbers.is_empty() {
+        return number
+            .map(|n| format!(r#"<span class="eq-num">({})</span>"#, escape_html(n)))
+            .unwrap_or_default();
+    }
+
+    let mut out = String::from(r#"<span class="eq-num-list" aria-hidden="true">"#);
+    for row in row_numbers {
+        match row {
+            Some(n) => write!(
+                out,
+                r#"<span class="eq-num-row">({})</span>"#,
+                escape_html(n)
+            )
+            .unwrap(),
+            None => out.push_str(r#"<span class="eq-num-row empty"></span>"#),
+        }
+    }
+    out.push_str("</span>");
+    out
+}
+
+fn equation_row_refkey_html(
+    body: &str,
+    primary: Option<&str>,
+    row_numbers: &[Option<String>],
+) -> String {
+    if row_numbers.is_empty() {
+        return String::new();
+    }
+
+    let labels_by_row = math_row_labels(body);
+    if labels_by_row.iter().all(Vec::is_empty) {
+        return String::new();
+    }
+
+    let row_count = row_numbers.len().max(labels_by_row.len());
+    let mut out = String::from(r#"<span class="eq-refkey-list" aria-hidden="true">"#);
+    for row_index in 0..row_count {
+        out.push_str(r#"<span class="eq-refkey-row">"#);
+        if let Some(labels) = labels_by_row.get(row_index) {
+            for label in labels {
+                let id_attr = if primary == Some(label.as_str()) {
+                    String::new()
+                } else {
+                    format!(r#" id="{}""#, escape_attr(&sanitize_id(label)))
+                };
+                write!(
+                    out,
+                    r#"<span class="eq-refkey-chip"{id}>{label}</span>"#,
+                    id = id_attr,
+                    label = escape_html(label),
+                )
+                .unwrap();
+            }
+        }
+        out.push_str("</span>");
+    }
+    out.push_str("</span>");
+    out
+}
+
+fn math_row_labels(body: &str) -> Vec<Vec<String>> {
+    let mut seen = Vec::<String>::new();
+    split_math_rows(body)
+        .into_iter()
+        .map(|row| {
+            let mut row_labels = Vec::new();
+            for label in latex_command_args(row, "label") {
+                if seen.iter().any(|existing| existing == &label) {
+                    continue;
+                }
+                seen.push(label.clone());
+                row_labels.push(label);
+            }
+            row_labels
+        })
+        .collect()
+}
+
 fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
     match &n.kind {
         NodeKind::Document => {
@@ -629,7 +950,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // Route through the inline parser so accents (`\'e` → é) and any
             // straggler inline commands get processed instead of leaking as
             // literal backslash sequences.
-            write_text(out, s, ctx.labels);
+            write_text_with_span(out, s, &n.span, ctx);
         }
         NodeKind::Comment(_) => { /* discard */ }
         NodeKind::Section {
@@ -651,9 +972,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .unwrap_or_default();
             writeln!(
                 out,
-                r#"<h{h} id="{id}" class="sec-h{level}" data-src="{src}">{num}{title}</h{h}>"#,
+                r#"<h{h} id="{id}" class="sec-h{level}" data-src="{src}"{refkey}>{num}{title}</h{h}>"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
+                refkey = refkey_attr(label.as_deref()),
                 level = level,
                 num = num_html,
                 title = render_inline_latex(title, ctx.labels),
@@ -693,11 +1015,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             let role_pill = role_pill_html(*role);
             writeln!(
                 out,
-                r#"<div class="thm {env_class} {role_class}" id="{id}" data-src="{src}">"#,
+                r#"<div class="thm {env_class} {role_class}" id="{id}" data-src="{src}"{refkey}>"#,
                 env_class = format_args!("env-{env}"),
                 role_class = role_class,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
+                refkey = refkey_attr(label.as_deref()),
             )
             .unwrap();
             writeln!(
@@ -746,13 +1069,14 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         NodeKind::InlineMath(s) => {
             let id = ctx.idgen.next("im");
             record(ctx, &id, &n.span, None);
-            let hash = fnv_hash(&format!("i:{s}"));
+            let rendered_math = resolve_math_refs(s, ctx.labels);
+            let hash = fnv_hash(&format!("i:{rendered_math}"));
             let copy_tex = format!(r"\({s}\)");
             // Use \( \) so MathJax doesn't typeset the literal `$` text.
             write!(
                 out,
                 r#"<span class="math inline" id="{id}" data-src="{src}" data-hash="{hash}" data-tex="{copy_tex}" tabindex="0" title="Copy as LaTeX">\({}\)</span>"#,
-                escape_math(s),
+                escape_math(&rendered_math),
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
                 hash = hash,
@@ -764,6 +1088,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             env,
             label,
             number,
+            row_numbers,
         } => {
             let id = label
                 .as_deref()
@@ -774,42 +1099,69 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // and MathJax otherwise warns "Label: multiply defined" when the
             // same equation is typeset across live-reload updates.
             let body_clean = strip_labels(body);
+            let body_rendered = resolve_math_refs(&body_clean, ctx.labels);
             let math = match env {
-                Some(e) => format!(r"\begin{{{e}}}{}\end{{{e}}}", body_clean),
-                None => format!(r"\[{}\]", body_clean),
+                Some(e) => format!(r"\begin{{{e}}}{}\end{{{e}}}", body_rendered),
+                None => format!(r"\[{}\]", body_rendered),
             };
             let copy_tex = match env {
                 Some(e) => format!(r"\begin{{{e}}}{}\end{{{e}}}", body),
                 None => format!(r"\[{}\]", body),
             };
-            let alias_html = label_alias_anchors(body, label.as_deref());
-            let num_html = number
-                .as_deref()
-                .map(|n| format!(r#"<span class="eq-num">({})</span>"#, escape_html(n)))
-                .unwrap_or_default();
+            let row_refkey_html = equation_row_refkey_html(body, label.as_deref(), row_numbers);
+            let alias_html = if row_numbers.is_empty() {
+                label_alias_anchors(body, label.as_deref())
+            } else {
+                String::new()
+            };
+            let num_html = equation_number_html(number.as_deref(), row_numbers);
+            let label_fingerprint = latex_command_args(body, "label").join("\u{1f}");
             let hash = fnv_hash(&format!(
-                "d:{}:{}:{}",
+                "d:{}:{}:{:?}:{}:{}",
                 env.as_deref().unwrap_or("[]"),
                 number.as_deref().unwrap_or(""),
+                row_numbers,
+                label_fingerprint,
                 math,
             ));
             writeln!(
                 out,
-                r#"<div class="math display" id="{id}" data-src="{src}" data-hash="{hash}" data-tex="{copy_tex}" tabindex="0" title="Copy as LaTeX">{aliases}{math}{num_html}</div>"#,
+                r#"<div class="math display" id="{id}" data-src="{src}"{refkey} data-hash="{hash}" data-tex="{copy_tex}" tabindex="0" title="Copy as LaTeX">{aliases}{row_refkeys}{math}{num_html}</div>"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
+                refkey = if row_numbers.is_empty() { refkey_attr(label.as_deref()) } else { String::new() },
                 aliases = alias_html,
+                row_refkeys = row_refkey_html,
                 math = escape_math(&math),
                 hash = hash,
                 copy_tex = escape_attr(&copy_tex),
             ).unwrap();
         }
+        NodeKind::Subequations { label, number: _ } => {
+            if let Some(label) = label {
+                let id = sanitize_id(label);
+                record(ctx, &id, &n.span, Some(label));
+                write!(
+                    out,
+                    r#"<span class="label-anchor" id="{}" data-src="{}" data-refkey="{}"></span>"#,
+                    escape_attr(&id),
+                    escape_attr(&data_src(&n.span)),
+                    escape_attr(label)
+                )
+                .unwrap();
+            }
+            write_children(out, &n.children, ctx);
+        }
         NodeKind::Ref { kind, key } => {
+            let id = ctx.idgen.next("ref");
+            record(ctx, &id, &n.span, None);
             let target = sanitize_id(key);
             let label = ctx.labels.resolve_ref(*kind, key);
             write!(
                 out,
-                r##"<a class="ref" href="#{target}" data-target="{key}" data-kind="{kind_str}">{label}</a>"##,
+                r##"<a class="ref" id="{id}" data-src="{src}" href="#{target}" data-target="{key}" data-kind="{kind_str}">{label}</a>"##,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
                 target = escape_attr(&target),
                 key = escape_attr(key),
                 kind_str = match kind {
@@ -824,6 +1176,8 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             ).unwrap();
         }
         NodeKind::Cite { keys } => {
+            let id = ctx.idgen.next("cite");
+            record(ctx, &id, &n.span, None);
             let parts: Vec<String> = keys
                 .iter()
                 .map(|k| {
@@ -848,7 +1202,14 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 BibStyle::AuthorYear => ('(', ')'),
                 _ => ('[', ']'),
             };
-            write!(out, "{l}{}{r}", parts.join("; ")).unwrap();
+            write!(
+                out,
+                r#"<span class="cite-group" id="{id}" data-src="{src}">{l}{}{r}</span>"#,
+                parts.join("; "),
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
         }
         NodeKind::Bibliography => {
             writeln!(
@@ -1062,8 +1423,9 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                     if let Some(label) = latex_command_arg(raw, "label") {
                         write!(
                             out,
-                            r#"<span class="label-anchor" id="{}"></span>"#,
-                            escape_attr(&sanitize_id(&label))
+                            r#"<span class="label-anchor" id="{}" data-refkey="{}"></span>"#,
+                            escape_attr(&sanitize_id(&label)),
+                            escape_attr(&label)
                         )
                         .unwrap();
                     }
@@ -1118,7 +1480,10 @@ fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
         if let NodeKind::Text(s) = &child.kind {
             for part in paragraph_text_parts(s) {
                 match part {
-                    ParagraphTextPart::Text(segment) => {
+                    ParagraphTextPart::Text {
+                        text: segment,
+                        start,
+                    } => {
                         let starts_blank_line = starts_with_blank_line(segment);
                         let text = if trim_next_text {
                             trim_leading_paragraph_space(segment)
@@ -1143,13 +1508,18 @@ fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
                         {
                             out.push(' ');
                         }
-                        write_text(out, text, ctx.labels);
+                        let text_start = start + (segment.len() - text.len());
+                        let text_span =
+                            text_segment_span(&child.span, s, text_start, start + segment.len());
+                        write_text_with_span(out, text, &text_span, ctx);
                         trim_next_text = false;
                         previous_was_display = false;
                         pending_paragraph_indent = false;
                         seen_content = true;
                     }
-                    ParagraphTextPart::Break => {
+                    ParagraphTextPart::Break { start, end } => {
+                        let break_span = paragraph_break_span(&child.span, s, start, end);
+                        write_source_space_anchor(out, &break_span, ctx);
                         if seen_content || previous_was_display {
                             pending_paragraph_indent = true;
                         }
@@ -1241,6 +1611,100 @@ fn strip_labels(body: &str) -> String {
     out
 }
 
+fn resolve_math_refs(body: &str, labels: &LabelTable) -> String {
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic() {
+            let cmd_start = i + 1;
+            let mut cmd_end = cmd_start;
+            while cmd_end < bytes.len() && bytes[cmd_end].is_ascii_alphabetic() {
+                cmd_end += 1;
+            }
+            let name = &body[cmd_start..cmd_end];
+            if let Some(kind) = math_ref_kind(name) {
+                let mut arg_start = cmd_end;
+                while arg_start < bytes.len() && bytes[arg_start].is_ascii_whitespace() {
+                    arg_start += 1;
+                }
+                if let Some((key, next)) = balanced_arg_at(body, arg_start) {
+                    let resolved = labels.resolve_ref(kind, key.trim());
+                    if matches!(kind, RefKind::Cref | RefKind::Autoref | RefKind::Nameref) {
+                        out.push_str(r"\text{");
+                        out.push_str(&escape_tex_text(&resolved));
+                        out.push('}');
+                    } else {
+                        out.push_str(&resolved);
+                    }
+                    i = next;
+                    continue;
+                }
+            }
+        }
+
+        let ch = body[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn math_ref_kind(name: &str) -> Option<RefKind> {
+    match name {
+        "ref" => Some(RefKind::Ref),
+        "eqref" => Some(RefKind::Eqref),
+        "pageref" => Some(RefKind::Pageref),
+        "cref" | "Cref" => Some(RefKind::Cref),
+        "autoref" => Some(RefKind::Autoref),
+        "nameref" => Some(RefKind::Nameref),
+        _ => None,
+    }
+}
+
+fn balanced_arg_at(src: &str, start: usize) -> Option<(&str, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+
+    let mut depth = 1i32;
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&src[start + 1..i], i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn escape_tex_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' | '{' | '}' | '$' | '%' | '#' | '&' | '_' | '^' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '~' => out.push_str(r"\textasciitilde{}"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn write_float_placeholder(out: &mut String, env: &str, body: &str, labels: &LabelTable) {
     let kind = if env.trim_end_matches('*') == "table" {
         "Table"
@@ -1252,6 +1716,7 @@ fn write_float_placeholder(out: &mut String, env: &str, body: &str, labels: &Lab
     let id_attr = primary_label
         .map(|label| format!(r#" id="{}""#, escape_attr(&sanitize_id(label))))
         .unwrap_or_default();
+    let refkey = refkey_attr(primary_label);
     let alias_html = label_alias_anchors(body, primary_label);
     let kind_label = primary_label
         .and_then(|label| labels.number.get(label))
@@ -1269,9 +1734,10 @@ fn write_float_placeholder(out: &mut String, env: &str, body: &str, labels: &Lab
         .unwrap_or_default();
     writeln!(
         out,
-        r#"<figure class="float-placeholder float-{env}"{id} data-env="{env}">{aliases}{asset}<figcaption><span class="float-kind">{kind_label}</span> {caption}</figcaption></figure>"#,
+        r#"<figure class="float-placeholder float-{env}"{id}{refkey} data-env="{env}">{aliases}{asset}<figcaption><span class="float-kind">{kind_label}</span> {caption}</figcaption></figure>"#,
         env = escape_attr(env),
         id = id_attr,
+        refkey = refkey,
         aliases = alias_html,
         kind_label = kind_label,
         asset = asset_html,
@@ -1701,8 +2167,9 @@ fn label_alias_anchors(body: &str, primary: Option<&str>) -> String {
         seen.push(label.clone());
         write!(
             out,
-            r#"<span class="label-anchor" id="{}"></span>"#,
-            escape_attr(&sanitize_id(&label))
+            r#"<span class="label-anchor" id="{}" data-refkey="{}"></span>"#,
+            escape_attr(&sanitize_id(&label)),
+            escape_attr(&label)
         )
         .unwrap();
     }
@@ -1748,6 +2215,120 @@ fn latex_command_args(src: &str, command: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+fn split_math_rows(src: &str) -> Vec<&str> {
+    let bytes = src.as_bytes();
+    let mut rows = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut brace_depth = 0i32;
+    let mut env_depth = 0i32;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if src[i..].starts_with("\\begin") {
+            if let Some(end) = latex_env_command_end(src, i + "\\begin".len()) {
+                env_depth += 1;
+                i = end;
+                continue;
+            }
+        }
+        if src[i..].starts_with("\\end") {
+            if let Some(end) = latex_env_command_end(src, i + "\\end".len()) {
+                if env_depth > 0 {
+                    env_depth -= 1;
+                }
+                i = end;
+                continue;
+            }
+        }
+
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() && bytes[i + 1] == b'\\' => {
+                if brace_depth == 0 && env_depth == 0 {
+                    rows.push(src[start..i].trim());
+                    i += 2;
+                    i = skip_row_separator_spacing(src, i);
+                    start = i;
+                    continue;
+                }
+                i += 2;
+                continue;
+            }
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'{' => brace_depth += 1,
+            b'}' if brace_depth > 0 => brace_depth -= 1,
+            _ => {}
+        }
+
+        let ch = src[i..].chars().next().unwrap_or('\0');
+        i += ch.len_utf8();
+    }
+
+    rows.push(src[start..].trim());
+    rows
+}
+
+fn latex_env_command_end(src: &str, mut i: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'}' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_row_separator_spacing(src: &str, mut i: usize) -> usize {
+    let bytes = src.as_bytes();
+    let before_ws = i;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r') {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'[') {
+        return before_ws;
+    }
+
+    let mut j = i + 1;
+    let mut depth = 1i32;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' if j + 1 < bytes.len() => {
+                j += 2;
+                continue;
+            }
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    before_ws
 }
 
 fn parse_balanced_bracket(src: &str, start: usize, open: u8, close: u8) -> Option<String> {
@@ -2565,6 +3146,8 @@ const CLIENT_JS: &str = r#"
   var currentSideTab = 'index';
   var currentPageMode = 'a4';
   var currentSideOpen = false;
+  var refkeysVisible = false;
+  var topbarHidden = false;
   var navRefreshTimer = 0;
   var activePageTimer = 0;
   var pageGuideLayoutHeightPx = 0;
@@ -2581,6 +3164,12 @@ const CLIENT_JS: &str = r#"
   var lastHeadingSignature = '';
   var lastPageGuideSignature = '';
   var selectedMath = null;
+  var activeSourceId = null;
+  var sourceFlashTimer = 0;
+  var vimPendingKey = '';
+  var vimPendingTimer = 0;
+  var lastSearchQuery = '';
+  var viewerJumpStack = [];
 
   function pageEl() {
     return document.getElementById('page');
@@ -2612,16 +3201,271 @@ const CLIENT_JS: &str = r#"
     return page.getBoundingClientRect().top + window.scrollY;
   }
 
+  function topbarOffset() {
+    if (topbarHidden || document.body.classList.contains('topbar-hidden')) return 12;
+    var topbar = document.querySelector('.topbar');
+    if (!topbar) return 58;
+    return Math.max(12, Math.round(topbar.getBoundingClientRect().height + 8));
+  }
+
   function scrollToPage(pageNo) {
     if (!pageGuideVisualHeightPx) refreshNavigation();
-    var y = pageTopY() + (pageNo - 1) * pageGuideVisualHeightPx - 58;
+    recordViewerPlace();
+    var y = pageTopY() + (pageNo - 1) * pageGuideVisualHeightPx - topbarOffset();
     window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
   }
 
   function scrollToTarget(target) {
     if (!target) return;
-    var y = target.getBoundingClientRect().top + window.scrollY - 58;
+    recordViewerPlace();
+    var y = target.getBoundingClientRect().top + window.scrollY - topbarOffset();
     window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+  }
+
+  function scrollByVim(dx, dy) {
+    window.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+  }
+
+  function clearVimPending() {
+    vimPendingKey = '';
+    if (vimPendingTimer) {
+      clearTimeout(vimPendingTimer);
+      vimPendingTimer = 0;
+    }
+  }
+
+  function setVimPending(key) {
+    clearVimPending();
+    vimPendingKey = key;
+    vimPendingTimer = setTimeout(clearVimPending, 750);
+  }
+
+  function isEditableTarget(target) {
+    if (!target || !target.closest) return false;
+    return !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
+  }
+
+  function recordViewerPlace() {
+    var place = { x: window.scrollX || 0, y: window.scrollY || 0 };
+    var last = viewerJumpStack.length ? viewerJumpStack[viewerJumpStack.length - 1] : null;
+    if (last && Math.abs(last.x - place.x) < 24 && Math.abs(last.y - place.y) < 24) {
+      return false;
+    }
+    viewerJumpStack.push(place);
+    if (viewerJumpStack.length > 100) viewerJumpStack.shift();
+    return true;
+  }
+
+  function restorePreviousPlace() {
+    clearVimPending();
+    var place = viewerJumpStack.pop();
+    if (!place) {
+      setStatus('dead', '○ no previous place');
+      return false;
+    }
+    window.scrollTo({ left: place.x, top: place.y, behavior: 'smooth' });
+    setStatus('live', '● previous place');
+    return true;
+  }
+
+  function searchPanelEl() {
+    return document.getElementById('search-panel');
+  }
+
+  function searchInputEl() {
+    return document.getElementById('search-input');
+  }
+
+  function openSearchPanel() {
+    var panel = searchPanelEl();
+    var input = searchInputEl();
+    if (!panel || !input) return;
+    panel.hidden = false;
+    input.value = lastSearchQuery;
+    input.focus({ preventScroll: true });
+    input.select();
+  }
+
+  function closeSearchPanel() {
+    var panel = searchPanelEl();
+    var input = searchInputEl();
+    if (panel) panel.hidden = true;
+    if (input && document.activeElement === input) input.blur();
+  }
+
+  function runSearch(backwards) {
+    var input = searchInputEl();
+    var query = input ? input.value.trim() : lastSearchQuery;
+    if (!query) {
+      openSearchPanel();
+      return false;
+    }
+    lastSearchQuery = query;
+    if (input && document.activeElement === input) input.blur();
+    var recorded = recordViewerPlace();
+    var found = false;
+    try {
+      if (window.find) {
+        found = window.find(query, false, !!backwards, true, false, false, false);
+      }
+    } catch (e) {
+      found = false;
+    }
+    if (!found && recorded) viewerJumpStack.pop();
+    setStatus(found ? 'live' : 'dead', (found ? '● found ' : '○ no match ') + query);
+    return found;
+  }
+
+  function handleVimNavigation(e) {
+    if (e.defaultPrevented || e.altKey || e.metaKey || isEditableTarget(e.target)) return false;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    var vw = window.innerWidth || document.documentElement.clientWidth || 1000;
+    var line = Math.max(28, Math.round(vh * 0.06));
+    var col = Math.max(48, Math.round(vw * 0.08));
+
+    if (e.ctrlKey) {
+      if (e.key === 'd') {
+        scrollByVim(0, Math.round(vh * 0.5));
+        return true;
+      }
+      if (e.key === 'u') {
+        scrollByVim(0, -Math.round(vh * 0.5));
+        return true;
+      }
+      if (e.key === 'o') {
+        restorePreviousPlace();
+        return true;
+      }
+      return false;
+    }
+
+    switch (e.key) {
+      case 'h':
+        scrollByVim(-col, 0);
+        return true;
+      case 'j':
+        scrollByVim(0, line);
+        return true;
+      case 'k':
+        scrollByVim(0, -line);
+        return true;
+      case 'l':
+        scrollByVim(col, 0);
+        return true;
+      case 'g':
+        if (vimPendingKey === 'g') {
+          clearVimPending();
+          recordViewerPlace();
+          window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
+        } else {
+          setVimPending('g');
+        }
+        return true;
+      case 'G':
+        clearVimPending();
+        recordViewerPlace();
+        window.scrollTo({ top: document.documentElement.scrollHeight, left: window.scrollX, behavior: 'auto' });
+        return true;
+      case '/':
+        clearVimPending();
+        openSearchPanel();
+        return true;
+      case 'n':
+        clearVimPending();
+        runSearch(false);
+        return true;
+      case 'N':
+        clearVimPending();
+        runSearch(true);
+        return true;
+      default:
+        clearVimPending();
+        return false;
+    }
+  }
+
+  function scrollSourceIntoView(target) {
+    if (!target) return;
+    var rect = target.getBoundingClientRect();
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    var upper = vh * 0.25;
+    var lower = vh * 0.75;
+    var y = rect.top + Math.min(rect.height / 2, 12);
+    if (y >= upper && y <= lower) return;
+    recordViewerPlace();
+    window.scrollTo({
+      top: Math.max(0, window.scrollY + rect.top - upper),
+      behavior: 'smooth'
+    });
+  }
+
+  function visibleSyncElement(el) {
+    if (!el) return null;
+    if (el.classList && el.classList.contains('blk')) {
+      return el.querySelector(':scope > :not(.page-guide-layer)') || el;
+    }
+    return el;
+  }
+
+  function revealSourceElement(id, shouldScroll) {
+    if (!id) return;
+    activeSourceId = id;
+    document.querySelectorAll('.source-active').forEach(function(el) {
+      el.classList.remove('source-active');
+    });
+    var raw = document.getElementById(id);
+    var el = visibleSyncElement(raw);
+    if (!el) return;
+    el.classList.add('source-active');
+    if (sourceFlashTimer) clearTimeout(sourceFlashTimer);
+    sourceFlashTimer = setTimeout(function() {
+      if (el && el.classList) el.classList.remove('source-active');
+    }, 1800);
+    if (shouldScroll) scrollSourceIntoView(el);
+  }
+
+  function restoreSourceHighlight() {
+    if (activeSourceId) revealSourceElement(activeSourceId, false);
+  }
+
+  function sourceElementFromTarget(target) {
+    if (!target || !target.closest) return null;
+    var el = target.closest('#page [data-src]');
+    var page = pageEl();
+    return el && page && page.contains(el) ? el : null;
+  }
+
+  function parseDataSrc(src) {
+    var m = /^(.+):(\d+):(\d+)$/.exec(src || '');
+    if (!m) return null;
+    return { file: m[1], line: parseInt(m[2], 10), col: parseInt(m[3], 10) };
+  }
+
+  async function postSourceJump(info) {
+    if (!info) return;
+    try {
+      var res = await fetch('/jump', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(info)
+      });
+      if (!res.ok) throw new Error('jump failed');
+      setStatus('live', '● source jump ' + info.line + ':' + info.col);
+    } catch (e) {
+      setStatus('dead', '○ source jump failed');
+    }
+  }
+
+  function requestSourceJump(e) {
+    var el = sourceElementFromTarget(e.target);
+    var info = el ? parseDataSrc(el.getAttribute('data-src')) : null;
+    if (!info) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    revealSourceElement(el.id, false);
+    postSourceJump(info);
+    return true;
   }
 
   function setSideOpen(open, persist) {
@@ -2636,6 +3480,40 @@ const CLIENT_JS: &str = r#"
     if (persist) {
       try { localStorage.setItem('mathpreview.sideOpen', currentSideOpen ? '1' : '0'); } catch (e) {}
     }
+  }
+
+  function setRefkeysVisible(visible, persist) {
+    refkeysVisible = !!visible;
+    document.body.classList.toggle('refkey-visible', refkeysVisible);
+    var page = pageEl();
+    if (page) page.setAttribute('data-refkeys', refkeysVisible ? 'visible' : 'hidden');
+    var btn = document.getElementById('refkey-toggle');
+    if (btn) {
+      btn.classList.toggle('active', refkeysVisible);
+      btn.setAttribute('aria-pressed', refkeysVisible ? 'true' : 'false');
+    }
+    if (persist) {
+      try { localStorage.setItem('mathpreview.refkeys', refkeysVisible ? '1' : '0'); } catch (e) {}
+    }
+  }
+
+  function setTopbarHidden(hidden, persist) {
+    topbarHidden = !!hidden;
+    document.body.classList.toggle('topbar-hidden', topbarHidden);
+    var hideBtn = document.getElementById('topbar-hide');
+    if (hideBtn) {
+      hideBtn.classList.toggle('active', topbarHidden);
+      hideBtn.setAttribute('aria-pressed', topbarHidden ? 'true' : 'false');
+    }
+    var restoreBtn = document.getElementById('topbar-restore');
+    if (restoreBtn) {
+      restoreBtn.setAttribute('aria-expanded', topbarHidden ? 'false' : 'true');
+    }
+    if (persist) {
+      try { localStorage.setItem('mathpreview.topbarHidden', topbarHidden ? '1' : '0'); } catch (e) {}
+    }
+    updatePageScale();
+    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
   }
 
   function setPageMode(mode) {
@@ -2800,7 +3678,7 @@ const CLIENT_JS: &str = r#"
 
   function updateActivePage() {
     if (!pageGuideVisualHeightPx) return;
-    var current = Math.floor((window.scrollY + 70 - pageTopY()) / pageGuideVisualHeightPx) + 1;
+    var current = Math.floor((window.scrollY + topbarOffset() + 12 - pageTopY()) / pageGuideVisualHeightPx) + 1;
     current = Math.min(pageGuideCount, Math.max(1, current));
     document.querySelectorAll('.page-link').forEach(function(btn) {
       btn.classList.toggle('active', btn.getAttribute('data-page-jump') === String(current));
@@ -3164,9 +4042,12 @@ const CLIENT_JS: &str = r#"
   });
   document.addEventListener('dblclick', function(e) {
     var math = e.target.closest('.math[data-tex]');
-    if (!math) return;
-    e.preventDefault();
-    selectMathNode(math);
+    if (math) {
+      e.preventDefault();
+      selectMathNode(math);
+      return;
+    }
+    requestSourceJump(e);
   });
   document.addEventListener('click', function(e) {
     var restart = e.target.closest('#server-restart');
@@ -3180,6 +4061,16 @@ const CLIENT_JS: &str = r#"
       else stopServer();
       return;
     }
+    var topbarHide = e.target.closest('#topbar-hide');
+    if (topbarHide) {
+      setTopbarHidden(true, true);
+      return;
+    }
+    var topbarRestore = e.target.closest('#topbar-restore');
+    if (topbarRestore) {
+      setTopbarHidden(false, true);
+      return;
+    }
     var sideToggle = e.target.closest('#side-toggle');
     if (sideToggle) {
       setSideOpen(!currentSideOpen, true);
@@ -3188,6 +4079,14 @@ const CLIENT_JS: &str = r#"
     var pageMode = e.target.closest('.page-mode-toggle button');
     if (pageMode) {
       setPageMode(pageMode.getAttribute('data-page-mode'));
+      return;
+    }
+    var refkeyToggle = e.target.closest('#refkey-toggle');
+    if (refkeyToggle) {
+      setRefkeysVisible(!refkeysVisible, true);
+      return;
+    }
+    if ((e.altKey || e.metaKey) && requestSourceJump(e)) {
       return;
     }
     var sideTab = e.target.closest('.side-tab');
@@ -3208,6 +4107,11 @@ const CLIENT_JS: &str = r#"
       scrollToTarget(document.getElementById(id));
       return;
     }
+    var pageHashLink = e.target.closest('#page a[href^=\'#\']');
+    if (pageHashLink) {
+      recordViewerPlace();
+      return;
+    }
     var btn = e.target.closest('.proof-toggle button');
     if (btn) {
       var mode = btn.getAttribute('data-mode');
@@ -3225,12 +4129,31 @@ const CLIENT_JS: &str = r#"
     }
   });
   document.addEventListener('keydown', function(e) {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var searchInput = searchInputEl();
+    if (e.target === searchInput) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSearchPanel();
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runSearch(e.shiftKey);
+        return;
+      }
+      return;
+    }
+
     var head = e.target.closest('.proof-head');
-    if (head) {
+    if (head && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       head.closest('.proof').classList.toggle('folded');
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
+      return;
+    }
+
+    if (handleVimNavigation(e)) {
+      e.preventDefault();
     }
   });
 
@@ -3262,6 +4185,7 @@ const CLIENT_JS: &str = r#"
   function syncReusedMathNode(oldEl, newEl) {
     oldEl.id = newEl.id;
     copyAttr(oldEl, newEl, 'data-src');
+    copyAttr(oldEl, newEl, 'data-refkey');
     copyAttr(oldEl, newEl, 'data-tex');
     copyAttr(oldEl, newEl, 'title');
     copyAttr(oldEl, newEl, 'tabindex');
@@ -3277,6 +4201,27 @@ const CLIENT_JS: &str = r#"
     oldBlock.id = newBlock.id;
     oldBlock.className = newBlock.className;
     copyAttr(oldBlock, newBlock, 'data-blockhash');
+    copyAttr(oldBlock, newBlock, 'data-src');
+    syncBlockSourceAnchorsFromBlock(oldBlock, newBlock);
+  }
+
+  function syncBlockSourceAnchors(block, anchors) {
+    if (!anchors) return;
+    var els = block.querySelectorAll('[id][data-src]');
+    for (var i = 0; i < els.length && i < anchors.length; i++) {
+      if (anchors[i].id) els[i].id = anchors[i].id;
+      if (anchors[i].src) els[i].setAttribute('data-src', anchors[i].src);
+      else els[i].removeAttribute('data-src');
+    }
+  }
+
+  function syncBlockSourceAnchorsFromBlock(oldBlock, newBlock) {
+    var oldEls = oldBlock.querySelectorAll('[id][data-src]');
+    var newEls = newBlock.querySelectorAll('[id][data-src]');
+    for (var i = 0; i < oldEls.length && i < newEls.length; i++) {
+      oldEls[i].id = newEls[i].id;
+      copyAttr(oldEls[i], newEls[i], 'data-src');
+    }
   }
 
   function syncPatchBlockMetadata(page, blocks) {
@@ -3285,6 +4230,9 @@ const CLIENT_JS: &str = r#"
     for (var i = 0; i < els.length && i < blocks.length; i++) {
       els[i].id = blocks[i].id;
       els[i].setAttribute('data-blockhash', blocks[i].hash);
+      if (blocks[i].src) els[i].setAttribute('data-src', blocks[i].src);
+      else els[i].removeAttribute('data-src');
+      syncBlockSourceAnchors(els[i], blocks[i].anchors);
     }
   }
 
@@ -3440,7 +4388,7 @@ const CLIENT_JS: &str = r#"
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '2';
+  var WS_PROTOCOL_VERSION = '9';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -3470,6 +4418,8 @@ const CLIENT_JS: &str = r#"
         if (msg.event === 'patch') {
           await applyPatch(msg.ops, msg.blocks);
           applyMode(currentProofMode);
+          setRefkeysVisible(refkeysVisible, false);
+          restoreSourceHighlight();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'body-updated') {
           var tStart = performance.now();
@@ -3563,7 +4513,13 @@ const CLIENT_JS: &str = r#"
             (reusedBlocks ? ', blocks ' + reusedBlocks : '') + ')' +
             memSuffix(window._lastRss));
           applyMode(currentProofMode);
+          setRefkeysVisible(refkeysVisible, false);
+          restoreSourceHighlight();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
+        } else if (msg.event === 'source-cursor') {
+          if (msg.element_id) {
+            revealSourceElement(msg.element_id, true);
+          }
         } else if (msg.event === 'full-reload') {
           location.reload();
         } else if (msg.event === 'error') {
@@ -3577,10 +4533,14 @@ const CLIENT_JS: &str = r#"
     setSideTab(localStorage.getItem('mathpreview.sideTab') || 'index');
     var storedSideOpen = localStorage.getItem('mathpreview.sideOpen');
     setSideOpen(storedSideOpen === null ? window.innerWidth > 1340 : storedSideOpen === '1', false);
+    setRefkeysVisible(localStorage.getItem('mathpreview.refkeys') === '1', false);
+    setTopbarHidden(localStorage.getItem('mathpreview.topbarHidden') === '1', false);
   } catch (e) {
     setPageMode('a4');
     setSideTab('index');
     setSideOpen(window.innerWidth > 1340, false);
+    setRefkeysVisible(false, false);
+    setTopbarHidden(false, false);
   }
   scheduleNavigationRefresh();
   refreshAfterInitialMathJax(40);
@@ -3608,6 +4568,9 @@ const DEFAULT_CSS: &str = r#"
   --a4-width: 794px;
   --dynamic-width: 720px;
   --page-scale: 1;
+  --page-pad-x: 64px;
+  --refkey-gutter: 58px;
+  --refkey-gap: 8px;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -3626,9 +4589,13 @@ html, body {
   font-size: 13px;
 }
 .topbar-spacer { flex: 1; }
+body.topbar-hidden .topbar { display: none; }
 .side-toggle,
+.refkey-toggle,
 .server-restart,
 .server-stop,
+.topbar-hide,
+.topbar-restore,
 .page-mode-toggle button,
 .proof-toggle button {
   border: 1px solid var(--border); background: #fff; padding: 4px 10px;
@@ -3637,7 +4604,52 @@ html, body {
 .server-restart:disabled,
 .server-stop:disabled { opacity: 0.55; cursor: wait; }
 .server-stop.is-start { border-color: var(--supporting); color: var(--supporting); }
+.topbar-restore {
+  display: none;
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 11;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 13px;
+}
+body.topbar-hidden .topbar-restore { display: block; }
+.search-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 14px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: min(520px, calc(100vw - 28px));
+  transform: translateX(-50%);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 13px;
+}
+.search-panel[hidden] { display: none; }
+.search-panel label {
+  color: var(--accent);
+  font-weight: 700;
+}
+.search-panel input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  padding: 4px 7px;
+  font: inherit;
+}
+.search-help {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .side-toggle.active,
+.refkey-toggle.active,
 .page-mode-toggle button.active,
 .proof-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .page-mode-toggle,
@@ -3665,6 +4677,7 @@ html, body {
   transform: translateX(0);
   transition: transform 0.16s ease;
 }
+body.topbar-hidden .side-panel { top: 16px; }
 body.side-panel-closed .side-panel { transform: translateX(calc(-100% - 24px)); }
 .side-tabs {
   display: grid;
@@ -3722,6 +4735,7 @@ body.side-panel-closed .side-panel { transform: translateX(calc(-100% - 24px)); 
   margin: 28px auto 64px;
   overflow: visible;
 }
+body.topbar-hidden #page-shell { margin-top: 18px; }
 body.page-mode-a4 #page-shell {
   width: var(--a4-width);
 }
@@ -3730,7 +4744,7 @@ body.page-mode-dynamic #page-shell {
 }
 main#page {
   width: 100%;
-  max-width: none; margin: 0; padding: 46px 64px 68px;
+  max-width: none; margin: 0; padding: 46px var(--page-pad-x) 68px;
   background: var(--paper);
   border: 1px solid #d8d5cc;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.06);
@@ -3785,7 +4799,10 @@ body.page-mode-dynamic main#page {
   }
   .topbar-spacer { flex-basis: 100%; height: 0; }
   main#page {
-    padding: 34px 24px 46px;
+    --page-pad-x: 24px;
+    --refkey-gutter: 52px;
+    padding-top: 34px;
+    padding-bottom: 46px;
   }
   #page-shell {
     width: calc(100vw - 16px);
@@ -3838,12 +4855,15 @@ body.page-mode-dynamic main#page {
   text-align: center;
   margin: 0.8em 0;
   position: relative;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: visible;
 }
 .math.display mjx-container[display="true"] {
   margin: 0 !important;
   display: inline-block !important;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
 }
 .eq-num {
   position: absolute;
@@ -3852,6 +4872,63 @@ body.page-mode-dynamic main#page {
   transform: translateY(-50%);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+.eq-num-list {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.eq-num-row {
+  display: block;
+  min-height: 1.2em;
+  line-height: 1.2;
+}
+.eq-num-row.empty {
+  visibility: hidden;
+}
+.eq-refkey-list {
+  position: absolute;
+  right: calc(100% + var(--refkey-gap));
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  align-items: flex-end;
+  gap: 0;
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 2;
+}
+body.refkey-visible .eq-refkey-list {
+  visibility: visible;
+}
+.eq-refkey-row {
+  display: flex;
+  gap: 3px;
+  min-height: 1.2em;
+  line-height: 1.2;
+}
+.eq-refkey-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid #d8d5cc;
+  border-radius: 3px;
+  background: #fbfaf7;
+  color: var(--muted);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
 }
 /* The first line of a paragraph after a display equation shouldn't indent
    (LaTeX's "this paragraph continues" rule). Without paragraph wrappers we
@@ -3913,6 +4990,33 @@ body.page-mode-dynamic main#page {
 .math:focus {
   outline: 2px solid rgba(91, 62, 162, 0.5);
   outline-offset: 3px;
+}
+.source-active {
+  outline: 2px solid rgba(91, 62, 162, 0.55);
+  outline-offset: 4px;
+  background: rgba(91, 62, 162, 0.07);
+  transition: background 0.12s ease, outline-color 0.12s ease;
+}
+.source-space {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 1em;
+  vertical-align: baseline;
+}
+.source-space.source-active {
+  outline: 0;
+  background: transparent;
+}
+.source-space.source-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.12em;
+  width: 1.45em;
+  height: 0.72em;
+  border-left: 2px solid rgba(91, 62, 162, 0.55);
+  background: rgba(91, 62, 162, 0.07);
 }
 .math.inline { white-space: nowrap; }
 .para {
@@ -4004,6 +5108,43 @@ body.page-mode-dynamic main#page {
   margin-top: 0.55em;
 }
 .label-anchor { position: relative; top: -4.5rem; }
+body.refkey-visible [data-refkey]:not(.label-anchor) {
+  position: relative;
+}
+body.refkey-visible [data-refkey]:not(.label-anchor)::after {
+  content: attr(data-refkey);
+  position: absolute;
+  right: calc(100% + var(--refkey-gap));
+  top: 0.05em;
+  display: block;
+  margin: 0;
+  padding: 1px 5px;
+  border: 1px solid #d8d5cc;
+  border-radius: 3px;
+  background: #fbfaf7;
+  color: var(--muted);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.35;
+  text-indent: 0;
+  text-align: right;
+  text-transform: none;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+}
+body.refkey-visible .math.display[data-refkey]::after {
+  top: 50%;
+  transform: translateY(-50%);
+}
+body.refkey-visible .thm[data-refkey]::after {
+  top: 0.72em;
+}
+body.refkey-visible .float-placeholder[data-refkey]::after {
+  top: 0;
+}
 .status { font-size: 11px; padding: 2px 6px; border-radius: 3px; color: var(--muted); }
 .status.live { color: #1e7e1e; }
 .status.dead { color: #b22222; }
@@ -4033,6 +5174,27 @@ mod tests {
 
     use super::HtmlOptions;
 
+    fn display_math_hash(html: &str) -> &str {
+        let display = html.find(r#"class="math display""#).unwrap();
+        let hash_start = html[display..].find(r#"data-hash=""#).unwrap() + display + 11;
+        let hash_end = html[hash_start..].find('"').unwrap() + hash_start;
+        &html[hash_start..hash_end]
+    }
+
+    fn text_content(html: &str) -> String {
+        let mut out = String::with_capacity(html.len());
+        let mut in_tag = false;
+        for ch in html.chars() {
+            match ch {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => out.push(ch),
+                _ => {}
+            }
+        }
+        out
+    }
+
     #[test]
     fn inline_math_separated_by_blank_line_renders_as_paragraphs() {
         let out = crate::render_project_from_source(
@@ -4058,9 +5220,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.body_html.matches(r#"<p class="para">"#).count(), 2);
-        assert!(out.body_html.contains("First paragraph."));
-        assert!(out.body_html.contains("Second paragraph."));
+        let text = text_content(&out.body_html);
+        assert!(text.contains("First paragraph."));
+        assert!(text.contains("Second paragraph."));
         assert!(!out.body_html.contains("<br><br>Second paragraph."));
+    }
+
+    #[test]
+    fn paragraph_blocks_are_source_sync_targets() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "First paragraph.\n\nSecond paragraph.\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .body_html
+            .contains(r#"<article class="blk" id="blk-1" data-blockhash=""#));
+        assert!(out.body_html.contains(r#"data-src="t.tex:1:1""#));
+        assert!(out.body_html.contains(r#"id="blk-2""#));
+        assert!(out.body_html.contains(r#"data-src="t.tex:3:1""#));
+        let block_entry = out
+            .sync
+            .entries
+            .iter()
+            .find(|entry| entry.element_id == "blk-2")
+            .expect("source sync entry");
+        assert_eq!(block_entry.start.line, 3);
+        let word_entry = out
+            .sync
+            .lookup_by_source_position(Path::new("t.tex"), 3, 2)
+            .expect("word sync entry");
+        assert!(word_entry.element_id.starts_with("srcw-"));
+        assert!(out.body_html.contains(r#"class="src-word""#));
+        assert!(out.blocks[1]
+            .source_anchors
+            .iter()
+            .any(|anchor| anchor.id == word_entry.element_id));
     }
 
     #[test]
@@ -4073,9 +5270,8 @@ mod tests {
         .unwrap();
 
         assert!(out.body_html.contains(r"\[a=b\]"));
-        assert!(out
-            .body_html
-            .contains(r#"<p class="para para-indent">Next line."#));
+        assert!(out.body_html.contains(r#"<p class="para para-indent">"#));
+        assert!(text_content(&out.body_html).contains("Next line."));
         assert!(!out.body_html.contains("<br><br>Next line."));
     }
 
@@ -4089,10 +5285,9 @@ mod tests {
         .unwrap();
 
         assert!(out.body_html.contains(r"\[a=b\]"));
-        assert!(out.body_html.contains(r#"<p class="para">Next line."#));
-        assert!(!out
-            .body_html
-            .contains(r#"<p class="para para-indent">Next line."#));
+        assert!(out.body_html.contains(r#"<p class="para">"#));
+        assert!(text_content(&out.body_html).contains("Next line."));
+        assert!(!out.body_html.contains(r#"<p class="para para-indent">"#));
     }
 
     #[test]
@@ -4104,8 +5299,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(out.body_html.contains(r"\(x\)</span> and after."));
-        assert!(!out.body_html.contains(r"\(x\)</span>and after."));
+        let text = text_content(&out.body_html);
+        assert!(text.contains(r"\(x\) and after."));
+        assert!(!text.contains(r"\(x\)and after."));
     }
 
     #[test]
@@ -4126,6 +5322,58 @@ mod tests {
     }
 
     #[test]
+    fn labeled_items_store_refkeys_for_viewer_toggle() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\section{Intro}\\label{sec:intro}\n\\begin{theorem}[role=main]\\label{thm:main}\nStatement.\n\\end{theorem}\n\\begin{equation}\n\\label{eq:main}\na=b\n\\label{eq:alias}\n\\end{equation}\n\\begin{figure}\n\\caption{Plot.}\\label{fig:plot}\n\\end{figure}\nLoose\\label{misc:loose}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"data-refkey="sec:intro""#));
+        assert!(out.body_html.contains(r#"data-refkey="thm:main""#));
+        assert_eq!(
+            out.body_html.matches(r#"data-refkey="thm:main""#).count(),
+            1
+        );
+        assert!(!out
+            .body_html
+            .contains(r#"class="label-anchor" id="thm-main" data-refkey="thm:main""#));
+        assert!(out.body_html.contains(r#"data-refkey="eq:main""#));
+        assert!(out
+            .body_html
+            .contains(r#"id="eq-alias" data-refkey="eq:alias""#));
+        assert!(out.body_html.contains(r#"data-refkey="fig:plot""#));
+        assert!(out.body_html.contains(r#"data-refkey="misc:loose""#));
+    }
+
+    #[test]
+    fn display_label_changes_affect_math_reuse_hash() {
+        let first = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{equation}\\label{eq:first}a=b\\end{equation}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let second = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{equation}\\label{eq:second}a=b\\end{equation}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(first.body_html.contains(r#"data-refkey="eq:first""#));
+        assert!(second.body_html.contains(r#"data-refkey="eq:second""#));
+        assert_ne!(
+            display_math_hash(&first.body_html),
+            display_math_hash(&second.body_html)
+        );
+    }
+
+    #[test]
     fn nested_blank_line_after_display_renders_indent_marker_without_extra_break() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
@@ -4136,7 +5384,7 @@ mod tests {
 
         assert!(out.body_html.contains(r"\[a=b\]"));
         assert!(out.body_html.contains("para-indent-marker"));
-        assert!(out.body_html.contains("Next line."));
+        assert!(text_content(&out.body_html).contains("Next line."));
         assert!(!out.body_html.contains("<br><br>Next line."));
     }
 
@@ -4149,10 +5397,33 @@ mod tests {
         )
         .unwrap();
 
-        assert!(out.body_html.contains("First paragraph."));
+        let text = text_content(&out.body_html);
+        assert!(text.contains("First paragraph."));
         assert!(out.body_html.contains("para-indent-marker"));
-        assert!(out.body_html.contains("Second paragraph."));
+        assert!(text.contains("Second paragraph."));
         assert!(!out.body_html.contains("<br><br>Second paragraph."));
+    }
+
+    #[test]
+    fn blank_line_inside_environment_is_a_source_sync_target() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{proof}\nFirst paragraph.\n\nSecond paragraph.\n\\end{proof}\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"class="source-space""#));
+        let entry = out
+            .sync
+            .lookup_by_source_position(Path::new("t.tex"), 4, 1)
+            .expect("blank line sync entry");
+        assert!(entry.element_id.starts_with("srcs-"));
+        assert!(out
+            .blocks
+            .iter()
+            .flat_map(|block| block.source_anchors.iter())
+            .any(|anchor| anchor.id == entry.element_id));
     }
 
     #[test]
@@ -4182,17 +5453,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(out.body_html.contains(r#"<p class="para">Before. "#));
-        assert!(out.body_html.contains(
-            r#"<p class="para para-noindent para-flow"><span class="proof-step flow-marker"><strong>Step 1:</strong></span> First step."#
-        ));
-        assert!(out.body_html.contains(
-            r#"<span class="proof-step flow-marker"><strong>Step 2:</strong> With <span class="math inline"#
-        ));
+        let text = text_content(&out.body_html);
+        assert!(out.body_html.contains(r#"<p class="para">"#));
+        assert!(out
+            .body_html
+            .contains(r#"<p class="para para-noindent para-flow">"#));
+        assert!(text.contains("Before."));
+        assert!(text.contains("Step 1: First step."));
+        assert!(text.contains(r"Step 2: With \(x\). Second step."));
         assert!(out.body_html.contains(r#"data-tex="\(x\)""#));
-        assert!(out.body_html.contains(
-            r#"<span class="proof-step flow-marker"><strong>Step 5:</strong></span> Restarted."#
-        ));
+        assert!(text.contains("Step 5: Restarted."));
         assert!(!out.body_html.contains("<strong>Step.</strong>"));
     }
 
@@ -4206,17 +5476,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(out.body_html.contains("Intro."));
+        let text = text_content(&out.body_html);
+        assert!(text.contains("Intro."));
         assert!(out.body_html.contains("flow-marker-break"));
-        assert!(out
-            .body_html
-            .contains(r#"<strong>Step 1:</strong></span> First."#));
-        assert!(out
-            .body_html
-            .contains(r#"<strong>Step 2:</strong> Second.</span> More."#));
-        assert!(out
-            .body_html
-            .contains(r#"<strong>Case I:</strong> Diagonal.</span> Case text."#));
+        assert!(text.contains("Step 1: First."));
+        assert!(text.contains("Step 2: Second. More."));
+        assert!(text.contains("Case I: Diagonal. Case text."));
         assert!(!out.body_html.contains(r#"\restartsteps"#));
         assert!(!out.body_html.contains(r#"\begin{proofcases}"#));
     }
@@ -4355,10 +5620,10 @@ mod tests {
     }
 
     #[test]
-    fn subequation_group_labels_resolve_to_next_equation() {
+    fn subequations_render_parent_and_alphabetic_child_refs() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
-            "\\begin{document}\n\\begin{subequations}\n\\label{eq:group}\n\\begin{equation}\n\\label{eq:first}\na=b\n\\end{equation}\n\\end{subequations}\nSee \\eqref{eq:group} and \\eqref{eq:first}.\n\\end{document}\n"
+            "\\begin{document}\n\\begin{subequations}\n\\label{eq:group}\n\\begin{equation}\n\\label{eq:first}\na=b\n\\end{equation}\n\\begin{equation}\n\\label{eq:second}\nc=d\n\\end{equation}\n\\end{subequations}\nSee \\eqref{eq:group}, \\eqref{eq:first}, and \\eqref{eq:second}.\n\\end{document}\n"
                 .to_string(),
             &HtmlOptions::default(),
         )
@@ -4366,14 +5631,88 @@ mod tests {
 
         assert!(out.body_html.contains(r#"id="eq-group""#));
         assert!(out.body_html.contains(r#"id="eq-first""#));
+        assert!(out.body_html.contains(r#"id="eq-second""#));
         assert!(out
             .body_html
             .contains(r##"href="#eq-group" data-target="eq:group" data-kind="eqref">(1)"##));
         assert!(out
             .body_html
-            .contains(r##"href="#eq-first" data-target="eq:first" data-kind="eqref">(1)"##));
+            .contains(r##"href="#eq-first" data-target="eq:first" data-kind="eqref">(1a)"##));
+        assert!(out
+            .body_html
+            .contains(r##"href="#eq-second" data-target="eq:second" data-kind="eqref">(1b)"##));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num">(1a)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num">(1b)</span>"#));
         assert!(!out.body_html.contains("(eq:group)"));
         assert!(!out.body_html.contains("(eq:first)"));
+        assert!(!out.body_html.contains("(eq:second)"));
+    }
+
+    #[test]
+    fn refs_inside_math_bodies_resolve_before_mathjax() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{subequations}\n\\label{assumptions}\n\\begin{equation}\\label{H1}a=b\\end{equation}\n\\begin{equation}\\label{H3}c=d\\end{equation}\n\\end{subequations}\n\\begin{equation}\nX_0 = x, \\qquad \\text{ $V_0$ satisfies~\\eqref{H3}} \\,.\n\\end{equation}\nInline $\\eqref{H3}$.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"\text{ $V_0$ satisfies~(1b)}"#));
+        assert!(out.body_html.contains(r#"\((1b)\)"#));
+        assert!(out.body_html.contains(r#"\eqref{H3}"#));
+        assert!(!out.body_html.contains(r#">\eqref{H3}<"#));
+    }
+
+    #[test]
+    fn align_rows_render_separate_numbers_and_refs() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\section{S}\n\\begin{align}\na &= b \\label{eq:a}\\\\\nc &= d \\label{eq:b}\\\\\ne &= f \\notag\\\\\ng &= h \\label{eq:c}\n\\end{align}\nSee \\eqref{eq:a}, \\eqref{eq:b}, \\eqref{eq:c}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"class="eq-num-list""#));
+        assert!(out.body_html.contains(r#"class="eq-refkey-list""#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-refkey-chip">eq:a</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-refkey-chip" id="eq-b">eq:b</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-refkey-chip" id="eq-c">eq:c</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(1.1)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(1.2)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row empty"></span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(1.3)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:a" data-kind="eqref">(1.1)</a>"##));
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:b" data-kind="eqref">(1.2)</a>"##));
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:c" data-kind="eqref">(1.3)</a>"##));
+        assert!(!out.body_html.contains(r#"data-refkey="eq:a""#));
+        assert!(!out.body_html.contains(r#"id="eq-b" data-refkey="eq:b""#));
+        assert!(!out.body_html.contains("(1.4)"));
     }
 
     #[test]
@@ -4391,8 +5730,34 @@ mod tests {
         assert!(out.html.contains(r#"data-side-tab="pages""#));
         assert!(out.html.contains(r#"data-page-mode="a4""#));
         assert!(out.html.contains(r#"data-page-mode="dynamic""#));
+        assert!(out.html.contains(r#"id="refkey-toggle""#));
+        assert!(out.html.contains(r#"data-refkeys="hidden""#));
         assert!(out.html.contains(r#"id="server-restart""#));
         assert!(out.html.contains(r#"id="server-stop""#));
+        assert!(out.html.contains(r#"id="topbar-hide""#));
+        assert!(out.html.contains(r#"id="topbar-restore""#));
+        assert!(out.html.contains("setRefkeysVisible"));
+        assert!(out.html.contains("mathpreview.refkeys"));
+        assert!(out.html.contains("refkey-visible"));
+        assert!(out.html.contains("setTopbarHidden"));
+        assert!(out.html.contains("mathpreview.topbarHidden"));
+        assert!(out.html.contains("topbar-hidden"));
+        assert!(out.html.contains("topbarOffset"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '9'"));
+        assert!(out.html.contains(r#"id="search-panel""#));
+        assert!(out.html.contains(r#"id="search-input""#));
+        assert!(out.html.contains("handleVimNavigation"));
+        assert!(out.html.contains("recordViewerPlace"));
+        assert!(out.html.contains("restorePreviousPlace"));
+        assert!(out.html.contains("viewerJumpStack"));
+        assert!(out.html.contains("window.find"));
+        assert!(out
+            .html
+            .contains(r#"body.refkey-visible [data-refkey]:not(.label-anchor)::after"#));
+        assert!(out
+            .html
+            .contains(r#"right: calc(100% + var(--refkey-gap));"#));
+        assert!(out.html.contains(r#".eq-refkey-list"#));
         assert!(out.html.contains("setStopButtonMode"));
         assert!(out.html.contains("startServer"));
         assert!(out.html.contains("stopServer"));
@@ -4407,9 +5772,21 @@ mod tests {
         assert!(out.html.contains("copySelectionAsLatex"));
         assert!(out.html.contains("selectionIsExactNode"));
         assert!(out.html.contains("math-selected"));
+        assert!(out.html.contains("revealSourceElement"));
+        assert!(out.html.contains("scrollSourceIntoView"));
+        assert!(out.html.contains("source-active"));
+        assert!(out.html.contains("fetch('/jump'"));
+        assert!(out.html.contains("source-cursor"));
+        assert!(out.html.contains(r#"class="src-word""#));
+        assert!(out.html.contains("syncBlockSourceAnchors"));
+        assert!(out.html.contains("syncBlockSourceAnchorsFromBlock"));
         assert!(out.html.contains("document.addEventListener('mousedown'"));
         assert!(out.html.contains("syncReusedMathNode"));
         assert!(out.html.contains("copyAttr(oldEl, newEl, 'tabindex')"));
+        assert!(out.html.contains("copyAttr(oldEl, newEl, 'data-refkey')"));
+        assert!(out
+            .html
+            .contains("copyAttr(oldBlock, newBlock, 'data-src')"));
         assert!(!out.html.contains("user-select: all"));
     }
 }
