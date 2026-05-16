@@ -5,18 +5,51 @@
 ### Performance
 
 - Reused unchanged math nodes during block-level patch replacement, so prose edits in blocks that contain math no longer call MathJax for identical expressions.
+- Deferred MathJax typesetting for changed math until 300 ms after edit activity stops, so active typing is no longer blocked by MathJax's fixed per-call cost.
+- Detached the transformed A4 page during live block patching and delayed page-guide recalculation after edits, avoiding forced layout work on every re-render.
+- Avoided detaching and reattaching the whole A4 document for small live patches; one-block typing updates now replace only the changed block.
 - Restored ASCII fast paths in parser advancement and inline text rendering after the UTF-8 correctness fix.
 - Kept Unicode text preservation by decoding UTF-8 only for non-ASCII bytes instead of every byte in normal LaTeX prose and math scans.
 - Verified cached `/buffer` timing on `examples/paper.tex` at 1 ms locally after an initial 8 ms preamble-cache miss.
 
 ### Fixed
 
+- Tightened the default viewer typography and spacing toward LaTeX/AMS PDF output: corrected section heading selectors, reduced title spacing, restored paragraph indentation, compacted display math/list spacing, and kept theorem/lemma blocks compact.
+- Fixed proof visibility mode buttons after block wrapping: `main only` and `+ supporting` now find theorem roles inside preceding patch blocks and keep the selected proof mode across live updates.
+- Made postponed proofs such as `Proof of Proposition \ref{...}` inherit the referenced theorem/proposition role before falling back to the immediately preceding theorem block or nearest `Proof of ...` section heading.
+- Added manual proof roles via `\begin{proof}[role=main]`, `\begin{proof}[role=main, Proof of ...]`, `\begin{proof}[role=main,of={...}]`, or `\begin{proof}[role=main,name={...}]`; explicit proof roles override inference in the viewer and are consumed by `examples/mathpreview.sty` for PDF proof filtering.
+- Kept optional proof headings such as `Proof of ...` bold by letting the title span inherit the proof heading weight.
+- Added A4 page dividers to the viewer and a fixed left navigation rail that toggles between a section index and generated page jumps.
+- Added viewer controls for A4 versus dynamic page sizing, plus a toggleable index/pages pane that can be opened on narrower browser widths.
+- Made A4 mode scale a fixed A4-width sheet on browser resize instead of reflowing the document into a narrower page.
 - Added a viewer topbar restart button backed by `POST /restart`; it launches a replacement server process with the same arguments, exits the old daemon, polls for readiness, and reloads the page.
+- Added a viewer topbar stop button backed by `POST /stop`; it exits the daemon manually, turns into a start button after the intentional shutdown, and prevents the browser from reconnecting until start is clicked.
+- Made rendered MathJax SVG equations selectable/copyable as LaTeX by storing the original TeX on math nodes, selecting exactly one math node on click, and substituting TeX into the clipboard when the selection includes math.
 - Preserved blank-line separators between inline math nodes, e.g. `$a^2$\n\n$b^2$`, by grouping top-level inline runs into real paragraph blocks instead of loose inline nodes.
+- Preserved LaTeX paragraph semantics for blank lines: they no longer render as visible `<br><br>` gaps, but still start an indented paragraph after display math and inside proof/theorem text.
+- Preserved LaTeX inter-word spacing when a single source newline separates inline math/refs from following prose, avoiding joined output such as math immediately followed by `and`.
+- Preserved multiple front-matter authors declared with repeated `\author{...}` commands or top-level `\and` inside one author command, including AMS-style `\address{...}`, `\curraddr{...}`, and `\email{...}` metadata attached to the preceding author.
+- Rendered `abstract` as front matter after the title block, even when the source declares the `abstract` environment before `\maketitle`.
 - Spliced `\input`, `\include`, and `\subfile` content at the command site instead of appending included files after the root body.
 - Added source-position offsets for parsed project chunks so flattened includes keep meaningful file, line, column, and byte metadata.
 - Preserved UTF-8 text during parsing and inline rendering; non-ASCII prose no longer renders as mojibake.
+- Rendered `subequations`, `abstract`, and `center` as transparent containers instead of raw opaque LaTeX blocks, including group labels that resolve to the next numbered equation.
+- Resolved labels inside multi-label display environments such as `align` and `gather`, so each `\label{...}` in the body gets the display number and anchor.
+- Prevented child `\label{...}` commands inside theorem bodies from overwriting the theorem/proposition label when the same label is encountered again during body rendering.
+- Suppressed warnings for layout/font/graphics packages that are intentionally no-ops in the HTML preview.
+- Treated proof-flow macros such as `\step` and `\case` as structured markers instead of unsupported MathJax macros.
+- Rendered KFP-style proof-flow macros more faithfully: `\step` now increments and prints `Step N:`, `\case` prints Roman-numbered cases, `\restartsteps` resets the step counter, and `proofsteps` / `proofcases` environments reset their local counters instead of leaking raw macro syntax.
+- Replaced raw `figure`/`table` dumps with compact float placeholders that render captions, inline math in captions, asset filenames, anchors, and Figure/Table reference numbers.
+- Rendered `\includegraphics` assets in the live viewer: raster/SVG figures use `<img>`, PDF figures use cached, trimmed PNG previews generated through ImageMagick, and the server exposes guarded project-local assets under `/assets/...`.
+- Preserved common `\includegraphics` sizing options in the live viewer: `width=0.8\textwidth` maps to `width: 80%`, absolute TeX units map to CSS units, `scale=...` is respected, and images keep their natural aspect ratio unless explicit width and height ask otherwise.
+- Numbered subsections hierarchically, so Section 2 subsections render as `2.1`, `2.2`, etc. instead of repeating `2`.
+- Loaded bibliography files referenced by `\bibliography{...}` in the document body, resolving them relative to the main `.tex` file directory just like preamble `\addbibresource{...}` entries.
+- Honored body-level `\bibliographystyle{plain}` declarations and rendered numeric references closer to BibTeX plain: sorted bibliography order, renumbered citations, first-name-first author/editor names, italic journal/book titles, cleaned protective braces, and arXiv/DOI metadata formatting.
+- Relaxed the live `/buffer` renderability guard so ordinary in-progress LaTeX with unmatched braces or open environments still updates; it now defers only unclosed math delimiters.
 - Rejected `/buffer` pushes whose `X-Mathpreview-Path` does not match the live root file.
+- Discarded stale out-of-order `/buffer` and file-watch render completions before they can update `current` or broadcast websocket patches, so older editor buffers cannot overwrite the latest preview.
+- Replaced unsafe id-based websocket patches with positional range patches plus block-id resync, so inserting paragraphs above existing content preserves order without forcing a full body update.
+- Added a websocket protocol version query so already-open tabs with old patch JavaScript receive a one-time `full-reload` after the daemon restarts.
 - Updated live-server file watching so newly introduced include directories are added to the watcher set after renders.
 - Cleared the live-server preamble cache after file-watch renders so later buffer pushes do not reuse stale preamble or bibliography state.
 - Made `examples/mathpreview.sty` actually honor `proofs=...` by capturing proof bodies and rendering them only when the preceding theorem role is enabled.
@@ -30,14 +63,50 @@
 
 - Regression test for source-order include flattening.
 - Regression test for preserving Unicode text in the parser.
+- Regression test for multiple front-matter authors.
+- Regression test for source-order `abstract` placement after `\maketitle`.
+- Regression tests for manual proof roles in the parser and renderer.
+- Regression test for the viewer index/pages rail and A4 page-guide shell.
+- Regression test for math copy metadata in rendered inline and display equations.
+- Regression tests for blank-line paragraph indentation in top-level text, display-math continuations, and proof/theorem text.
+- Regression test for single-newline spacing after inline math.
+- Regression test for transparent `subequations` parsing.
+- Regression tests for KFP-style float placeholders, proof-flow markers, and subequation group labels.
+- Regression tests for numbered `\step`, `\case`, `\restartsteps`, `proofsteps`, and `proofcases` flow-marker rendering.
+- Regression tests for `\includegraphics` width/ratio options and body-level `\bibliography{...}` resolution relative to the main file directory.
+- Regression test for body-level `\bibliographystyle{plain}` sorting, citation renumbering, and BibTeX-plain reference formatting.
+- Expanded regression coverage for hierarchical subsection numbering and rendered PDF figure assets.
+- Regression test for the live buffer guard so it defers unclosed math without blocking ordinary partial LaTeX edits.
+- Regression test for render-attempt sequencing so newer live renders invalidate older in-flight renders.
+- Regression tests for shifted block insertions/deletions, shifted source metadata, generated display-math ids, and single-block edits using compact websocket range patches.
+
+### Documentation
+
+- Updated `DESIGN.md` with the completed viewer work, current remaining work, a TODO checklist that crosses out completed items, and a plain-language explanation of the live-update race/id-shift bug plus the final range-patch solution.
 
 ### Verified
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` - 27 core tests passing
+- `cargo test` - 7 CLI tests and 47 core tests passing
 - `cargo clippy --all-targets --all-features -- -D warnings`
+- `git diff --check`
+- KFP render smoke test for `/Users/tsv/Work/KFP/main.tex` confirmed no warning panel, no rendered opaque environment blocks, no raw `subequations` blocks, no sampled unresolved equation refs, and resolved Figure/Table refs.
+- KFP live-server smoke test confirmed `/assets/figures/comparison-longtime.png` returns `image/png`, `/assets/figures/2025-01-08_g_u_weak_cos_bsinxsint.pdf` returns `application/pdf`, and Section 2 subsections render as `2.1` and `2.2`.
+- KFP live-server smoke test confirmed `/assets/figures/2025-01-08_g_u_weak_cos_bsinxsint.pdf?preview=png` returns a cached `image/png` preview and `POST /buffer` for the root file returns `204 No Content`.
+- KFP render smoke test confirmed `\bibliography{bibo}` in the document body loads entries from `/Users/tsv/Work/KFP/bibo.bib`, producing 34 bibliography entries, and figure previews carry `width=0.8\textwidth` / `width=0.95\textwidth` as 80% / 95% CSS widths.
+- KFP render smoke test confirmed the `abstract` block appears after the title block and before the first section.
+- KFP render smoke test confirmed `\step` markers render as numbered `Step N:` labels, `\restartsteps` is not leaked, and math/prose spacing after step markers remains separated.
+- KFP render smoke test confirmed `\bibliographystyle{plain}` is detected from the body, references are sorted and renumbered in plain style, 34 bibliography entries still render, protective braces are cleaned, and arXiv-style entries render compactly.
+- KFP live-server smoke test confirmed the restarted daemon no longer serves stale `Test test test` / `$a^2+b^2$` buffer content while still rendering the current `First, note that if ...` manuscript line.
+- KFP unsaved-buffer smoke test confirmed inserting `Test test test` / `$a^2+b^2$` before `First, note that if ...` is served in the correct order before save, then the daemon was restored to the saved file buffer.
+- KFP websocket smoke test confirmed the same unsaved insertion now logs `1 ops` instead of a full `376 blocks` update.
+- Render smoke test confirmed the default viewer loads `tex-svg.js`.
+- Render smoke test confirmed inline/display equations include LaTeX clipboard metadata and the copy handler is present.
+- Render smoke test for the live manuscript confirmed blank-line paragraphs no longer emit `<br><br>` gaps.
+- Temporary `pdflatex` smoke test for explicit proof roles with `proofs=main`.
 - Restart smoke test: `POST /restart` returned 202, then `GET /` returned 200 from the relaunched server.
+- Stop smoke test: temporary daemon on port 23637 returned 202 for `POST /stop` and exited.
 - `cargo run --quiet --bin mathpreview-cli -- render examples/paper.tex -o /private/tmp/mathpreview-analysis-fixed.html`
 - `pdflatex -interaction=nonstopmode -halt-on-error -output-directory=/private/tmp/mathpreview-pdflatex paper.tex` from `examples/`
 - Temporary `pdflatex` smoke tests for `proofs=main` and `proofs=main+supporting`

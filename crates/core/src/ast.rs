@@ -88,8 +88,11 @@ pub enum NodeKind {
         number: Option<String>,
         omit_ref: Option<String>,
     },
-    /// `\begin{proof}` ... `\end{proof}`.
-    Proof { of: Option<String> },
+    /// `\begin{proof}[role=...,name=...]` ... `\end{proof}`.
+    Proof {
+        of: Option<String>,
+        role: Option<Role>,
+    },
     /// Inline math `\(...\)` or `$...$`.
     InlineMath(String),
     /// Display math `\[...\]`, `$$...$$`, or `\begin{equation}`/`align`/etc.
@@ -105,6 +108,8 @@ pub enum NodeKind {
     Cite { keys: Vec<String> },
     /// Other `\begin{env}` ... `\end{env}` passed through opaquely.
     OpaqueEnv { env: String, body: String },
+    /// `\begin{abstract}` ... `\end{abstract}` rendered as front matter.
+    Abstract,
     /// `\command[opt]{arg}{arg}` passed through opaquely.
     OpaqueCmd { name: String, raw: String },
     /// LaTeX comment; usually discarded by the renderer.

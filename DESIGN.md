@@ -27,15 +27,70 @@ What's built:
 - **Step 2′ (WebSocket server, replacing original Tauri shell).**
   `mathpreview-cli serve` exposes HTTP + WebSocket on `127.0.0.1:23636`.
   The HTTP page is the shell; WebSocket pushes body deltas on every
-  re-render.
+  re-render. The shell also exposes `POST /restart` and `POST /stop`
+  through toolbar controls.
 - **Step 3 (live reload).** File watcher (`notify-debouncer-full`) + an
   in-memory **buffer-push endpoint** (`POST /buffer`) that the editor
   plugin pings on `TextChanged`. Mid-edit guard: unbalanced `$$…$$` or
   `\begin{…}` defers the push so the page never flashes a broken state.
-- **Incremental rendering.** Every math node carries a content hash;
-  the client transplants already-typeset DOM nodes by hash and only
-  asks MathJax to typeset the actually-changed expressions. Per-keystroke
-  updates run in ~5–10 ms total on the test paper.
+- **Incremental SVG MathJax rendering.** Every math node carries a
+  content hash and original `data-tex`; the client transplants
+  already-typeset SVG DOM nodes by hash and defers typesetting for
+  actually-changed expressions. Per-keystroke updates run in ~5-10 ms
+  total on the test paper when the edited math is unchanged.
+- **Paper-like viewer layout.** The browser shell has A4 page mode,
+  dynamic page mode, page dividers, a toggleable index/pages rail, and
+  responsive controls for narrow browser widths.
+- **LaTeX paragraph semantics.** Blank lines create paragraph breaks
+  with indentation instead of visible `<br><br>` gaps, including around
+  display math and inside theorem/proof text.
+- **Proof-flow macros.** KFP-style `\step`, `\case`,
+  `\restartsteps`, `proofsteps`, and `proofcases` render as numbered
+  proof markers with LaTeX-like resets and no-indent flow.
+- **Front matter, roles, and proof metadata.** Repeated authors,
+  `\and`, `\address`, `\curraddr`, and `\email` render in the title
+  block, and `abstract` renders after the title block even when the
+  source places it before `\maketitle`. Theorems/propositions/lemmas
+  carry `main`, `supporting`, `standard`, or `omitted` roles, and
+  proofs can infer or manually declare their role.
+- **Equation copy path.** Inline and display SVG equations can be
+  selected as a single math node and copied as their original LaTeX
+  source.
+- **Project-local bibliography and figure sizing.** `\bibliography{...}`
+  and `\addbibresource{...}` are resolved relative to the main `.tex`
+  file directory, including bibliography commands in the document body.
+  Body-level `\bibliographystyle{plain}` is honored with sorted numeric
+  references and BibTeX-plain-like entry formatting.
+  Rendered figures preserve common `\includegraphics` sizing options
+  such as `width=0.8\textwidth`, absolute widths, `height`, `scale`, and
+  `keepaspectratio`.
+
+### Implementation TODO
+
+- [x] ~~CLI render pipeline for real LaTeX projects.~~
+- [x] ~~WebSocket daemon and browser shell.~~
+- [x] ~~Live file watching and editor buffer-push updates.~~
+- [x] ~~Block-level patch protocol and MathJax node reuse.~~
+- [x] ~~Deferred SVG MathJax typesetting and A4 patch optimization.~~
+- [x] ~~Root/input/include/subfile splicing with source offsets.~~
+- [x] ~~Macro/preamble extraction from root and local `.sty` files.~~
+- [x] ~~BibTeX/biblatex-style references and friendly cross-references.~~
+- [x] ~~Body-level `\bibliographystyle{plain}` sorting and reference formatting.~~
+- [x] ~~Title/authors/address/email front matter.~~
+- [x] ~~Abstract placement after the title block.~~
+- [x] ~~Role-tagged theorems and proof filtering.~~
+- [x] ~~Postponed proof role inference from `Proof of ...` headings.~~
+- [x] ~~Manual proof roles and companion `mathpreview.sty` proof filtering.~~
+- [x] ~~Numbered `\step` / `\case` proof-flow macros with counter resets.~~
+- [x] ~~LaTeX-like paragraph, display, and blank-line spacing.~~
+- [x] ~~A4/dynamic page layout, page dividers, and index/pages rail.~~
+- [x] ~~Viewer restart and stop/start buttons.~~
+- [x] ~~Selectable/copyable SVG MathJax equations that copy LaTeX.~~
+- [ ] Margin / popup reference previews with click-to-pin and nested references.
+- [ ] Forward / inverse search between preview and editor.
+- [ ] Vendored/offline MathJax distribution.
+- [ ] Better parser coverage for more LaTeX text constructs and packages.
+- [ ] Browser-level interaction tests for copy/selection, page layout, and proof filters.
 
 What's not built yet — sections §8, §9 below describe these as forward
 goals:
@@ -43,6 +98,7 @@ goals:
 - Forward / inverse search (preview ↔ editor cursor jump).
 - Margin / popup cross-references with hover and click-to-pin.
 - Vendored MathJax for offline distribution.
+- Broader browser-level interaction testing for the viewer controls.
 
 The build-order plan in §11 is updated to reflect this.
 
@@ -128,9 +184,11 @@ file picker, no settings UI beyond a small toolbar.
 One process, many possible frontends. The daemon talks to the frontend
 over WebSocket text frames carrying JSON events:
 
-- `{event: "patch", ops: [{type: "replace" | "append" | "remove", id?, html?}, …]}`
-  — the common case for keystroke edits, carrying only the blocks that
-  changed since the last broadcast.
+- `{event: "patch", ops: [{type: "range", index, remove, insert, html}, …],
+  blocks: [{id, hash}, …]}` — the common case for keystroke edits.
+  Each range op replaces `remove` top-level render blocks starting at
+  `index` with the already-rendered `html`. The `blocks` list lets the
+  browser retag shifted DOM blocks after insertion/deletion edits.
 - `{event: "body-updated", html: …}` — full-body re-render, sent when
   the block diff would be larger than ~50% of the document anyway
   (typical for a structural edit that shifts every block's position).
@@ -153,6 +211,47 @@ The editor talks to the daemon two ways:
   every keystroke (debounced 40 ms in the nvim plugin). This is the
   approach `latex-preview.nvim` uses to talk to its MathJax-Node
   daemon; we copied the shape.
+
+### Live-update correctness and speed
+
+Two separate bugs showed up while testing unsaved buffer updates on the
+KFP manuscript.
+
+First, async renders can finish out of order. If the editor sends buffer
+A, then buffer B, buffer A may still finish last and overwrite the
+preview with stale HTML. The daemon now assigns every file-watch and
+`/buffer` render a monotonic render sequence number. Only the newest
+sequence may update `current` or broadcast websocket patches; older
+successful renders and older render errors are discarded.
+
+Second, a paragraph insertion above existing text shifts generated block
+ids. The old patch format said "replace DOM element `blk-519`", which is
+fine for typing inside a paragraph but unsafe when the new render has
+inserted a new `blk-519` before the old one. The visible symptom was an
+unsaved insertion such as:
+
+```tex
+Test test test
+$a^2+b^2$
+
+First, note that if ...
+```
+
+appearing below the `First, note...` paragraph. A brute-force full-body
+update fixed the order but forced the browser to diff and swap hundreds
+of MathJax nodes, producing multi-second updates on A4 pages.
+
+The current protocol uses position-based range patches instead. The
+server finds the unchanged prefix and suffix of top-level render blocks,
+sends only the changed middle range, and the browser applies that range
+by child position rather than by old DOM id. After the range is applied,
+the browser retags block ids from the server's `blocks` metadata so the
+next patch starts from a consistent DOM. The diff uses a semantic block
+hash that ignores volatile source line metadata and generated MathJax ids
+(`im-*`, `dm-*`, etc.), so inserting a few lines above a large unchanged
+display section remains a one-op patch instead of becoming a full body
+swap. Already-open tabs with the old JavaScript are forced through a
+one-time reload by a websocket protocol version query.
 
 ### Why HTML over WebSocket, not SVG
 
@@ -577,6 +676,42 @@ The investment is real (~150 lines of LCS + move detection + ID
 counter + reset-on-save), so it's worth doing only when the
 full-body fallback on insertions starts being noticeable in daily use.
 
+**Step 3.7 ✅ Viewer fidelity and editing ergonomics.** Several
+workflow-polish items landed before the interactive reference work:
+
+- SVG MathJax remains the default output, but math nodes now retain the
+  original TeX source in `data-tex`. Clicking an inline or display
+  equation selects just that math node, and copy events substitute the
+  original LaTeX source instead of SVG text.
+- A4 mode renders a fixed A4-ratio sheet that scales with the browser
+  width; dynamic mode preserves readability without strict paper
+  scaling. Page dividers and generated page jumps share the left rail
+  with the section index.
+- Blank LaTeX lines map to paragraph breaks with indentation, not
+  visible blank vertical gaps. This applies to top-level prose, display
+  math continuations, and text inside theorem/proof environments.
+- Front matter handles repeated `\author{...}`, `\and`,
+  `\address{...}`, `\curraddr{...}`, `\email{...}`, and `abstract`
+  closely enough for AMS-style paper heads. Abstracts render after the
+  title block even when declared before `\maketitle`.
+- Proof roles can be explicit (`\begin{proof}[role=main]`) or inferred
+  from postponed headings such as `Proof of Proposition \ref{...}`.
+  `Proof of ...` headings render bold, and the companion
+  `mathpreview.sty` uses the same proof-role metadata for PDF filtering.
+- KFP-style proof-flow macros render as semantic markers:
+  `\step` increments `Step N:`, `\case` increments Roman cases, and
+  `\restartsteps` plus `proofsteps` / `proofcases` reset counters.
+- Body-level `\bibliographystyle{plain}` is detected for legacy BibTeX
+  documents. Numeric citations are renumbered after author/editor sorting,
+  and bibliography entries use first-name-first names, italic venues, cleaned
+  BibTeX capitalization braces, and compact DOI/arXiv metadata.
+- The browser toolbar has restart and stop buttons backed by
+  `POST /restart` and `POST /stop`. Restart relaunches the daemon with
+  the same arguments and reloads the page after the replacement server
+  is ready; stop exits the daemon, turns into a start button, and leaves
+  the browser in an intentional stopped state until the server is
+  available again.
+
 **Step 4 ⏳ Interactive references.** Margin column, click-to-pin,
 hover previews, nested expansion, citation previews. All frontend work
 on top of the rendered DOM; the data is already there (refs carry
@@ -592,10 +727,10 @@ WebSocket; daemon dispatches `nvim_command(...)` to move the cursor.
 broadcast `{event:"flash-element", id, ...}` → frontend scrolls and
 briefly highlights.
 
-**Step 7 ⏳ Polish.** Vendored MathJax (no CDN). Margin warnings UI for
-filtered macros. Multi-buffer push (editing an `\input`-ed chapter).
-Server-side per-project preamble cache shared across reconnects.
-Distributable binaries.
+**Step 7 ⏳ Distribution polish.** Vendored MathJax (no CDN). Margin
+warnings UI for filtered macros. Multi-buffer push (editing an
+`\input`-ed chapter). Server-side per-project preamble cache shared
+across reconnects. Distributable binaries.
 
 Each ⏳ step is bounded by hours-to-days, not the weeks the original
 plan reserved, because the architecture pivot removed most of the

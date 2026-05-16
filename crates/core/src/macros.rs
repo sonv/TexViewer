@@ -38,6 +38,13 @@ pub struct ExtractedMacro {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrontMatterAuthor {
+    pub name: String,
+    pub addresses: Vec<String>,
+    pub emails: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedPreamble {
     pub macros: Vec<ExtractedMacro>,
     pub packages_short: Vec<String>,
@@ -50,8 +57,14 @@ pub struct ExtractedPreamble {
     pub raw_preamble: String,
     /// `\title{…}` body — rendered when the document calls `\maketitle`.
     pub title: Option<String>,
-    /// `\author{…}` body.
+    /// First `\author{…}` body, kept for callers that only need one author.
     pub author: Option<String>,
+    /// Every `\author{…}` body in declaration order. A single command using
+    /// top-level `\and` is split into multiple entries.
+    pub authors: Vec<String>,
+    /// Authors plus AMS-style metadata attached by following `\address{...}`
+    /// and `\email{...}` declarations.
+    pub author_details: Vec<FrontMatterAuthor>,
     /// `\date{…}` body.
     pub date: Option<String>,
 }
@@ -364,6 +377,14 @@ impl Extractor {
             return;
         }
 
+        // Text-flow helpers such as KFP's \step and \case are parsed by the
+        // document renderer, not expanded by MathJax. Do not surface them as
+        // scary macro warnings just because their LaTeX body contains
+        // counters or conditionals.
+        if is_text_flow_macro(&name) {
+            return;
+        }
+
         // Bodies that rely on TeX primitives MathJax can't expand are
         // worse than useless — they'll likely error at typeset time. Warn
         // and skip; mirrors the §6 "Failure mode" guidance.
@@ -404,9 +425,12 @@ impl Extractor {
             .into_iter()
             .map(String::from)
             .collect();
-        let title = extract_brace_arg(&self.raw, r"\title");
-        let author = extract_brace_arg(&self.raw, r"\author");
-        let date = extract_brace_arg(&self.raw, r"\date");
+        let metadata_src = strip_line_comments(&self.raw);
+        let title = extract_brace_arg(&metadata_src, r"\title");
+        let author_details = extract_front_matter_authors(&metadata_src);
+        let authors: Vec<String> = author_details.iter().map(|a| a.name.clone()).collect();
+        let author = authors.first().cloned();
+        let date = extract_brace_arg(&metadata_src, r"\date");
         ExtractedPreamble {
             macros: self.macros,
             packages_short,
@@ -416,6 +440,8 @@ impl Extractor {
             raw_preamble: self.raw,
             title,
             author,
+            authors,
+            author_details,
             date,
         }
     }
@@ -423,6 +449,14 @@ impl Extractor {
 
 /// Find the first `\<cmd>{...}` and return the brace-balanced contents.
 fn extract_brace_arg(src: &str, cmd: &str) -> Option<String> {
+    extract_brace_args(src, cmd).into_iter().next()
+}
+
+/// Find every `\<cmd>{...}` and return brace-balanced contents. Supports a
+/// single LaTeX optional argument before the required brace arg, e.g.
+/// `\author[short]{long}`.
+fn extract_brace_args(src: &str, cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
     let bytes = src.as_bytes();
     let needle = cmd.as_bytes();
     let mut i = 0;
@@ -435,33 +469,222 @@ fn extract_brace_arg(src: &str, cmd: &str) -> Option<String> {
                 while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                     j += 1;
                 }
-                if j < bytes.len() && bytes[j] == b'{' {
-                    let start = j + 1;
-                    let mut depth = 1i32;
-                    let mut k = start;
-                    while k < bytes.len() {
-                        match bytes[k] {
-                            b'\\' if k + 1 < bytes.len() => k += 2,
-                            b'{' => {
-                                depth += 1;
-                                k += 1;
-                            }
-                            b'}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    return Some(src[start..k].to_string());
-                                }
-                                k += 1;
-                            }
-                            _ => k += 1,
+                if j < bytes.len() && bytes[j] == b'[' {
+                    if let Some(next) = skip_bracket_arg(src, j) {
+                        j = next;
+                        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                            j += 1;
                         }
+                    }
+                }
+                if j < bytes.len() && bytes[j] == b'{' {
+                    if let Some((arg, next)) = read_brace_arg(src, j) {
+                        out.push(arg);
+                        i = next;
+                        continue;
                     }
                 }
             }
         }
         i += 1;
     }
+    out
+}
+
+fn skip_bracket_arg(src: &str, start: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'[') {
+        return None;
+    }
+    let mut depth = 1i32;
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b']' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
     None
+}
+
+fn read_brace_arg(src: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+    let arg_start = start + 1;
+    let mut depth = 1i32;
+    let mut i = arg_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((src[arg_start..i].to_string(), i + 1));
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn split_author_arg(src: &str) -> Vec<String> {
+    let bytes = src.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if depth == 0
+            && bytes.get(i..i + 4) == Some(br"\and")
+            && !bytes
+                .get(i + 4)
+                .copied()
+                .is_some_and(|b| b.is_ascii_alphabetic())
+        {
+            out.push(src[start..i].to_string());
+            i += 4;
+            start = i;
+            continue;
+        }
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth = (depth - 1).max(0);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out.push(src[start..].to_string());
+    out
+}
+
+fn extract_front_matter_authors(src: &str) -> Vec<FrontMatterAuthor> {
+    let bytes = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+
+        let command = if command_at(src, i, r"\author") {
+            Some("author")
+        } else if command_at(src, i, r"\address") {
+            Some("address")
+        } else if command_at(src, i, r"\curraddr") {
+            Some("curraddr")
+        } else if command_at(src, i, r"\email") {
+            Some("email")
+        } else {
+            None
+        };
+
+        let Some(command) = command else {
+            i += 1;
+            continue;
+        };
+        let cmd_len = command.len() + 1;
+        let Some((arg, next)) = command_brace_arg(src, i + cmd_len, command == "author") else {
+            i += cmd_len;
+            continue;
+        };
+        match command {
+            "author" => {
+                for name in split_author_arg(&arg) {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        out.push(FrontMatterAuthor {
+                            name: name.to_string(),
+                            addresses: Vec::new(),
+                            emails: Vec::new(),
+                        });
+                    }
+                }
+            }
+            "address" => {
+                if let Some(author) = out.last_mut() {
+                    let address = arg.trim();
+                    if !address.is_empty() {
+                        author.addresses.push(address.to_string());
+                    }
+                }
+            }
+            "curraddr" => {
+                if let Some(author) = out.last_mut() {
+                    let address = arg.trim();
+                    if !address.is_empty() {
+                        author.addresses.push(format!("Current address: {address}"));
+                    }
+                }
+            }
+            "email" => {
+                if let Some(author) = out.last_mut() {
+                    let email = arg.trim();
+                    if !email.is_empty() {
+                        author.emails.push(email.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+        i = next;
+    }
+    out
+}
+
+fn command_at(src: &str, start: usize, command: &str) -> bool {
+    let bytes = src.as_bytes();
+    let needle = command.as_bytes();
+    if bytes.get(start..start + needle.len()) != Some(needle) {
+        return false;
+    }
+    !bytes
+        .get(start + needle.len())
+        .copied()
+        .is_some_and(|b| b.is_ascii_alphabetic())
+}
+
+fn command_brace_arg(
+    src: &str,
+    mut pos: usize,
+    allow_optional_arg: bool,
+) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+        pos += 1;
+    }
+    if allow_optional_arg && pos < bytes.len() && bytes[pos] == b'[' {
+        pos = skip_bracket_arg(src, pos)?;
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+    }
+    read_brace_arg(src, pos)
 }
 
 /// Find `\usepackage` and `\input` targets in `src` that look like they could
@@ -579,6 +802,10 @@ fn body_uses_unsupported_primitives(body: &str) -> bool {
         return true;
     }
     false
+}
+
+fn is_text_flow_macro(name: &str) -> bool {
+    matches!(name, "case" | "step" | "restartsteps")
 }
 
 fn count_mandatory_args(spec: &str) -> u8 {
@@ -733,6 +960,12 @@ mod tests {
         e.finish().macros
     }
 
+    fn preamble(src: &str) -> ExtractedPreamble {
+        let mut e = Extractor::new();
+        e.scan(src, Path::new("test.tex"));
+        e.finish()
+    }
+
     #[test]
     fn newcommand_no_args() {
         let m = extract(r"\newcommand{\R}{\mathbb{R}}");
@@ -791,6 +1024,38 @@ mod tests {
     fn comments_are_stripped() {
         let m = extract("\\newcommand{\\R}{\\mathbb{R}} % real numbers\n");
         assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn multiple_authors_are_preserved() {
+        let p = preamble(
+            r#"
+\title{Paper}
+\author{Alice A.}
+\email{alice@example.test}
+\address{Department A\\ University A}
+
+\author{Bob B. \and Carol C.}
+\email{carol@example.test}
+%\author{Commented Out}
+"#,
+        );
+        assert_eq!(p.author.as_deref(), Some("Alice A."));
+        assert_eq!(
+            p.authors,
+            vec![
+                "Alice A.".to_string(),
+                "Bob B.".to_string(),
+                "Carol C.".to_string()
+            ]
+        );
+        assert_eq!(p.author_details[0].emails, vec!["alice@example.test"]);
+        assert_eq!(
+            p.author_details[0].addresses,
+            vec![r"Department A\\ University A"]
+        );
+        assert!(p.author_details[1].emails.is_empty());
+        assert_eq!(p.author_details[2].emails, vec!["carol@example.test"]);
     }
 
     #[test]

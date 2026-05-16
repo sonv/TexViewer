@@ -56,7 +56,7 @@ fn finish_render(
 ) -> Result<RenderOutput> {
     let preamble = macros::extract_preamble(&project)?;
     let bib = bibtex::load_project_bib(&project)?;
-    let bib_style = bibtex::detect_bib_style(&preamble.raw_preamble);
+    let bib_style = bibtex::detect_project_bib_style(&project);
     let mut body = parser::parse_body(&project)?;
     let labels = numbering::assign_numbers(&mut body, &bib, bib_style);
     let mut sync = SyncIndex::new();

@@ -25,6 +25,29 @@ pub const PACKAGE_TO_MATHJAX: &[(&str, &str)] = &[
     ("verb", "[tex]/verb"),
 ];
 
+/// Common LaTeX packages that affect layout, fonts, images, captions, or PDF
+/// metadata rather than MathJax's TeX input. They are expected in real papers
+/// and should not be reported as MathJax mapping problems.
+pub const PACKAGE_NOOP: &[&str] = &[
+    "inputenc",
+    "fontenc",
+    "subcaption",
+    "caption",
+    "array",
+    "latexsym",
+    "graphics",
+    "graphicx",
+    "epsfig",
+    "epsf",
+    "setspace",
+    "amsfonts",
+    "multicol",
+    "colordvi",
+    "hyperref",
+    "geometry",
+    "url",
+];
+
 /// Map a sequence of `\usepackage` names to MathJax extension ids,
 /// deduplicated and sorted for deterministic output.
 #[derive(Debug, Default, Clone)]
@@ -42,6 +65,9 @@ impl PackageMap {
 
     pub fn add(&mut self, package_name: &str) {
         let name = package_name.trim();
+        if PACKAGE_NOOP.contains(&name) {
+            return;
+        }
         let mut hit = false;
         for (pkg, ext) in PACKAGE_TO_MATHJAX {
             if *pkg == name {

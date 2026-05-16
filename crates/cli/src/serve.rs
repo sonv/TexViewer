@@ -11,22 +11,28 @@
 //! per-keystroke live updating without editor config, see the planned nvim
 //! RPC integration — that's a separate Step, not part of this subcommand.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{mpsc as std_mpsc, Arc};
-use std::time::Duration;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc as std_mpsc, Arc,
+};
+use std::time::{Duration, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result};
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
+        Path as AxumPath, Query, State, WebSocketUpgrade,
     },
-    response::{Html, IntoResponse},
+    http::{header, HeaderValue, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -57,6 +63,9 @@ struct AppState {
     /// Updated atomically with each broadcast so reconnects and patches
     /// stay in sync.
     last_blocks: Arc<RwLock<Vec<RenderedBlock>>>,
+    /// Monotonic render attempt id. Buffer pushes can complete out of order;
+    /// only the newest attempt is allowed to update the preview.
+    render_seq: Arc<AtomicU64>,
 }
 
 struct PreambleCache {
@@ -109,6 +118,14 @@ fn fmt_mem_log(state: &AppState, last_blocks: &[RenderedBlock]) -> String {
     format!("{rss}, cache {cache_kib:.1} KiB")
 }
 
+fn begin_render_attempt(state: &AppState) -> u64 {
+    state.render_seq.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+fn is_latest_render_attempt(state: &AppState, seq: u64) -> bool {
+    state.render_seq.load(Ordering::Acquire) == seq
+}
+
 fn fnv_hash(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
@@ -150,15 +167,18 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
         watch_tx,
         preamble_cache: Arc::new(RwLock::new(None)),
         last_blocks: Arc::new(RwLock::new(last_blocks)),
+        render_seq: Arc::new(AtomicU64::new(0)),
     };
 
     spawn_watcher(state.clone(), watch_rx);
 
     let app = Router::new()
         .route("/", get(serve_index))
+        .route("/assets/*path", get(serve_asset))
         .route("/ws", get(serve_ws))
         .route("/buffer", axum::routing::post(serve_buffer_push))
         .route("/restart", post(serve_restart))
+        .route("/stop", post(serve_stop))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
         .with_state(state);
 
@@ -176,8 +196,173 @@ async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
     Html(current.html.clone())
 }
 
-async fn serve_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+async fn serve_asset(
+    State(state): State<AppState>,
+    AxumPath(path): AxumPath<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let root_dir = {
+        let current = state.current.read().await;
+        current
+            .root_file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    let preview_png = query.get("preview").is_some_and(|value| value == "png");
+    match read_project_asset(&root_dir, &path, preview_png).await {
+        Ok((bytes, content_type)) => {
+            let mut response = Body::from(bytes).into_response();
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-cache, max-age=0"),
+            );
+            response
+        }
+        Err(status) => status.into_response(),
+    }
+}
+
+async fn read_project_asset(
+    root_dir: &Path,
+    request_path: &str,
+    preview_png: bool,
+) -> std::result::Result<(Vec<u8>, &'static str), StatusCode> {
+    let rel = clean_asset_path(request_path).ok_or(StatusCode::BAD_REQUEST)?;
+    let root = tokio::fs::canonicalize(root_dir)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let path = root.join(rel);
+    let canonical = tokio::fs::canonicalize(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    if !canonical.starts_with(&root) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if preview_png && is_pdf(&canonical) {
+        let preview = render_pdf_preview(&canonical).await?;
+        let bytes = tokio::fs::read(&preview)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        return Ok((bytes, "image/png"));
+    }
+    let content_type = asset_content_type(&canonical);
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok((bytes, content_type))
+}
+
+fn clean_asset_path(path: &str) -> Option<PathBuf> {
+    let path = path.trim_start_matches('/');
+    let mut out = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
+async fn render_pdf_preview(path: &Path) -> std::result::Result<PathBuf, StatusCode> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || render_pdf_preview_blocking(&path))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+}
+
+fn render_pdf_preview_blocking(path: &Path) -> std::result::Result<PathBuf, StatusCode> {
+    let metadata = std::fs::metadata(path).map_err(|_| StatusCode::NOT_FOUND)?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    modified.hash(&mut hasher);
+    "pdf-preview-png-v1-density-180".hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let cache_dir = std::env::temp_dir().join("mathpreview-figure-cache");
+    std::fs::create_dir_all(&cache_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let out = cache_dir.join(format!("{hash:016x}.png"));
+    if out.exists() {
+        return Ok(out);
+    }
+    let tmp = cache_dir.join(format!("{hash:016x}.{}.tmp.png", std::process::id()));
+    let input = format!("{}[0]", path.display());
+    let args = [
+        "-density",
+        "180",
+        &input,
+        "-trim",
+        "+repage",
+        "-background",
+        "white",
+        "-alpha",
+        "remove",
+        "-alpha",
+        "off",
+    ];
+    let status = Command::new("magick")
+        .args(args)
+        .arg(&tmp)
+        .status()
+        .or_else(|_| Command::new("convert").args(args).arg(&tmp).status())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    match std::fs::rename(&tmp, &out) {
+        Ok(()) => Ok(out),
+        Err(_) if out.exists() => Ok(out),
+        Err(_) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
+fn asset_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn serve_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let needs_reload = query.get("v").is_none_or(|v| v != "2");
+    ws.on_upgrade(move |socket| handle_ws(socket, state, needs_reload))
 }
 
 async fn serve_restart() -> axum::http::StatusCode {
@@ -208,6 +393,15 @@ async fn serve_restart() -> axum::http::StatusCode {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+async fn serve_stop() -> axum::http::StatusCode {
+    eprintln!("mathpreview: stopping server");
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(100));
+        std::process::exit(0);
+    });
+    axum::http::StatusCode::ACCEPTED
 }
 
 #[cfg(unix)]
@@ -270,9 +464,10 @@ async fn serve_buffer_push(
 
     let t0 = std::time::Instant::now();
     let body_len = body.len();
+    let seq = begin_render_attempt(&state);
     if !is_buffer_renderable(&body) {
         eprintln!(
-            "mathpreview: buffer-push {} bytes — incomplete, deferring",
+            "mathpreview: buffer-push #{seq} {} bytes — incomplete, deferring",
             body_len
         );
         return axum::http::StatusCode::ACCEPTED;
@@ -280,6 +475,10 @@ async fn serve_buffer_push(
 
     match render_cached(&state, &root, body).await {
         Ok((out, timing)) => {
+            if !is_latest_render_attempt(&state, seq) {
+                eprintln!("mathpreview: buffer-push #{seq} {body_len}b → stale render discarded");
+                return axum::http::StatusCode::NO_CONTENT;
+            }
             update_watched(&state, &out).await;
             let (op_count, kind) = broadcast_render(&state, out).await;
             let mem = {
@@ -287,7 +486,7 @@ async fn serve_buffer_push(
                 fmt_mem_log(&state, &blocks)
             };
             eprintln!(
-                "mathpreview: buffer-push {body_len}b → total {tot} ms ({op_count} {kind}; parse {p}, preamble {pr}, body-parse {bp}, number {n}, render {r}; cache {cache}; {mem})",
+                "mathpreview: buffer-push #{seq} {body_len}b → total {tot} ms ({op_count} {kind}; parse {p}, preamble {pr}, body-parse {bp}, number {n}, render {r}; cache {cache}; {mem})",
                 tot = t0.elapsed().as_millis(),
                 p = timing.parse_ms,
                 pr = timing.preamble_ms,
@@ -299,6 +498,10 @@ async fn serve_buffer_push(
             axum::http::StatusCode::NO_CONTENT
         }
         Err(e) => {
+            if !is_latest_render_attempt(&state, seq) {
+                eprintln!("mathpreview: buffer-push #{seq} stale render error discarded: {e:#}");
+                return axum::http::StatusCode::NO_CONTENT;
+            }
             eprintln!("mathpreview: buffer-push render error: {e:#}");
             let payload = serde_json::json!({
                 "event": "error",
@@ -408,8 +611,12 @@ async fn render_cached(
     Ok((out, t))
 }
 
-async fn handle_ws(socket: WebSocket, state: AppState) {
+async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
     let (mut sender, mut receiver) = socket.split();
+    if needs_reload {
+        let payload = serde_json::json!({ "event": "full-reload" }).to_string();
+        let _ = sender.send(Message::Text(payload)).await;
+    }
     let mut rx = state.tx.subscribe();
     loop {
         tokio::select! {
@@ -435,12 +642,14 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
 /// update `last_blocks` and `current`. Returns `(op_count, "ops"|"blocks (full)")`
 /// for logging.
 async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'static str) {
-    let ops = {
+    let (ops, patch_cost) = {
         let prev = state.last_blocks.read().await;
-        diff_blocks(&prev, &out.blocks)
+        let ops = diff_blocks(&prev, &out.blocks);
+        let patch_cost = ops.iter().map(PatchOp::cost).sum::<usize>();
+        (ops, patch_cost)
     };
     let block_count = out.blocks.len();
-    let fallback_full = ops.len() * 2 > block_count.max(1);
+    let fallback_full = patch_cost * 2 > block_count.max(1);
 
     // Sample memory after the render so the client sees the cost at the
     // point the page actually displays the update.
@@ -455,15 +664,25 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
         .to_string();
         (payload, block_count, "blocks (full)")
     } else {
-        let n = ops.len();
         let ops_json: Vec<_> = ops.iter().map(PatchOp::to_json).collect();
+        let blocks_json: Vec<_> = out
+            .blocks
+            .iter()
+            .map(|block| {
+                serde_json::json!({
+                    "id": block.id,
+                    "hash": block.hash,
+                })
+            })
+            .collect();
         let payload = serde_json::json!({
             "event": "patch",
             "ops": ops_json,
+            "blocks": blocks_json,
             "rss_mib": rss,
         })
         .to_string();
-        (payload, n, "ops")
+        (payload, patch_cost, "ops")
     };
 
     *state.last_blocks.write().await = out.blocks.clone();
@@ -472,59 +691,74 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
     (op_count, kind)
 }
 
-/// One element of a block-level patch. Position-based: ops apply in order,
-/// referencing block ids that exist after prior ops have been applied.
+/// One element of a block-level patch. Position-based: replace `remove`
+/// current blocks starting at `index` with the already-rendered `html`.
 #[derive(Debug)]
 enum PatchOp {
-    Replace { id: String, html: String },
-    Append { html: String },
-    Remove { id: String },
+    ReplaceRange {
+        index: usize,
+        remove: usize,
+        insert: usize,
+        html: String,
+    },
 }
 
 impl PatchOp {
     fn to_json(&self) -> serde_json::Value {
         match self {
-            PatchOp::Replace { id, html } => serde_json::json!({
-                "type": "replace", "id": id, "html": html,
+            PatchOp::ReplaceRange {
+                index,
+                remove,
+                insert,
+                html,
+            } => serde_json::json!({
+                "type": "range", "index": index, "remove": remove, "insert": insert, "html": html,
             }),
-            PatchOp::Append { html } => serde_json::json!({
-                "type": "append", "html": html,
-            }),
-            PatchOp::Remove { id } => serde_json::json!({
-                "type": "remove", "id": id,
-            }),
+        }
+    }
+
+    fn cost(&self) -> usize {
+        match self {
+            PatchOp::ReplaceRange { remove, insert, .. } => *remove + *insert,
         }
     }
 }
 
-/// Position-based diff. Replaces blocks whose hash differs at the same
-/// position; appends extras at the end; removes trailing blocks no longer
-/// present. Intentionally simple — a paragraph insertion in the middle
-/// invalidates every subsequent block, which is fine for typing within a
-/// single paragraph (the common case) and falls back to a full
-/// `body-updated` event for larger structural changes.
+/// Prefix/suffix block diff. For ordinary typing this replaces one block.
+/// For insertion/deletion above existing content it sends only the changed
+/// middle range and lets the client retag shifted blocks by position.
 fn diff_blocks(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<PatchOp> {
-    let mut ops = Vec::new();
-    let common = old.len().min(new.len());
-    for i in 0..common {
-        if old[i].hash != new[i].hash {
-            ops.push(PatchOp::Replace {
-                id: old[i].id.clone(),
-                html: new[i].html.clone(),
-            });
-        }
+    let mut prefix = 0;
+    while prefix < old.len() && prefix < new.len() && old[prefix].diff_hash == new[prefix].diff_hash
+    {
+        prefix += 1;
     }
-    for block in new.iter().skip(common) {
-        ops.push(PatchOp::Append {
-            html: block.html.clone(),
-        });
+
+    let mut old_suffix = old.len();
+    let mut new_suffix = new.len();
+    while old_suffix > prefix
+        && new_suffix > prefix
+        && old[old_suffix - 1].diff_hash == new[new_suffix - 1].diff_hash
+    {
+        old_suffix -= 1;
+        new_suffix -= 1;
     }
-    for block in old.iter().skip(common) {
-        ops.push(PatchOp::Remove {
-            id: block.id.clone(),
-        });
+
+    let remove = old_suffix - prefix;
+    let insert = new_suffix - prefix;
+    if remove == 0 && insert == 0 {
+        return Vec::new();
     }
-    ops
+    let html = new[prefix..new_suffix]
+        .iter()
+        .map(|block| block.html.as_str())
+        .collect::<String>();
+    vec![PatchOp::ReplaceRange {
+        index: prefix,
+        remove,
+        insert,
+        html,
+    }]
 }
 
 /// Heuristic: is the source in a renderable state, or is the user
@@ -538,7 +772,6 @@ fn is_buffer_renderable(source: &str) -> bool {
     // not balanced because two `$`s.
     let mut in_inline = false;
     let mut in_display = false;
-    let mut brace_depth = 0i32;
     let mut in_comment = false;
     let mut i = 0;
     while i < bytes.len() {
@@ -577,23 +810,11 @@ fn is_buffer_renderable(source: &str) -> bool {
                 }
                 in_inline = !in_inline;
             }
-            b'{' => brace_depth += 1,
-            b'}' => {
-                brace_depth -= 1;
-                if brace_depth < 0 {
-                    return false;
-                }
-            }
             _ => {}
         }
         i += 1;
     }
-    // \begin{...} / \end{...} count match (cheap check, doesn't enforce
-    // nesting order — but the parser handles that, and a mismatched env
-    // usually still renders something rather than crashes).
-    let begins = source.matches("\\begin{").count();
-    let ends = source.matches("\\end{").count();
-    !in_inline && !in_display && brace_depth == 0 && begins == ends
+    !in_inline && !in_display
 }
 
 fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>) {
@@ -663,8 +884,13 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
         while file_rx.recv().await.is_some() {
             // Drain any queued ticks — we only need the latest state.
             while file_rx.try_recv().is_ok() {}
+            let seq = begin_render_attempt(&state);
             match render_project(&state.input, &state.opts) {
                 Ok(new_output) => {
+                    if !is_latest_render_attempt(&state, seq) {
+                        eprintln!("mathpreview: file-change #{seq} stale render discarded");
+                        continue;
+                    }
                     update_watched(&state, &new_output).await;
                     *state.preamble_cache.write().await = None;
                     let (op_count, kind) = broadcast_render(&state, new_output).await;
@@ -675,6 +901,12 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
                     eprintln!("mathpreview: file-change → {op_count} {kind}; {mem}");
                 }
                 Err(e) => {
+                    if !is_latest_render_attempt(&state, seq) {
+                        eprintln!(
+                            "mathpreview: file-change #{seq} stale render error discarded: {e:#}"
+                        );
+                        continue;
+                    }
                     eprintln!("mathpreview: render error: {e:#}");
                     let payload = serde_json::json!({
                         "event": "error",
@@ -686,4 +918,211 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        begin_render_attempt, diff_blocks, is_buffer_renderable, is_latest_render_attempt,
+        AppState, PatchOp,
+    };
+    use mathpreview_core::{
+        renderer::{HtmlOptions, RenderedBlock},
+        sync::SyncIndex,
+        ExtractedPreamble, RenderOutput,
+    };
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::{atomic::AtomicU64, mpsc as std_mpsc, Arc};
+    use tokio::sync::{broadcast, RwLock};
+
+    #[test]
+    fn buffer_guard_only_defers_unclosed_math() {
+        assert!(is_buffer_renderable(r"\begin{document}\section{A"));
+        assert!(is_buffer_renderable(r"\begin{document}\begin{proof} text"));
+        assert!(!is_buffer_renderable(r"\begin{document} $x"));
+        assert!(!is_buffer_renderable(r"\begin{document} \[x"));
+    }
+
+    #[test]
+    fn shifted_block_insertion_stays_one_range_patch() {
+        let old = vec![
+            rendered_block("blk-10", "old first"),
+            rendered_block("blk-14", "old second"),
+        ];
+        let new = vec![
+            rendered_block("blk-10", "inserted"),
+            rendered_block("blk-12", "old first"),
+            rendered_block("blk-14", "old second"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 0,
+                remove: 0,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn single_block_edit_stays_one_range_patch() {
+        let old = vec![
+            rendered_block("blk-10", "old first"),
+            rendered_block("blk-14", "old second"),
+        ];
+        let new = vec![
+            rendered_block("blk-10", "new first"),
+            rendered_block("blk-14", "old second"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 0,
+                remove: 1,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn shifted_block_deletion_stays_one_range_patch() {
+        let old = vec![
+            rendered_block("blk-10", "inserted"),
+            rendered_block("blk-12", "old first"),
+            rendered_block("blk-14", "old second"),
+        ];
+        let new = vec![
+            rendered_block("blk-10", "old first"),
+            rendered_block("blk-14", "old second"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 0,
+                remove: 1,
+                insert: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn shifted_source_metadata_does_not_force_large_patch() {
+        let old = vec![
+            rendered_block_with_diff("blk-519", "first line old metadata", "first line semantic"),
+            rendered_block_with_diff("blk-524", "equation old metadata", "equation semantic"),
+        ];
+        let new = vec![
+            rendered_block_with_diff("blk-519", "inserted", "inserted"),
+            rendered_block_with_diff("blk-521", "first line new metadata", "first line semantic"),
+            rendered_block_with_diff("blk-526", "equation new metadata", "equation semantic"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 0,
+                remove: 0,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rendered_line_insertion_before_math_paragraph_is_compact_patch() {
+        let old = mathpreview_core::render_project_from_source(
+            &PathBuf::from("main.tex"),
+            "\\begin{document}\nFirst, note that if $(x_t, v_t)$ is a solution\nof~\\eqref{eq:Langevin}, then\n\\[\ny=z\n\\]\nAfter.\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let new = mathpreview_core::render_project_from_source(
+            &PathBuf::from("main.tex"),
+            "\\begin{document}\nTest test test\n$a^2+b^2$\n\nFirst, note that if $(x_t, v_t)$ is a solution\nof~\\eqref{eq:Langevin}, then\n\\[\ny=z\n\\]\nAfter.\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let ops = diff_blocks(&old.blocks, &new.blocks);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 0,
+                remove: 0,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn newer_render_attempt_invalidates_older_attempts() {
+        let (tx, _) = broadcast::channel(1);
+        let (watch_tx, _) = std_mpsc::channel();
+        let state = AppState {
+            input: PathBuf::from("main.tex"),
+            opts: HtmlOptions::default(),
+            current: Arc::new(RwLock::new(RenderOutput {
+                html: String::new(),
+                body_html: String::new(),
+                blocks: Vec::new(),
+                sync: SyncIndex::new(),
+                root_file: PathBuf::from("main.tex"),
+                preamble: ExtractedPreamble {
+                    macros: Vec::new(),
+                    packages_short: Vec::new(),
+                    packages_long: Vec::new(),
+                    unmapped_packages: Vec::new(),
+                    warnings: Vec::new(),
+                    raw_preamble: String::new(),
+                    title: None,
+                    author: None,
+                    authors: Vec::new(),
+                    author_details: Vec::new(),
+                    date: None,
+                },
+                included_files: Vec::new(),
+            })),
+            tx,
+            watched: Arc::new(RwLock::new(HashSet::new())),
+            watch_tx,
+            preamble_cache: Arc::new(RwLock::new(None)),
+            last_blocks: Arc::new(RwLock::new(Vec::new())),
+            render_seq: Arc::new(AtomicU64::new(0)),
+        };
+
+        let older = begin_render_attempt(&state);
+        let newer = begin_render_attempt(&state);
+        assert!(!is_latest_render_attempt(&state, older));
+        assert!(is_latest_render_attempt(&state, newer));
+    }
+
+    fn rendered_block(id: &str, html: &str) -> RenderedBlock {
+        rendered_block_with_diff(id, html, html)
+    }
+
+    fn rendered_block_with_diff(id: &str, html: &str, diff_hash: &str) -> RenderedBlock {
+        RenderedBlock {
+            id: id.to_string(),
+            hash: html.to_string(),
+            diff_hash: diff_hash.to_string(),
+            html: html.to_string(),
+        }
+    }
 }

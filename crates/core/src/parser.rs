@@ -31,6 +31,8 @@ const MATH_ENVS: &[&str] = &[
     "split",
 ];
 
+const TRANSPARENT_ENVS: &[&str] = &["center"];
+
 /// Parse every project file's body into a flat node list, preserving include
 /// order.
 pub fn parse_body(project: &Project) -> Result<Vec<Node>> {
@@ -537,26 +539,35 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        if env == "abstract" {
+            self.parse_abstract(out, start, env);
+            return;
+        }
+
+        if env == "proofsteps" {
+            self.parse_counter_env(out, start, env, "restartsteps");
+            return;
+        }
+
+        if env == "proofcases" {
+            self.parse_counter_env(out, start, env, "restartcases");
+            return;
+        }
+
+        if env == "subequations" {
+            self.parse_transparent_env(out, env);
+            return;
+        }
+
+        if TRANSPARENT_ENVS.contains(&env.as_str()) {
+            self.parse_transparent_env(out, env);
+            return;
+        }
+
         if env == "document" {
             // Defensive: someone slipped a nested document env. Treat as a
             // transparent block.
-            let body_end = self.find_matching_end(&env);
-            let mut children = Vec::new();
-            let inner = self.src[self.byte..body_end].to_string();
-            let mut sub = Parser::new_at(
-                &self.src[self.byte..body_end],
-                self.file.clone(),
-                self.pos(),
-            );
-            sub.parse_block_into(&mut children, None);
-            self.advance_to(body_end);
-            self.advance(format!("\\end{{{env}}}").len());
-            out.push(Node {
-                kind: NodeKind::Document,
-                span: self.span_from(start),
-                children,
-            });
-            drop(inner);
+            self.parse_transparent_env(out, env);
             return;
         }
 
@@ -570,6 +581,57 @@ impl<'a> Parser<'a> {
             span: self.span_from(start),
             children: vec![],
         });
+    }
+
+    fn parse_transparent_env(&mut self, out: &mut Vec<Node>, env: String) {
+        let body_end = self.find_matching_end(&env);
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        sub.parse_block_into(&mut children, None);
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.extend(children);
+    }
+
+    fn parse_abstract(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
+        let body_end = self.find_matching_end(&env);
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        sub.parse_block_into(&mut children, None);
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.push(Node {
+            kind: NodeKind::Abstract,
+            span: self.span_from(start),
+            children,
+        });
+    }
+
+    fn parse_counter_env(
+        &mut self,
+        out: &mut Vec<Node>,
+        start: Pos,
+        env: String,
+        reset_name: &str,
+    ) {
+        let body_end = self.find_matching_end(&env);
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        sub.parse_block_into(&mut children, None);
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.push(Node {
+            kind: NodeKind::OpaqueCmd {
+                name: reset_name.to_string(),
+                raw: format!("\\{reset_name}"),
+            },
+            span: self.span_from(start),
+            children: vec![],
+        });
+        out.extend(children);
     }
 
     fn parse_theorem(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
@@ -673,7 +735,7 @@ impl<'a> Parser<'a> {
 
     fn parse_proof(&mut self, out: &mut Vec<Node>, start: Pos) {
         self.skip_ws_inline();
-        let of = self.optional_arg();
+        let (of, role) = parse_proof_option(self.optional_arg());
 
         let body_end = self.find_matching_end("proof");
         let inner = &self.src[self.byte..body_end];
@@ -685,7 +747,7 @@ impl<'a> Parser<'a> {
         self.advance("\\end{proof}".len());
 
         out.push(Node {
-            kind: NodeKind::Proof { of },
+            kind: NodeKind::Proof { of, role },
             span: self.span_from(start),
             children,
         });
@@ -867,6 +929,132 @@ fn section_level(cmd: &str) -> Option<u8> {
 
 fn strip_star(env: &str) -> &str {
     env.strip_suffix('*').unwrap_or(env)
+}
+
+fn split_top_level_commas(src: &str) -> Vec<&str> {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut parts = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(src[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(src[start..].trim());
+    parts
+}
+
+fn option_key_value<'a>(part: &'a str, key: &str) -> Option<&'a str> {
+    let (candidate, value) = part.split_once('=')?;
+    if candidate.trim().eq_ignore_ascii_case(key) {
+        Some(value.trim())
+    } else {
+        None
+    }
+}
+
+fn is_single_braced_group(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 || bytes.first() != Some(&b'{') || bytes.last() != Some(&b'}') {
+        return false;
+    }
+
+    let mut depth = 0i32;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 && i + 1 != bytes.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    depth == 0
+}
+
+fn strip_wrapping_braces(s: &str) -> &str {
+    let mut out = s.trim();
+    while is_single_braced_group(out) {
+        out = out[1..out.len() - 1].trim();
+    }
+    out
+}
+
+fn parse_proof_option(opt: Option<String>) -> (Option<String>, Option<Role>) {
+    let Some(opt) = opt else {
+        return (None, None);
+    };
+    let opt = opt.trim();
+    if opt.is_empty() {
+        return (None, None);
+    }
+
+    let has_metadata = split_top_level_commas(opt).iter().any(|part| {
+        option_key_value(part, "role").is_some()
+            || option_key_value(part, "name").is_some()
+            || option_key_value(part, "of").is_some()
+    });
+    if !has_metadata {
+        return (Some(opt.to_string()), None);
+    }
+
+    let mut role = None;
+    let mut title_parts = Vec::new();
+    for part in split_top_level_commas(opt) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(value) = option_key_value(part, "role") {
+            role = Some(Role::parse(strip_wrapping_braces(value)));
+        } else if let Some(value) = option_key_value(part, "name") {
+            let value = strip_wrapping_braces(value);
+            if !value.is_empty() {
+                title_parts.push(value.to_string());
+            }
+        } else if let Some(value) = option_key_value(part, "of") {
+            let value = strip_wrapping_braces(value);
+            if !value.is_empty() {
+                let lower = value.to_ascii_lowercase();
+                if lower.starts_with("of ") || lower.starts_with("proof ") {
+                    title_parts.push(value.to_string());
+                } else {
+                    title_parts.push(format!("of {value}"));
+                }
+            }
+        } else {
+            title_parts.push(part.to_string());
+        }
+    }
+
+    let of = if title_parts.is_empty() {
+        None
+    } else {
+        Some(title_parts.join(", "))
+    };
+    (of, role)
 }
 
 fn list_kind_for(env: &str) -> Option<ListKind> {
@@ -1091,6 +1279,35 @@ mod tests {
     }
 
     #[test]
+    fn subequations_parse_as_transparent_math_blocks() {
+        let n = parse(
+            "\\begin{subequations}\n\\label{eq:group}\n\\begin{equation}\na=b\n\\end{equation}\nwith data\n\\begin{equation*}\nc=d\n\\end{equation*}\n\\end{subequations}",
+        );
+
+        assert!(!n.iter().any(
+            |node| matches!(node.kind, NodeKind::OpaqueEnv { ref env, .. } if env == "subequations")
+        ));
+        let displays: Vec<_> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::DisplayMath { env, label, .. } => {
+                    Some((env.as_deref(), label.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(displays.len(), 2);
+        assert_eq!(displays[0], (Some("equation"), None));
+        assert_eq!(displays[1], (Some("equation*"), None));
+        assert!(n.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "label" && raw.contains("eq:group"))
+        ));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Text(s) if s.contains("with data"))));
+    }
+
+    #[test]
     fn theorem_with_role() {
         let src = "\\begin{theorem}[role=main]{Main result}\\label{thm:main}\nfoo\n\\end{theorem}";
         let n = parse(src);
@@ -1158,7 +1375,24 @@ mod tests {
         let src = "\\begin{proof}[of Lemma 1]\nQED.\n\\end{proof}";
         let n = parse(src);
         match &n[0].kind {
-            NodeKind::Proof { of } => assert_eq!(of.as_deref(), Some("of Lemma 1")),
+            NodeKind::Proof { of, role } => {
+                assert_eq!(of.as_deref(), Some("of Lemma 1"));
+                assert_eq!(*role, None);
+            }
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn proof_with_manual_role() {
+        let src =
+            "\\begin{proof}[role=main, of={Proposition~\\ref{prop:main}}]\nQED.\n\\end{proof}";
+        let n = parse(src);
+        match &n[0].kind {
+            NodeKind::Proof { of, role } => {
+                assert_eq!(of.as_deref(), Some("of Proposition~\\ref{prop:main}"));
+                assert_eq!(*role, Some(Role::Main));
+            }
             other => panic!("got {:?}", other),
         }
     }

@@ -51,6 +51,21 @@
 % mathpreview reads it from the source; pdflatex just needs to swallow it.
 \define@key{mp@thm}{role}{\def\mp@thm@role{#1}}
 \define@key{mp@thm}{name}{\def\mp@thm@name{#1}}
+\define@key{mp@proof}{role}{\def\mp@proof@role{#1}}
+\define@key{mp@proof}{name}{\def\mp@proof@name{#1}}
+\define@key{mp@proof}{of}{\def\mp@proof@name{Proof of #1}}
+
+\NewDocumentCommand{\mpParseProofPart}{ m }{%
+  \def\mp@proof@part{#1}%
+  \in@{=}{\mp@proof@part}\ifin@
+    \setkeys{mp@proof}{#1}%
+  \else
+    \def\mp@proof@name{#1}%
+  \fi
+}
+\NewDocumentCommand{\mpParseProofOption}{ >{\SplitList{,}}m }{%
+  \ProcessList{#1}{\mpParseProofPart}%
+}
 
 \newcommand{\mpSetProofVisibility}[1]{%
   \mp@proof@visiblefalse
@@ -98,9 +113,17 @@
 \let\mp@orig@proof\proof
 \let\mp@orig@endproof\endproof
 \RenewDocumentEnvironment{proof}{ o +b }{%
-  \mpSetProofVisibility{\mp@last@role}%
+  \def\mp@proof@role{\mp@last@role}\def\mp@proof@name{}%
+  \IfValueT{#1}{%
+    \mpParseProofOption{#1}%
+  }%
+  \mpSetProofVisibility{\mp@proof@role}%
   \ifmp@proof@visible
-    \IfNoValueTF{#1}{\mp@orig@proof}{\mp@orig@proof[#1]}%
+    \ifx\mp@proof@name\@empty
+      \mp@orig@proof
+    \else
+      \mp@orig@proof[\mp@proof@name]%
+    \fi
     #2%
     \mp@orig@endproof
   \fi
