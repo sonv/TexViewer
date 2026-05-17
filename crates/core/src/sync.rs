@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::Pos;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyncKind {
+    #[default]
+    Leaf,
+    Container,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncEntry {
     pub element_id: String,
@@ -17,6 +25,8 @@ pub struct SyncEntry {
     pub start: Pos,
     pub end: Pos,
     pub label: Option<String>,
+    #[serde(default)]
+    pub kind: SyncKind,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -38,6 +48,18 @@ impl SyncIndex {
         end: Pos,
         label: Option<String>,
     ) {
+        self.record_with_kind(element_id, file, start, end, label, SyncKind::Leaf);
+    }
+
+    pub fn record_with_kind(
+        &mut self,
+        element_id: impl Into<String>,
+        file: PathBuf,
+        start: Pos,
+        end: Pos,
+        label: Option<String>,
+        kind: SyncKind,
+    ) {
         let element_id = element_id.into();
         let idx = self.entries.len();
         if let Some(ref l) = label {
@@ -49,6 +71,7 @@ impl SyncIndex {
             start,
             end,
             label,
+            kind,
         });
     }
 
@@ -62,12 +85,35 @@ impl SyncIndex {
         line: u32,
         col: u32,
     ) -> Option<&SyncEntry> {
+        self.lookup_by_source_position_filtered(file, line, col, None, true)
+    }
+
+    pub fn lookup_leaf_by_source_position(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Option<&SyncEntry> {
+        self.lookup_by_source_position_filtered(file, line, col, Some(SyncKind::Leaf), false)
+    }
+
+    fn lookup_by_source_position_filtered(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+        kind: Option<SyncKind>,
+        allow_cross_line_fallback: bool,
+    ) -> Option<&SyncEntry> {
         let pos = Pos { line, col, byte: 0 };
         let mut containing: Option<(usize, u32)> = None;
         let mut before: Option<(usize, u32, u32)> = None;
         let mut after: Option<(usize, u32, u32)> = None;
 
         for (idx, entry) in self.entries.iter().enumerate() {
+            if kind.is_some_and(|expected| entry.kind != expected) {
+                continue;
+            }
             if !same_path(&entry.file, file) {
                 continue;
             }
@@ -80,6 +126,9 @@ impl SyncIndex {
             }
             if pos_after_or_equal(pos, entry.start) {
                 let line_delta = pos.line.saturating_sub(entry.start.line);
+                if !allow_cross_line_fallback && line_delta != 0 {
+                    continue;
+                }
                 let col_delta = pos.col.saturating_sub(entry.start.col);
                 if before.is_none_or(|(_, best_line, best_col)| {
                     line_delta < best_line || (line_delta == best_line && col_delta < best_col)
@@ -88,6 +137,9 @@ impl SyncIndex {
                 }
             } else {
                 let line_delta = entry.start.line.saturating_sub(pos.line);
+                if !allow_cross_line_fallback && line_delta != 0 {
+                    continue;
+                }
                 let col_delta = entry.start.col.saturating_sub(pos.col);
                 if after.is_none_or(|(_, best_line, best_col)| {
                     line_delta < best_line || (line_delta == best_line && col_delta < best_col)
@@ -162,5 +214,26 @@ mod tests {
 
         let entry = sync.lookup_by_source_position(&file, 14, 1).expect("entry");
         assert_eq!(entry.element_id, "blk-1");
+    }
+
+    #[test]
+    fn leaf_lookup_ignores_containers_and_cross_line_fallback() {
+        let file = PathBuf::from("/tmp/main.tex");
+        let mut sync = SyncIndex::new();
+        sync.record_with_kind(
+            "proof-1",
+            file.clone(),
+            pos(10, 1),
+            pos(20, 1),
+            None,
+            SyncKind::Container,
+        );
+        sync.record("srcw-1", file.clone(), pos(11, 3), pos(11, 8), None);
+
+        let in_word = sync
+            .lookup_leaf_by_source_position(&file, 11, 5)
+            .expect("leaf word entry");
+        assert_eq!(in_word.element_id, "srcw-1");
+        assert!(sync.lookup_leaf_by_source_position(&file, 15, 1).is_none());
     }
 }

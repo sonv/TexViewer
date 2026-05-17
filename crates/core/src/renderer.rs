@@ -16,7 +16,7 @@ use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span};
 use crate::bibtex::{BibEntry, BibStyle};
 use crate::macros::ExtractedPreamble;
 use crate::numbering::LabelTable;
-use crate::sync::SyncIndex;
+use crate::sync::{SyncIndex, SyncKind};
 
 #[derive(Debug, Clone)]
 pub struct HtmlOptions {
@@ -157,13 +157,14 @@ pub fn render(
                             text: segment,
                             start,
                         } => {
-                            let text = if paragraph.html.trim().is_empty()
+                            let mut text = if paragraph.html.trim().is_empty()
                                 || paragraph.trim_after_flow_marker
                             {
                                 trim_leading_paragraph_space(segment)
                             } else {
                                 segment
                             };
+                            let mut text_start = start + (segment.len() - text.len());
                             if text.is_empty() {
                                 continue;
                             }
@@ -190,8 +191,10 @@ pub fn render(
                                 && !paragraph.html.ends_with(char::is_whitespace)
                             {
                                 paragraph.html.push(' ');
+                                let trimmed = trim_leading_paragraph_space(text);
+                                text_start += text.len() - trimmed.len();
+                                text = trimmed;
                             }
-                            let text_start = start + (segment.len() - text.len());
                             let text_span =
                                 text_segment_span(&node.span, s, text_start, start + segment.len());
                             write_text_with_span(&mut paragraph.html, text, &text_span, &mut ctx);
@@ -343,7 +346,7 @@ fn push_block(
         .map(|src| format!(r#" data-src="{}""#, escape_attr(src)))
         .unwrap_or_default();
     if let Some(span) = span {
-        record_sync(ctx, &id, span, None);
+        record_sync(ctx, &id, span, None, SyncKind::Container);
     }
     let html = format!(
         r#"<article class="blk" id="{id}" data-blockhash="{hash}"{src}>{inner}</article>"#,
@@ -535,6 +538,23 @@ fn paragraph_break_span(node_span: &Span, text: &str, start: usize, end: usize) 
     text_segment_span(node_span, text, anchor_start, anchor_end)
 }
 
+fn soft_line_break_span(node_span: &Span, text: &str, start: usize, end: usize) -> Option<Span> {
+    let bytes = text.as_bytes();
+    let newline = bytes
+        .get(start..end)
+        .and_then(|slice| slice.iter().rposition(|b| *b == b'\n'))
+        .map(|offset| start + offset)?;
+    let anchor_start = newline + 1;
+    let mut anchor_end = anchor_start;
+    while anchor_end < end && anchor_end < bytes.len() {
+        match bytes[anchor_end] {
+            b'\n' | b'\r' => break,
+            _ => anchor_end += 1,
+        }
+    }
+    Some(text_segment_span(node_span, text, anchor_start, anchor_end))
+}
+
 fn offset_pos(src: &str, start: Pos, byte: usize) -> Pos {
     let mut line = start.line;
     let mut col = start.col;
@@ -624,7 +644,19 @@ fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderC
                 }
                 i += next.len_utf8();
             }
-            out.push_str(&render_inline_latex(&s[start..i], ctx.labels));
+            let had_output = !out.is_empty();
+            let ended_with_whitespace = out.ends_with(char::is_whitespace);
+            if let Some(space_span) = soft_line_break_span(span, s, start, i) {
+                write_source_space_anchor(&mut out, &space_span, ctx);
+            }
+            let rendered = render_inline_latex(&s[start..i], ctx.labels);
+            if rendered.is_empty() {
+                if had_output && !ended_with_whitespace {
+                    out.push(' ');
+                }
+            } else {
+                out.push_str(&rendered);
+            }
             continue;
         }
 
@@ -828,20 +860,35 @@ struct RenderCtx<'a> {
 }
 
 fn record(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
-    record_sync(ctx, id, span, label);
+    record_with_kind(ctx, id, span, label, SyncKind::Leaf);
+}
+
+fn record_container(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
+    record_with_kind(ctx, id, span, label, SyncKind::Container);
+}
+
+fn record_with_kind(
+    ctx: &mut RenderCtx,
+    id: &str,
+    span: &Span,
+    label: Option<&str>,
+    kind: SyncKind,
+) {
+    record_sync(ctx, id, span, label, kind);
     ctx.source_anchors.push(SourceAnchor {
         id: id.to_string(),
         src: data_src(span),
     });
 }
 
-fn record_sync(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
-    ctx.sync.record(
+fn record_sync(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>, kind: SyncKind) {
+    ctx.sync.record_with_kind(
         id.to_string(),
         span.file.clone(),
         span.start,
         span.end,
         label.map(str::to_string),
+        kind,
     );
 }
 
@@ -996,7 +1043,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .as_deref()
                 .map(sanitize_id)
                 .unwrap_or_else(|| ctx.idgen.next("thm"));
-            record(ctx, &id, &n.span, label.as_deref());
+            record_container(ctx, &id, &n.span, label.as_deref());
             let role_class = role.as_css_class();
             let kind_label = capitalize(env);
             let num_html = number
@@ -1042,7 +1089,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         }
         NodeKind::Proof { of, role } => {
             let id = ctx.idgen.next("proof");
-            record(ctx, &id, &n.span, None);
+            record_container(ctx, &id, &n.span, None);
             let head = match of {
                 Some(o) => proof_head_html(o, ctx.labels),
                 None => r#"<div class="proof-head" role="button" tabindex="0"><span class="fold-marker"></span>Proof.</div>"#.to_string(),
@@ -1140,7 +1187,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         NodeKind::Subequations { label, number: _ } => {
             if let Some(label) = label {
                 let id = sanitize_id(label);
-                record(ctx, &id, &n.span, Some(label));
+                record_container(ctx, &id, &n.span, Some(label));
                 write!(
                     out,
                     r#"<span class="label-anchor" id="{}" data-src="{}" data-refkey="{}"></span>"#,
@@ -1485,11 +1532,12 @@ fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
                         start,
                     } => {
                         let starts_blank_line = starts_with_blank_line(segment);
-                        let text = if trim_next_text {
+                        let mut text = if trim_next_text {
                             trim_leading_paragraph_space(segment)
                         } else {
                             segment
                         };
+                        let mut text_start = start + (segment.len() - text.len());
                         if text.is_empty() {
                             if previous_was_display && starts_blank_line {
                                 pending_paragraph_indent = true;
@@ -1507,8 +1555,10 @@ fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
                             && !out.ends_with(char::is_whitespace)
                         {
                             out.push(' ');
+                            let trimmed = trim_leading_paragraph_space(text);
+                            text_start += text.len() - trimmed.len();
+                            text = trimmed;
                         }
-                        let text_start = start + (segment.len() - text.len());
                         let text_span =
                             text_segment_span(&child.span, s, text_start, start + segment.len());
                         write_text_with_span(out, text, &text_span, ctx);
@@ -1519,6 +1569,9 @@ fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
                     }
                     ParagraphTextPart::Break { start, end } => {
                         let break_span = paragraph_break_span(&child.span, s, start, end);
+                        if seen_content || previous_was_display {
+                            out.push_str(r#"<span class="para-break" aria-hidden="true"></span>"#);
+                        }
                         write_source_space_anchor(out, &break_span, ctx);
                         if seen_content || previous_was_display {
                             pending_paragraph_indent = true;
@@ -4388,7 +4441,7 @@ const CLIENT_JS: &str = r#"
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '9';
+  var WS_PROTOCOL_VERSION = '11';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -5044,7 +5097,7 @@ body.refkey-visible .eq-refkey-list {
   display: inline-block;
   width: 1.45em;
 }
-.para-break { display: block; height: 0.72em; }
+.para-break { display: block; height: 0; }
 .ref { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
 .cite { color: var(--supporting); text-decoration: none; }
 .cite:hover { text-decoration: underline; }
@@ -5305,6 +5358,44 @@ mod tests {
     }
 
     #[test]
+    fn single_newline_before_inline_math_keeps_interword_space() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nSince $B$ is first order in $x$, the function\n$v\\cdot\\grad_x(B\\psi)$ contains at most two $x$-derivatives.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let text = text_content(&out.body_html);
+        assert!(text.contains(r"the function \(v\cdot\grad_x(B\psi)\) contains"));
+        assert!(!text.contains(r"the function\(v\cdot\grad_x(B\psi)\)"));
+    }
+
+    #[test]
+    fn soft_line_break_inside_paragraph_is_a_source_sync_target() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nSince $B$ is first order in $x$, the function\n  $v\\cdot\\grad_x(B\\psi)$ contains at most two.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let entry = out
+            .sync
+            .lookup_leaf_by_source_position(Path::new("t.tex"), 3, 1)
+            .expect("soft line break sync entry");
+        assert!(entry.element_id.starts_with("srcs-"));
+        assert!(out.body_html.contains(r#"class="source-space""#));
+        assert!(out
+            .blocks
+            .iter()
+            .flat_map(|block| block.source_anchors.iter())
+            .any(|anchor| anchor.id == entry.element_id));
+    }
+
+    #[test]
     fn math_nodes_store_latex_for_copying() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
@@ -5383,6 +5474,7 @@ mod tests {
         .unwrap();
 
         assert!(out.body_html.contains(r"\[a=b\]"));
+        assert!(out.body_html.contains(r#"class="para-break""#));
         assert!(out.body_html.contains("para-indent-marker"));
         assert!(text_content(&out.body_html).contains("Next line."));
         assert!(!out.body_html.contains("<br><br>Next line."));
@@ -5399,6 +5491,7 @@ mod tests {
 
         let text = text_content(&out.body_html);
         assert!(text.contains("First paragraph."));
+        assert!(out.body_html.contains(r#"class="para-break""#));
         assert!(out.body_html.contains("para-indent-marker"));
         assert!(text.contains("Second paragraph."));
         assert!(!out.body_html.contains("<br><br>Second paragraph."));
@@ -5416,7 +5509,7 @@ mod tests {
         assert!(out.body_html.contains(r#"class="source-space""#));
         let entry = out
             .sync
-            .lookup_by_source_position(Path::new("t.tex"), 4, 1)
+            .lookup_leaf_by_source_position(Path::new("t.tex"), 4, 1)
             .expect("blank line sync entry");
         assert!(entry.element_id.starts_with("srcs-"));
         assert!(out
@@ -5424,6 +5517,27 @@ mod tests {
             .iter()
             .flat_map(|block| block.source_anchors.iter())
             .any(|anchor| anchor.id == entry.element_id));
+    }
+
+    #[test]
+    fn forward_source_sync_ignores_environment_container_spans() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{proof}\nFirst paragraph.\n\\end{proof}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .sync
+            .lookup_leaf_by_source_position(Path::new("t.tex"), 2, 1)
+            .is_none());
+        let entry = out
+            .sync
+            .lookup_leaf_by_source_position(Path::new("t.tex"), 3, 3)
+            .expect("word sync entry");
+        assert!(entry.element_id.starts_with("srcw-"));
     }
 
     #[test]
@@ -5743,7 +5857,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '9'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '11'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));

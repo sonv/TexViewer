@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "9";
+const WS_PROTOCOL_VERSION: &str = "11";
 
 #[derive(Clone)]
 struct AppState {
@@ -404,7 +404,7 @@ async fn serve_cursor(
         let current = state.current.read().await;
         current
             .sync
-            .lookup_by_source_position(&file, line, col)
+            .lookup_leaf_by_source_position(&file, line, col)
             .map(|entry| entry.element_id.clone())
     };
     let payload = serde_json::json!({

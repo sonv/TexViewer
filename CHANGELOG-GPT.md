@@ -45,6 +45,8 @@
 - Preserved blank-line separators between inline math nodes, e.g. `$a^2$\n\n$b^2$`, by grouping top-level inline runs into real paragraph blocks instead of loose inline nodes.
 - Preserved LaTeX paragraph semantics for blank lines: they no longer render as visible `<br><br>` gaps, but still start an indented paragraph after display math and inside proof/theorem text.
 - Preserved LaTeX inter-word spacing when a single source newline separates inline math/refs from following prose, avoiding joined output such as math immediately followed by `and`.
+- Preserved LaTeX inter-word spacing when a single source newline separates prose from following inline math, avoiding joined output such as `function\(v\cdot...\)` after wrapping a source line in nvim.
+- Collapsed renderer-inserted soft-newline spacing with the following leading source whitespace, avoiding doubled spaces around inline math after line wraps.
 - Preserved multiple front-matter authors declared with repeated `\author{...}` commands or top-level `\and` inside one author command, including AMS-style `\address{...}`, `\curraddr{...}`, and `\email{...}` metadata attached to the preceding author.
 - Rendered `abstract` as front matter after the title block, even when the source declares the `abstract` environment before `\maketitle`.
 - Spliced `\input`, `\include`, and `\subfile` content at the command site instead of appending included files after the root body.
@@ -73,7 +75,12 @@
 - Fixed the protocol-version gate after the source-sync protocol bump: the server now accepts WebSocket shell protocol 7, preventing a reload loop where every reconnect received `full-reload`.
 - Bumped the websocket shell protocol to 8 so already-open tabs reload once and pick up the topbar hide/restore controls.
 - Bumped the websocket shell protocol to 9 so already-open tabs reload once and pick up Vim navigation/search bindings.
+- Bumped the websocket shell protocol to 10 so already-open tabs reload once and pick up the corrected soft-newline spacing.
 - Added source-space anchors for blank paragraph-break lines inside environments, so cursor sync on an empty proof/theorem line scrolls to that whitespace position instead of the top of the enclosing environment.
+- Added source-space anchors for soft single-newline line wraps inside paragraphs, so cursor sync after pressing Enter lands near that intra-paragraph space instead of falling back to the previous word and making the viewer jump backward.
+- Changed editor-to-viewer cursor sync to use only leaf content targets such as source words, whitespace anchors, math, refs, and cites; broad block/proof/theorem container spans remain available for metadata but no longer pull the viewer to the start of an environment.
+- Made blank lines inside proof/theorem text emit an actual zero-height paragraph break plus indentation, so a double Enter starts a new LaTeX-style paragraph instead of only widening the inline gap.
+- Bumped the websocket shell protocol to 11 so already-open tabs reload once and pick up the soft-line source-sync anchors.
 - Updated live-server file watching so newly introduced include directories are added to the watcher set after renders.
 - Cleared the live-server preamble cache after file-watch renders so later buffer pushes do not reuse stale preamble or bibliography state.
 - Made `examples/mathpreview.sty` actually honor `proofs=...` by capturing proof bodies and rendering them only when the preceding theorem role is enabled.
@@ -97,6 +104,7 @@
 - Regression test for labeled item refkey metadata and the viewer refkey toggle shell.
 - Regression tests for blank-line paragraph indentation in top-level text, display-math continuations, and proof/theorem text.
 - Regression test for single-newline spacing after inline math.
+- Regression test for single-newline spacing before inline math.
 - Regression test for transparent `subequations` parsing.
 - Regression tests for KFP-style float placeholders, proof-flow markers, and subequation group labels.
 - Regression tests for numbered `\step`, `\case`, `\restartsteps`, `proofsteps`, and `proofcases` flow-marker rendering.
@@ -113,6 +121,9 @@
 - Regression tests for shifted block insertions/deletions, shifted source metadata, generated display-math ids, and single-block edits using compact websocket range patches.
 - Regression test ensuring the server accepts the current WebSocket shell protocol version and only reloads missing/old versions.
 - Regression test ensuring a blank line inside an environment resolves to a whitespace source-sync anchor rather than the enclosing environment.
+- Regression test ensuring a soft source line break inside a paragraph resolves to a whitespace source-sync anchor.
+- Regression test ensuring forward source sync ignores environment container spans and targets nearby leaf text instead.
+- Regression test ensuring nested blank lines emit paragraph-break markup as well as the LaTeX-style indentation marker.
 - Regression tests for `SyncIndex` lookup by source file/line/column, including smallest containing span and nearest previous fallback behavior.
 - Regression test ensuring split paragraph blocks and source words are source-sync targets with independent `data-src` anchors.
 - Viewer shell regression coverage for `source-cursor`, dynamic source scrolling, source highlighting, `/jump` posting, and `data-src` / source-anchor preservation across websocket patches.
@@ -129,11 +140,11 @@
 
 - `cargo fmt --check`
 - `cargo check`
-- `cargo test` - 8 CLI tests and 57 core tests passing
+- `cargo test` - 8 CLI tests and 61 core tests passing
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `git diff --check`
 - `nvim --headless -u NONE -i NONE +'luafile examples/mathpreview.lua' +'qall!'`
-- LargeTimeLangevin live-server smoke test for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` confirmed `GET /` returns 200, rendered prose contains `src-word` anchors, the viewer serves WebSocket protocol 9, dynamic source-scroll JS is present, `POST /cursor` returns 204, and `/jump` posts/polls a source location.
+- LargeTimeLangevin live-server smoke test for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` confirmed `GET /` returns 200, rendered prose contains `src-word` anchors, the viewer serves WebSocket protocol 11, dynamic source-scroll JS is present, `POST /cursor` returns 204, and `/jump` posts/polls a source location.
 - KFP live-server source-sync smoke test confirmed `POST /cursor` returns 204, `POST /jump` returns 202, `GET /jump?after=0` returns the pending source jump, and rendered blocks carry `data-src` anchors.
 - KFP render smoke test for `/Users/tsv/Work/KFP/main.tex` confirmed no warning panel, no rendered opaque environment blocks, no raw `subequations` blocks, no sampled unresolved equation refs, and resolved Figure/Table refs.
 - KFP render smoke test confirmed multi-row displays include per-row refkey chips and theorem/proposition/lemma boxes do not emit duplicate loose refkey anchors.
