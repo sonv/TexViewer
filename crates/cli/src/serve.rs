@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "11";
+const WS_PROTOCOL_VERSION: &str = "18";
 
 #[derive(Clone)]
 struct AppState {
@@ -217,7 +217,16 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
 
 async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
     let current = state.current.read().await;
-    Html(current.html.clone())
+    (
+        [
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store, max-age=0, must-revalidate"),
+            ),
+            (header::PRAGMA, HeaderValue::from_static("no-cache")),
+        ],
+        Html(current.html.clone()),
+    )
 }
 
 async fn serve_asset(

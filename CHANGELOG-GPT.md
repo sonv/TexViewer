@@ -81,6 +81,18 @@
 - Changed editor-to-viewer cursor sync to use only leaf content targets such as source words, whitespace anchors, math, refs, and cites; broad block/proof/theorem container spans remain available for metadata but no longer pull the viewer to the start of an environment.
 - Made blank lines inside proof/theorem text emit an actual zero-height paragraph break plus indentation, so a double Enter starts a new LaTeX-style paragraph instead of only widening the inline gap.
 - Bumped the websocket shell protocol to 11 so already-open tabs reload once and pick up the soft-line source-sync anchors.
+- Added math-aware viewer search: TeX-looking searches such as `\theta` now scan math `data-tex`, map common TeX symbols to MathJax SVG glyphs, highlight exact glyph hits inside equations, and keep `n` / `N` navigation working across the math hits.
+- Bumped the websocket shell protocol to 12 so already-open tabs reload once and pick up the math-aware search code.
+- Made Escape from the viewer search panel clear math-search highlights and the active browser selection, and limited math-search highlight restoration to the period when the search panel is visible.
+- Bumped the websocket shell protocol to 13 so already-open tabs reload once and pick up the search-highlight cleanup behavior.
+- Stopped intercepting normal mouse-down and double-click events on MathJax SVG math nodes, so browser text/glyph selection can work at the finest granularity the SVG output permits; Shift-click still selects a whole math node for LaTeX copying.
+- Bumped the websocket shell protocol to 14 so already-open tabs reload once and pick up the math-selection interaction change.
+- Removed the experimental transparent SVG math text-selection layer because it made the viewer more complex without producing reliable per-character selection; normal math clicks remain non-intercepting, and Shift-click still selects/copies the whole original LaTeX math node.
+- Bumped the websocket shell protocol to 16 so already-open tabs reload once and drop the removed SVG math text-selection layer.
+- Removed the leftover `position: relative` styling from math nodes and made the served viewer HTML `no-store`, so browser reloads cannot keep an old viewer shell with the removed SVG selection overlay.
+- Bumped the websocket shell protocol to 17 so already-open tabs reload once and pick up the final cleanup.
+- Fixed inverse search from rendered math by letting double-clicks on MathJax nodes use the same nearest `data-src` jump path as prose; normal click still focuses math, and Shift-click still selects/copies the whole original LaTeX node.
+- Bumped the websocket shell protocol to 18 so already-open tabs reload once and pick up math inverse-search clicks.
 - Updated live-server file watching so newly introduced include directories are added to the watcher set after renders.
 - Cleared the live-server preamble cache after file-watch renders so later buffer pushes do not reuse stale preamble or bibliography state.
 - Made `examples/mathpreview.sty` actually honor `proofs=...` by capturing proof bodies and rendering them only when the preceding theorem role is enabled.
@@ -124,6 +136,11 @@
 - Regression test ensuring a soft source line break inside a paragraph resolves to a whitespace source-sync anchor.
 - Regression test ensuring forward source sync ignores environment container spans and targets nearby leaf text instead.
 - Regression test ensuring nested blank lines emit paragraph-break markup as well as the LaTeX-style indentation marker.
+- Viewer shell regression coverage for math-aware search hooks, TeX-symbol lookup data, SVG glyph highlighting CSS, and the protocol 12 reload gate.
+- Viewer shell regression coverage for search-panel visibility gating and explicit search-session cleanup.
+- Viewer shell regression coverage for normal math clicks focusing without forced whole-node selection and Shift-click preserving whole-node LaTeX selection.
+- Viewer shell regression coverage for the protocol 17 reload gate after removing the experimental SVG math text-selection layer and final leftover math-node styling.
+- Viewer shell regression coverage ensuring rendered math double-clicks are not blocked from the inverse-search jump path.
 - Regression tests for `SyncIndex` lookup by source file/line/column, including smallest containing span and nearest previous fallback behavior.
 - Regression test ensuring split paragraph blocks and source words are source-sync targets with independent `data-src` anchors.
 - Viewer shell regression coverage for `source-cursor`, dynamic source scrolling, source highlighting, `/jump` posting, and `data-src` / source-anchor preservation across websocket patches.
@@ -132,7 +149,7 @@
 
 - Updated `DESIGN.md` with the completed viewer work, current remaining work, a TODO checklist that crosses out completed items, a refkey-toggle status item, and a plain-language explanation of the live-update race/id-shift bug plus the final range-patch solution.
 - Documented the first-pass nvim/HTML source sync design, endpoints, plugin behavior, word-level anchors, dynamic scroll band, and remaining precision tradeoffs.
-- Expanded `README.md` with current viewer controls, restart/stop/start behavior, A4/dynamic layout controls, refkey overlays, toolbar hide/restore, Vim navigation/search bindings, selectable SVG math copy, bibliography/figure support, and blank-line source-sync behavior.
+- Expanded `README.md` with current viewer controls, restart/stop/start behavior, A4/dynamic layout controls, refkey overlays, toolbar hide/restore, Vim navigation/search bindings, math-node LaTeX copy, bibliography/figure support, and blank-line source-sync behavior.
 - Extended `DESIGN.md` with the toolbar hide/restore persistence behavior and the `source-space` strategy for syncing empty lines inside environments.
 - Documented Vim-style viewer navigation, search, and `Ctrl-o` previous-place behavior in `DESIGN.md`.
 
@@ -143,8 +160,9 @@
 - `cargo test` - 8 CLI tests and 61 core tests passing
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `git diff --check`
+- `node --check` on the embedded viewer JavaScript
 - `nvim --headless -u NONE -i NONE +'luafile examples/mathpreview.lua' +'qall!'`
-- LargeTimeLangevin live-server smoke test for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` confirmed `GET /` returns 200, rendered prose contains `src-word` anchors, the viewer serves WebSocket protocol 11, dynamic source-scroll JS is present, `POST /cursor` returns 204, and `/jump` posts/polls a source location.
+- LargeTimeLangevin live-server smoke test for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` confirmed `GET /` returns 200 with `Cache-Control: no-store`, rendered prose contains `src-word` anchors, math nodes carry `data-src` anchors, the viewer serves WebSocket protocol 18, dynamic source-scroll JS is present, math-aware search code is served, search cleanup code is served, the experimental SVG math selection-layer code is no longer served, `POST /cursor` returns 204, and `/jump` posts/polls a source location.
 - KFP live-server source-sync smoke test confirmed `POST /cursor` returns 204, `POST /jump` returns 202, `GET /jump?after=0` returns the pending source jump, and rendered blocks carry `data-src` anchors.
 - KFP render smoke test for `/Users/tsv/Work/KFP/main.tex` confirmed no warning panel, no rendered opaque environment blocks, no raw `subequations` blocks, no sampled unresolved equation refs, and resolved Figure/Table refs.
 - KFP render smoke test confirmed multi-row displays include per-row refkey chips and theorem/proposition/lemma boxes do not emit duplicate loose refkey anchors.

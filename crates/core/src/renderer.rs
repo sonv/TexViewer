@@ -3222,6 +3222,9 @@ const CLIENT_JS: &str = r#"
   var vimPendingKey = '';
   var vimPendingTimer = 0;
   var lastSearchQuery = '';
+  var mathSearchQuery = '';
+  var mathSearchResults = [];
+  var mathSearchIndex = -1;
   var viewerJumpStack = [];
 
   function pageEl() {
@@ -3329,6 +3332,11 @@ const CLIENT_JS: &str = r#"
     return document.getElementById('search-input');
   }
 
+  function searchPanelIsOpen() {
+    var panel = searchPanelEl();
+    return !!(panel && !panel.hidden);
+  }
+
   function openSearchPanel() {
     var panel = searchPanelEl();
     var input = searchInputEl();
@@ -3344,6 +3352,283 @@ const CLIENT_JS: &str = r#"
     var input = searchInputEl();
     if (panel) panel.hidden = true;
     if (input && document.activeElement === input) input.blur();
+    clearSearchSession();
+  }
+
+  var TEX_SYMBOL_CODEPOINTS = {
+    alpha: [0x03B1],
+    beta: [0x03B2],
+    gamma: [0x03B3],
+    delta: [0x03B4],
+    epsilon: [0x03F5, 0x03B5],
+    varepsilon: [0x03B5, 0x03F5],
+    zeta: [0x03B6],
+    eta: [0x03B7],
+    theta: [0x03B8],
+    vartheta: [0x03D1],
+    iota: [0x03B9],
+    kappa: [0x03BA],
+    lambda: [0x03BB],
+    mu: [0x03BC],
+    nu: [0x03BD],
+    xi: [0x03BE],
+    pi: [0x03C0],
+    varpi: [0x03D6],
+    rho: [0x03C1],
+    varrho: [0x03F1],
+    sigma: [0x03C3],
+    varsigma: [0x03C2],
+    tau: [0x03C4],
+    upsilon: [0x03C5],
+    phi: [0x03D5, 0x03C6],
+    varphi: [0x03C6, 0x03D5],
+    chi: [0x03C7],
+    psi: [0x03C8],
+    omega: [0x03C9],
+    Gamma: [0x0393],
+    Delta: [0x0394],
+    Theta: [0x0398],
+    Lambda: [0x039B],
+    Xi: [0x039E],
+    Pi: [0x03A0],
+    Sigma: [0x03A3],
+    Upsilon: [0x03A5],
+    Phi: [0x03A6],
+    Psi: [0x03A8],
+    Omega: [0x03A9],
+    partial: [0x2202],
+    infty: [0x221E],
+    nabla: [0x2207],
+    grad: [0x2207],
+    leq: [0x2264],
+    geq: [0x2265],
+    neq: [0x2260],
+    times: [0x00D7],
+    cdot: [0x22C5],
+    pm: [0x00B1],
+    mp: [0x2213],
+    to: [0x2192],
+    mapsto: [0x21A6],
+    leftarrow: [0x2190],
+    rightarrow: [0x2192],
+    Leftrightarrow: [0x21D4],
+    Rightarrow: [0x21D2],
+    subset: [0x2282],
+    subseteq: [0x2286],
+    in: [0x2208],
+    notin: [0x2209],
+    forall: [0x2200],
+    exists: [0x2203],
+    emptyset: [0x2205],
+    setminus: [0x2216],
+    cup: [0x222A],
+    cap: [0x2229],
+    int: [0x222B],
+    sum: [0x2211],
+    prod: [0x220F]
+  };
+
+  function stripMathDelimiters(query) {
+    return (query || '')
+      .trim()
+      .replace(/^\\\(/, '')
+      .replace(/\\\)$/, '')
+      .replace(/^\\\[/, '')
+      .replace(/\\\]$/, '')
+      .replace(/^\$+/, '')
+      .replace(/\$+$/, '')
+      .trim();
+  }
+
+  function looksLikeMathSearch(query) {
+    return /\\|[_^{}$]/.test(query || '');
+  }
+
+  function glyphCharsForTeXCommand(command) {
+    var cps = TEX_SYMBOL_CODEPOINTS[command];
+    if (!cps) return [];
+    return cps.map(function(cp) { return String.fromCodePoint(cp); });
+  }
+
+  function mathSearchSpec(query) {
+    var core = stripMathDelimiters(query);
+    var texNeedles = [];
+    var glyphChars = [];
+    if (core) texNeedles.push(core);
+    if (query && query !== core) texNeedles.push(query);
+    var command = /^\\([A-Za-z]+)$/.exec(core);
+    if (command) {
+      glyphChars = glyphCharsForTeXCommand(command[1]);
+      texNeedles.push('\\' + command[1]);
+    } else if (core && Array.from(core).length === 1) {
+      glyphChars.push(core);
+    } else if (/^[A-Za-z]+$/.test(core)) {
+      glyphChars = glyphCharsForTeXCommand(core);
+      if (glyphChars.length) texNeedles.push('\\' + core);
+    }
+    return {
+      core: core,
+      texNeedles: Array.from(new Set(texNeedles.filter(Boolean))),
+      glyphChars: Array.from(new Set(glyphChars))
+    };
+  }
+
+  function svgDataCodeForChar(ch) {
+    return ch.codePointAt(0).toString(16).toUpperCase();
+  }
+
+  function mathGlyphMatches(math, glyphChars) {
+    if (!glyphChars.length || !math || !math.querySelectorAll) return [];
+    var wanted = new Set(glyphChars.map(svgDataCodeForChar));
+    var matches = [];
+    math.querySelectorAll('svg [data-c]').forEach(function(node) {
+      var code = (node.getAttribute('data-c') || '').toUpperCase();
+      if (wanted.has(code)) matches.push(node);
+    });
+    return matches;
+  }
+
+  function texContainsAny(tex, needles) {
+    if (!tex || !needles.length) return false;
+    return needles.some(function(needle) {
+      return needle && tex.indexOf(needle) !== -1;
+    });
+  }
+
+  function clearMathSearchHighlights() {
+    document.querySelectorAll('.math-search-hit, .math-search-active').forEach(function(el) {
+      el.classList.remove('math-search-hit', 'math-search-active');
+    });
+    document.querySelectorAll('.math-search-glyph-hit, .math-search-glyph-active').forEach(function(el) {
+      el.classList.remove('math-search-glyph-hit', 'math-search-glyph-active');
+    });
+  }
+
+  function clearSearchSession() {
+    mathSearchQuery = '';
+    mathSearchResults = [];
+    mathSearchIndex = -1;
+    clearMathSearchHighlights();
+    var selection = window.getSelection ? window.getSelection() : null;
+    if (selection && selection.removeAllRanges) selection.removeAllRanges();
+  }
+
+  function buildMathSearchResults(query) {
+    var page = pageEl();
+    if (!page) return [];
+    var spec = mathSearchSpec(query);
+    if (!spec.core) return [];
+    var results = [];
+    page.querySelectorAll('.math[data-tex]').forEach(function(math) {
+      var tex = math.getAttribute('data-tex') || '';
+      var glyphs = mathGlyphMatches(math, spec.glyphChars);
+      if (glyphs.length) {
+        glyphs.forEach(function(glyph) {
+          results.push({ math: math, target: glyph, glyph: glyph });
+        });
+        return;
+      }
+      if (looksLikeMathSearch(query) && texContainsAny(tex, spec.texNeedles)) {
+        results.push({ math: math, target: math, glyph: null });
+      }
+    });
+    return results;
+  }
+
+  function mathResultTop(result) {
+    var target = result && result.target;
+    if (!target || !target.getBoundingClientRect) return 0;
+    return target.getBoundingClientRect().top + window.scrollY;
+  }
+
+  function firstMathResultIndex(results, backwards) {
+    if (!results.length) return -1;
+    var y = window.scrollY + topbarOffset() + 1;
+    if (backwards) {
+      for (var i = results.length - 1; i >= 0; i--) {
+        if (mathResultTop(results[i]) < y) return i;
+      }
+      return results.length - 1;
+    }
+    for (var j = 0; j < results.length; j++) {
+      if (mathResultTop(results[j]) >= y) return j;
+    }
+    return 0;
+  }
+
+  function applyMathSearchHighlights(activeResult) {
+    if (!searchPanelIsOpen()) {
+      clearMathSearchHighlights();
+      return;
+    }
+    clearMathSearchHighlights();
+    mathSearchResults.forEach(function(result) {
+      if (result.math && result.math.classList) result.math.classList.add('math-search-hit');
+      if (result.glyph && result.glyph.classList) result.glyph.classList.add('math-search-glyph-hit');
+    });
+    if (!activeResult) return;
+    if (activeResult.math && activeResult.math.classList) {
+      activeResult.math.classList.add('math-search-active');
+    }
+    if (activeResult.glyph && activeResult.glyph.classList) {
+      activeResult.glyph.classList.add('math-search-glyph-active');
+    }
+  }
+
+  function runMathSearch(query, backwards) {
+    if (!searchPanelIsOpen()) return false;
+    var previousQuery = mathSearchQuery;
+    var previousTarget = mathSearchResults[mathSearchIndex] && mathSearchResults[mathSearchIndex].target;
+    mathSearchResults = buildMathSearchResults(query);
+    if (!mathSearchResults.length) {
+      mathSearchQuery = '';
+      mathSearchIndex = -1;
+      clearMathSearchHighlights();
+      return false;
+    }
+
+    mathSearchQuery = query;
+    var nextIndex = -1;
+    if (previousQuery === query && previousTarget) {
+      for (var i = 0; i < mathSearchResults.length; i++) {
+        if (mathSearchResults[i].target === previousTarget) {
+          nextIndex = backwards ? i - 1 : i + 1;
+          break;
+        }
+      }
+    }
+    if (nextIndex < 0 || nextIndex >= mathSearchResults.length) {
+      nextIndex = previousQuery === query && mathSearchIndex >= 0
+        ? mathSearchIndex + (backwards ? -1 : 1)
+        : firstMathResultIndex(mathSearchResults, backwards);
+    }
+    if (nextIndex < 0) nextIndex = mathSearchResults.length - 1;
+    if (nextIndex >= mathSearchResults.length) nextIndex = 0;
+
+    mathSearchIndex = nextIndex;
+    var active = mathSearchResults[mathSearchIndex];
+    applyMathSearchHighlights(active);
+    scrollSourceIntoView(active.target || active.math);
+    setStatus('live',
+      '● math ' + (mathSearchIndex + 1) + '/' + mathSearchResults.length + ' ' + query);
+    return true;
+  }
+
+  function restoreMathSearchHighlights() {
+    if (!searchPanelIsOpen()) {
+      clearMathSearchHighlights();
+      return;
+    }
+    if (!mathSearchQuery) return;
+    var oldIndex = mathSearchIndex;
+    mathSearchResults = buildMathSearchResults(mathSearchQuery);
+    if (!mathSearchResults.length) {
+      clearMathSearchHighlights();
+      mathSearchIndex = -1;
+      return;
+    }
+    mathSearchIndex = Math.max(0, Math.min(oldIndex, mathSearchResults.length - 1));
+    applyMathSearchHighlights(mathSearchResults[mathSearchIndex]);
   }
 
   function runSearch(backwards) {
@@ -3356,6 +3641,10 @@ const CLIENT_JS: &str = r#"
     lastSearchQuery = query;
     if (input && document.activeElement === input) input.blur();
     var recorded = recordViewerPlace();
+    if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
+      return true;
+    }
+    if (mathSearchQuery) clearSearchSession();
     var found = false;
     try {
       if (window.find) {
@@ -3363,6 +3652,9 @@ const CLIENT_JS: &str = r#"
       }
     } catch (e) {
       found = false;
+    }
+    if (!found && runMathSearch(query, backwards)) {
+      return true;
     }
     if (!found && recorded) viewerJumpStack.pop();
     setStatus(found ? 'live' : 'dead', (found ? '● found ' : '○ no match ') + query);
@@ -3748,7 +4040,9 @@ const CLIENT_JS: &str = r#"
 
   function refreshAfterInitialMathJax(tries) {
     if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-      window.MathJax.startup.promise.then(scheduleNavigationRefresh);
+      window.MathJax.startup.promise.then(function() {
+        scheduleNavigationRefresh();
+      });
       return;
     }
     if (tries > 0) {
@@ -3975,6 +4269,12 @@ const CLIENT_JS: &str = r#"
     selectedMath = null;
   }
 
+  function focusMathNode(math) {
+    if (!math || !math.focus) return;
+    try { math.focus({ preventScroll: true }); }
+    catch (e) { math.focus(); }
+  }
+
   function fragmentLatexText(node) {
     if (!node) return '';
     if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
@@ -4071,10 +4371,7 @@ const CLIENT_JS: &str = r#"
     clearSelectedMath();
     selectedMath = math;
     math.classList.add('math-selected');
-    if (math.focus) {
-      try { math.focus({ preventScroll: true }); }
-      catch (e) { math.focus(); }
-    }
+    focusMathNode(math);
     var range = document.createRange();
     range.selectNode(math);
     var selection = window.getSelection();
@@ -4085,21 +4382,9 @@ const CLIENT_JS: &str = r#"
   // Event delegation survives `#page` innerHTML replacement.
   document.addEventListener('copy', copySelectionAsLatex);
   document.addEventListener('mousedown', function(e) {
-    var math = e.target.closest('.math[data-tex]');
-    if (math) {
-      e.preventDefault();
-      selectMathNode(math);
-      return;
-    }
     clearSelectedMath();
   });
   document.addEventListener('dblclick', function(e) {
-    var math = e.target.closest('.math[data-tex]');
-    if (math) {
-      e.preventDefault();
-      selectMathNode(math);
-      return;
-    }
     requestSourceJump(e);
   });
   document.addEventListener('click', function(e) {
@@ -4140,6 +4425,16 @@ const CLIENT_JS: &str = r#"
       return;
     }
     if ((e.altKey || e.metaKey) && requestSourceJump(e)) {
+      return;
+    }
+    var clickedMath = e.target.closest('.math[data-tex]');
+    if (clickedMath) {
+      if (e.shiftKey) {
+        e.preventDefault();
+        selectMathNode(clickedMath);
+        return;
+      }
+      focusMathNode(clickedMath);
       return;
     }
     var sideTab = e.target.closest('.side-tab');
@@ -4335,6 +4630,7 @@ const CLIENT_JS: &str = r#"
       await window.MathJax.typesetPromise(nodes);
       var ms = Math.round(performance.now() - tStart);
       nodes.forEach(function(node) { node.classList.remove('math-pending'); });
+      restoreMathSearchHighlights();
       setStatus('live',
         '● live / idle typeset ' + ms + 'ms (' + nodes.length + ' math)' +
         memSuffix(window._lastRss));
@@ -4441,7 +4737,7 @@ const CLIENT_JS: &str = r#"
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '11';
+  var WS_PROTOCOL_VERSION = '18';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -4473,6 +4769,7 @@ const CLIENT_JS: &str = r#"
           applyMode(currentProofMode);
           setRefkeysVisible(refkeysVisible, false);
           restoreSourceHighlight();
+          restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'body-updated') {
           var tStart = performance.now();
@@ -4568,6 +4865,7 @@ const CLIENT_JS: &str = r#"
           applyMode(currentProofMode);
           setRefkeysVisible(refkeysVisible, false);
           restoreSourceHighlight();
+          restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
           if (msg.element_id) {
@@ -5039,6 +5337,25 @@ body.refkey-visible .eq-refkey-list {
   outline: 2px solid rgba(91, 62, 162, 0.5);
   outline-offset: 3px;
   background: rgba(91, 62, 162, 0.08);
+}
+.math.math-search-hit {
+  background: rgba(216, 151, 0, 0.10);
+}
+.math.math-search-active {
+  outline: 2px solid rgba(181, 124, 0, 0.72);
+  outline-offset: 3px;
+  background: rgba(216, 151, 0, 0.16);
+}
+.math-search-glyph-hit {
+  stroke: rgba(216, 151, 0, 0.82);
+  stroke-width: 14px;
+  paint-order: stroke fill;
+}
+.math-search-glyph-active {
+  stroke: rgba(91, 62, 162, 0.95);
+  stroke-width: 20px;
+  paint-order: stroke fill;
+  filter: drop-shadow(0 0 3px rgba(91, 62, 162, 0.55));
 }
 .math:focus {
   outline: 2px solid rgba(91, 62, 162, 0.5);
@@ -5857,7 +6174,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '11'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '18'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));
@@ -5865,6 +6182,12 @@ mod tests {
         assert!(out.html.contains("restorePreviousPlace"));
         assert!(out.html.contains("viewerJumpStack"));
         assert!(out.html.contains("window.find"));
+        assert!(out.html.contains("TEX_SYMBOL_CODEPOINTS"));
+        assert!(out.html.contains("theta: [0x03B8]"));
+        assert!(out.html.contains("runMathSearch"));
+        assert!(out.html.contains("clearSearchSession"));
+        assert!(out.html.contains("searchPanelIsOpen"));
+        assert!(out.html.contains("math-search-glyph-active"));
         assert!(out
             .html
             .contains(r#"body.refkey-visible [data-refkey]:not(.label-anchor)::after"#));
@@ -5886,6 +6209,12 @@ mod tests {
         assert!(out.html.contains("copySelectionAsLatex"));
         assert!(out.html.contains("selectionIsExactNode"));
         assert!(out.html.contains("math-selected"));
+        assert!(out.html.contains("focusMathNode"));
+        assert!(out.html.contains("if (e.shiftKey)"));
+        assert!(out.html.contains("document.addEventListener('dblclick'"));
+        assert!(!out
+            .html
+            .contains("if (math) {\n      return;\n    }\n    requestSourceJump(e);"));
         assert!(out.html.contains("revealSourceElement"));
         assert!(out.html.contains("scrollSourceIntoView"));
         assert!(out.html.contains("source-active"));
