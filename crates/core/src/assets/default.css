@@ -772,6 +772,14 @@ body.margin-mode aside#margin {
   min-width: 320px;
   overflow-y: auto;
   z-index: 100;
+  /* The aside is layered over the page's right gutter, where sidenote
+     chips also live. Letting the empty aside catch clicks would make
+     chips unreachable; make the aside itself pass clicks through, and
+     restore the click target on its actual children (the cards). */
+  pointer-events: none;
+}
+body.margin-mode aside#margin > * {
+  pointer-events: auto;
 }
 body.topbar-hidden.margin-mode aside#margin { top: 0; }
 
