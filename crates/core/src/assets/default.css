@@ -716,11 +716,6 @@ body.margin-mode.margin-has-cards .topbar-restore {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.margin-card-rendered {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .margin-card-close {
   background: transparent;
   border: none;
