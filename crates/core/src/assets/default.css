@@ -715,16 +715,21 @@ body.topbar-hidden.margin-mode aside#margin {
 .hover-preview .blk { padding: 0; }
 .hover-preview .thm,
 .hover-preview .bib-entry { margin: 0; padding: 0; border: none; }
-/* Equation numbers add clutter and overlap the equation in narrow hover
-   previews — drop them, you can see the number in the document itself. */
-.hover-preview .eq-num { display: none; }
+/* Hide auto-generated equation numbering inside hover previews. The
+   preview is meant for a quick look at the statement; the `(N)` was
+   already visible at the call site. Covers single-display numbers
+   (`.eq-num`), multi-row align/gather lists (`.eq-num-list` and
+   `.eq-num-row` inside them), and any nested wrapper. Refkey chips
+   (the `keys` overlay) are NOT hidden — those are LaTeX labels, not
+   auto-numbers, and the user opts into them via the toolbar. */
 .hover-preview .math.display {
   margin: 0.3em 0;
-  /* Make sure long displays can scroll horizontally inside the preview
-     instead of clipping. */
   overflow-x: auto;
   overflow-y: hidden;
 }
+.hover-preview .eq-num,
+.hover-preview .eq-num-list,
+.hover-preview .eq-num-row { display: none !important; }
 @keyframes hover-preview-in {
   from { opacity: 0; }
   to   { opacity: 1; }

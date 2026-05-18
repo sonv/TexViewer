@@ -104,7 +104,17 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
     }}
   }},
   loader: {{ load: [{packages_long}] }},
-  svg: {{ fontCache: 'global' }},
+  svg: {{
+    fontCache: 'global',
+    // Auto-break long display equations at low-priority operators when the
+    // container is narrower than the rendered math. Kicks in for the margin
+    // column and the hover preview; a no-op on a wide main page because
+    // breaks only fire when the math actually overflows. Inline math is
+    // intentionally NOT reflowed (`inline: false`): wrapping `$x+y$` mid
+    // sentence reads worse than letting the surrounding paragraph wrap.
+    displayOverflow: 'linebreak',
+    linebreaks: {{ inline: false }}
+  }},
   startup: {{ typeset: true }}
 }};"#,
         packages_short = package_short.join(", "),
