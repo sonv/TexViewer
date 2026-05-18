@@ -679,11 +679,21 @@ details.warnings {
 }
 details.warnings summary { cursor: pointer; }
 /* Sidenotes from \SV / \AB / \sidenote / any preamble-detected wrapper.
-   Positioned in the real right margin OUTSIDE the page text box, using
-   `position: absolute` against the relatively-positioned `main#page`.
-   Vertical anchor is `top` from inline flow; horizontal `left: 100%`
-   places the box just past the page's right edge with a small gap. */
-.sidenote {
+   Hidden by default — the `margin` toolbar button gates them along with
+   the pinned-reference column, so the reader can clear the margin
+   entirely with one toggle. Positioned in the real right margin OUTSIDE
+   the page text box, using `position: absolute` against the
+   relatively-positioned `main#page`. Vertical anchor is `top` from
+   inline flow; horizontal `left: 100%` places the box just past the
+   page's right edge with a small gap. */
+.sidenote { display: none; }
+body.margin-mode .sidenote {
+  /* `display: inline-block; vertical-align: top;` keeps the chip
+     vertically aligned with its inline source position (browsers
+     resolve absolute-positioned-without-top to the static-position
+     y-coordinate, which matches the line the `\SV`/`\AB` was on). */
+  display: inline-block;
+  vertical-align: top;
   position: absolute;
   left: 100%;
   margin-left: 18px;
@@ -694,12 +704,6 @@ details.warnings summary { cursor: pointer; }
   border: 1px solid #f0d97a;
   border-radius: 4px;
   overflow: hidden;
-  /* `display: inline-block; vertical-align: top;` keeps the chip
-     vertically aligned with its inline source position (browsers
-     resolve absolute-positioned-without-top to the static-position
-     y-coordinate, which matches the line the `\SV`/`\AB` was on). */
-  display: inline-block;
-  vertical-align: top;
 }
 /* When several sidenotes pile up at the same source position, stack
    them vertically inside the same `position: absolute` lane by giving
