@@ -114,6 +114,7 @@ pub fn render(
         preamble,
         step_counter: 0,
         case_counter: 0,
+        sidenote_counter: 0,
         source_anchors: Vec::new(),
     };
 
@@ -900,6 +901,7 @@ struct RenderCtx<'a> {
     preamble: &'a ExtractedPreamble,
     step_counter: usize,
     case_counter: usize,
+    sidenote_counter: usize,
     source_anchors: Vec<SourceAnchor>,
 }
 
@@ -1528,6 +1530,53 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 }
                 "restartcases" => {
                     ctx.case_counter = 0;
+                }
+                // Sidenote / review-annotation commands. Render as inline
+                // collapsible <details> chips so the author can see their
+                // own annotations without them disrupting the reading flow.
+                // Each chip stays compact (just the label) until clicked
+                // open. Embedded math / refs / emphasis inside the content
+                // get re-parsed via render_inline_latex.
+                "SV" | "AB" => {
+                    // svmacro.sty: `\SV[date]{text}` and `\AB[date]{text}`.
+                    // The optional bracket arg is the author's annotation tag
+                    // (date or note id); the required brace arg is the
+                    // review text itself. Without `[..]` the marker is just
+                    // "SV" / "AB".
+                    if let Some(call) = latex_command_call(raw, name) {
+                        ctx.sidenote_counter += 1;
+                        let id = format!("sn-{}", ctx.sidenote_counter);
+                        let kind = name.to_lowercase();
+                        let label = match call.optional.as_deref().map(str::trim) {
+                            Some(opt) if !opt.is_empty() => format!("{name} {opt}"),
+                            _ => name.to_string(),
+                        };
+                        let label_attr = escape_attr(&label);
+                        let label_html = escape_html(&label);
+                        let content_id = format!("{id}-content");
+                        let content = render_inline_latex(&call.arg, ctx.labels);
+                        write!(
+                            out,
+                            r#"<span class="sidenote sidenote-{kind}" id="{id}" data-label="{label_attr}"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">{label_html}</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
+                        )
+                        .unwrap();
+                    }
+                }
+                "sidenote" => {
+                    // `\sidenote[options]{text}` from tcolorbox-style packages.
+                    // We discard the options (they're styling-only) and emit
+                    // just the body with a generic "note" marker.
+                    if let Some(call) = latex_command_call(raw, "sidenote") {
+                        ctx.sidenote_counter += 1;
+                        let id = format!("sn-{}", ctx.sidenote_counter);
+                        let content_id = format!("{id}-content");
+                        let content = render_inline_latex(&call.arg, ctx.labels);
+                        write!(
+                            out,
+                            r#"<span class="sidenote sidenote-note" id="{id}" data-label="note"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">note</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
+                        )
+                        .unwrap();
+                    }
                 }
                 _ => {
                     // Route the raw token through the inline parser so known
@@ -3821,7 +3870,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '21'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '22'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));

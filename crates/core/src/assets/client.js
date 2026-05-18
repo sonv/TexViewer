@@ -1397,6 +1397,25 @@
       setTopbarHidden(!topbarHidden, true);
       return;
     }
+    // Sidenote chip (\SV / \AB / \sidenote) — toggle its content
+    // visibility. Uses aria-expanded on the button + hidden on the
+    // content span + a data-open flag on the wrapper so CSS can
+    // re-style the marker as a tab header when expanded.
+    var sidenoteMarker = e.target.closest('.sidenote-marker');
+    if (sidenoteMarker) {
+      e.preventDefault();
+      var wrap = sidenoteMarker.closest('.sidenote');
+      var contentId = sidenoteMarker.getAttribute('aria-controls');
+      var content = contentId ? document.getElementById(contentId) : null;
+      var open = sidenoteMarker.getAttribute('aria-expanded') !== 'true';
+      sidenoteMarker.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (wrap) wrap.setAttribute('data-open', open ? 'true' : 'false');
+      if (content) {
+        if (open) content.removeAttribute('hidden');
+        else content.setAttribute('hidden', '');
+      }
+      return;
+    }
     var sideToggle = e.target.closest('#side-toggle');
     if (sideToggle) {
       setSideOpen(!currentSideOpen, true);
@@ -1823,7 +1842,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '21';
+  var WS_PROTOCOL_VERSION = '22';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

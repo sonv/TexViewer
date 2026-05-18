@@ -678,6 +678,59 @@ details.warnings {
   font-size: 13px;
 }
 details.warnings summary { cursor: pointer; }
+/* Sidenotes from \SV / \AB / \sidenote. Float to the right gutter of
+   the page so they read as marginalia rather than disrupting prose
+   flow. Closed: a compact accent-coloured pill with just the label.
+   Open: expands to show the content underneath the label. The body
+   is `display: none` while collapsed so the floated box stays tight. */
+.sidenote {
+  float: right;
+  clear: right;
+  width: 220px;
+  margin: 4px 0 6px 14px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 11px;
+  background: #fff8e1;
+  border: 1px solid #f0d97a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.sidenote-marker {
+  display: block;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  padding: 3px 8px;
+  background: transparent;
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  color: #6a4e00;
+}
+.sidenote-marker:hover { background: rgba(0, 0, 0, 0.03); }
+.sidenote[data-open="true"] .sidenote-marker {
+  border-bottom: 1px solid #f0d97a;
+}
+.sidenote-content {
+  display: block;
+  padding: 6px 9px;
+  font-family: 'Latin Modern Roman', 'CMU Serif', 'STIX Two Text', Georgia, serif;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fg);
+  background: #fffdf3;
+}
+/* Style the three command flavours subtly so SV vs AB vs sidenote
+   are visually distinguishable in a cluster. */
+.sidenote-sv { background: #ecf6e6; border-color: #b6d9a3; }
+.sidenote-sv .sidenote-marker { color: #2a5a13; }
+.sidenote-sv[data-open="true"] .sidenote-marker { border-bottom-color: #b6d9a3; }
+.sidenote-sv .sidenote-content { background: #f7fbf4; }
+.sidenote-ab { background: #e7f1f5; border-color: #95c3d3; }
+.sidenote-ab .sidenote-marker { color: #1a4d63; }
+.sidenote-ab[data-open="true"] .sidenote-marker { border-bottom-color: #95c3d3; }
+.sidenote-ab .sidenote-content { background: #f5fafd; }
+
 aside#margin { display: none; }
 
 /* The margin column. Sized so most display equations fit without
