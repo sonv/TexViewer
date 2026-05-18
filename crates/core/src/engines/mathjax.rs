@@ -69,18 +69,44 @@ impl MathEngine for MathJaxEngine {
 /// authors who declare their own `\newcommand{\given}{...}` cleanly in
 /// the preamble override these because user macros are emitted later in
 /// the JSON object (last-key-wins).
-const FALLBACK_MACROS: &[(&str, &str, u8)] = &[
+/// Fallback macro entry: (name, body, total_args, optional_default).
+/// When `optional_default` is `Some(default)`, the FIRST of `total_args`
+/// is the optional `[...]` argument; the remaining `total_args - 1` are
+/// required `{...}` arguments. Mirrors MathJax's `tex.macros` shape.
+type FallbackMacro = (&'static str, &'static str, u8, Option<&'static str>);
+
+const FALLBACK_MACROS: &[FallbackMacro] = &[
     // `\given` and `\st` from `svmacro.sty` style packages — typically
     // used as the spaced pipe in `P(A \given B)` / `\{x \st x > 0\}`.
-    ("given", r"\,|\,", 0),
-    ("st", r"\,|\,", 0),
+    ("given", r"\,|\,", 0, None),
+    ("st", r"\,|\,", 0, None),
     // `\underaccent` from the `accents` package: no MathJax extension,
     // but `\underset` is the nearest pure-MathJax fit.
-    ("underaccent", r"\underset{#1}{#2}", 2),
+    ("underaccent", r"\underset{#1}{#2}", 2, None),
     // `\xspace` is a no-op in math contexts.
-    ("xspace", r"", 0),
+    ("xspace", r"", 0, None),
     // `\defeq` (svmacro / mathtools-style) — render as a stylized `:=`.
-    ("defeq", r"\stackrel{\scriptscriptstyle\mathrm{def}}{=}", 0),
+    (
+        "defeq",
+        r"\stackrel{\scriptscriptstyle\mathrm{def}}{=}",
+        0,
+        None,
+    ),
+    // Sidenote / annotation commands authors use for review comments:
+    //   `\sidenote[opts]{text}` from a typical svmacro.sty / tcolorbox
+    //   bridge. The wrapping `\SV{n}{text}` / `\AB{n}{text}` macros (also
+    //   from svmacro.sty) extract fine but their bodies call `\sidenote`,
+    //   so stubbing `\sidenote` to render as empty makes the whole
+    //   annotation invisible in the viewer — the right call for live
+    //   preview where author-private review notes are noise.
+    ("sidenote", r"", 2, Some("")),
+    // Edit-tracking commands from marktext-style packages: render only
+    // the post-edit text (`\add` shows what was added; `\replace{a}{b}`
+    // shows `b`; `\remove{...}` hides the deletion entirely).
+    ("add", r"#1", 1, None),
+    ("remove", r"", 1, None),
+    ("highlight", r"#1", 1, None),
+    ("replace", r"#2", 2, None),
 ];
 
 fn mathjax_config(preamble: &ExtractedPreamble) -> String {
@@ -105,8 +131,8 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
         };
     // Built-in fallbacks first; user-extracted macros below override on
     // matching keys (JS object literals: last key wins).
-    for (name, body, n_args) in FALLBACK_MACROS {
-        write_entry(&mut macros, name, body, *n_args, None);
+    for (name, body, n_args, default) in FALLBACK_MACROS {
+        write_entry(&mut macros, name, body, *n_args, *default);
     }
     for m in preamble.macros.iter() {
         write_entry(
