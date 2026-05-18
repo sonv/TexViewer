@@ -205,7 +205,11 @@ body.topbar-hidden .topbar { display: none; }
 .side-panel {
   position: fixed;
   left: 16px;
-  top: 58px;
+  /* Start below the floating toc toggle pill (at top: 52px, ~22 px
+     tall, with hover growing it to ~26 px) so the panel doesn't tuck
+     UNDER the button. Same offset regardless of topbar state — the
+     toc pill stays at top: 52px in both states. */
+  top: 86px;
   bottom: 16px;
   width: 236px;
   display: flex;
@@ -219,7 +223,6 @@ body.topbar-hidden .topbar { display: none; }
   transform: translateX(0);
   transition: transform 0.16s ease;
 }
-body.topbar-hidden .side-panel { top: 16px; }
 body.side-panel-closed .side-panel { transform: translateX(calc(-100% - 24px)); }
 .side-tabs {
   display: grid;
