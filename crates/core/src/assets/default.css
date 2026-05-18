@@ -628,7 +628,11 @@ body.margin-mode aside#margin {
   position: fixed;
   top: 60px;
   right: 16px;
-  width: 300px;
+  /* Sized so most display equations fit without horizontal overflow on a
+     normal laptop screen. Equations wider than this still scroll inside
+     the card via `overflow-x: auto`. */
+  width: min(540px, 36vw);
+  min-width: 320px;
   max-height: calc(100vh - 80px);
   overflow-y: auto;
   z-index: 100;
