@@ -1275,18 +1275,7 @@
     if (head) {
       head.closest('.proof').classList.toggle('folded');
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
-      return;
     }
-
-    // Plain click on rendered text falls through to inverse source search.
-    // Earlier handlers (toolbar, math focus, links, side tabs, proof fold)
-    // all `return` before reaching here, so this fires only for clicks on
-    // prose / refs / cites / etc. with a `data-src` ancestor that wasn't
-    // otherwise wired up. An active text selection is preserved: if the
-    // user just finished a drag-select, we don't jump and surprise them.
-    var sel = window.getSelection && window.getSelection();
-    if (sel && !sel.isCollapsed) return;
-    requestSourceJump(e);
   });
   document.addEventListener('keydown', function(e) {
     var searchInput = searchInputEl();
