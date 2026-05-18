@@ -1546,14 +1546,19 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         let id = format!("sn-{}", ctx.sidenote_counter);
                         let content_id = format!("{id}-content");
                         let content = render_latex_text_with_math(&call.arg, ctx.labels);
+                        // Register the chip in the sync index so editor cursor
+                        // movement within the `\sidenote{...}` source range
+                        // highlights / scrolls to the rendered chip.
+                        record_container(ctx, &id, &n.span, None);
+                        let src_attr = data_src(&n.span);
                         write!(
                             out,
-                            r#"<span class="sidenote sidenote-note" id="{id}" data-label="note"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">note</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
+                            r#"<span class="sidenote sidenote-note" id="{id}" data-src="{src_attr}" data-label="note"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">note</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
                         )
                         .unwrap();
                     }
                 }
-                _ if ctx.preamble.sidenote_wrappers.iter().any(|n| n == name) => {
+                _ if ctx.preamble.sidenote_wrappers.iter().any(|w| w == name) => {
                     // User wrapper around `\sidenote`. Optional bracket arg
                     // becomes the chip's secondary label (typical author
                     // pattern: `\SV[2025-05-18]{...}` for a dated review
@@ -1570,9 +1575,14 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         let label_html = escape_html(&label);
                         let content_id = format!("{id}-content");
                         let content = render_latex_text_with_math(&call.arg, ctx.labels);
+                        // Register the chip in the sync index so editor cursor
+                        // movement within the `\SV{...}` / `\AB{...}` source
+                        // range highlights / scrolls to the rendered chip.
+                        record_container(ctx, &id, &n.span, None);
+                        let src_attr = data_src(&n.span);
                         write!(
                             out,
-                            r#"<span class="sidenote sidenote-{kind}" id="{id}" data-label="{label_attr}"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">{label_html}</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
+                            r#"<span class="sidenote sidenote-{kind}" id="{id}" data-src="{src_attr}" data-label="{label_attr}"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">{label_html}</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
                         )
                         .unwrap();
                     }
@@ -3869,7 +3879,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '24'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '25'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));
