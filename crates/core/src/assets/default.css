@@ -732,7 +732,12 @@ body.margin-mode .sidenote {
 .sidenote[data-open="true"] .sidenote-marker {
   border-bottom: 1px solid #f0d97a;
 }
-.sidenote-content {
+/* Default: hidden. Author CSS `display: block` would otherwise beat the
+   `hidden` attribute (UA stylesheet) and leave the content always
+   visible regardless of the open/close click. Drive visibility off
+   the `data-open` flag on the wrapper instead. */
+.sidenote-content { display: none; }
+.sidenote[data-open="true"] .sidenote-content {
   display: block;
   padding: 6px 9px;
   font-family: 'Latin Modern Roman', 'CMU Serif', 'STIX Two Text', Georgia, serif;

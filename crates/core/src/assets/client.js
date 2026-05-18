@@ -1024,43 +1024,65 @@
     if (navNeedsPages) rebuildPageGuides();
     navNeedsIndex = false;
     navNeedsPages = false;
-    layoutSidenotes();
+    scheduleSidenoteLayout();
   }
 
-  /// Stack overlapping sidenote chips.
+  /// Stack overlapping sidenote chips dynamically.
   ///
-  /// `\AB{...}` and `\SV[date]{...}` placed next to each other in the
-  /// source share an inline static-position (same line), so the
-  /// absolutely-positioned chips land at the same y-coordinate and
-  /// overlay one another. CSS `margin-top` on adjacent siblings can't
-  /// fix this because static-position computation ignores margins of
-  /// siblings.
+  /// `\AB{...}` and `\SV[date]{...}` next to each other in the source
+  /// share the same inline static-position, so the absolutely-positioned
+  /// chips land at the same y-coordinate and overlay one another. CSS
+  /// `margin-top` on adjacent siblings can't fix this — static-position
+  /// computation ignores sibling margins for inline-blocks on the same
+  /// line.
   ///
-  /// JS post-pass: walk all chips in document order, group by
-  /// `offsetTop`, and apply a `transform: translateY()` offset to
-  /// each chip after the first in a group so they stack vertically.
-  /// Called from `refreshNavigation` (i.e., after every patch + on
-  /// initial load + on resize) so the offsets stay current as
-  /// content moves.
+  /// Algorithm: group chips by their natural `offsetTop`. Inside each
+  /// group, walk in document order and translateY each subsequent chip
+  /// by the cumulative height of the chips that precede it in the same
+  /// group plus a small gap. Heights are read AFTER resetting transforms
+  /// so we measure the chip's true rendered height — which differs
+  /// between collapsed (~24 px) and expanded (variable) states.
   function layoutSidenotes() {
     var chips = document.querySelectorAll('main#page .sidenote');
     if (!chips.length) return;
-    // Reset transforms first so a re-layout doesn't compound.
+    // Reset transforms first so offsetHeight measures the natural box.
     for (var i = 0; i < chips.length; i++) {
       chips[i].style.transform = '';
     }
-    var seen = new Map();
+    // Group by static-position top.
+    var groups = new Map();
     for (var j = 0; j < chips.length; j++) {
       var chip = chips[j];
       var top = chip.offsetTop;
-      var n = seen.get(top) || 0;
-      if (n > 0) {
-        // Each subsequent chip on the same static y-line sits below the
-        // previous one with a small gap.
-        chip.style.transform = 'translateY(' + (n * 28) + 'px)';
-      }
-      seen.set(top, n + 1);
+      if (!groups.has(top)) groups.set(top, []);
+      groups.get(top).push(chip);
     }
+    // Stack chips within each group, offsetting by ACTUAL height of
+    // the preceding chips so an expanded chip pushes the next one
+    // further down.
+    var gap = 4;
+    groups.forEach(function(group) {
+      var dy = 0;
+      for (var k = 0; k < group.length; k++) {
+        if (dy > 0) {
+          group[k].style.transform = 'translateY(' + dy + 'px)';
+        }
+        dy += group[k].offsetHeight + gap;
+      }
+    });
+  }
+
+  /// Run `layoutSidenotes` on the next animation frame.
+  /// Coalesces several invocations (e.g., toggling multiple chips
+  /// quickly) into one re-layout.
+  var sidenoteLayoutScheduled = false;
+  function scheduleSidenoteLayout() {
+    if (sidenoteLayoutScheduled) return;
+    sidenoteLayoutScheduled = true;
+    requestAnimationFrame(function() {
+      sidenoteLayoutScheduled = false;
+      layoutSidenotes();
+    });
   }
 
   function scheduleNavigationRefresh(delay, includeIndex) {
@@ -1479,6 +1501,9 @@
         if (open) content.removeAttribute('hidden');
         else content.setAttribute('hidden', '');
       }
+      // Toggling a chip changes its height; re-stack so following chips
+      // in the same source-line group reposition.
+      scheduleSidenoteLayout();
       // Also fire inverse search so nvim jumps to the `\SV{...}` /
       // `\AB{...}` / `\sidenote{...}` source line at the same time. The
       // chip wrapper carries `data-src` (added with the recent sync-index
