@@ -619,4 +619,99 @@ details.warnings {
   font-size: 13px;
 }
 details.warnings summary { cursor: pointer; }
-aside#margin { display: none; /* populated in Step 4 */ }
+aside#margin { display: none; }
+
+body.margin-mode aside#margin {
+  display: block;
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  width: 300px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  z-index: 100;
+  padding-right: 4px;
+}
+
+body.topbar-hidden.margin-mode aside#margin {
+  top: 16px;
+  max-height: calc(100vh - 32px);
+}
+
+.margin-card {
+  background: #fff;
+  border: 1px solid var(--rule, #ddd);
+  border-radius: 4px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  font-size: 13.5px;
+  line-height: 1.5;
+  animation: margin-card-in 180ms ease-out;
+}
+.margin-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule, #eee);
+}
+.margin-card-title {
+  font-size: 12px;
+  color: var(--muted, #666);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+.margin-card-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted, #888);
+  padding: 0 4px;
+}
+.margin-card-close:hover { color: #000; }
+.margin-card-body { font-size: 13.5px; }
+.margin-card-body .blk { padding: 0; }
+.margin-card-body .thm,
+.margin-card-body .proof,
+.margin-card-body .bib-entry {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.margin-card-body .math.display { margin: 0.4em 0; }
+
+@keyframes margin-card-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.hover-preview {
+  position: fixed;
+  z-index: 200;
+  background: #fff;
+  border: 1px solid var(--rule, #ccc);
+  border-radius: 4px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  font-size: 13px;
+  line-height: 1.4;
+  max-width: 360px;
+  max-height: 240px;
+  overflow: auto;
+  pointer-events: none;
+  animation: hover-preview-in 100ms ease-out;
+}
+.hover-preview .proof { display: none; }
+.hover-preview .blk { padding: 0; }
+.hover-preview .thm,
+.hover-preview .bib-entry { margin: 0; padding: 0; border: none; }
+@keyframes hover-preview-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.ref:hover, .cite:hover { cursor: pointer; }

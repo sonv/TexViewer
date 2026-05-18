@@ -110,6 +110,14 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - `keys` toggles LaTeX refkeys for labeled sections, theorem boxes,
   floats, display equations, and loose labels. Visible keys sit in the
   page margin, and multi-row displays show row-level keys.
+- `margin` toggles a right-hand column of pinned reference cards. With
+  margin mode on, clicking a `\ref` or `\cite` link pins the referenced
+  theorem / equation / bibliography entry into the margin (typeset
+  MathJax preserved) instead of scrolling to the anchor; click again to
+  unpin, or use the `×` button on the card. Hovering any `\ref` /
+  `\cite` for ~250 ms shows a quick floating preview regardless of
+  margin mode — the preview omits proofs so you see the statement
+  alone.
 - `restart` calls `POST /restart`, relaunches the daemon with the same
   command-line arguments, polls until the replacement server is ready,
   then reloads the page.
@@ -283,12 +291,46 @@ The `client.js` and `default.css` files are pulled into the Rust binary via
 `include_str!`, so editing them is just editing the file — no Rust string
 escaping, full editor support, and lint-friendly.
 
+## Roadmap
+
+Ordered roughly by what we plan to tackle next. ↻ marks the in-progress
+item; ◯ marks queued items. See `DESIGN.md` for the full backlog.
+
+- **✓ Margin reference cards (first pass).** Toolbar `margin` button
+  enables a right-hand column; clicking `\ref` / `\cite` pins the
+  referenced statement (with typeset MathJax intact) into the margin,
+  click again to unpin. Hover any reference for a quick preview without
+  enabling margin mode. Nested expansion (clicking a ref inside a margin
+  card) and explicit popup mode are still ahead.
+- **◯ Split client.js and renderer.rs.** After the recent Rebuild /
+  cross-range transplant work, `client.js` is ~1800 lines doing ten
+  different things and `renderer.rs` is 3825 lines. Both still work — just
+  dense. Splitting them into focused modules concatenated via
+  `include_str!` keeps the file tree readable and lets future engines plug
+  in along the boundaries the engine seam already exposed.
+- **◯ Multi-buffer chapter editing.** `POST /buffer` only accepts the root
+  file's content. Editing an `\input`-ed `chapter1.tex` in nvim doesn't
+  live-update because the daemon ignores buffer pushes for non-root files.
+  Fix is a per-file buffer map on the daemon plus the nvim plugin sending
+  each buffer keyed by path.
+- **◯ Trim vendored MathJax further.** Current vendor bundle is ~5 MB
+  after removing the alternate output / input engines we never load. The
+  font-shard set (es5/output/svg/fonts/tex/) could be further audited
+  against the actual macro/package usage to drop unused shards.
+- **◯ SyncTeX-precision source sync.** Editor-cursor ↔ preview jumps work
+  at source-word granularity for prose and element granularity for math
+  and refs. Full SyncTeX-style precision for exact display rows or
+  glyph-level positions is still future work.
+- **◯ CI: GitHub Actions.** `cargo fmt --check`, `cargo clippy -D
+  warnings`, `cargo test`, `npm run lint`, and a headless nvim plugin
+  smoke test. No `.github/workflows/` today.
+- **◯ Browser-level interaction tests.** Today's regression coverage is
+  cargo tests + eslint. A small headless-browser harness (Playwright) on
+  the rendered shell would catch CSS regressions, toolbar interactions,
+  and cross-tab WS reconnect flows that the unit tests can't see.
+
 ## What's not done yet
 
-- **Higher-precision source sync.** Editor-cursor ↔ preview jumps work at
-  source-word granularity for prose and element granularity for math/refs.
-  Full SyncTeX-style precision for exact display rows or glyph-level
-  positions is still future work.
 - **Margin/popup cross-references.** Clicking a ref currently jumps to
   the target via `<a href="#id">`. The "pin into the margin" interaction
   from DESIGN §8 isn't built.

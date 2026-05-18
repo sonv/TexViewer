@@ -4,6 +4,11 @@
   var currentPageMode = 'a4';
   var currentSideOpen = false;
   var refkeysVisible = false;
+  var marginMode = false;
+  var pinnedRefs = new Map();
+  var hoverPreviewTimer = 0;
+  var hoverPreviewEl = null;
+  var hoverPreviewSource = null;
   var topbarHidden = false;
   var navRefreshTimer = 0;
   var activePageTimer = 0;
@@ -646,6 +651,164 @@
     }
   }
 
+  function setMarginMode(on, persist) {
+    marginMode = !!on;
+    document.body.classList.toggle('margin-mode', marginMode);
+    var btn = document.getElementById('margin-toggle');
+    if (btn) {
+      btn.classList.toggle('active', marginMode);
+      btn.setAttribute('aria-pressed', marginMode ? 'true' : 'false');
+    }
+    if (persist) {
+      try { localStorage.setItem('mathpreview.marginMode', marginMode ? '1' : '0'); } catch (e) {}
+    }
+    if (!marginMode) closeAllMarginCards();
+  }
+
+  function marginEl() { return document.getElementById('margin'); }
+
+  function closeAllMarginCards() {
+    var m = marginEl();
+    if (m) m.innerHTML = '';
+    pinnedRefs.clear();
+  }
+
+  /// Returns the rendered DOM element referenced by a `<a class="ref|cite"
+  /// href="#...">` link. For citations the target is the `<dt>` of a bib
+  /// entry; we wrap it together with its `<dd>` sibling so the card shows
+  /// the full reference.
+  function resolveLinkTarget(link) {
+    var href = link.getAttribute('href') || '';
+    if (href.charAt(0) !== '#') return null;
+    var id = href.slice(1);
+    try { id = decodeURIComponent(id); } catch (e) {}
+    return document.getElementById(id);
+  }
+
+  function clonePreviewContent(link, target) {
+    // Citation: target is a <dt>, glue its <dd> sibling into the clone.
+    if (link.classList.contains('cite') && target.tagName === 'DT') {
+      var wrap = document.createElement('div');
+      wrap.className = 'bib-preview';
+      wrap.appendChild(target.cloneNode(true));
+      var dd = target.nextElementSibling;
+      if (dd && dd.tagName === 'DD') wrap.appendChild(dd.cloneNode(true));
+      return wrap;
+    }
+    return target.cloneNode(true);
+  }
+
+  function pinKeyFor(link) {
+    return link.getAttribute('data-target') ||
+           link.getAttribute('data-key') ||
+           link.getAttribute('href') || '';
+  }
+
+  function buildMarginCard(link, clone) {
+    var card = document.createElement('div');
+    card.className = 'margin-card';
+    card.dataset.pinKey = pinKeyFor(link);
+
+    var head = document.createElement('div');
+    head.className = 'margin-card-header';
+    var title = document.createElement('span');
+    title.className = 'margin-card-title';
+    title.textContent = (link.textContent || '').trim();
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'margin-card-close';
+    close.setAttribute('aria-label', 'unpin');
+    close.title = 'unpin';
+    close.textContent = '×';
+    head.appendChild(title);
+    head.appendChild(close);
+
+    var body = document.createElement('div');
+    body.className = 'margin-card-body';
+    body.appendChild(clone);
+
+    card.appendChild(head);
+    card.appendChild(body);
+    return card;
+  }
+
+  function togglePinReference(link) {
+    var key = pinKeyFor(link);
+    if (!key) return;
+    if (pinnedRefs.has(key)) {
+      var existing = pinnedRefs.get(key);
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      pinnedRefs.delete(key);
+      return;
+    }
+    var target = resolveLinkTarget(link);
+    if (!target) return;
+    if (!marginMode) setMarginMode(true, true);
+    var clone = clonePreviewContent(link, target);
+    var card = buildMarginCard(link, clone);
+    var margin = marginEl();
+    if (!margin) return;
+    margin.appendChild(card);
+    pinnedRefs.set(key, card);
+  }
+
+  function isPinnableLink(target) {
+    if (!target || !target.closest) return null;
+    return target.closest('#page a.ref[href^="#"], #page a.cite[href^="#"]');
+  }
+
+  function hideHoverPreview() {
+    if (hoverPreviewTimer) {
+      clearTimeout(hoverPreviewTimer);
+      hoverPreviewTimer = 0;
+    }
+    if (hoverPreviewEl && hoverPreviewEl.parentNode) {
+      hoverPreviewEl.parentNode.removeChild(hoverPreviewEl);
+    }
+    hoverPreviewEl = null;
+    hoverPreviewSource = null;
+  }
+
+  function positionHoverPreview(el, anchor) {
+    var rect = anchor.getBoundingClientRect();
+    var pad = 8;
+    el.style.left = '0px';
+    el.style.top = '0px';
+    var pw = el.offsetWidth;
+    var ph = el.offsetHeight;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var left = Math.min(rect.left, vw - pw - pad);
+    var top = rect.bottom + 4;
+    if (top + ph + pad > vh) top = Math.max(pad, rect.top - ph - 4);
+    if (left < pad) left = pad;
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+  }
+
+  function showHoverPreviewFor(link) {
+    hideHoverPreview();
+    var target = resolveLinkTarget(link);
+    if (!target) return;
+    var clone = clonePreviewContent(link, target);
+    var box = document.createElement('div');
+    box.className = 'hover-preview';
+    box.appendChild(clone);
+    document.body.appendChild(box);
+    positionHoverPreview(box, link);
+    hoverPreviewEl = box;
+    hoverPreviewSource = link;
+  }
+
+  function scheduleHoverPreview(link) {
+    if (hoverPreviewSource === link && hoverPreviewEl) return;
+    if (hoverPreviewTimer) clearTimeout(hoverPreviewTimer);
+    hoverPreviewTimer = setTimeout(function() {
+      hoverPreviewTimer = 0;
+      showHoverPreviewFor(link);
+    }, 250);
+  }
+
   function setTopbarHidden(hidden, persist) {
     topbarHidden = !!hidden;
     document.body.classList.toggle('topbar-hidden', topbarHidden);
@@ -1188,6 +1351,18 @@
   document.addEventListener('dblclick', function(e) {
     requestSourceJump(e);
   });
+  document.addEventListener('mouseover', function(e) {
+    var link = isPinnableLink(e.target);
+    if (link) scheduleHoverPreview(link);
+  });
+  document.addEventListener('mouseout', function(e) {
+    var link = isPinnableLink(e.target);
+    if (!link) return;
+    var related = e.relatedTarget;
+    if (related && link.contains(related)) return;
+    hideHoverPreview();
+  });
+  document.addEventListener('scroll', hideHoverPreview, { passive: true });
   document.addEventListener('click', function(e) {
     var restart = e.target.closest('#server-restart');
     if (restart) {
@@ -1225,7 +1400,32 @@
       setRefkeysVisible(!refkeysVisible, true);
       return;
     }
+    var marginToggle = e.target.closest('#margin-toggle');
+    if (marginToggle) {
+      setMarginMode(!marginMode, true);
+      return;
+    }
+    var marginClose = e.target.closest('.margin-card-close');
+    if (marginClose) {
+      var card = marginClose.closest('.margin-card');
+      if (card) {
+        var key = card.dataset.pinKey;
+        if (key && pinnedRefs.has(key)) pinnedRefs.delete(key);
+        if (card.parentNode) card.parentNode.removeChild(card);
+      }
+      return;
+    }
     if ((e.altKey || e.metaKey) && requestSourceJump(e)) {
+      return;
+    }
+    // In margin mode, plain click on a \ref or \cite pins it to the
+    // margin column instead of scrolling to the anchor. Off-mode keeps
+    // the existing scroll-to-anchor behavior (handled below).
+    var pinnable = isPinnableLink(e.target);
+    if (pinnable && marginMode) {
+      e.preventDefault();
+      hideHoverPreview();
+      togglePinReference(pinnable);
       return;
     }
     var clickedMath = e.target.closest('.math[data-tex]');
@@ -1610,7 +1810,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '19';
+  var WS_PROTOCOL_VERSION = '20';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -1758,12 +1958,14 @@
     var storedSideOpen = localStorage.getItem('mathpreview.sideOpen');
     setSideOpen(storedSideOpen === null ? window.innerWidth > 1340 : storedSideOpen === '1', false);
     setRefkeysVisible(localStorage.getItem('mathpreview.refkeys') === '1', false);
+    setMarginMode(localStorage.getItem('mathpreview.marginMode') === '1', false);
     setTopbarHidden(localStorage.getItem('mathpreview.topbarHidden') === '1', false);
   } catch (e) {
     setPageMode('a4');
     setSideTab('index');
     setSideOpen(window.innerWidth > 1340, false);
     setRefkeysVisible(false, false);
+    setMarginMode(false, false);
     setTopbarHidden(false, false);
   }
   scheduleNavigationRefresh();

@@ -794,6 +794,7 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
     <button data-page-mode="dynamic" type="button">dynamic</button>
   </span>
   <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
+  <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
   <button class="server-restart" id="server-restart" type="button" title="restart preview server">restart</button>
   <button class="server-stop" id="server-stop" type="button" title="stop preview server">stop</button>
   <span class="proof-toggle" data-mode="all">
@@ -3764,7 +3765,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '19'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '20'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));
