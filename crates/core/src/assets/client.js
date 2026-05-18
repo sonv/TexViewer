@@ -1458,12 +1458,60 @@
     var needTypeset = [];
     var reusedMath = 0, totalMath = 0;
     var replacedBlocks = 0, insertedBlocks = 0, removedBlocks = 0;
-    var detachPage = ops.length > 8;
+    var reusedBlocks = 0;
+    var hasRebuild = ops.some(function(op) { return op.type === 'rebuild'; });
+    var detachPage = ops.length > 8 || hasRebuild;
     var pageParent = detachPage ? page.parentNode : null;
     var pageNextSibling = detachPage ? page.nextSibling : null;
     if (pageParent) pageParent.removeChild(page);
     var oldGuideLayer = page.querySelector('.page-guide-layer');
     if (oldGuideLayer) oldGuideLayer.remove();
+
+    // PRE-SCAN: index math from every block that any op will drop, into a
+    // single shared pool. This lets math that "moves" between distant
+    // range ops (e.g. across two disjoint edits) transplant instead of
+    // re-typesetting, and it gives a rebuild plan's html-slots access to
+    // math from any non-reused block in the rebuilt slice.
+    var initialBlocks = pageBlocks(page);
+    var sharedOldByHash = new Map();
+    for (var k = 0; k < ops.length; k++) {
+      var pop = ops[k];
+      if (pop.type === 'range') {
+        var rStart = Math.max(0, Math.min(pop.index || 0, initialBlocks.length));
+        var rRemove = Math.max(0, Math.min(pop.remove || 0, initialBlocks.length - rStart));
+        for (var r = 0; r < rRemove; r++) {
+          var rb = initialBlocks[rStart + r];
+          if (rb) indexMathByHash(rb, sharedOldByHash);
+        }
+      } else if (pop.type === 'rebuild') {
+        var rebuildReused = new Set();
+        (pop.plan || []).forEach(function(slot) {
+          if (typeof slot.src === 'number') rebuildReused.add(slot.src);
+        });
+        for (var s = 0; s < (pop.old_count || 0); s++) {
+          var srcIdx = (pop.start || 0) + s;
+          if (!rebuildReused.has(srcIdx)) {
+            var sb = initialBlocks[srcIdx];
+            if (sb) indexMathByHash(sb, sharedOldByHash);
+          }
+        }
+      }
+    }
+
+    function transplantMath(scope) {
+      scope.querySelectorAll('.math[data-hash]').forEach(function(newEl) {
+        totalMath++;
+        var pool = sharedOldByHash.get(newEl.dataset.hash);
+        if (pool && pool.length > 0) {
+          var oldEl = pool.shift();
+          syncReusedMathNode(oldEl, newEl);
+          newEl.replaceWith(oldEl);
+          reusedMath++;
+        } else {
+          needTypeset.push(newEl);
+        }
+      });
+    }
 
     try {
       for (var i = 0; i < ops.length; i++) {
@@ -1474,25 +1522,10 @@
           var removeCount = Math.max(0, Math.min(op.remove || 0, blocks.length - start));
           var anchor = blocks[start + removeCount] || null;
 
-          var oldByHash = new Map();
-          for (var r = 0; r < removeCount; r++) indexMathByHash(blocks[start + r], oldByHash);
-
           tpl.innerHTML = op.html || '';
           var frag = tpl.content;
           var inserted = frag.querySelectorAll('.blk').length;
-          frag.querySelectorAll('.math[data-hash]').forEach(function(newEl) {
-            totalMath++;
-            var pool = oldByHash.get(newEl.dataset.hash);
-            if (pool && pool.length > 0) {
-              var oldEl = pool.shift();
-              syncReusedMathNode(oldEl, newEl);
-              newEl.replaceWith(oldEl);
-              reusedMath++;
-            } else {
-              needTypeset.push(newEl);
-            }
-          });
-          clearRemovedMath(leftoverMath(oldByHash));
+          transplantMath(frag);
 
           for (var d = 0; d < removeCount; d++) {
             if (blocks[start + d] && blocks[start + d].parentNode === page) {
@@ -1505,8 +1538,47 @@
             insertedBlocks += inserted;
           }
           replacedBlocks += Math.min(removeCount, inserted);
+        } else if (op.type === 'rebuild') {
+          var rbBlocks = pageBlocks(page);
+          var rbStart = Math.max(0, Math.min(op.start || 0, rbBlocks.length));
+          var rbCount = Math.max(0, Math.min(op.old_count || 0, rbBlocks.length - rbStart));
+          var rbAnchor = rbBlocks[rbStart + rbCount] || null;
+
+          // Index the old slice by absolute src index so plan Reuse slots
+          // can pull the exact DOM subtree (preserving typeset MathJax).
+          var rbOldByIdx = new Map();
+          for (var s2 = 0; s2 < rbCount; s2++) {
+            var rbOld = rbBlocks[rbStart + s2];
+            if (rbOld) {
+              rbOldByIdx.set(rbStart + s2, rbOld);
+              rbOld.remove();
+              removedBlocks++;
+            }
+          }
+
+          (op.plan || []).forEach(function(slot) {
+            if (typeof slot.src === 'number') {
+              var b = rbOldByIdx.get(slot.src);
+              if (b) {
+                page.insertBefore(b, rbAnchor);
+                reusedBlocks++;
+                // Reused old block survived the detach above; count it back
+                // out of removedBlocks so the status pill stays honest.
+                removedBlocks--;
+              }
+            } else if (typeof slot.html === 'string') {
+              tpl.innerHTML = slot.html;
+              var children = Array.from(tpl.content.children);
+              children.forEach(function(c) {
+                transplantMath(c);
+                page.insertBefore(c, rbAnchor);
+                insertedBlocks++;
+              });
+            }
+          });
         }
       }
+      clearRemovedMath(leftoverMath(sharedOldByHash));
       syncPatchBlockMetadata(page, blocksMeta);
     } finally {
       if (pageParent) {
@@ -1520,8 +1592,9 @@
     var total = Math.round(performance.now() - tStart);
     setStatus('live',
       '● ' + total + 'ms · ' + replacedBlocks + 'r' +
+      (reusedBlocks ? '/=' + reusedBlocks : '') +
       (insertedBlocks ? '/+' + insertedBlocks : '') +
-      (removedBlocks ? '/-' + removedBlocks : '') +
+      (removedBlocks > 0 ? '/-' + removedBlocks : '') +
       ' / typeset ' + (needTypeset.length ? 'queued' : '0') +
       ' (' + needTypeset.length + ' math' +
       (reusedMath ? ', reused ' + reusedMath + '/' + totalMath : '') + ')' +
@@ -1537,7 +1610,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '18';
+  var WS_PROTOCOL_VERSION = '19';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

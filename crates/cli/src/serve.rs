@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "18";
+const WS_PROTOCOL_VERSION: &str = "19";
 
 #[derive(Clone)]
 struct AppState {
@@ -845,8 +845,19 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
     (op_count, kind)
 }
 
-/// One element of a block-level patch. Position-based: replace `remove`
-/// current blocks starting at `index` with the already-rendered `html`.
+/// One element of a block-level patch.
+///
+/// * `ReplaceRange` is the compact common case: replace `remove` blocks
+///   starting at `index` with the already-rendered `html`. The diff emits
+///   these in reverse-position order so the client can apply them
+///   sequentially without rebasing indices.
+/// * `Rebuild` covers the structural case the diff cannot encode as a
+///   sequence of disjoint ranges — typically when blocks have moved. It
+///   replaces a contiguous slice of `old_count` blocks (starting at
+///   `start`) with the layout described by `plan`, where each slot either
+///   reuses an existing block by absolute old-index (`Reuse`) or inserts a
+///   newly-rendered block (`Insert`). Reuse preserves the existing DOM
+///   subtree, so moved blocks keep their typeset MathJax SVG intact.
 #[derive(Debug)]
 enum PatchOp {
     ReplaceRange {
@@ -855,6 +866,19 @@ enum PatchOp {
         insert: usize,
         html: String,
     },
+    Rebuild {
+        start: usize,
+        old_count: usize,
+        plan: Vec<PlanSlot>,
+    },
+}
+
+#[derive(Debug)]
+enum PlanSlot {
+    /// Reuse the block at this absolute index in the old (pre-patch) layout.
+    Reuse(usize),
+    /// Insert a freshly-rendered block.
+    Insert(String),
 }
 
 impl PatchOp {
@@ -868,12 +892,36 @@ impl PatchOp {
             } => serde_json::json!({
                 "type": "range", "index": index, "remove": remove, "insert": insert, "html": html,
             }),
+            PatchOp::Rebuild {
+                start,
+                old_count,
+                plan,
+            } => {
+                let plan_json: Vec<_> = plan
+                    .iter()
+                    .map(|slot| match slot {
+                        PlanSlot::Reuse(src) => serde_json::json!({ "src": src }),
+                        PlanSlot::Insert(html) => serde_json::json!({ "html": html }),
+                    })
+                    .collect();
+                serde_json::json!({
+                    "type": "rebuild",
+                    "start": start,
+                    "old_count": old_count,
+                    "plan": plan_json,
+                })
+            }
         }
     }
 
     fn cost(&self) -> usize {
         match self {
             PatchOp::ReplaceRange { remove, insert, .. } => *remove + *insert,
+            // Rebuild cost = number of fresh inserts (reused blocks are essentially free).
+            PatchOp::Rebuild { plan, .. } => plan
+                .iter()
+                .filter(|slot| matches!(slot, PlanSlot::Insert(_)))
+                .count(),
         }
     }
 }
@@ -925,6 +973,59 @@ fn diff_blocks(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<PatchOp> {
 
     let alignment = lcs_align(old_mid, new_mid);
 
+    // Move detection: pair up unmatched-on-old with unmatched-on-new blocks
+    // that share a diff_hash (FIFO). Any such pair means the block content
+    // moved positions and can be reused via a Rebuild plan slot.
+    let lcs_old: std::collections::HashSet<usize> = alignment.iter().map(|&(o, _)| o).collect();
+    let lcs_new: std::collections::HashSet<usize> = alignment.iter().map(|&(_, n)| n).collect();
+    let mut move_to_old: HashMap<usize, usize> = HashMap::new();
+    {
+        let unmatched_old: Vec<usize> = (0..old_mid.len())
+            .filter(|i| !lcs_old.contains(i))
+            .collect();
+        let mut used_old: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for ni in (0..new_mid.len()).filter(|i| !lcs_new.contains(i)) {
+            let hash = &new_mid[ni].diff_hash;
+            for &oi in &unmatched_old {
+                if used_old.contains(&oi) {
+                    continue;
+                }
+                if &old_mid[oi].diff_hash == hash {
+                    move_to_old.insert(ni, oi);
+                    used_old.insert(oi);
+                    break;
+                }
+            }
+        }
+    }
+
+    if !move_to_old.is_empty() {
+        // Structural rearrangement detected. Emit a single Rebuild op
+        // covering the trimmed middle. Anchored (LCS) blocks and moved
+        // blocks become Reuse slots that preserve their DOM (and typeset
+        // MathJax). Truly-new blocks become Insert slots with rendered HTML.
+        let mut lcs_to_old: HashMap<usize, usize> = HashMap::new();
+        for &(oi, ni) in alignment.iter() {
+            lcs_to_old.insert(ni, oi);
+        }
+        let mut plan = Vec::with_capacity(new_mid.len());
+        for (ni, block) in new_mid.iter().enumerate() {
+            if let Some(&oi) = lcs_to_old.get(&ni) {
+                plan.push(PlanSlot::Reuse(prefix + oi));
+            } else if let Some(&oi) = move_to_old.get(&ni) {
+                plan.push(PlanSlot::Reuse(prefix + oi));
+            } else {
+                plan.push(PlanSlot::Insert(block.html.clone()));
+            }
+        }
+        return vec![PatchOp::Rebuild {
+            start: prefix,
+            old_count: old_mid.len(),
+            plan,
+        }];
+    }
+
+    // No moves: emit one ReplaceRange per non-LCS gap.
     let mut ops = Vec::new();
     let mut o = 0usize;
     let mut n = 0usize;
@@ -1201,7 +1302,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, is_buffer_renderable, is_latest_render_attempt,
-        websocket_needs_reload, AppState, PatchOp, WS_PROTOCOL_VERSION,
+        websocket_needs_reload, AppState, PatchOp, PlanSlot, WS_PROTOCOL_VERSION,
     };
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},
@@ -1330,6 +1431,70 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// End-to-end check: render a real LaTeX document with three sections,
+    /// then re-render with the sections in a different order.
+    ///
+    /// What we want: a single Rebuild op whose plan reuses every paragraph
+    /// body (and therefore every typeset math node inside them) verbatim
+    /// from the old layout. Section headers themselves rerender because
+    /// they contain auto-numbered counters (`\section` 1, 2, 3) that
+    /// genuinely change when sections move — but those headers carry no
+    /// math, so the cost is in the noise. The expensive parts (proofs,
+    /// equations, theorem statements) stay reused.
+    #[test]
+    fn rendered_section_swap_emits_rebuild_that_reuses_paragraph_bodies() {
+        let original = "\
+\\documentclass{article}
+\\begin{document}
+\\section{Alpha}
+First paragraph here.
+\\section{Beta}
+Second paragraph here.
+\\section{Gamma}
+Third paragraph here.
+\\end{document}
+";
+        let swapped = "\
+\\documentclass{article}
+\\begin{document}
+\\section{Gamma}
+Third paragraph here.
+\\section{Alpha}
+First paragraph here.
+\\section{Beta}
+Second paragraph here.
+\\end{document}
+";
+        let old = mathpreview_core::render_project_from_source(
+            &PathBuf::from("main.tex"),
+            original.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let new = mathpreview_core::render_project_from_source(
+            &PathBuf::from("main.tex"),
+            swapped.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let ops = diff_blocks(&old.blocks, &new.blocks);
+        assert_eq!(ops.len(), 1, "expected a single Rebuild for the reorder");
+        let PatchOp::Rebuild { plan, .. } = &ops[0] else {
+            panic!("expected Rebuild after section swap, got {:?}", ops[0]);
+        };
+        let reuses = plan
+            .iter()
+            .filter(|s| matches!(s, PlanSlot::Reuse(_)))
+            .count();
+        // Three paragraph bodies must be reused. (Section headers may
+        // rerender because their auto-numbers change.)
+        assert!(
+            reuses >= 3,
+            "expected at least three Reuse slots (one per paragraph body), got {reuses}: {plan:?}"
+        );
     }
 
     #[test]
@@ -1530,60 +1695,151 @@ mod tests {
         ));
     }
 
-    /// Reorder: swap two paragraphs. With no explicit `move` op, LCS emits a
-    /// remove + an insert against the still-anchored blocks. The unrelated
-    /// surrounding blocks are not touched.
+    /// Reorder: swap two paragraphs. The diff now emits a single Rebuild op
+    /// whose plan consists entirely of Reuse slots — no fresh HTML is sent
+    /// because every block in the new layout exists somewhere in the old
+    /// layout. This is the path that preserves typeset MathJax across moves.
     #[test]
-    fn reorder_emits_remove_and_insert_without_touching_neighbors() {
+    fn reorder_emits_rebuild_with_pure_reuse_slots() {
+        let old = vec![
+            rendered_block_with_diff("blk-1", "<p>A</p>", "A"),
+            rendered_block_with_diff("blk-2", "<p>B</p>", "B"),
+            rendered_block_with_diff("blk-3", "<p>C</p>", "C"),
+            rendered_block_with_diff("blk-4", "<p>D</p>", "D"),
+        ];
+        // Swap B and C.
+        let new = vec![
+            rendered_block_with_diff("blk-1", "<p>A</p>", "A"),
+            rendered_block_with_diff("blk-2", "<p>C</p>", "C"),
+            rendered_block_with_diff("blk-3", "<p>B</p>", "B"),
+            rendered_block_with_diff("blk-4", "<p>D</p>", "D"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1, "reorder should collapse to one Rebuild op");
+        let PatchOp::Rebuild {
+            start,
+            old_count,
+            plan,
+        } = &ops[0]
+        else {
+            panic!("expected Rebuild op, got {ops:?}");
+        };
+        // Prefix/suffix trim — A and D anchor at positions 0 and 3, so the
+        // rebuilt slice is just the middle two.
+        assert_eq!(*start, 1);
+        assert_eq!(*old_count, 2);
+        assert_eq!(plan.len(), 2);
+        // Both slots must be Reuse pointing back into the OLD slice; no
+        // fresh HTML is shipped over the wire.
+        for slot in plan {
+            assert!(
+                matches!(slot, PlanSlot::Reuse(_)),
+                "reorder should not emit any Insert slots: {plan:?}"
+            );
+        }
+        // The two reuse indices must be exactly the two old positions, but
+        // referenced in the new (swapped) order — i.e. they cover positions
+        // 1 and 2 of the old layout, not the same one twice.
+        let srcs: Vec<usize> = plan
+            .iter()
+            .filter_map(|s| {
+                if let PlanSlot::Reuse(i) = s {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut sorted = srcs.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![1, 2]);
+        assert_ne!(srcs, vec![1, 2], "expected swapped order, got {srcs:?}");
+    }
+
+    /// A section moves AND an unrelated paragraph is edited in the same
+    /// render. Both changes should be coalesced into a single Rebuild op —
+    /// the moved blocks become Reuse slots (preserving typeset math) and
+    /// the edited paragraph becomes an Insert slot with fresh HTML.
+    #[test]
+    fn move_plus_typo_emits_single_rebuild_with_mixed_plan() {
+        let old = vec![
+            rendered_block_with_diff("blk-1", "<p>head</p>", "head"),
+            rendered_block_with_diff("blk-2", "<p>typo</p>", "typo"),
+            rendered_block_with_diff("blk-3", "<sec>S</sec>", "section"),
+            rendered_block_with_diff("blk-4", "<p>body1</p>", "body1"),
+            rendered_block_with_diff("blk-5", "<p>tail</p>", "tail"),
+        ];
+        // Move "section" past "body1" AND fix the typo.
+        let new = vec![
+            rendered_block_with_diff("blk-1", "<p>head</p>", "head"),
+            rendered_block_with_diff("blk-2", "<p>fixed</p>", "fixed"),
+            rendered_block_with_diff("blk-3", "<p>body1</p>", "body1"),
+            rendered_block_with_diff("blk-4", "<sec>S</sec>", "section"),
+            rendered_block_with_diff("blk-5", "<p>tail</p>", "tail"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1);
+        let PatchOp::Rebuild { plan, .. } = &ops[0] else {
+            panic!("expected Rebuild op, got {ops:?}");
+        };
+        let inserts = plan
+            .iter()
+            .filter(|s| matches!(s, PlanSlot::Insert(_)))
+            .count();
+        let reuses = plan
+            .iter()
+            .filter(|s| matches!(s, PlanSlot::Reuse(_)))
+            .count();
+        // Exactly one fresh insert (the typo fix). The rest are reuse,
+        // including the moved section block.
+        assert_eq!(inserts, 1, "only the edited paragraph should be Insert");
+        assert!(
+            reuses >= 1,
+            "moved + anchored blocks should produce Reuse slots: {plan:?}"
+        );
+    }
+
+    /// Pure inserts/deletes/edits with no positional reuse must keep
+    /// emitting range ops — the Rebuild path costs more on the wire and
+    /// should only fire when there is something to reuse out of position.
+    #[test]
+    fn pure_inserts_and_deletes_do_not_trigger_rebuild() {
         let old = vec![
             rendered_block_with_diff("blk-1", "A", "A"),
             rendered_block_with_diff("blk-2", "B", "B"),
             rendered_block_with_diff("blk-3", "C", "C"),
-            rendered_block_with_diff("blk-4", "D", "D"),
         ];
-        // Swap B and C.
+        // Insert a new "X" between B and C; no moves.
         let new = vec![
             rendered_block_with_diff("blk-1", "A", "A"),
-            rendered_block_with_diff("blk-2", "C", "C"),
-            rendered_block_with_diff("blk-3", "B", "B"),
-            rendered_block_with_diff("blk-4", "D", "D"),
+            rendered_block_with_diff("blk-2", "B", "B"),
+            rendered_block_with_diff("blk-3", "X", "X"),
+            rendered_block_with_diff("blk-4", "C", "C"),
         ];
 
         let ops = diff_blocks(&old, &new);
-        // LCS picks ONE of {B, C} as the anchor and rewrites the other.
-        // Either way the unrelated A and D are untouched and total churn is
-        // 1 remove + 1 insert.
-        let total_remove: usize = ops
-            .iter()
-            .map(|PatchOp::ReplaceRange { remove, .. }| *remove)
-            .sum();
-        let total_insert: usize = ops
-            .iter()
-            .map(|PatchOp::ReplaceRange { insert, .. }| *insert)
-            .sum();
-        assert_eq!(total_remove, 1);
-        assert_eq!(total_insert, 1);
-        // The patch index must fall inside the swapped pair (1 or 2) and
-        // must never touch index 0 (A) or index 3 (D).
         for op in &ops {
-            let PatchOp::ReplaceRange { index, remove, .. } = op;
-            let start = *index;
-            let end = start + *remove;
-            assert!(start >= 1 && end <= 3, "patch touched neighbor: {op:?}");
+            assert!(
+                matches!(op, PatchOp::ReplaceRange { .. }),
+                "pure insert should stay on the range path, got Rebuild: {op:?}"
+            );
         }
     }
 
-    /// Reverse-order emission contract: if multiple ops are emitted, the
-    /// indices must be monotonically non-increasing so the client can apply
-    /// them sequentially against the live DOM without rebasing.
+    /// Reverse-order emission contract for the range path: when multiple
+    /// range ops are emitted, the indices must be monotonically
+    /// non-increasing so the client can apply them sequentially against the
+    /// live DOM without rebasing.
     #[test]
-    fn ops_are_emitted_in_reverse_position_order() {
+    fn range_ops_are_emitted_in_reverse_position_order() {
         let old: Vec<_> = (0..10)
             .map(|i| {
                 rendered_block_with_diff(&format!("blk-{i}"), &format!("o{i}"), &format!("h{i}"))
             })
             .collect();
-        // Edit blocks 1, 4, 7.
+        // Edit blocks 1, 4, 7. Hashes are all unique (no moves).
         let mut new = old.clone();
         new[1] = rendered_block_with_diff("blk-1", "n1", "h1-new");
         new[4] = rendered_block_with_diff("blk-4", "n4", "h4-new");
@@ -1593,7 +1849,10 @@ mod tests {
         assert_eq!(ops.len(), 3);
         let indices: Vec<usize> = ops
             .iter()
-            .map(|PatchOp::ReplaceRange { index, .. }| *index)
+            .map(|op| match op {
+                PatchOp::ReplaceRange { index, .. } => *index,
+                PatchOp::Rebuild { .. } => panic!("unexpected Rebuild in pure-edit case"),
+            })
             .collect();
         assert_eq!(indices, vec![7, 4, 1]);
     }
