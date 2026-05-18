@@ -639,12 +639,27 @@ body.margin-mode aside#margin {
   padding-right: 4px;
 }
 
-/* Shift the reading area left when margin mode is on so the fixed
-   margin column doesn't overlay the page content. Padding on the
-   `#page-shell` is the only attachment point — A4 mode centers within
-   its shell, dynamic mode flows to fill, both respect this padding. */
+/* Shift the entire #page-shell left when margin mode is on so the fixed
+   margin column doesn't overlay the page content. `#page-shell` is
+   normally centered with `margin: 28px auto 64px`; overriding to
+   `margin-left: 32px; margin-right: auto` pins the shell near the left
+   edge and lets the auto-right margin absorb the slack on the right
+   side, where the margin column floats. The shell's own width is
+   unchanged, so reading-column width does NOT shrink — the page just
+   moves to the left of where it used to sit. Works in both A4 (fixed
+   sheet width) and dynamic (flow-to-width) modes. */
 body.margin-mode #page-shell {
-  padding-right: calc(min(540px, 36vw) + 32px);
+  margin-left: 32px;
+  margin-right: auto;
+}
+/* On narrow viewports there isn't room for both the shell at its
+   default width and the margin column. Cap the shell's max-width in
+   dynamic mode so it stays clear of the margin column even on a
+   laptop screen. A4 mode keeps its fixed sheet width; on very narrow
+   windows the A4 sheet may sit underneath the margin column (the user
+   can hide the margin or switch to dynamic). */
+body.page-mode-dynamic.margin-mode #page-shell {
+  max-width: calc(100vw - min(540px, 36vw) - 80px);
 }
 /* Keep the restore-topbar pill from disappearing behind the margin
    column when both margin mode and topbar-hide are active. */
