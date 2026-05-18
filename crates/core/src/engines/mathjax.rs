@@ -21,8 +21,8 @@ use crate::macros::ExtractedPreamble;
 #[derive(Debug, Clone)]
 pub struct MathJaxEngine {
     /// URL or relative path the page should load MathJax from. Default points
-    /// at the jsdelivr CDN for quick browser checks; switch to a vendored
-    /// copy (e.g. `mathjax/es5/tex-svg.js`) for offline distribution.
+    /// at the jsdelivr CDN (`mathjax@4/tex-svg.js`) for quick browser checks;
+    /// switch to the vendored `/vendor/mathjax/tex-svg.js` for offline use.
     pub script_url: String,
 }
 
@@ -36,7 +36,7 @@ impl MathJaxEngine {
 
 impl Default for MathJaxEngine {
     fn default() -> Self {
-        Self::new("https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js")
+        Self::new("https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js")
     }
 }
 
@@ -178,13 +178,12 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
   svg: {{
     fontCache: 'global',
     // Auto-break long display equations at low-priority operators when the
-    // container is narrower than the rendered math. Kicks in for the margin
-    // column and the hover preview; a no-op on a wide main page because
-    // breaks only fire when the math actually overflows. Inline math is
-    // intentionally NOT reflowed (`inline: false`): wrapping `$x+y$` mid
-    // sentence reads worse than letting the surrounding paragraph wrap.
+    // container is narrower than the rendered math. With MathJax 4's
+    // improved linebreak heuristics this also handles inline math that
+    // overflows its paragraph width — useful for narrow margin previews
+    // and the sidenote chips.
     displayOverflow: 'linebreak',
-    linebreaks: {{ inline: false }}
+    linebreaks: {{ inline: true }}
   }},
   startup: {{ typeset: true }}
 }};"#,

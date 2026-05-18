@@ -678,22 +678,37 @@ details.warnings {
   font-size: 13px;
 }
 details.warnings summary { cursor: pointer; }
-/* Sidenotes from \SV / \AB / \sidenote. Float to the right gutter of
-   the page so they read as marginalia rather than disrupting prose
-   flow. Closed: a compact accent-coloured pill with just the label.
-   Open: expands to show the content underneath the label. The body
-   is `display: none` while collapsed so the floated box stays tight. */
+/* Sidenotes from \SV / \AB / \sidenote / any preamble-detected wrapper.
+   Positioned in the real right margin OUTSIDE the page text box, using
+   `position: absolute` against the relatively-positioned `main#page`.
+   Vertical anchor is `top` from inline flow; horizontal `left: 100%`
+   places the box just past the page's right edge with a small gap. */
 .sidenote {
-  float: right;
-  clear: right;
+  position: absolute;
+  left: 100%;
+  margin-left: 18px;
   width: 220px;
-  margin: 4px 0 6px 14px;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: 11px;
   background: #fff8e1;
   border: 1px solid #f0d97a;
   border-radius: 4px;
   overflow: hidden;
+  /* `display: inline-block; vertical-align: top;` keeps the chip
+     vertically aligned with its inline source position (browsers
+     resolve absolute-positioned-without-top to the static-position
+     y-coordinate, which matches the line the `\SV`/`\AB` was on). */
+  display: inline-block;
+  vertical-align: top;
+}
+/* When several sidenotes pile up at the same source position, stack
+   them vertically inside the same `position: absolute` lane by giving
+   each subsequent sibling a small downward offset. CSS-only stacking
+   isn't perfect — overlapping notes on the same line stay overlapped
+   — but for typical author usage (one note per paragraph or two)
+   this looks clean. */
+.sidenote + .sidenote {
+  margin-top: 26px;
 }
 .sidenote-marker {
   display: block;

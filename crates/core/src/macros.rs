@@ -70,6 +70,12 @@ pub struct ExtractedPreamble {
     pub author_details: Vec<FrontMatterAuthor>,
     /// `\date{…}` body.
     pub date: Option<String>,
+    /// User macro names whose body wraps `\sidenote[...]{...}` — e.g.
+    /// `\SV`, `\AB`, `\GI`, or any author-defined review/annotation
+    /// command following the same `\newcommand{\X}[2][]{\sidenote[...]{...}}`
+    /// pattern. The renderer picks these up and emits them as collapsible
+    /// margin chips instead of falling back to opaque LaTeX text.
+    pub sidenote_wrappers: Vec<String>,
 }
 
 /// Extract macros and package mappings for a loaded project.
@@ -434,6 +440,16 @@ impl Extractor {
         let authors: Vec<String> = author_details.iter().map(|a| a.name.clone()).collect();
         let author = authors.first().cloned();
         let date = extract_brace_arg(&metadata_src, r"\date");
+        // Any extracted user macro whose body wraps `\sidenote[...]{...}`
+        // (svmacro.sty's `\SV` / `\AB` and any author-defined equivalent
+        // like `\GI`) is a sidenote wrapper — the renderer treats them
+        // the same way as the bare `\sidenote` command.
+        let sidenote_wrappers: Vec<String> = self
+            .macros
+            .iter()
+            .filter(|m| m.body.trim_start().starts_with(r"\sidenote"))
+            .map(|m| m.name.clone())
+            .collect();
         ExtractedPreamble {
             macros: self.macros,
             packages_short,
@@ -447,6 +463,7 @@ impl Extractor {
             authors,
             author_details,
             date,
+            sidenote_wrappers,
         }
     }
 }

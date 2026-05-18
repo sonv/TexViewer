@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "22";
+const WS_PROTOCOL_VERSION: &str = "23";
 
 #[derive(Clone)]
 struct AppState {
@@ -260,10 +260,12 @@ async fn serve_asset(
     }
 }
 
-/// Compile-time path to the vendored MathJax bundle (`crates/cli/vendor/mathjax/es5/`).
-/// Resolved from `CARGO_MANIFEST_DIR` so the daemon finds the bundle whether it's run
-/// via `cargo run` or as a release binary in the same checkout.
-const MATHJAX_VENDOR_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/mathjax/es5");
+/// Compile-time path to the vendored MathJax bundle. MathJax 4 ships its
+/// bundles at the package root (no more `es5/` subdirectory like in v3).
+/// Resolved from `CARGO_MANIFEST_DIR` so the daemon finds the bundle
+/// whether it's run via `cargo run` or as a release binary in the same
+/// checkout.
+const MATHJAX_VENDOR_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/mathjax");
 
 async fn serve_vendor_mathjax(AxumPath(path): AxumPath<String>) -> Response {
     let Some(rel) = clean_asset_path(&path) else {
@@ -1551,6 +1553,7 @@ Second paragraph here.
                     authors: Vec::new(),
                     author_details: Vec::new(),
                     date: None,
+                    sidenote_wrappers: Vec::new(),
                 },
                 included_files: Vec::new(),
             })),
