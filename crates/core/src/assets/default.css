@@ -642,15 +642,15 @@ body.margin-mode aside#margin {
 }
 body.topbar-hidden.margin-mode aside#margin { top: 0; }
 
-/* Shift the entire #page-shell left only when at least one card is
-   pinned (`body.margin-has-cards`). Without that gate, enabling
-   margin mode while empty would slide the page off-center for no
-   visual reason — the reader wants the page centered until they
-   actually need the margin column. `margin-right` is set to exactly
-   the margin-column width so the shell butts up against the column
-   with no gap. */
+/* When at least one card is pinned (`body.margin-has-cards`), pin the
+   #page-shell against the margin column. `margin-right` is set to
+   exactly the column width so the shell's right edge meets the column's
+   left edge with no gap. `margin-left: auto` absorbs the remaining slack
+   on the LEFT instead of the right, so any empty space lives away from
+   the cards — the reading field reads as continuous with the margin
+   strip rather than floating in the middle of the viewport. */
 body.margin-mode.margin-has-cards #page-shell {
-  margin-left: 32px;
+  margin-left: auto;
   margin-right: min(540px, 36vw);
 }
 /* On narrow viewports there isn't room for both the shell at its
@@ -660,7 +660,7 @@ body.margin-mode.margin-has-cards #page-shell {
    the A4 sheet may sit underneath the margin column (the user can
    hide the margin or switch to dynamic). */
 body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
-  max-width: calc(100vw - min(540px, 36vw) - 64px);
+  max-width: calc(100vw - min(540px, 36vw) - 32px);
 }
 /* Keep the restore-topbar pill from disappearing behind the margin
    column when both margin mode and topbar-hide are active. */
