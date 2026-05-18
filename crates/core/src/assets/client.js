@@ -1494,26 +1494,13 @@
     // visibility. Uses aria-expanded on the button + hidden on the
     // content span + a data-open flag on the wrapper so CSS can
     // re-style the marker as a tab header when expanded.
-    var sidenoteMarker = e.target.closest('.sidenote-marker');
-    if (sidenoteMarker) {
+    // Click anywhere on a sidenote chip jumps nvim to the `\SV{...}` /
+    // `\AB{...}` / `\sidenote{...}` source line. There is no open/close
+    // anymore — chips are always expanded and their dynamic positions
+    // are recomputed by `layoutSidenotes` on every render/resize.
+    var sidenoteChip = e.target.closest('.sidenote');
+    if (sidenoteChip) {
       e.preventDefault();
-      var wrap = sidenoteMarker.closest('.sidenote');
-      var contentId = sidenoteMarker.getAttribute('aria-controls');
-      var content = contentId ? document.getElementById(contentId) : null;
-      var open = sidenoteMarker.getAttribute('aria-expanded') !== 'true';
-      sidenoteMarker.setAttribute('aria-expanded', open ? 'true' : 'false');
-      if (wrap) wrap.setAttribute('data-open', open ? 'true' : 'false');
-      if (content) {
-        if (open) content.removeAttribute('hidden');
-        else content.setAttribute('hidden', '');
-      }
-      // Toggling a chip changes its height; re-stack so following chips
-      // in the same source-line group reposition.
-      scheduleSidenoteLayout();
-      // Also fire inverse search so nvim jumps to the `\SV{...}` /
-      // `\AB{...}` / `\sidenote{...}` source line at the same time. The
-      // chip wrapper carries `data-src` (added with the recent sync-index
-      // registration), so `requestSourceJump` resolves the right anchor.
       requestSourceJump(e);
       return;
     }
@@ -1943,7 +1930,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '27';
+  var WS_PROTOCOL_VERSION = '28';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

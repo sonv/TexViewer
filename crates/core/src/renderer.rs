@@ -1544,16 +1544,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                     if let Some(call) = latex_command_call(raw, "sidenote") {
                         ctx.sidenote_counter += 1;
                         let id = format!("sn-{}", ctx.sidenote_counter);
-                        let content_id = format!("{id}-content");
                         let content = render_latex_text_with_math(&call.arg, ctx.labels);
-                        // Register the chip in the sync index so editor cursor
-                        // movement within the `\sidenote{...}` source range
-                        // highlights / scrolls to the rendered chip.
                         record_container(ctx, &id, &n.span, None);
                         let src_attr = data_src(&n.span);
                         write!(
                             out,
-                            r#"<span class="sidenote sidenote-note" id="{id}" data-src="{src_attr}" data-label="note"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">note</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
+                            r#"<span class="sidenote sidenote-note" id="{id}" data-src="{src_attr}" data-label="note"><span class="sidenote-marker">note</span><span class="sidenote-content">{content}</span></span>"#,
                         )
                         .unwrap();
                     }
@@ -1573,16 +1569,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         };
                         let label_attr = escape_attr(&label);
                         let label_html = escape_html(&label);
-                        let content_id = format!("{id}-content");
                         let content = render_latex_text_with_math(&call.arg, ctx.labels);
-                        // Register the chip in the sync index so editor cursor
-                        // movement within the `\SV{...}` / `\AB{...}` source
-                        // range highlights / scrolls to the rendered chip.
                         record_container(ctx, &id, &n.span, None);
                         let src_attr = data_src(&n.span);
                         write!(
                             out,
-                            r#"<span class="sidenote sidenote-{kind}" id="{id}" data-src="{src_attr}" data-label="{label_attr}"><button class="sidenote-marker" type="button" aria-expanded="false" aria-controls="{content_id}">{label_html}</button><span class="sidenote-content" id="{content_id}" hidden>{content}</span></span>"#,
+                            r#"<span class="sidenote sidenote-{kind}" id="{id}" data-src="{src_attr}" data-label="{label_attr}"><span class="sidenote-marker">{label_html}</span><span class="sidenote-content">{content}</span></span>"#,
                         )
                         .unwrap();
                     }
@@ -3886,7 +3878,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '27'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '28'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));

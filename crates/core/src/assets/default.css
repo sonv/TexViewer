@@ -716,28 +716,22 @@ body.margin-mode .sidenote {
    (`layoutSidenotes` in client.js); a pure-CSS approach can't offset
    absolute-positioned siblings whose static y-coordinate is the
    same. */
+/* Marker = static header label (no longer a button). Click handling is
+   on the whole `.sidenote` chip and just triggers source-jump. */
 .sidenote-marker {
   display: block;
   width: 100%;
   text-align: left;
-  cursor: pointer;
   padding: 3px 8px;
   background: transparent;
   border: none;
+  border-bottom: 1px solid #f0d97a;
   font: inherit;
   font-weight: 600;
   color: #6a4e00;
+  user-select: none;
 }
-.sidenote-marker:hover { background: rgba(0, 0, 0, 0.03); }
-.sidenote[data-open="true"] .sidenote-marker {
-  border-bottom: 1px solid #f0d97a;
-}
-/* Default: hidden. Author CSS `display: block` would otherwise beat the
-   `hidden` attribute (UA stylesheet) and leave the content always
-   visible regardless of the open/close click. Drive visibility off
-   the `data-open` flag on the wrapper instead. */
-.sidenote-content { display: none; }
-.sidenote[data-open="true"] .sidenote-content {
+.sidenote-content {
   display: block;
   padding: 6px 9px;
   font-family: 'Latin Modern Roman', 'CMU Serif', 'STIX Two Text', Georgia, serif;
@@ -749,13 +743,19 @@ body.margin-mode .sidenote {
 /* Style the three command flavours subtly so SV vs AB vs sidenote
    are visually distinguishable in a cluster. */
 .sidenote-sv { background: #ecf6e6; border-color: #b6d9a3; }
-.sidenote-sv .sidenote-marker { color: #2a5a13; }
-.sidenote-sv[data-open="true"] .sidenote-marker { border-bottom-color: #b6d9a3; }
+.sidenote-sv .sidenote-marker {
+  color: #2a5a13;
+  border-bottom-color: #b6d9a3;
+}
 .sidenote-sv .sidenote-content { background: #f7fbf4; }
 .sidenote-ab { background: #e7f1f5; border-color: #95c3d3; }
-.sidenote-ab .sidenote-marker { color: #1a4d63; }
-.sidenote-ab[data-open="true"] .sidenote-marker { border-bottom-color: #95c3d3; }
+.sidenote-ab .sidenote-marker {
+  color: #1a4d63;
+  border-bottom-color: #95c3d3;
+}
 .sidenote-ab .sidenote-content { background: #f5fafd; }
+.sidenote { cursor: pointer; }
+.sidenote:hover { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08); }
 
 aside#margin { display: none; }
 
