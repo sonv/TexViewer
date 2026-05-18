@@ -60,22 +60,62 @@ impl MathEngine for MathJaxEngine {
     }
 }
 
+/// Best-effort stubs for macros that real papers reach for but which the
+/// preamble extractor cannot translate — typically because the author's
+/// definition delegates to an `@`-internal helper (e.g. `\given` →
+/// `\SV@given{\delimsize}` from `svmacro.sty`) that uses TeX primitives
+/// MathJax cannot expand. Without a stub, every equation using these
+/// commands fails to render. With these defaults, the math is readable;
+/// authors who declare their own `\newcommand{\given}{...}` cleanly in
+/// the preamble override these because user macros are emitted later in
+/// the JSON object (last-key-wins).
+const FALLBACK_MACROS: &[(&str, &str, u8)] = &[
+    // `\given` and `\st` from `svmacro.sty` style packages — typically
+    // used as the spaced pipe in `P(A \given B)` / `\{x \st x > 0\}`.
+    ("given", r"\,|\,", 0),
+    ("st", r"\,|\,", 0),
+    // `\underaccent` from the `accents` package: no MathJax extension,
+    // but `\underset` is the nearest pure-MathJax fit.
+    ("underaccent", r"\underset{#1}{#2}", 2),
+    // `\xspace` is a no-op in math contexts.
+    ("xspace", r"", 0),
+    // `\defeq` (svmacro / mathtools-style) — render as a stylized `:=`.
+    ("defeq", r"\stackrel{\scriptscriptstyle\mathrm{def}}{=}", 0),
+];
+
 fn mathjax_config(preamble: &ExtractedPreamble) -> String {
     let mut macros = String::new();
-    for (i, m) in preamble.macros.iter().enumerate() {
-        if i > 0 {
-            macros.push_str(",\n      ");
-        }
-        let name_json = json_string(&m.name);
-        let body_json = json_string(&m.body);
-        match (m.n_args, &m.default) {
-            (0, _) => write!(macros, "{}: {}", name_json, body_json).unwrap(),
-            (n, None) => write!(macros, "{}: [{}, {}]", name_json, body_json, n).unwrap(),
-            (n, Some(d)) => {
-                let d_json = json_string(d);
-                write!(macros, "{}: [{}, {}, {}]", name_json, body_json, n, d_json).unwrap();
+    let mut first = true;
+    let mut write_entry =
+        |out: &mut String, name: &str, body: &str, n_args: u8, default: Option<&str>| {
+            if !first {
+                out.push_str(",\n      ");
             }
-        }
+            first = false;
+            let name_json = json_string(name);
+            let body_json = json_string(body);
+            match (n_args, default) {
+                (0, _) => write!(out, "{}: {}", name_json, body_json).unwrap(),
+                (n, None) => write!(out, "{}: [{}, {}]", name_json, body_json, n).unwrap(),
+                (n, Some(d)) => {
+                    let d_json = json_string(d);
+                    write!(out, "{}: [{}, {}, {}]", name_json, body_json, n, d_json).unwrap();
+                }
+            }
+        };
+    // Built-in fallbacks first; user-extracted macros below override on
+    // matching keys (JS object literals: last key wins).
+    for (name, body, n_args) in FALLBACK_MACROS {
+        write_entry(&mut macros, name, body, *n_args, None);
+    }
+    for m in preamble.macros.iter() {
+        write_entry(
+            &mut macros,
+            &m.name,
+            &m.body,
+            m.n_args,
+            m.default.as_deref(),
+        );
     }
 
     let package_short: Vec<String> = preamble
@@ -92,7 +132,12 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
     format!(
         r#"window.MathJax = {{
   tex: {{
-    packages: {{ '[+]': [{packages_short}] }},
+    // `noerrors` is always loaded so undefined commands render as their
+    // raw LaTeX source in gray text rather than scary red error boxes.
+    // Real papers reach for project-specific .sty files we can't always
+    // mirror (`\given`, `\st`, `\underaccent`, ...); the page stays
+    // readable while the author sees which spots are unresolved.
+    packages: {{ '[+]': ['noerrors', {packages_short}] }},
     inlineMath: [['\\(', '\\)']],
     displayMath: [['\\[', '\\]']],
     // Equation numbers are computed in Rust and emitted as <span
@@ -103,7 +148,7 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
       {macros}
     }}
   }},
-  loader: {{ load: [{packages_long}] }},
+  loader: {{ load: ['[tex]/noerrors', {packages_long}] }},
   svg: {{
     fontCache: 'global',
     // Auto-break long display equations at low-priority operators when the

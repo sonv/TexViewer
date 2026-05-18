@@ -23,6 +23,11 @@ pub const PACKAGE_TO_MATHJAX: &[(&str, &str)] = &[
     ("boldsymbol", "[tex]/boldsymbol"),
     ("enclose", "[tex]/enclose"),
     ("verb", "[tex]/verb"),
+    ("centernot", "[tex]/centernot"),
+    ("textcomp", "[tex]/textcomp"),
+    ("gensymb", "[tex]/gensymb"),
+    ("bbox", "[tex]/bbox"),
+    ("html", "[tex]/html"),
 ];
 
 /// Common LaTeX packages that affect layout, fonts, images, captions, or PDF
