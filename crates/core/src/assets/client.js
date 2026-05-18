@@ -1837,6 +1837,42 @@
       });
     }
 
+    /// Sub-block reuse: for every (old block, new fragment block) pair,
+    /// transplant `.proof-para` children whose `data-subhash` matches
+    /// between sides. This keeps the existing DOM (and all the typeset
+    /// math nodes inside) for paragraphs that didn't change, so a
+    /// single-paragraph edit inside a long proof costs roughly the
+    /// price of one paragraph's HTML parse instead of the whole
+    /// proof's. Mirrors the math `transplantMath` reuse pattern but at
+    /// the paragraph level. Called BEFORE `transplantMath(frag)` so
+    /// the moved old paragraphs (which already contain their typeset
+    /// math) skip the math-pool walk entirely for their contents.
+    function transplantSubBlocks(oldBlock, newBlock) {
+      if (!oldBlock || !newBlock) return;
+      var oldParas = oldBlock.querySelectorAll('span.proof-para[data-subhash]');
+      if (!oldParas.length) return;
+      var newParas = newBlock.querySelectorAll('span.proof-para[data-subhash]');
+      if (!newParas.length) return;
+      var byHash = new Map();
+      for (var i = 0; i < oldParas.length; i++) {
+        var h = oldParas[i].getAttribute('data-subhash');
+        if (!byHash.has(h)) byHash.set(h, []);
+        byHash.get(h).push(oldParas[i]);
+      }
+      var reused = 0;
+      for (var j = 0; j < newParas.length; j++) {
+        var newPara = newParas[j];
+        var hash = newPara.getAttribute('data-subhash');
+        var pool = byHash.get(hash);
+        if (pool && pool.length) {
+          var oldPara = pool.shift();
+          newPara.replaceWith(oldPara);
+          reused++;
+        }
+      }
+      return reused;
+    }
+
     try {
       for (var i = 0; i < ops.length; i++) {
         var op = ops[i];
@@ -1849,6 +1885,15 @@
           tpl.innerHTML = op.html || '';
           var frag = tpl.content;
           var inserted = frag.querySelectorAll('.blk').length;
+          // Sub-block reuse: for each positionally-paired (old, new) block,
+          // transplant `proof-para` children with matching data-subhash
+          // BEFORE the math transplant so reused paragraphs come along
+          // with their already-typeset math intact.
+          var newFragBlocks = frag.querySelectorAll('article.blk');
+          var pairCount = Math.min(removeCount, newFragBlocks.length);
+          for (var pp = 0; pp < pairCount; pp++) {
+            transplantSubBlocks(blocks[start + pp], newFragBlocks[pp]);
+          }
           transplantMath(frag);
 
           for (var d = 0; d < removeCount; d++) {
@@ -1934,7 +1979,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '29';
+  var WS_PROTOCOL_VERSION = '30';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

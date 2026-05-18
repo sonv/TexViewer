@@ -1124,7 +1124,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 r#"<div class="thm-head"><span class="thm-kind">{kind_label}</span>{num_html}{name_html}{role_pill}</div>"#,
             ).unwrap();
             out.push_str(r#"<div class="thm-body">"#);
-            write_children(out, &n.children, ctx);
+            write_chunked_children(out, &n.children, ctx);
             out.push_str("</div>");
             if let Some(omit) = omit_ref {
                 writeln!(
@@ -1158,7 +1158,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 src = escape_attr(&data_src(&n.span)),
             )
             .unwrap();
-            write_children(out, &n.children, ctx);
+            write_chunked_children(out, &n.children, ctx);
             out.push_str(r#"<span class="qed">∎</span></div></div>"#);
             out.push('\n');
         }
@@ -1699,6 +1699,155 @@ fn is_inline_like_node(node: &Node) -> bool {
             | NodeKind::Cite { .. }
             | NodeKind::OpaqueCmd { .. }
     )
+}
+
+fn is_chunked_block_child(node: &Node) -> bool {
+    matches!(
+        &node.kind,
+        NodeKind::DisplayMath { .. } | NodeKind::Subequations { .. } | NodeKind::List { .. }
+    )
+}
+
+/// Flush a paragraph-chunk buffer wrapped in a hashed `proof-para` span
+/// so the client can sub-block-diff proof/theorem bodies — replacing
+/// only the paragraphs whose hash changed instead of the entire block.
+/// Empty / whitespace-only chunks are dropped to avoid polluting the
+/// output with no-op spans.
+///
+/// The hash is computed over the chunk's STABLE diff source (the same
+/// IDs / data-src normalization the top-level block diff uses) so a
+/// single-paragraph edit doesn't ripple chunk hashes downstream just
+/// because the `srcw-N` id counter shifted.
+fn flush_chunk(buf: &mut String, out: &mut String) {
+    let chunk = std::mem::take(buf);
+    if chunk.trim().is_empty() {
+        return;
+    }
+    let hash = fnv_hash(&stable_block_diff_source(&chunk));
+    write!(
+        out,
+        r#"<span class="proof-para" data-subhash="{hash}">{chunk}</span>"#
+    )
+    .unwrap();
+}
+
+/// Like `write_children`, but groups runs of inline content into
+/// hashed `<span class="proof-para" data-subhash="...">` chunks. Block
+/// children (display math, subequations, lists) flush the current
+/// chunk and are emitted as siblings, so the client can transplant
+/// them by their existing `data-hash`. The state-machine logic mirrors
+/// `write_children` closely; the only structural change is that
+/// inline-bound writes go into a `chunk_buf` that is flushed on every
+/// paragraph break / block-level child / end of children.
+fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
+    let mut chunk_buf = String::new();
+    let mut trim_next_text = true;
+    let mut previous_was_display = false;
+    let mut pending_paragraph_indent = false;
+    let mut seen_content = false;
+
+    for child in children {
+        if matches!(&child.kind, NodeKind::Comment(_)) {
+            continue;
+        }
+        if let Some(name) = flow_command_name(child) {
+            if is_flow_reset_command(name) {
+                let mut sink = String::new();
+                write_node(&mut sink, child, ctx);
+                continue;
+            }
+            if is_flow_marker_command(name) {
+                if seen_content || previous_was_display {
+                    chunk_buf.push_str(r#"<span class="flow-marker-break"></span>"#);
+                }
+                write_node(&mut chunk_buf, child, ctx);
+                previous_was_display = false;
+                trim_next_text = true;
+                pending_paragraph_indent = false;
+                seen_content = true;
+                continue;
+            }
+        }
+        if let NodeKind::Text(s) = &child.kind {
+            for part in paragraph_text_parts(s) {
+                match part {
+                    ParagraphTextPart::Text {
+                        text: segment,
+                        start,
+                    } => {
+                        let starts_blank_line = starts_with_blank_line(segment);
+                        let mut text = if trim_next_text {
+                            trim_leading_paragraph_space(segment)
+                        } else {
+                            segment
+                        };
+                        let mut text_start = start + (segment.len() - text.len());
+                        if text.is_empty() {
+                            if previous_was_display && starts_blank_line {
+                                pending_paragraph_indent = true;
+                            }
+                            continue;
+                        }
+                        if pending_paragraph_indent || previous_was_display && starts_blank_line {
+                            chunk_buf.push_str(
+                                r#"<span class="para-indent-marker" aria-hidden="true"></span>"#,
+                            );
+                        }
+                        if !trim_next_text
+                            && !starts_blank_line
+                            && text.starts_with(char::is_whitespace)
+                            && !chunk_buf.ends_with(char::is_whitespace)
+                        {
+                            chunk_buf.push(' ');
+                            let trimmed = trim_leading_paragraph_space(text);
+                            text_start += text.len() - trimmed.len();
+                            text = trimmed;
+                        }
+                        let text_span =
+                            text_segment_span(&child.span, s, text_start, start + segment.len());
+                        write_text_with_span(&mut chunk_buf, text, &text_span, ctx);
+                        trim_next_text = false;
+                        previous_was_display = false;
+                        pending_paragraph_indent = false;
+                        seen_content = true;
+                    }
+                    ParagraphTextPart::Break { start, end } => {
+                        flush_chunk(&mut chunk_buf, out);
+                        let break_span = paragraph_break_span(&child.span, s, start, end);
+                        if seen_content || previous_was_display {
+                            out.push_str(r#"<span class="para-break" aria-hidden="true"></span>"#);
+                        }
+                        write_source_space_anchor(out, &break_span, ctx);
+                        if seen_content || previous_was_display {
+                            pending_paragraph_indent = true;
+                        }
+                        trim_next_text = true;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if is_chunked_block_child(child) {
+            flush_chunk(&mut chunk_buf, out);
+            write_node(out, child, ctx);
+            previous_was_display = matches!(&child.kind, NodeKind::DisplayMath { .. });
+            trim_next_text = previous_was_display;
+            pending_paragraph_indent = false;
+            seen_content = true;
+            continue;
+        }
+
+        if pending_paragraph_indent && is_inline_like_node(child) {
+            chunk_buf.push_str(r#"<span class="para-indent-marker" aria-hidden="true"></span>"#);
+        }
+        write_node(&mut chunk_buf, child, ctx);
+        previous_was_display = false;
+        trim_next_text = false;
+        pending_paragraph_indent = false;
+        seen_content = true;
+    }
+    flush_chunk(&mut chunk_buf, out);
 }
 
 /// FNV-1a 64-bit, hex-encoded. Stable across runs — used by the client to
@@ -3566,6 +3715,60 @@ mod tests {
     }
 
     #[test]
+    fn proof_paragraphs_are_wrapped_in_subhash_chunks() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{proof}\nFirst paragraph.\n\nSecond paragraph with $a+b$.\n\nThird paragraph.\n\\end{proof}\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        // Each non-empty inline run inside the proof body becomes a
+        // `<span class="proof-para" data-subhash="...">` chunk so the
+        // client can sub-block diff at paragraph granularity rather
+        // than swapping the whole proof's HTML on every edit.
+        let chunk_count = out
+            .body_html
+            .matches(r#"<span class="proof-para" data-subhash=""#)
+            .count();
+        assert!(
+            chunk_count >= 3,
+            "expected at least one chunk per paragraph, got {chunk_count}: {body}",
+            body = out.body_html
+        );
+        // Editing one paragraph should change exactly one chunk's hash;
+        // the others should keep theirs across renders.
+        let second = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{proof}\nFirst paragraph.\n\nSecond paragraph CHANGED with $a+b$.\n\nThird paragraph.\n\\end{proof}\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let extract = |html: &str| -> Vec<String> {
+            let needle = r#"data-subhash=""#;
+            let mut hashes = Vec::new();
+            let mut i = 0;
+            while let Some(pos) = html[i..].find(needle) {
+                let start = i + pos + needle.len();
+                if let Some(end) = html[start..].find('"') {
+                    hashes.push(html[start..start + end].to_string());
+                    i = start + end;
+                } else {
+                    break;
+                }
+            }
+            hashes
+        };
+        let h1 = extract(&out.body_html);
+        let h2 = extract(&second.body_html);
+        assert_eq!(h1.len(), h2.len());
+        let diffs: usize = h1.iter().zip(h2.iter()).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            diffs, 1,
+            "exactly one chunk's hash should change for a single-paragraph edit"
+        );
+    }
+
+    #[test]
     fn proof_role_is_rendered_as_metadata_not_title() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
@@ -3881,7 +4084,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '29'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '30'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));
