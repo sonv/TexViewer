@@ -2923,6 +2923,13 @@ fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             continue;
         }
         if b != b'\\' {
+            // LaTeX grouping braces have no visual effect — strip them so
+            // text like `Hello {grouping} world` reads as `Hello grouping
+            // world` rather than literally including the braces.
+            if b == b'{' || b == b'}' {
+                i += 1;
+                continue;
+            }
             // Inline escape of HTML-special chars only — math is unlikely here.
             if b.is_ascii() {
                 match b {

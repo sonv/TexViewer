@@ -1045,10 +1045,15 @@
   function layoutSidenotes() {
     var chips = document.querySelectorAll('main#page .sidenote');
     if (!chips.length) return;
-    // Reset transforms first so offsetHeight measures the natural box.
+    // Reset transforms first so offsetHeight measures the natural box
+    // without the previously-applied translate.
     for (var i = 0; i < chips.length; i++) {
       chips[i].style.transform = '';
     }
+    // Force the browser to flush style/layout invalidations before we
+    // read offsetTop / offsetHeight. Without this, browsers can return
+    // stale measurements based on the pre-reset transforms.
+    void document.body.offsetHeight;
     // Group by static-position top.
     var groups = new Map();
     for (var j = 0; j < chips.length; j++) {
@@ -1059,7 +1064,8 @@
     }
     // Stack chips within each group, offsetting by ACTUAL height of
     // the preceding chips so an expanded chip pushes the next one
-    // further down.
+    // further down. Reading offsetHeight after the reset+reflow gives
+    // the current rendered height regardless of expanded/collapsed state.
     var gap = 4;
     groups.forEach(function(group) {
       var dy = 0;
