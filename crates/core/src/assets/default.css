@@ -691,13 +691,17 @@ body.margin-mode .sidenote {
   /* `display: inline-block; vertical-align: top;` keeps the chip
      vertically aligned with its inline source position (browsers
      resolve absolute-positioned-without-top to the static-position
-     y-coordinate, which matches the line the `\SV`/`\AB` was on). */
+     y-coordinate, which matches the line the `\SV`/`\AB` was on).
+     `z-index: 150` sits above the margin column (z=100) so the chip
+     remains clickable even when its absolute position lands inside
+     the margin column's overlay area. */
   display: inline-block;
   vertical-align: top;
   position: absolute;
   left: 100%;
   margin-left: 18px;
   width: 220px;
+  z-index: 150;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: 11px;
   background: #fff8e1;
