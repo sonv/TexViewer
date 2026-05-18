@@ -38,8 +38,6 @@ body.topbar-hidden .topbar { display: none; }
 .margin-toggle,
 .server-restart,
 .server-stop,
-.topbar-hide,
-.topbar-restore,
 .page-mode-toggle button,
 .proof-toggle button {
   border: 1px solid var(--border); background: #fff; padding: 4px 10px;
@@ -48,16 +46,46 @@ body.topbar-hidden .topbar { display: none; }
 .server-restart:disabled,
 .server-stop:disabled { opacity: 0.55; cursor: wait; }
 .server-stop.is-start { border-color: var(--supporting); color: var(--supporting); }
-.topbar-restore {
-  display: none;
+
+/* Toggle for the top banner. Sits as a thin vertical stripe on the
+   left edge of the viewport so it stays reachable in margin mode
+   (the right side gets covered by the margin column). Click anywhere
+   on the stripe to hide or show the topbar; same control for both
+   directions, like the sidebar reveal handles in modern web apps. */
+.topbar-stripe {
   position: fixed;
-  top: 10px;
-  right: 12px;
-  z-index: 11;
-  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 13px;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding-top: 16px;
 }
-body.topbar-hidden .topbar-restore { display: block; }
+.topbar-stripe::before {
+  content: '';
+  display: block;
+  width: 4px;
+  height: 36px;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+  opacity: 0.4;
+  transition: opacity 120ms ease, width 120ms ease, height 120ms ease;
+}
+.topbar-stripe:hover::before,
+.topbar-stripe:focus-visible::before {
+  opacity: 1;
+  width: 6px;
+  height: 48px;
+}
+.topbar-stripe:focus { outline: none; }
 .search-panel {
   position: fixed;
   left: 50%;
@@ -661,11 +689,6 @@ body.margin-mode.margin-has-cards #page-shell {
    hide the margin or switch to dynamic). */
 body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   max-width: calc(100vw - min(540px, 36vw) - 32px);
-}
-/* Keep the restore-topbar pill from disappearing behind the margin
-   column when both margin mode and topbar-hide are active. */
-body.margin-mode.margin-has-cards .topbar-restore {
-  right: calc(min(540px, 36vw) + 12px);
 }
 
 .margin-card {

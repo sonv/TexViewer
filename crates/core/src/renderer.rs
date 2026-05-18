@@ -802,9 +802,11 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
     <button data-mode="supporting">+ supporting</button>
     <button data-mode="all" class="active">all</button>
   </span>
-  <button class="topbar-hide" id="topbar-hide" type="button" aria-pressed="false" title="hide top banner">hide</button>
+  <!-- The topbar hide/show toggle lives as a thin stripe on the left edge
+       of the viewport (see #topbar-stripe below) so it stays reachable
+       when the margin column covers the right side of the screen. -->
 </header>
-<button class="topbar-restore" id="topbar-restore" type="button" title="show top banner">toolbar</button>
+<button class="topbar-stripe" id="topbar-stripe" type="button" aria-expanded="true" aria-controls="topbar-banner" title="toggle top banner"></button>
 <div class="search-panel" id="search-panel" hidden>
   <label for="search-input">/</label>
   <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
@@ -3756,8 +3758,7 @@ mod tests {
         assert!(out.html.contains(r#"data-refkeys="hidden""#));
         assert!(out.html.contains(r#"id="server-restart""#));
         assert!(out.html.contains(r#"id="server-stop""#));
-        assert!(out.html.contains(r#"id="topbar-hide""#));
-        assert!(out.html.contains(r#"id="topbar-restore""#));
+        assert!(out.html.contains(r#"id="topbar-stripe""#));
         assert!(out.html.contains("setRefkeysVisible"));
         assert!(out.html.contains("mathpreview.refkeys"));
         assert!(out.html.contains("refkey-visible"));
@@ -3765,7 +3766,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '20'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '21'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));

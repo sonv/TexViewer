@@ -834,14 +834,9 @@
   function setTopbarHidden(hidden, persist) {
     topbarHidden = !!hidden;
     document.body.classList.toggle('topbar-hidden', topbarHidden);
-    var hideBtn = document.getElementById('topbar-hide');
-    if (hideBtn) {
-      hideBtn.classList.toggle('active', topbarHidden);
-      hideBtn.setAttribute('aria-pressed', topbarHidden ? 'true' : 'false');
-    }
-    var restoreBtn = document.getElementById('topbar-restore');
-    if (restoreBtn) {
-      restoreBtn.setAttribute('aria-expanded', topbarHidden ? 'false' : 'true');
+    var stripe = document.getElementById('topbar-stripe');
+    if (stripe) {
+      stripe.setAttribute('aria-expanded', topbarHidden ? 'false' : 'true');
     }
     if (persist) {
       try { localStorage.setItem('mathpreview.topbarHidden', topbarHidden ? '1' : '0'); } catch (e) {}
@@ -1397,14 +1392,9 @@
       else stopServer();
       return;
     }
-    var topbarHide = e.target.closest('#topbar-hide');
-    if (topbarHide) {
-      setTopbarHidden(true, true);
-      return;
-    }
-    var topbarRestore = e.target.closest('#topbar-restore');
-    if (topbarRestore) {
-      setTopbarHidden(false, true);
+    var topbarStripe = e.target.closest('#topbar-stripe');
+    if (topbarStripe) {
+      setTopbarHidden(!topbarHidden, true);
       return;
     }
     var sideToggle = e.target.closest('#side-toggle');
@@ -1833,7 +1823,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '20';
+  var WS_PROTOCOL_VERSION = '21';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
