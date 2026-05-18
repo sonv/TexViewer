@@ -293,26 +293,24 @@ escaping, full editor support, and lint-friendly.
 
 ## Roadmap
 
-Ordered roughly by what we plan to tackle next. ↻ marks the in-progress
-item; ◯ marks queued items. See `DESIGN.md` for the full backlog.
+Ordered roughly by what we plan to tackle next. ◯ marks queued items.
+See `DESIGN.md` for the full backlog.
 
-- **✓ Margin reference cards (first pass).** Toolbar `margin` button
-  enables a right-hand column; clicking `\ref` / `\cite` pins the
-  referenced statement (with typeset MathJax intact) into the margin,
-  click again to unpin. Hover any reference for a quick preview without
-  enabling margin mode. Nested expansion (clicking a ref inside a margin
-  card) and explicit popup mode are still ahead.
 - **◯ Split client.js and renderer.rs.** After the recent Rebuild /
-  cross-range transplant work, `client.js` is ~1800 lines doing ten
-  different things and `renderer.rs` is 3825 lines. Both still work — just
-  dense. Splitting them into focused modules concatenated via
-  `include_str!` keeps the file tree readable and lets future engines plug
-  in along the boundaries the engine seam already exposed.
+  cross-range transplant work and the margin-card UI, `client.js` is
+  ~2000 lines doing many different things and `renderer.rs` is 3825
+  lines. Both still work — just dense. Splitting them into focused
+  modules concatenated via `include_str!` keeps the file tree readable
+  and lets future engines plug in along the boundaries the engine seam
+  already exposed.
 - **◯ Multi-buffer chapter editing.** `POST /buffer` only accepts the root
   file's content. Editing an `\input`-ed `chapter1.tex` in nvim doesn't
   live-update because the daemon ignores buffer pushes for non-root files.
   Fix is a per-file buffer map on the daemon plus the nvim plugin sending
   each buffer keyed by path.
+- **◯ Nested margin-card expansion.** Clicking a `\ref` inside an
+  already-pinned margin card should open a child card indented underneath,
+  preserving the dependency trail. Closing a parent closes its children.
 - **◯ Trim vendored MathJax further.** Current vendor bundle is ~5 MB
   after removing the alternate output / input engines we never load. The
   font-shard set (es5/output/svg/fonts/tex/) could be further audited
@@ -331,25 +329,14 @@ item; ◯ marks queued items. See `DESIGN.md` for the full backlog.
 
 ## What's not done yet
 
-- **Margin/popup cross-references.** Clicking a ref currently jumps to
-  the target via `<a href="#id">`. The "pin into the margin" interaction
-  from DESIGN §8 isn't built.
-- **Vendored MathJax.** The daemon ships MathJax 3 at
-  `crates/cli/vendor/mathjax/` (~5 MB, trimmed of non-tex-svg alternates).
-  `mathpreview-cli serve` defaults the engine URL to
-  `/vendor/mathjax/tex-svg.js`, so a fresh checkout works offline with no
-  CDN round-trip. To refresh against the latest npm release, run
-  `bash scripts/vendor-mathjax.sh`. The `render` subcommand still defaults
-  to the jsdelivr CDN because its output is a standalone HTML file.
 - **Multi-file editing.** The buffer-push path replaces the *root* file's
   content; if you edit a `\input`-ed child, you'd need the editor plugin
   to send each buffer keyed by path. The server-side substitution map
   exists in the architecture but isn't exercised.
-- **Keyed-LCS block matching.** The current range-patch protocol fixes
-  ordinary insertions without stale ordering, but it is still position
-  based. A real keyed-LCS diff with explicit move/insert ops would reduce
-  large structural edits further; see DESIGN §11 for the proper approach
-  and the gotchas of the naive heuristic.
+- **Nested margin-card expansion + popup mode.** First-pass margin
+  cards (click-to-pin + hover preview) work, but clicking a `\ref`
+  *inside* an already-pinned card doesn't yet open a child card, and
+  there's no floating-popup alternative to the right-margin column.
 - **Tauri shell as a native window option.** WebSocket was picked as the
   starting transport because it decouples backend from frontend — not as
   a permanent rejection of Tauri. The intended destination is to add a

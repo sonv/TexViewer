@@ -112,11 +112,17 @@ What's built:
 - [x] ~~Row-level align/gather refkeys and deduplicated boxed theorem refkeys.~~
 - [x] ~~First-pass forward / inverse source sync between preview and nvim.~~
 - [x] ~~Source-word anchors and dynamic 25%/75% sync scrolling.~~
-- [ ] Margin / popup reference previews with click-to-pin and nested references.
+- [x] ~~Margin reference cards: click-to-pin + hover preview (first pass).~~
+- [x] ~~Vendored/offline MathJax distribution.~~
+- [x] ~~Keyed-LCS block diff with explicit move ops and cross-range MathJax transplant.~~
+- [x] ~~Pluggable rendering engine seam (`MathEngine` trait + `window.__mpEngine` shim).~~
+- [ ] Nested margin-card expansion (clicking a ref inside a margin card opens a child card).
+- [ ] Popup-mode toggle for cross-references (floating cards near the click instead of a side column).
 - [ ] SyncTeX-style display-row and glyph-level source sync.
-- [ ] Vendored/offline MathJax distribution.
 - [ ] Better parser coverage for more LaTeX text constructs and packages.
 - [ ] Browser-level interaction tests for copy/selection, page layout, and proof filters.
+- [ ] Multi-buffer chapter editing (`/buffer` accepting non-root files).
+- [ ] CI: GitHub Actions running fmt/clippy/test/eslint on PRs.
 
 Remaining forward goals:
 
@@ -687,36 +693,25 @@ keystroke that edits one paragraph: ~5 ms daemon-side render + 1 op
 on the wire + ~3 ms client-side patch + 0 ms MathJax = single-digit
 milliseconds wall clock from keypress to re-render.
 
-**Step 3.6 ⏳ Better block-level diff (keyed LCS).** The current
-position-based diff handles in-place edits perfectly (one `replace` op,
-sub-10 ms wall clock) but falls back to a full `body-updated` push
-whenever an insertion in the middle of the document shifts every
-subsequent block's position. A first attempt at "stable IDs across
-renders" — match new blocks to prior blocks by content hash so the IDs
-don't shift on insertion — was reverted because the naive
-hash-popping-front heuristic scrambles duplicate-hash blocks (two
-structurally identical paragraphs, two equations with the same body,
-etc.) and the position-only diff doesn't detect block reorders. The
-right fix when revisited:
+**Step 3.6 ✅ Better block-level diff (keyed LCS + Rebuild op).**
+`diff_blocks` runs an `O(n·m)` LCS keyed on `diff_hash` over the
+prefix/suffix-trimmed middle and emits one `ReplaceRange` op per
+non-LCS gap, in reverse-position order so the client applies them
+without rebasing indices. When the LCS post-pass detects a moved
+block (unmatched-on-old paired with unmatched-on-new of the same
+hash, FIFO), the whole middle collapses into a single `Rebuild` op
+whose `plan` is a per-new-slot list: `Reuse(old_idx)` for anchored
+and moved blocks (preserves typeset MathJax), `Insert(html)` for
+genuinely new content. Section reorders pay zero MathJax cost; the
+fallback to full `body-updated` remains for catastrophic edits.
 
-1. Compute a real LCS of (hash, position) pairs between old and new
-   block sequences. Anything in LCS keeps its ID. Anything outside LCS
-   on the new side is an insert; outside on the old side is a remove.
-2. Detect reorders explicitly. Where a block matches by content but
-   its position differs by more than its neighbours moved, emit an
-   explicit `move` op instead of leaving the DOM stale.
-3. Keep IDs stable across consecutive renders (a block keeps its ID
-   from its previous appearance) but re-canonicalize on file save
-   (file-watcher event) so the ID counter doesn't grow unbounded over
-   long editing sessions.
-4. The fallback to full `body-updated` stays as a safety net for
-   catastrophic edits (more than ~50% of blocks change at once), but
-   in-place insertions become a single `insert` op rather than the
-   current full-body fallback.
+Cross-range MathJax transplant: `applyPatch` pre-scans every op to
+build a single shared `oldByHash` math pool, so math that moves
+between distant range ops transplants instead of re-typesetting.
 
-The investment is real (~150 lines of LCS + move detection + ID
-counter + reset-on-save), so it's worth doing only when the
-full-body fallback on insertions starts being noticeable in daily use.
+Regression coverage includes duplicate-hash blocks (the failure mode
+of the earlier reverted attempt) and end-to-end real-LaTeX section
+swaps.
 
 **Step 3.7 ✅ Viewer fidelity and editing ergonomics.** Several
 workflow-polish items landed before the interactive reference work:
@@ -764,10 +759,29 @@ workflow-polish items landed before the interactive reference work:
   recorded before search results, page/index jumps, source-sync jumps,
   top/bottom jumps, and in-page reference clicks.
 
-**Step 4 ⏳ Interactive references.** Margin column, click-to-pin,
-hover previews, nested expansion, citation previews. All frontend work
-on top of the rendered DOM; the data is already there (refs carry
-`data-target`, citations carry `data-key`, sync index is populated).
+**Step 4 ✅ Interactive references (first pass).** Toolbar `margin`
+button toggles a right-hand column. With margin mode on, clicking
+`\ref` or `\cite` pins the referenced theorem / equation / bib entry
+into a margin card; clicking the same reference again unpins. Card
+titles show only the LaTeX `\label{...}` / cite key (the rendered
+"Theorem 2.1" / "(3.1)" is already visible in the card body). Cloned
+DOM preserves typeset MathJax — pinning costs no MathJax work.
+
+Hovering any ref/cite for ~250 ms shows a floating preview popup
+regardless of margin mode; the preview strips `.proof` children so
+the statement reads alone, and auto-numbering chips are hidden to
+avoid overlap with the equation in the narrower preview box.
+
+Layout details: the margin column is flush with the viewport's right
+and bottom edges so the cards extend to the screen edge. When at
+least one card is pinned (`body.margin-has-cards`), the `#page-shell`
+floats right against the column with no visible gap; the reading
+field stays centered while the column is empty. Cards stack flush
+with shared 1px borders rather than per-card shadows.
+
+Still ahead: nested expansion (clicking a ref inside a margin card
+opens a child card) and an explicit popup mode (floating cards near
+the click instead of a side column).
 
 **Step 5 ✅ First-pass nvim/HTML source sync.** Rendered blocks, split
 paragraphs, source words, math nodes, refs, and citation groups now
@@ -791,10 +805,21 @@ and refs, but it is not yet SyncTeX-level. The next iteration should
 attach exact display-row and glyph coordinates without changing the
 `/cursor` and `/jump` protocol.
 
-**Step 7 ⏳ Distribution polish.** Vendored MathJax (no CDN). Margin
-warnings UI for filtered macros. Multi-buffer push (editing an
-`\input`-ed chapter). Server-side per-project preamble cache shared
-across reconnects. Distributable binaries.
+**Step 7 🚧 Distribution polish.** Done:
+  * Vendored MathJax 3 at `crates/cli/vendor/mathjax/` (trimmed
+    ~5 MB). `serve` defaults its engine URL to the local copy;
+    `render` keeps the jsdelivr CDN because its output is a standalone
+    HTML file. Refresh via `scripts/vendor-mathjax.sh`.
+  * Pluggable rendering engine seam: `MathEngine` trait + `Engine`
+    enum + `window.__mpEngine` adapter shim. Today's only impl is
+    `MathJaxEngine`; adding e.g. a `PdfjsEngine` (real-LaTeX PDF
+    rasterization) or a `TexpressoEngine` is a new variant on the
+    enum and a `MathEngine` impl, no changes to `renderer.rs`.
+
+Still ahead: margin warnings UI for filtered macros; multi-buffer
+push (`/buffer` accepting non-root files); server-side per-project
+preamble cache shared across reconnects; further trimming of the
+vendored MathJax font shard set; distributable binaries.
 
 Each ⏳ step is bounded by hours-to-days, not the weeks the original
 plan reserved, because the architecture pivot removed most of the
