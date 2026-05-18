@@ -1045,37 +1045,41 @@
   function layoutSidenotes() {
     var chips = document.querySelectorAll('main#page .sidenote');
     if (!chips.length) return;
-    // Reset transforms first so offsetHeight measures the natural box
-    // without the previously-applied translate.
+    // Reset transforms first so offsetHeight / offsetTop measure the
+    // natural box without the previously-applied translate.
     for (var i = 0; i < chips.length; i++) {
       chips[i].style.transform = '';
     }
     // Force the browser to flush style/layout invalidations before we
-    // read offsetTop / offsetHeight. Without this, browsers can return
-    // stale measurements based on the pre-reset transforms.
+    // read offsetTop / offsetHeight.
     void document.body.offsetHeight;
-    // Group by static-position top.
-    var groups = new Map();
+    // Walk chips in document order. Maintain the running "lowest y so
+    // far occupied by a previous chip's bottom edge"; whenever the
+    // next chip's natural offsetTop would overlap that, translateY it
+    // downward by the difference. This covers BOTH cases that overlap
+    // in practice:
+    //   * Multiple chips on the same source line share `offsetTop`,
+    //     so the second one starts inside the first one's box and
+    //     gets pushed below it.
+    //   * Chips in adjacent paragraphs with small inter-paragraph
+    //     spacing can have non-equal offsetTop yet still visually
+    //     overlap because a tall chip's content extends past the
+    //     next chip's natural y; the inequality `top < prevBottom`
+    //     catches that and shifts.
+    var prevBottom = -Infinity;
+    var gap = 4;
     for (var j = 0; j < chips.length; j++) {
       var chip = chips[j];
       var top = chip.offsetTop;
-      if (!groups.has(top)) groups.set(top, []);
-      groups.get(top).push(chip);
-    }
-    // Stack chips within each group, offsetting by ACTUAL height of
-    // the preceding chips so an expanded chip pushes the next one
-    // further down. Reading offsetHeight after the reset+reflow gives
-    // the current rendered height regardless of expanded/collapsed state.
-    var gap = 4;
-    groups.forEach(function(group) {
-      var dy = 0;
-      for (var k = 0; k < group.length; k++) {
-        if (dy > 0) {
-          group[k].style.transform = 'translateY(' + dy + 'px)';
-        }
-        dy += group[k].offsetHeight + gap;
+      var height = chip.offsetHeight;
+      var minTop = prevBottom + gap;
+      if (top < minTop) {
+        chip.style.transform = 'translateY(' + (minTop - top) + 'px)';
+        prevBottom = minTop + height;
+      } else {
+        prevBottom = top + height;
       }
-    });
+    }
   }
 
   /// Run `layoutSidenotes` on the next animation frame.
