@@ -83,9 +83,13 @@ body.topbar-hidden .topbar { display: none; }
 .topbar-stripe {
   position: fixed;
   left: 0;
-  top: 0;
-  bottom: 0;
+  /* Sized to wrap just the visible square (18×18 default, 22×22 hovered).
+     Earlier this was full viewport height so any click on the left edge
+     toggled the topbar — annoying when clicking near the side panel or
+     anything else on the left side of the screen. */
+  top: 14px;
   width: 26px;
+  height: 30px;
   background: transparent;
   border: none;
   padding: 0;
@@ -95,7 +99,6 @@ body.topbar-hidden .topbar { display: none; }
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
-  padding-top: 18px;
 }
 .topbar-stripe::before {
   content: '';
