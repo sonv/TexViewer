@@ -35,6 +35,7 @@ html, body {
 body.topbar-hidden .topbar { display: none; }
 .side-toggle,
 .refkey-toggle,
+.margin-toggle,
 .server-restart,
 .server-stop,
 .topbar-hide,
@@ -93,6 +94,7 @@ body.topbar-hidden .topbar-restore { display: block; }
 }
 .side-toggle.active,
 .refkey-toggle.active,
+.margin-toggle.active,
 .page-mode-toggle button.active,
 .proof-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .page-mode-toggle,
@@ -695,12 +697,16 @@ body.topbar-hidden.margin-mode aside#margin {
   background: #fff;
   border: 1px solid var(--rule, #ccc);
   border-radius: 4px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
   font-size: 13px;
-  line-height: 1.4;
-  max-width: 360px;
-  max-height: 240px;
+  line-height: 1.45;
+  /* Wide enough to show typical display equations without truncation; if a
+     long expression still overflows the box gives it a horizontal scroll
+     bar (the user can't drive it because pointer-events is off, but it's
+     visually obvious there's more content). */
+  max-width: min(720px, calc(100vw - 32px));
+  max-height: min(420px, calc(100vh - 80px));
   overflow: auto;
   pointer-events: none;
   animation: hover-preview-in 100ms ease-out;
@@ -709,6 +715,16 @@ body.topbar-hidden.margin-mode aside#margin {
 .hover-preview .blk { padding: 0; }
 .hover-preview .thm,
 .hover-preview .bib-entry { margin: 0; padding: 0; border: none; }
+/* Equation numbers add clutter and overlap the equation in narrow hover
+   previews — drop them, you can see the number in the document itself. */
+.hover-preview .eq-num { display: none; }
+.hover-preview .math.display {
+  margin: 0.3em 0;
+  /* Make sure long displays can scroll horizontally inside the preview
+     instead of clipping. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 @keyframes hover-preview-in {
   from { opacity: 0; }
   to   { opacity: 1; }
