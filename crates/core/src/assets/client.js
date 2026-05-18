@@ -1024,6 +1024,43 @@
     if (navNeedsPages) rebuildPageGuides();
     navNeedsIndex = false;
     navNeedsPages = false;
+    layoutSidenotes();
+  }
+
+  /// Stack overlapping sidenote chips.
+  ///
+  /// `\AB{...}` and `\SV[date]{...}` placed next to each other in the
+  /// source share an inline static-position (same line), so the
+  /// absolutely-positioned chips land at the same y-coordinate and
+  /// overlay one another. CSS `margin-top` on adjacent siblings can't
+  /// fix this because static-position computation ignores margins of
+  /// siblings.
+  ///
+  /// JS post-pass: walk all chips in document order, group by
+  /// `offsetTop`, and apply a `transform: translateY()` offset to
+  /// each chip after the first in a group so they stack vertically.
+  /// Called from `refreshNavigation` (i.e., after every patch + on
+  /// initial load + on resize) so the offsets stay current as
+  /// content moves.
+  function layoutSidenotes() {
+    var chips = document.querySelectorAll('main#page .sidenote');
+    if (!chips.length) return;
+    // Reset transforms first so a re-layout doesn't compound.
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].style.transform = '';
+    }
+    var seen = new Map();
+    for (var j = 0; j < chips.length; j++) {
+      var chip = chips[j];
+      var top = chip.offsetTop;
+      var n = seen.get(top) || 0;
+      if (n > 0) {
+        // Each subsequent chip on the same static y-line sits below the
+        // previous one with a small gap.
+        chip.style.transform = 'translateY(' + (n * 28) + 'px)';
+      }
+      seen.set(top, n + 1);
+    }
   }
 
   function scheduleNavigationRefresh(delay, includeIndex) {
@@ -1875,7 +1912,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '26';
+  var WS_PROTOCOL_VERSION = '27';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

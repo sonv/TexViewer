@@ -712,15 +712,10 @@ body.margin-mode .sidenote {
   border-radius: 4px;
   overflow: hidden;
 }
-/* When several sidenotes pile up at the same source position, stack
-   them vertically inside the same `position: absolute` lane by giving
-   each subsequent sibling a small downward offset. CSS-only stacking
-   isn't perfect — overlapping notes on the same line stay overlapped
-   — but for typical author usage (one note per paragraph or two)
-   this looks clean. */
-.sidenote + .sidenote {
-  margin-top: 26px;
-}
+/* Stacking of overlapping chips at the same source line is done in JS
+   (`layoutSidenotes` in client.js); a pure-CSS approach can't offset
+   absolute-positioned siblings whose static y-coordinate is the
+   same. */
 .sidenote-marker {
   display: block;
   width: 100%;
