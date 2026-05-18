@@ -623,65 +623,67 @@ details.warnings {
 details.warnings summary { cursor: pointer; }
 aside#margin { display: none; }
 
+/* The margin column. Sized so most display equations fit without
+   horizontal overflow on a normal laptop screen; equations wider than
+   this still scroll inside the card via `overflow-x: auto`.
+   Flush with the viewport edges (right: 0, bottom: 0) so there is no
+   visible gap between the reading area and the column when cards are
+   pinned. */
 body.margin-mode aside#margin {
   display: block;
   position: fixed;
   top: 60px;
-  right: 16px;
-  /* Sized so most display equations fit without horizontal overflow on a
-     normal laptop screen. Equations wider than this still scroll inside
-     the card via `overflow-x: auto`. */
+  right: 0;
+  bottom: 0;
   width: min(540px, 36vw);
   min-width: 320px;
-  max-height: calc(100vh - 80px);
   overflow-y: auto;
   z-index: 100;
-  padding-right: 4px;
 }
+body.topbar-hidden.margin-mode aside#margin { top: 0; }
 
-/* Shift the entire #page-shell left when margin mode is on so the fixed
-   margin column doesn't overlay the page content. `#page-shell` is
-   normally centered with `margin: 28px auto 64px`; overriding to
-   `margin-left: 32px; margin-right: auto` pins the shell near the left
-   edge and lets the auto-right margin absorb the slack on the right
-   side, where the margin column floats. The shell's own width is
-   unchanged, so reading-column width does NOT shrink — the page just
-   moves to the left of where it used to sit. Works in both A4 (fixed
-   sheet width) and dynamic (flow-to-width) modes. */
-body.margin-mode #page-shell {
+/* Shift the entire #page-shell left only when at least one card is
+   pinned (`body.margin-has-cards`). Without that gate, enabling
+   margin mode while empty would slide the page off-center for no
+   visual reason — the reader wants the page centered until they
+   actually need the margin column. `margin-right` is set to exactly
+   the margin-column width so the shell butts up against the column
+   with no gap. */
+body.margin-mode.margin-has-cards #page-shell {
   margin-left: 32px;
-  margin-right: auto;
+  margin-right: min(540px, 36vw);
 }
 /* On narrow viewports there isn't room for both the shell at its
    default width and the margin column. Cap the shell's max-width in
-   dynamic mode so it stays clear of the margin column even on a
-   laptop screen. A4 mode keeps its fixed sheet width; on very narrow
-   windows the A4 sheet may sit underneath the margin column (the user
-   can hide the margin or switch to dynamic). */
-body.page-mode-dynamic.margin-mode #page-shell {
-  max-width: calc(100vw - min(540px, 36vw) - 80px);
+   dynamic mode so it stays clear of the column even on a small
+   laptop. A4 mode keeps its fixed sheet width; on very narrow windows
+   the A4 sheet may sit underneath the margin column (the user can
+   hide the margin or switch to dynamic). */
+body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
+  max-width: calc(100vw - min(540px, 36vw) - 64px);
 }
 /* Keep the restore-topbar pill from disappearing behind the margin
    column when both margin mode and topbar-hide are active. */
-body.margin-mode .topbar-restore {
-  right: calc(min(540px, 36vw) + 28px);
-}
-
-body.topbar-hidden.margin-mode aside#margin {
-  top: 16px;
-  max-height: calc(100vh - 32px);
+body.margin-mode.margin-has-cards .topbar-restore {
+  right: calc(min(540px, 36vw) + 12px);
 }
 
 .margin-card {
   background: #fff;
-  border: 1px solid var(--rule, #ddd);
-  border-radius: 4px;
-  margin-bottom: 12px;
+  /* Cards stack flush — top borders form the inter-card separator, no
+     extra margin or shadow between them. The column itself has the
+     viewport edge on the right, so cards span flush there too. */
+  border: none;
+  border-top: 1px solid var(--rule, #ddd);
+  border-left: 1px solid var(--rule, #ddd);
+  margin: 0;
   padding: 10px 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   font-size: 13.5px;
   line-height: 1.5;
   animation: margin-card-in 180ms ease-out;
+}
+.margin-card:last-child {
+  border-bottom: 1px solid var(--rule, #ddd);
 }
 .margin-card-header {
   display: flex;

@@ -667,10 +667,19 @@
 
   function marginEl() { return document.getElementById('margin'); }
 
+  /// Toggle the `margin-has-cards` body class. Layout rules that shift
+  /// the page content (`#page-shell`) live behind that class so the
+  /// reading area stays centered when margin mode is on but no card is
+  /// pinned. Called after every pinnedRefs mutation.
+  function updateMarginCardsClass() {
+    document.body.classList.toggle('margin-has-cards', pinnedRefs.size > 0);
+  }
+
   function closeAllMarginCards() {
     var m = marginEl();
     if (m) m.innerHTML = '';
     pinnedRefs.clear();
+    updateMarginCardsClass();
   }
 
   /// Returns the rendered DOM element referenced by a `<a class="ref|cite"
@@ -759,6 +768,7 @@
       var existing = pinnedRefs.get(key);
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
       pinnedRefs.delete(key);
+      updateMarginCardsClass();
       return;
     }
     var target = resolveLinkTarget(link);
@@ -770,6 +780,7 @@
     if (!margin) return;
     margin.appendChild(card);
     pinnedRefs.set(key, card);
+    updateMarginCardsClass();
   }
 
   function isPinnableLink(target) {
@@ -1432,6 +1443,7 @@
         var key = card.dataset.pinKey;
         if (key && pinnedRefs.has(key)) pinnedRefs.delete(key);
         if (card.parentNode) card.parentNode.removeChild(card);
+        updateMarginCardsClass();
       }
       return;
     }
