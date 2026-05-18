@@ -25,8 +25,15 @@ pub struct HtmlOptions {
     /// Math engine used to typeset math nodes in the browser. Default is
     /// [`crate::engines::MathJaxEngine`] pointed at the jsdelivr CDN.
     pub engine: Engine,
-    /// Document title.
+    /// Short document title — used both in `<title>` and as the bold label
+    /// in the viewer topbar.
     pub title: String,
+    /// Path to the root `.tex` file. Shown in the topbar next to the title
+    /// (with `$HOME` shortened to `~`) so the reader can tell at a glance
+    /// which file is being previewed. Populated automatically by
+    /// `render_project` / `render_project_from_source`; the static
+    /// `mathpreview-cli render` path leaves it unset.
+    pub source_path: Option<PathBuf>,
     /// Whether to embed the default stylesheet inline. Off if you want to
     /// supply your own.
     pub inline_css: bool,
@@ -37,6 +44,7 @@ impl Default for HtmlOptions {
         Self {
             engine: Engine::default(),
             title: "mathpreview".into(),
+            source_path: None,
             inline_css: true,
         }
     }
@@ -772,6 +780,18 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
 
     let mut out = String::new();
     let title = escape_html(&opts.title);
+    let path_html = match opts.source_path.as_ref() {
+        Some(p) => {
+            let full = p.display().to_string();
+            let short = shorten_home_path(p);
+            format!(
+                r#"<span class="topbar-doc-path" title="{full}">{short}</span>"#,
+                full = escape_attr(&full),
+                short = escape_html(&short),
+            )
+        }
+        None => String::new(),
+    };
     write!(
         out,
         r#"<!doctype html>
@@ -785,7 +805,10 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
 </head>
 <body class="page-mode-a4">
 <header class="topbar">
-  <strong>mathpreview</strong>
+  <div class="topbar-doc">
+    <strong class="topbar-doc-title">{title}</strong>
+    {path_html}
+  </div>
   <span class="status" id="ws-status" title="live-reload status"></span>
   <span class="topbar-spacer"></span>
   <button class="side-toggle" id="side-toggle" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
@@ -3065,6 +3088,21 @@ fn escape_html(s: &str) -> String {
 
 fn escape_attr(s: &str) -> String {
     escape_html(s)
+}
+
+/// Replace the user's `$HOME` prefix with `~` for display in the topbar.
+/// Falls back to the full path if `$HOME` is unset or the file lives
+/// outside it.
+fn shorten_home_path(path: &std::path::Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::Path::new(&home);
+        if let Ok(rel) = path.strip_prefix(home) {
+            let mut out = String::from("~/");
+            out.push_str(&rel.display().to_string());
+            return out;
+        }
+    }
+    path.display().to_string()
 }
 
 fn escape_math(s: &str) -> String {

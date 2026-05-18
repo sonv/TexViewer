@@ -62,7 +62,17 @@ fn finish_render(
     let mut body = parser::parse_body(&project)?;
     let labels = numbering::assign_numbers(&mut body, &bib, bib_style);
     let mut sync = SyncIndex::new();
-    let rendered = renderer::render(&body, &preamble, &labels, &bib, bib_style, &mut sync, opts);
+    // Inject the resolved root path so the topbar can show "title — path".
+    // Done as a clone to avoid asking callers to mutate the &HtmlOptions
+    // they passed in.
+    let opts = if opts.source_path.is_none() {
+        let mut owned = opts.clone();
+        owned.source_path = Some(root.clone());
+        owned
+    } else {
+        opts.clone()
+    };
+    let rendered = renderer::render(&body, &preamble, &labels, &bib, bib_style, &mut sync, &opts);
     Ok(RenderOutput {
         html: rendered.full,
         body_html: rendered.body,

@@ -24,7 +24,9 @@ html, body {
 }
 .topbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 10px 18px;
+  /* Left padding clears the fixed `.topbar-stripe` toggle so the
+     document title isn't tucked under the square tab. */
+  padding: 10px 18px 10px 38px;
   background: #fff;
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
@@ -32,6 +34,32 @@ html, body {
   font-size: 13px;
 }
 .topbar-spacer { flex: 1; }
+
+/* Document title + source path block. Replaces the static "mathpreview"
+   brand text — the path makes it obvious which file is being previewed
+   when several daemons or windows are open. The path uses ui-monospace
+   and the muted colour so it visually defers to the bold short title. */
+.topbar-doc {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.topbar-doc-title {
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+  color: var(--fg);
+}
+.topbar-doc-path {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 body.topbar-hidden .topbar { display: none; }
 .side-toggle,
 .refkey-toggle,
