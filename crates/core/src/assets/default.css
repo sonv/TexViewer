@@ -75,6 +75,43 @@ body.topbar-hidden .topbar { display: none; }
 .server-stop:disabled { opacity: 0.55; cursor: wait; }
 .server-stop.is-start { border-color: var(--supporting); color: var(--supporting); }
 
+/* Floating `toc` toggle — moved out of the topbar to a small
+   left-edge pill below the topbar-stripe. Same visual language as
+   the stripe (accent color, rounded right side, grows on hover) so
+   the two left-edge controls read as a stack. */
+.side-toggle {
+  position: fixed;
+  left: 0;
+  top: 52px;
+  z-index: 1000;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 0 4px 4px 0;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0.55;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  transition: opacity 120ms ease, padding 120ms ease, height 120ms ease;
+}
+.side-toggle:hover,
+.side-toggle:focus-visible {
+  opacity: 1;
+  padding: 0 10px;
+  height: 26px;
+  outline: none;
+}
+.side-toggle.active {
+  opacity: 1;
+}
+
 /* Toggle for the top banner. Sits as a thin vertical stripe on the
    left edge of the viewport so it stays reachable in margin mode
    (the right side gets covered by the margin column). Click anywhere

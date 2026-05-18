@@ -829,7 +829,9 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
   </div>
   <span class="status" id="ws-status" title="live-reload status"></span>
   <span class="topbar-spacer"></span>
-  <button class="side-toggle" id="side-toggle" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
+  <!-- `toc` toggle moved to a fixed pill on the left edge (see
+       `#side-toggle` below). Kept reachable independent of the
+       top-banner visibility. -->
   <span class="page-mode-toggle" data-page-mode="a4">
     <button data-page-mode="a4" class="active" type="button">A4</button>
     <button data-page-mode="dynamic" type="button">dynamic</button>
@@ -848,6 +850,7 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
        when the margin column covers the right side of the screen. -->
 </header>
 <button class="topbar-stripe" id="topbar-stripe" type="button" aria-expanded="true" aria-controls="topbar-banner" title="toggle top banner"></button>
+<button class="side-toggle" id="side-toggle" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
 <div class="search-panel" id="search-panel" hidden>
   <label for="search-input">/</label>
   <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
@@ -3878,7 +3881,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '28'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '29'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));
