@@ -1442,6 +1442,11 @@
         if (open) content.removeAttribute('hidden');
         else content.setAttribute('hidden', '');
       }
+      // Also fire inverse search so nvim jumps to the `\SV{...}` /
+      // `\AB{...}` / `\sidenote{...}` source line at the same time. The
+      // chip wrapper carries `data-src` (added with the recent sync-index
+      // registration), so `requestSourceJump` resolves the right anchor.
+      requestSourceJump(e);
       return;
     }
     var sideToggle = e.target.closest('#side-toggle');
@@ -1870,7 +1875,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '25';
+  var WS_PROTOCOL_VERSION = '26';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

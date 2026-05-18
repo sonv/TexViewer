@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "25";
+const WS_PROTOCOL_VERSION: &str = "26";
 
 #[derive(Clone)]
 struct AppState {

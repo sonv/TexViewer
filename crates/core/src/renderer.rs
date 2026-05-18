@@ -3879,7 +3879,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '25'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '26'"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleVimNavigation"));
