@@ -80,6 +80,11 @@ const FALLBACK_MACROS: &[FallbackMacro] = &[
     // used as the spaced pipe in `P(A \given B)` / `\{x \st x > 0\}`.
     ("given", r"\,|\,", 0, None),
     ("st", r"\,|\,", 0, None),
+    // `\bm` from the `bm` package. MathJax's `[tex]/boldsymbol` extension
+    // provides `\boldsymbol` but does NOT alias it to `\bm`, so author
+    // macros like `\newcommand{\E}{\bm{E}}` (from svmacro.sty) break
+    // every equation they touch. Alias here.
+    ("bm", r"\boldsymbol{#1}", 1, None),
     // `\underaccent` from the `accents` package: no MathJax extension,
     // but `\underset` is the nearest pure-MathJax fit.
     ("underaccent", r"\underset{#1}{#2}", 2, None),
