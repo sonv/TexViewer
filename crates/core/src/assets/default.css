@@ -639,6 +639,19 @@ body.margin-mode aside#margin {
   padding-right: 4px;
 }
 
+/* Shift the reading area left when margin mode is on so the fixed
+   margin column doesn't overlay the page content. Padding on the
+   `#page-shell` is the only attachment point — A4 mode centers within
+   its shell, dynamic mode flows to fill, both respect this padding. */
+body.margin-mode #page-shell {
+  padding-right: calc(min(540px, 36vw) + 32px);
+}
+/* Keep the restore-topbar pill from disappearing behind the margin
+   column when both margin mode and topbar-hide are active. */
+body.margin-mode .topbar-restore {
+  right: calc(min(540px, 36vw) + 28px);
+}
+
 body.topbar-hidden.margin-mode aside#margin {
   top: 16px;
   max-height: calc(100vh - 32px);
@@ -665,9 +678,31 @@ body.topbar-hidden.margin-mode aside#margin {
   border-bottom: 1px solid var(--rule, #eee);
 }
 .margin-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 12px;
   color: var(--muted, #666);
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  min-width: 0;
+  overflow: hidden;
+}
+/* LaTeX `\label{...}` key, shown as the primary title of a margin card.
+   The rendered "Theorem 2.1" / "(3.1)" sits next to it in muted text. */
+.margin-card-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--accent, #b04b00);
+  background: rgba(0, 0, 0, 0.045);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.margin-card-rendered {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .margin-card-close {
   background: transparent;

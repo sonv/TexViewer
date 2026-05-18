@@ -711,9 +711,29 @@
 
     var head = document.createElement('div');
     head.className = 'margin-card-header';
+    // Title: LaTeX `\label{...}` / cite-key in a monospace chip, with the
+    // rendered display ("Theorem 2.1", "(3.1)") next to it as secondary
+    // muted text. Lets the reader identify the card by its source label
+    // rather than just by its auto-number.
     var title = document.createElement('span');
     title.className = 'margin-card-title';
-    title.textContent = (link.textContent || '').trim();
+    var rawKey = link.getAttribute('data-target') || link.getAttribute('data-key') || '';
+    var renderedLabel = (link.textContent || '').trim();
+    if (rawKey) {
+      var keyChip = document.createElement('code');
+      keyChip.className = 'margin-card-key';
+      keyChip.textContent = rawKey;
+      title.appendChild(keyChip);
+    }
+    if (renderedLabel && renderedLabel !== rawKey) {
+      var rendered = document.createElement('span');
+      rendered.className = 'margin-card-rendered';
+      rendered.textContent = renderedLabel;
+      title.appendChild(rendered);
+    }
+    if (!rawKey && !renderedLabel) {
+      title.textContent = pinKeyFor(link);
+    }
     var close = document.createElement('button');
     close.type = 'button';
     close.className = 'margin-card-close';
