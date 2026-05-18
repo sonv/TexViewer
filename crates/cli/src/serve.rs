@@ -878,9 +878,22 @@ impl PatchOp {
     }
 }
 
-/// Prefix/suffix block diff. For ordinary typing this replaces one block.
-/// For insertion/deletion above existing content it sends only the changed
-/// middle range and lets the client retag shifted blocks by position.
+/// Keyed-LCS block diff.
+///
+/// Computes the longest common subsequence of `diff_hash` values between the
+/// previous and new block sequences and emits one `ReplaceRange` op per
+/// non-LCS gap. Compared to the prior single-range diff this surfaces
+/// multiple surgical edits when the user makes disjoint changes (e.g. fix a
+/// typo in §2 while also editing the bibliography), and it keeps unrelated
+/// duplicate-hash blocks anchored in place when only one of them is edited.
+///
+/// Ops are emitted in reverse-position order so the client can apply them
+/// sequentially against the live DOM without rebasing indices — each op's
+/// `index` is valid in the document state at the moment it is applied.
+///
+/// Common prefix and suffix are trimmed up front as a fast path. The shared
+/// LCS work is bounded by `O(n * m)` on the trimmed middle; for the
+/// 300-block test paper that is sub-millisecond in practice.
 fn diff_blocks(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<PatchOp> {
     let mut prefix = 0;
     while prefix < old.len() && prefix < new.len() && old[prefix].diff_hash == new[prefix].diff_hash
@@ -898,21 +911,131 @@ fn diff_blocks(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<PatchOp> {
         new_suffix -= 1;
     }
 
-    let remove = old_suffix - prefix;
-    let insert = new_suffix - prefix;
-    if remove == 0 && insert == 0 {
+    let old_mid = &old[prefix..old_suffix];
+    let new_mid = &new[prefix..new_suffix];
+
+    if old_mid.is_empty() && new_mid.is_empty() {
         return Vec::new();
     }
-    let html = new[prefix..new_suffix]
+
+    // For very small middles, skip LCS — a single range op is optimal anyway.
+    if old_mid.len() <= 1 || new_mid.len() <= 1 {
+        return single_range(old_mid, new_mid, prefix);
+    }
+
+    let alignment = lcs_align(old_mid, new_mid);
+
+    let mut ops = Vec::new();
+    let mut o = 0usize;
+    let mut n = 0usize;
+    for &(ai, bi) in alignment.iter() {
+        if ai > o || bi > n {
+            emit_range_op(&mut ops, old_mid, new_mid, o, ai, n, bi, prefix);
+        }
+        o = ai + 1;
+        n = bi + 1;
+    }
+    if o < old_mid.len() || n < new_mid.len() {
+        emit_range_op(
+            &mut ops,
+            old_mid,
+            new_mid,
+            o,
+            old_mid.len(),
+            n,
+            new_mid.len(),
+            prefix,
+        );
+    }
+
+    // Reverse so the client can process ops front-to-back without index
+    // rebasing: each op's index targets a slice of the document that hasn't
+    // been touched by any later op in the sequence.
+    ops.reverse();
+    ops
+}
+
+fn single_range(
+    old_mid: &[RenderedBlock],
+    new_mid: &[RenderedBlock],
+    prefix: usize,
+) -> Vec<PatchOp> {
+    let html = new_mid
         .iter()
         .map(|block| block.html.as_str())
         .collect::<String>();
     vec![PatchOp::ReplaceRange {
         index: prefix,
-        remove,
-        insert,
+        remove: old_mid.len(),
+        insert: new_mid.len(),
         html,
     }]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_range_op(
+    ops: &mut Vec<PatchOp>,
+    old_mid: &[RenderedBlock],
+    new_mid: &[RenderedBlock],
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+    prefix: usize,
+) {
+    let html = new_mid[new_start..new_end]
+        .iter()
+        .map(|block| block.html.as_str())
+        .collect::<String>();
+    let _ = old_mid;
+    ops.push(PatchOp::ReplaceRange {
+        index: prefix + old_start,
+        remove: old_end - old_start,
+        insert: new_end - new_start,
+        html,
+    });
+}
+
+/// Standard O(n·m) LCS keyed on `diff_hash`. Returns aligned `(old_idx,
+/// new_idx)` pairs in ascending order.
+///
+/// Backtrack tie-breaks consistently (prefer moving in `old` when LCS
+/// lengths are equal) so that runs of duplicate-hash blocks align in the
+/// natural order rather than scrambling — the regression that sank the
+/// previous attempt described in DESIGN.md §13.
+fn lcs_align(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<(usize, usize)> {
+    let n = old.len();
+    let m = new.len();
+    if n == 0 || m == 0 {
+        return Vec::new();
+    }
+    let mut dp = vec![0u32; (n + 1) * (m + 1)];
+    let stride = m + 1;
+    let idx = |i: usize, j: usize| i * stride + j;
+    for i in 0..n {
+        for j in 0..m {
+            dp[idx(i + 1, j + 1)] = if old[i].diff_hash == new[j].diff_hash {
+                dp[idx(i, j)] + 1
+            } else {
+                dp[idx(i + 1, j)].max(dp[idx(i, j + 1)])
+            };
+        }
+    }
+    let mut out = Vec::with_capacity(dp[idx(n, m)] as usize);
+    let (mut i, mut j) = (n, m);
+    while i > 0 && j > 0 {
+        if old[i - 1].diff_hash == new[j - 1].diff_hash {
+            out.push((i - 1, j - 1));
+            i -= 1;
+            j -= 1;
+        } else if dp[idx(i - 1, j)] >= dp[idx(i, j - 1)] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    out.reverse();
+    out
 }
 
 /// Heuristic: is the source in a renderable state, or is the user
@@ -1294,5 +1417,184 @@ mod tests {
             diff_hash: diff_hash.to_string(),
             html: html.to_string(),
         }
+    }
+
+    /// Two structurally identical paragraphs (same `diff_hash`); editing the
+    /// second one must not pull the first into the patch. This is the
+    /// duplicate-hash regression captured in DESIGN.md §13.
+    #[test]
+    fn duplicate_hash_blocks_dont_scramble_when_one_is_edited() {
+        let old = vec![
+            rendered_block_with_diff("blk-1", "<p>A</p>", "A"),
+            rendered_block_with_diff("blk-2", "<p>P</p>", "P"),
+            rendered_block_with_diff("blk-3", "<p>B</p>", "B"),
+            rendered_block_with_diff("blk-4", "<p>P</p>", "P"),
+            rendered_block_with_diff("blk-5", "<p>C</p>", "C"),
+        ];
+        let new = vec![
+            rendered_block_with_diff("blk-1", "<p>A</p>", "A"),
+            rendered_block_with_diff("blk-2", "<p>P</p>", "P"),
+            rendered_block_with_diff("blk-3", "<p>B</p>", "B"),
+            rendered_block_with_diff("blk-4", "<p>P!</p>", "P-edited"),
+            rendered_block_with_diff("blk-5", "<p>C</p>", "C"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1, "expected exactly one surgical range op");
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 3,
+                remove: 1,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    /// Two disjoint edits in the same render — the previous prefix/suffix
+    /// diff collapsed these into one big span covering the unchanged middle;
+    /// LCS keeps them surgical.
+    #[test]
+    fn two_disjoint_edits_emit_two_range_ops() {
+        let old = vec![
+            rendered_block_with_diff("blk-1", "h-old", "h-old"),
+            rendered_block_with_diff("blk-2", "p1", "p1"),
+            rendered_block_with_diff("blk-3", "p2", "p2"),
+            rendered_block_with_diff("blk-4", "p3", "p3"),
+            rendered_block_with_diff("blk-5", "p4", "p4"),
+            rendered_block_with_diff("blk-6", "t-old", "t-old"),
+        ];
+        let new = vec![
+            rendered_block_with_diff("blk-1", "h-new", "h-new"),
+            rendered_block_with_diff("blk-2", "p1", "p1"),
+            rendered_block_with_diff("blk-3", "p2", "p2"),
+            rendered_block_with_diff("blk-4", "p3", "p3"),
+            rendered_block_with_diff("blk-5", "p4", "p4"),
+            rendered_block_with_diff("blk-6", "t-new", "t-new"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 2, "expected two surgical range ops");
+        // Ops are emitted in reverse-position order so the client doesn't
+        // need to rebase indices.
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 5,
+                remove: 1,
+                insert: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &ops[1],
+            PatchOp::ReplaceRange {
+                index: 0,
+                remove: 1,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    /// Mid-document insertion of a new paragraph — the old single-range diff
+    /// already handled this, but as a structural sanity check confirm LCS
+    /// still emits one tight insert.
+    #[test]
+    fn mid_document_insertion_is_single_insert_op() {
+        let old = vec![
+            rendered_block_with_diff("blk-1", "A", "A"),
+            rendered_block_with_diff("blk-2", "B", "B"),
+            rendered_block_with_diff("blk-3", "C", "C"),
+            rendered_block_with_diff("blk-4", "D", "D"),
+        ];
+        let new = vec![
+            rendered_block_with_diff("blk-1", "A", "A"),
+            rendered_block_with_diff("blk-2", "B", "B"),
+            rendered_block_with_diff("blk-3", "X", "X"),
+            rendered_block_with_diff("blk-4", "C", "C"),
+            rendered_block_with_diff("blk-5", "D", "D"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            PatchOp::ReplaceRange {
+                index: 2,
+                remove: 0,
+                insert: 1,
+                ..
+            }
+        ));
+    }
+
+    /// Reorder: swap two paragraphs. With no explicit `move` op, LCS emits a
+    /// remove + an insert against the still-anchored blocks. The unrelated
+    /// surrounding blocks are not touched.
+    #[test]
+    fn reorder_emits_remove_and_insert_without_touching_neighbors() {
+        let old = vec![
+            rendered_block_with_diff("blk-1", "A", "A"),
+            rendered_block_with_diff("blk-2", "B", "B"),
+            rendered_block_with_diff("blk-3", "C", "C"),
+            rendered_block_with_diff("blk-4", "D", "D"),
+        ];
+        // Swap B and C.
+        let new = vec![
+            rendered_block_with_diff("blk-1", "A", "A"),
+            rendered_block_with_diff("blk-2", "C", "C"),
+            rendered_block_with_diff("blk-3", "B", "B"),
+            rendered_block_with_diff("blk-4", "D", "D"),
+        ];
+
+        let ops = diff_blocks(&old, &new);
+        // LCS picks ONE of {B, C} as the anchor and rewrites the other.
+        // Either way the unrelated A and D are untouched and total churn is
+        // 1 remove + 1 insert.
+        let total_remove: usize = ops
+            .iter()
+            .map(|PatchOp::ReplaceRange { remove, .. }| *remove)
+            .sum();
+        let total_insert: usize = ops
+            .iter()
+            .map(|PatchOp::ReplaceRange { insert, .. }| *insert)
+            .sum();
+        assert_eq!(total_remove, 1);
+        assert_eq!(total_insert, 1);
+        // The patch index must fall inside the swapped pair (1 or 2) and
+        // must never touch index 0 (A) or index 3 (D).
+        for op in &ops {
+            let PatchOp::ReplaceRange { index, remove, .. } = op;
+            let start = *index;
+            let end = start + *remove;
+            assert!(start >= 1 && end <= 3, "patch touched neighbor: {op:?}");
+        }
+    }
+
+    /// Reverse-order emission contract: if multiple ops are emitted, the
+    /// indices must be monotonically non-increasing so the client can apply
+    /// them sequentially against the live DOM without rebasing.
+    #[test]
+    fn ops_are_emitted_in_reverse_position_order() {
+        let old: Vec<_> = (0..10)
+            .map(|i| {
+                rendered_block_with_diff(&format!("blk-{i}"), &format!("o{i}"), &format!("h{i}"))
+            })
+            .collect();
+        // Edit blocks 1, 4, 7.
+        let mut new = old.clone();
+        new[1] = rendered_block_with_diff("blk-1", "n1", "h1-new");
+        new[4] = rendered_block_with_diff("blk-4", "n4", "h4-new");
+        new[7] = rendered_block_with_diff("blk-7", "n7", "h7-new");
+
+        let ops = diff_blocks(&old, &new);
+        assert_eq!(ops.len(), 3);
+        let indices: Vec<usize> = ops
+            .iter()
+            .map(|PatchOp::ReplaceRange { index, .. }| *index)
+            .collect();
+        assert_eq!(indices, vec![7, 4, 1]);
     }
 }
