@@ -704,6 +704,34 @@
       if (dd && dd.tagName === 'DD') wrap.appendChild(dd.cloneNode(true));
       return wrap;
     }
+    // Empty label-anchor — typically `\label{...}` placed at the top of a
+    // `\begin{subequations}` group, where the label sits as a zero-content
+    // marker BEFORE the actual `\begin{equation}` / `align` children.
+    // Cloning the anchor alone yields an empty box, which is what the
+    // user saw in hover / margin previews. Walk forward through its
+    // following siblings and collect every math display that belongs to
+    // the same logical group, stopping at the next label-anchor or any
+    // non-math content (prose, the next paragraph, the block boundary).
+    if (target.classList.contains('label-anchor') && !target.firstElementChild) {
+      var bundle = document.createElement('div');
+      bundle.className = 'subeq-preview';
+      var el = target.nextElementSibling;
+      while (el) {
+        if (el.classList.contains('label-anchor')) break;
+        if (el.classList.contains('source-space') ||
+            el.classList.contains('src-word')) {
+          el = el.nextElementSibling;
+          continue;
+        }
+        if (el.classList.contains('math')) {
+          bundle.appendChild(el.cloneNode(true));
+          el = el.nextElementSibling;
+          continue;
+        }
+        break;
+      }
+      if (bundle.children.length) return bundle;
+    }
     return target.cloneNode(true);
   }
 
@@ -1842,7 +1870,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '23';
+  var WS_PROTOCOL_VERSION = '24';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
