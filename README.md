@@ -157,6 +157,23 @@ body in a detached template, hash-matches math nodes from the live DOM,
 transplants the reused ones, swaps `#page` contents in one op, and
 re-typesets only the truly-new math.
 
+### Lint the embedded JS
+
+The viewer JavaScript lives in `crates/core/src/assets/client.js`
+(engine-neutral) and `crates/core/src/engines/assets/mathjax.js` (the
+MathJax adapter). Both files are pulled into the binary via `include_str!`,
+so they are real `.js` files you can lint with ESLint:
+
+```sh
+npm install               # one-time
+npm run lint
+```
+
+The flat config in `eslint.config.js` runs `no-undef` (catches typo'd
+identifiers / forgotten renames), `no-unused-vars` (warning),
+`no-unreachable`, and dupe-key/dupe-arg checks. Browser globals plus
+`window.__mpEngine` are declared so the bundle parses clean.
+
 ### Inspect what MathJax sees
 
 Mirrors `latex-preview.nvim`'s `:LatexPreview debug`:
@@ -253,7 +270,10 @@ crates/core             parser + macro extractor + numbering + renderer (the lib
       ├ client.js         WebSocket + patch ops + source-sync + vim + search + UI
       └ default.css       page stylesheet
 crates/cli              mathpreview-cli binary (render / debug / serve)
+  └ vendor/mathjax/     trimmed MathJax 3 (tex-svg) served at /vendor/mathjax/*
 examples/               demo paper + companion .sty + nvim Lua plugin
+scripts/
+  └ vendor-mathjax.sh   refresh vendor/mathjax/ from npm
 CHANGELOG-GPT.md        codex session changelog
 CHANGELOG-claude.md     claude session changelog
 DESIGN.md               full design document
@@ -272,9 +292,13 @@ escaping, full editor support, and lint-friendly.
 - **Margin/popup cross-references.** Clicking a ref currently jumps to
   the target via `<a href="#id">`. The "pin into the margin" interaction
   from DESIGN §8 isn't built.
-- **Vendored MathJax.** Defaults to jsdelivr CDN. For offline use, pass
-  `--mathjax-url path/to/vendored/tex-svg.js` (the flag routes through
-  `MathJaxEngine::new(url)` under the hood).
+- **Vendored MathJax.** The daemon ships MathJax 3 at
+  `crates/cli/vendor/mathjax/` (~5 MB, trimmed of non-tex-svg alternates).
+  `mathpreview-cli serve` defaults the engine URL to
+  `/vendor/mathjax/tex-svg.js`, so a fresh checkout works offline with no
+  CDN round-trip. To refresh against the latest npm release, run
+  `bash scripts/vendor-mathjax.sh`. The `render` subcommand still defaults
+  to the jsdelivr CDN because its output is a standalone HTML file.
 - **Multi-file editing.** The buffer-push path replaces the *root* file's
   content; if you edit a `\input`-ed child, you'd need the editor plugin
   to send each buffer keyed by path. The server-side substitution map

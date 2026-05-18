@@ -1,0 +1,13 @@
+{
+  "name": "mathpreview-frontend-lint",
+  "private": true,
+  "type": "module",
+  "description": "ESLint setup for the embedded viewer JavaScript bundles (crates/core/src/assets/client.js and the per-engine adapters under crates/core/src/engines/assets/).",
+  "scripts": {
+    "lint": "eslint crates/core/src/assets/client.js crates/core/src/engines/assets/mathjax.js"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "globals": "^17.6.0"
+  }
+}

@@ -67,17 +67,18 @@ fn main() -> Result<()> {
             port,
             mathjax_url,
         } => {
-            let mut opts = HtmlOptions {
+            // serve-mode default: use the vendored bundle so the page works offline.
+            // Render-mode keeps the CDN default since its output is a standalone file.
+            let url = mathjax_url.unwrap_or_else(|| "/vendor/mathjax/tex-svg.js".to_string());
+            let opts = HtmlOptions {
                 title: input
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("mathpreview")
                     .to_string(),
+                engine: Engine::MathJax(MathJaxEngine::new(url)),
                 ..HtmlOptions::default()
             };
-            if let Some(url) = mathjax_url {
-                opts.engine = Engine::MathJax(MathJaxEngine::new(url));
-            }
             if let Ok(ms) = std::env::var("MATHPREVIEW_RESTART_DELAY_MS") {
                 if let Ok(ms) = ms.parse::<u64>() {
                     std::thread::sleep(std::time::Duration::from_millis(ms));

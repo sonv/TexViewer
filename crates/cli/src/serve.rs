@@ -197,6 +197,7 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/assets/*path", get(serve_asset))
+        .route("/vendor/mathjax/*path", get(serve_vendor_mathjax))
         .route("/ws", get(serve_ws))
         .route("/buffer", axum::routing::post(serve_buffer_push))
         .route("/cursor", post(serve_cursor))
@@ -257,6 +258,52 @@ async fn serve_asset(
         }
         Err(status) => status.into_response(),
     }
+}
+
+/// Compile-time path to the vendored MathJax bundle (`crates/cli/vendor/mathjax/es5/`).
+/// Resolved from `CARGO_MANIFEST_DIR` so the daemon finds the bundle whether it's run
+/// via `cargo run` or as a release binary in the same checkout.
+const MATHJAX_VENDOR_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/mathjax/es5");
+
+async fn serve_vendor_mathjax(AxumPath(path): AxumPath<String>) -> Response {
+    let Some(rel) = clean_asset_path(&path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let root = match tokio::fs::canonicalize(MATHJAX_VENDOR_ROOT).await {
+        Ok(p) => p,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let candidate = root.join(rel);
+    let canonical = match tokio::fs::canonicalize(&candidate).await {
+        Ok(p) => p,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if !canonical.starts_with(&root) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let bytes = match tokio::fs::read(&canonical).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let content_type = match canonical.extension().and_then(|e| e.to_str()) {
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("ttf") => "font/ttf",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    let mut response = Body::from(bytes).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400, immutable"),
+    );
+    response
 }
 
 async fn read_project_asset(
