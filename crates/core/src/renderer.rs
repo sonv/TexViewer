@@ -779,7 +779,24 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
     let css = if opts.inline_css { DEFAULT_CSS } else { "" };
 
     let mut out = String::new();
-    let title = escape_html(&opts.title);
+    // <head><title> uses the file stem (opts.title) so the browser tab
+    // is never blank.
+    let head_title = escape_html(&opts.title);
+    // The topbar's bold short-title slot is intentionally blank unless
+    // the LaTeX source provides `\title[short]{long}`. Authors who want
+    // a label in the topbar opt in via that optional argument.
+    let topbar_short = preamble
+        .title_short
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let topbar_title_html = match topbar_short {
+        Some(s) => format!(
+            r#"<strong class="topbar-doc-title">{s}</strong>"#,
+            s = escape_html(s),
+        ),
+        None => String::new(),
+    };
     let path_html = match opts.source_path.as_ref() {
         Some(p) => {
             let full = p.display().to_string();
@@ -799,14 +816,14 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
+<title>{head_title}</title>
 <style>{css}{engine_css}</style>
 {engine_head}
 </head>
 <body class="page-mode-a4">
 <header class="topbar">
   <div class="topbar-doc">
-    <strong class="topbar-doc-title">{title}</strong>
+    {topbar_title_html}
     {path_html}
   </div>
   <span class="status" id="ws-status" title="live-reload status"></span>

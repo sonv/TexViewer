@@ -1546,6 +1546,7 @@ Second paragraph here.
                     warnings: Vec::new(),
                     raw_preamble: String::new(),
                     title: None,
+                    title_short: None,
                     author: None,
                     authors: Vec::new(),
                     author_details: Vec::new(),

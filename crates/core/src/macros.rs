@@ -57,6 +57,9 @@ pub struct ExtractedPreamble {
     pub raw_preamble: String,
     /// `\title{…}` body — rendered when the document calls `\maketitle`.
     pub title: Option<String>,
+    /// Optional short title from `\title[short]{long}`. Used in the topbar
+    /// and other compact contexts where the full title would be too long.
+    pub title_short: Option<String>,
     /// First `\author{…}` body, kept for callers that only need one author.
     pub author: Option<String>,
     /// Every `\author{…}` body in declaration order. A single command using
@@ -426,7 +429,7 @@ impl Extractor {
             .map(String::from)
             .collect();
         let metadata_src = strip_line_comments(&self.raw);
-        let title = extract_brace_arg(&metadata_src, r"\title");
+        let (title_short, title) = extract_optional_and_brace_arg(&metadata_src, r"\title");
         let author_details = extract_front_matter_authors(&metadata_src);
         let authors: Vec<String> = author_details.iter().map(|a| a.name.clone()).collect();
         let author = authors.first().cloned();
@@ -439,12 +442,84 @@ impl Extractor {
             warnings: self.warnings,
             raw_preamble: self.raw,
             title,
+            title_short,
             author,
             authors,
             author_details,
             date,
         }
     }
+}
+
+/// Like `extract_brace_arg`, but also captures the LaTeX optional `[...]`
+/// argument when present. Returns `(optional, brace)`. For `\title[Short]{Long}`
+/// this is `(Some("Short"), Some("Long"))`; for `\title{Long}` it's
+/// `(None, Some("Long"))`.
+fn extract_optional_and_brace_arg(src: &str, cmd: &str) -> (Option<String>, Option<String>) {
+    let bytes = src.as_bytes();
+    let needle = cmd.as_bytes();
+    let mut i = 0;
+    while i + needle.len() < bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            let after = bytes.get(i + needle.len()).copied().unwrap_or(b' ');
+            if !after.is_ascii_alphabetic() {
+                let mut j = i + needle.len();
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let mut optional: Option<String> = None;
+                if j < bytes.len() && bytes[j] == b'[' {
+                    if let Some((opt, next)) = read_bracket_arg(src, j) {
+                        optional = Some(opt);
+                        j = next;
+                        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                            j += 1;
+                        }
+                    }
+                }
+                if j < bytes.len() && bytes[j] == b'{' {
+                    if let Some((arg, _)) = read_brace_arg(src, j) {
+                        return (optional, Some(arg));
+                    }
+                }
+                return (optional, None);
+            }
+        }
+        i += 1;
+    }
+    (None, None)
+}
+
+/// Read a `[...]` LaTeX optional argument starting at `start` (the `[`).
+/// Returns `(contents, end_index_after_])`. Brace-balanced inside, just
+/// like `read_brace_arg`.
+fn read_bracket_arg(src: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'[') {
+        return None;
+    }
+    let mut depth = 1i32;
+    let mut i = start + 1;
+    let arg_start = i;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b']' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    let arg = src[arg_start..i - 1].to_string();
+                    return Some((arg, i));
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Find the first `\<cmd>{...}` and return the brace-balanced contents.
@@ -1024,6 +1099,20 @@ mod tests {
     fn comments_are_stripped() {
         let m = extract("\\newcommand{\\R}{\\mathbb{R}} % real numbers\n");
         assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn title_extracts_optional_short_argument() {
+        let p = preamble(r#"\title[Short Title]{Long Title With $a^2$ in it}"#);
+        assert_eq!(p.title.as_deref(), Some("Long Title With $a^2$ in it"));
+        assert_eq!(p.title_short.as_deref(), Some("Short Title"));
+    }
+
+    #[test]
+    fn title_without_optional_leaves_short_none() {
+        let p = preamble(r#"\title{Just the Long Title}"#);
+        assert_eq!(p.title.as_deref(), Some("Just the Long Title"));
+        assert_eq!(p.title_short, None);
     }
 
     #[test]
