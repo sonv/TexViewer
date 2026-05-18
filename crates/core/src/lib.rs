@@ -5,6 +5,7 @@
 
 pub mod ast;
 pub mod bibtex;
+pub mod engines;
 pub mod macros;
 pub mod numbering;
 pub mod packages;
@@ -19,6 +20,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 pub use ast::{Node, NodeKind, Pos, Role, Span};
+pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{ExtractedMacro, ExtractedPreamble};
 pub use packages::PackageMap;
 pub use renderer::{HtmlOptions, RenderOutput, RenderedBlock};

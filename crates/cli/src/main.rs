@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use mathpreview_core::{render_project, HtmlOptions};
+use mathpreview_core::{render_project, Engine, HtmlOptions, MathJaxEngine};
 
 mod serve;
 
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
                 ..HtmlOptions::default()
             };
             if let Some(url) = mathjax_url {
-                opts.mathjax_url = url;
+                opts.engine = Engine::MathJax(MathJaxEngine::new(url));
             }
             if let Ok(ms) = std::env::var("MATHPREVIEW_RESTART_DELAY_MS") {
                 if let Ok(ms) = ms.parse::<u64>() {
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
                 ..HtmlOptions::default()
             };
             if let Some(url) = mathjax_url {
-                opts.mathjax_url = url;
+                opts.engine = Engine::MathJax(MathJaxEngine::new(url));
             }
             let result = render_project(&input, &opts)
                 .with_context(|| format!("rendering {}", input.display()))?;

@@ -1,0 +1,8 @@
+.math.display mjx-container[display="true"] {
+  margin: 0 !important;
+  display: inline-block !important;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
+}
