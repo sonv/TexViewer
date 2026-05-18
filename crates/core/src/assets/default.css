@@ -57,7 +57,7 @@ body.topbar-hidden .topbar { display: none; }
   left: 0;
   top: 0;
   bottom: 0;
-  width: 18px;
+  width: 26px;
   background: transparent;
   border: none;
   padding: 0;
@@ -72,8 +72,8 @@ body.topbar-hidden .topbar { display: none; }
 .topbar-stripe::before {
   content: '';
   display: block;
-  width: 7px;
-  height: 64px;
+  width: 18px;
+  height: 18px;
   background: var(--accent);
   border-radius: 0 4px 4px 0;
   opacity: 0.85;
@@ -83,8 +83,8 @@ body.topbar-hidden .topbar { display: none; }
 .topbar-stripe:hover::before,
 .topbar-stripe:focus-visible::before {
   opacity: 1;
-  width: 10px;
-  height: 84px;
+  width: 22px;
+  height: 22px;
 }
 .topbar-stripe:focus { outline: none; }
 .search-panel {
