@@ -245,11 +245,23 @@ mathpreview: buffer-push 39781b → total 5 ms
 ## Layout
 
 ```
-crates/core   parser + macro extractor + numbering + renderer (the library)
-crates/cli    mathpreview-cli binary (render / debug / serve)
-examples/     demo paper + companion .sty + nvim Lua plugin
-DESIGN.md     full design document
+crates/core             parser + macro extractor + numbering + renderer (the library)
+  ├ engines/            MathEngine trait + Engine enum (dispatch)
+  │   ├ mathjax.rs        MathJaxEngine: head config, adapter shim, extra CSS
+  │   └ assets/           engine-specific frontend bits (window.__mpEngine, mjx CSS)
+  └ assets/             shared engine-neutral frontend bundle
+      ├ client.js         WebSocket + patch ops + source-sync + vim + search + UI
+      └ default.css       page stylesheet
+crates/cli              mathpreview-cli binary (render / debug / serve)
+examples/               demo paper + companion .sty + nvim Lua plugin
+CHANGELOG-GPT.md        codex session changelog
+CHANGELOG-claude.md     claude session changelog
+DESIGN.md               full design document
 ```
+
+The `client.js` and `default.css` files are pulled into the Rust binary via
+`include_str!`, so editing them is just editing the file — no Rust string
+escaping, full editor support, and lint-friendly.
 
 ## What's not done yet
 
@@ -261,7 +273,8 @@ DESIGN.md     full design document
   the target via `<a href="#id">`. The "pin into the margin" interaction
   from DESIGN §8 isn't built.
 - **Vendored MathJax.** Defaults to jsdelivr CDN. For offline use, pass
-  `--mathjax-url path/to/vendored/tex-svg.js`.
+  `--mathjax-url path/to/vendored/tex-svg.js` (the flag routes through
+  `MathJaxEngine::new(url)` under the hood).
 - **Multi-file editing.** The buffer-push path replaces the *root* file's
   content; if you edit a `\input`-ed child, you'd need the editor plugin
   to send each buffer keyed by path. The server-side substitution map
@@ -278,9 +291,10 @@ DESIGN.md     full design document
   underneath, with the existing `mathpreview-cli serve` remaining as the
   headless option for browser-tab users. See DESIGN §11 step 7 for the
   migration sketch.
-- **Pluggable rendering engine.** The current renderer emits HTML +
-  MathJax; the architecture (AST → renderer → WebSocket → frontend) is
-  set up so we can swap in PDF-based rendering (via Texpresso) later
-  without disturbing the AST or interactive-overlay layers. A future
-  `--engine mathjax|texpresso` flag would let users with a TeX install
-  pick faithful rendering, others keep the fast MathJax default.
+- **Second rendering engine.** The `MathEngine` trait and the
+  engine-neutral `window.__mpEngine` shim are in place; today the only
+  implementation is `MathJaxEngine`. Adding e.g. a `PdfjsEngine` (page
+  images from a real TeX compile) or a `TexpressoEngine` (driver mode)
+  is a new variant on the `Engine` enum plus a `MathEngine` impl, no
+  changes to `renderer.rs`. See `crates/core/src/engines/mod.rs` for the
+  contract.
