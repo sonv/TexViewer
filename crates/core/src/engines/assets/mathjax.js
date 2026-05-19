@@ -57,7 +57,10 @@
       return Promise.all(sources.map(function(source) {
         if (source.querySelector('mjx-container')) return Promise.resolve();
         return window.MathJax.tex2svgPromise(sourceTex(source), { display: sourceDisplay(source) })
-          .then(function(svg) { source.replaceChildren(svg); });
+          .then(function(svg) { source.replaceChildren(svg); })
+          .catch(function(e) {
+            console.warn('mathpreview engine item:', e);
+          });
       }));
     }
     return window.MathJax.typesetPromise(sources);

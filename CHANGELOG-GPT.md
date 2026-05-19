@@ -13,6 +13,10 @@
 - Switched the MathJax adapter from delimiter scanning to direct `tex2svgPromise` conversion using `data-mathjax-tex`, so live display environments such as `equation*` are sent to MathJax as TeX instead of being left as centered source text.
 - Loaded MathJax's `ams` extension by default because the renderer emits AMS-style display environments even when the LaTeX source relies on an AMS document class rather than an explicit `\usepackage{amsmath}`.
 - Bumped the WebSocket shell protocol so already-open tabs reload onto the direct MathJax feeder.
+- Changed the live MathJax scheduler from a reset-on-every-update debounce to a throttle, so frequent nvim `/buffer` pushes cannot postpone the typeset pass indefinitely while the user is typing.
+- Added a lightweight `MutationObserver` fallback on `#page` that queues newly inserted raw `.math[data-hash]` nodes for MathJax, covering patch paths that insert math outside the explicit queue.
+- Made direct per-equation `tex2svgPromise` failures local to that equation, preventing one unsupported formula from aborting the whole live typeset batch.
+- Bumped the WebSocket shell protocol so already-open tabs reload onto the throttled live MathJax scheduler.
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.

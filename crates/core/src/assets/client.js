@@ -1646,7 +1646,10 @@
   var typesetTimer = 0;
   var typesetBusy = false;
   var initialTypesetQueued = false;
-  var TYPESET_IDLE_MS = 300;
+  var mathObserver = null;
+  var TYPESET_IDLE_MS = 120;
+  var TYPESET_SMALL_IDLE_MS = 35;
+  var TYPESET_BUSY_RETRY_MS = 80;
 
   function clearRemovedMath(nodes) {
     if (!nodes.length || !window.__mpEngine) return;
@@ -1751,13 +1754,18 @@
     });
   }
 
-  function mathNeedsTypeset(node) {
+  function isUntypesetMathNode(node) {
     return !!(node && node.isConnected && node.matches &&
       node.matches('.math[data-hash]') && !node.querySelector('mjx-container'));
   }
 
+  function isRawMathNode(node) {
+    return !!(node && node.matches &&
+      node.matches('.math[data-hash]') && !node.querySelector('mjx-container'));
+  }
+
   function syncMathSourceText(node) {
-    if (!mathNeedsTypeset(node)) return;
+    if (!isRawMathNode(node)) return;
     var tex = node.getAttribute('data-mathjax-tex');
     var source = node.querySelector('.math-source');
     if (source && tex !== null && source.textContent !== tex) {
@@ -1767,13 +1775,18 @@
 
   function queueUntypesetMath(root) {
     if (!root || !root.querySelectorAll) return;
-    var nodes = Array.from(root.querySelectorAll('.math[data-hash]')).filter(mathNeedsTypeset);
+    var nodes = Array.from(root.querySelectorAll('.math[data-hash]')).filter(isRawMathNode);
     queueTypeset(nodes);
+  }
+
+  function scheduleTypesetFlush(delay) {
+    if (!pendingTypeset.size || typesetTimer) return;
+    typesetTimer = setTimeout(flushTypeset, delay);
   }
 
   function queueTypeset(nodes) {
     nodes.forEach(function(node) {
-      if (!mathNeedsTypeset(node)) return;
+      if (!isRawMathNode(node)) return;
       syncMathSourceText(node);
       pendingTypeset.add(node);
       node.classList.add('math-pending');
@@ -1782,8 +1795,7 @@
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
       return;
     }
-    if (typesetTimer) clearTimeout(typesetTimer);
-    typesetTimer = setTimeout(flushTypeset, TYPESET_IDLE_MS);
+    scheduleTypesetFlush(pendingTypeset.size <= 4 ? TYPESET_SMALL_IDLE_MS : TYPESET_IDLE_MS);
   }
 
   function queueInitialTypeset() {
@@ -1797,7 +1809,7 @@
   async function flushTypeset() {
     typesetTimer = 0;
     if (typesetBusy) {
-      typesetTimer = setTimeout(flushTypeset, 80);
+      typesetTimer = setTimeout(flushTypeset, TYPESET_BUSY_RETRY_MS);
       return;
     }
     if (!pendingTypeset.size) return;
@@ -1806,9 +1818,7 @@
       return;
     }
 
-    var nodes = Array.from(pendingTypeset).filter(function(node) {
-      return node && node.isConnected;
-    });
+    var nodes = Array.from(pendingTypeset).filter(isUntypesetMathNode);
     pendingTypeset.clear();
     if (!nodes.length) return;
 
@@ -1830,9 +1840,32 @@
       typesetBusy = false;
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
       if (pendingTypeset.size && !typesetTimer) {
-        typesetTimer = setTimeout(flushTypeset, TYPESET_IDLE_MS);
+        scheduleTypesetFlush(TYPESET_IDLE_MS);
       }
     }
+  }
+
+  function collectRawMath(node, out) {
+    if (!node || node.nodeType !== 1) return;
+    if (isRawMathNode(node)) out.push(node);
+    if (!node.querySelectorAll) return;
+    node.querySelectorAll('.math[data-hash]').forEach(function(math) {
+      if (isRawMathNode(math)) out.push(math);
+    });
+  }
+
+  function startMathObserver() {
+    var page = pageEl();
+    if (!page || !window.MutationObserver) return;
+    if (mathObserver) mathObserver.disconnect();
+    mathObserver = new MutationObserver(function(records) {
+      var nodes = [];
+      records.forEach(function(record) {
+        record.addedNodes.forEach(function(node) { collectRawMath(node, nodes); });
+      });
+      if (nodes.length) queueTypeset(nodes);
+    });
+    mathObserver.observe(page, { childList: true, subtree: true });
   }
 
   // Apply a server-computed block-level patch. Ops are positional ranges
@@ -2057,7 +2090,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '36';
+  var WS_PROTOCOL_VERSION = '37';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -2217,6 +2250,7 @@
     setTopbarHidden(false, false);
   }
   scheduleNavigationRefresh();
+  startMathObserver();
   refreshAfterInitialEngine(40);
   window.addEventListener('load', scheduleNavigationRefresh);
   window.addEventListener('resize', function() {
