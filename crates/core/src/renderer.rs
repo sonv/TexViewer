@@ -1171,12 +1171,13 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // Use \( \) so MathJax doesn't typeset the literal `$` text.
             write!(
                 out,
-                r#"<span class="math inline" id="{id}" data-src="{src}" data-hash="{hash}" data-tex="{copy_tex}" tabindex="0" title="Copy as LaTeX">\({}\)</span>"#,
-                escape_math(&rendered_math),
+                r#"<span class="math inline" id="{id}" data-src="{src}" data-hash="{hash}" data-tex="{copy_tex}" data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX"><span class="math-source">\({math}\)</span></span>"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
                 hash = hash,
                 copy_tex = escape_attr(&copy_tex),
+                mathjax_tex = escape_attr(&format!(r"\({rendered_math}\)")),
+                math = escape_math(&rendered_math),
             ).unwrap();
         }
         NodeKind::DisplayMath {
@@ -1222,7 +1223,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             ));
             writeln!(
                 out,
-                r#"<div class="math display" id="{id}" data-src="{src}"{refkey} data-hash="{hash}" data-tex="{copy_tex}" tabindex="0" title="Copy as LaTeX">{aliases}{row_refkeys}{math}{num_html}</div>"#,
+                r#"<div class="math display" id="{id}" data-src="{src}"{refkey} data-hash="{hash}" data-tex="{copy_tex}" data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX">{aliases}{row_refkeys}<span class="math-source">{math}</span>{num_html}</div>"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
                 refkey = if row_numbers.is_empty() { refkey_attr(label.as_deref()) } else { String::new() },
@@ -1231,6 +1232,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 math = escape_math(&math),
                 hash = hash,
                 copy_tex = escape_attr(&copy_tex),
+                mathjax_tex = escape_attr(&math),
             ).unwrap();
         }
         NodeKind::Subequations { label, number: _ } => {
@@ -2380,9 +2382,10 @@ fn render_latex_text_with_math(s: &str, labels: &LabelTable) -> String {
         let copy_tex = format!(r"\({body}\)");
         write!(
             out,
-            r#"<span class="math inline" data-hash="{hash}" data-tex="{copy_tex}" tabindex="0" title="Copy as LaTeX">\({math}\)</span>"#,
+            r#"<span class="math inline" data-hash="{hash}" data-tex="{copy_tex}" data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX"><span class="math-source">\({math}\)</span></span>"#,
             hash = fnv_hash(&format!("i:{body}")),
             copy_tex = escape_attr(&copy_tex),
+            mathjax_tex = escape_attr(&copy_tex),
             math = escape_math(body),
         )
         .unwrap();
@@ -3580,10 +3583,37 @@ mod tests {
 
         assert!(out.body_html.contains(r#"data-tex="\(a&amp;b\)""#));
         assert!(out.body_html.contains(r#"data-tex="\begin{equation}"#));
+        assert!(out
+            .body_html
+            .contains(r#"data-mathjax-tex="\begin{equation}"#));
+        assert!(out.body_html.contains(r#"<span class="math-source">\("#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="math-source">\begin{equation}"#));
         assert!(out.body_html.contains("x&lt;y"));
         assert!(out.body_html.contains(r#"\label{eq:test}"#));
         assert!(out.body_html.contains(r#"title="Copy as LaTeX""#));
         assert!(out.body_html.contains(r#"tabindex="0""#));
+    }
+
+    #[test]
+    fn display_mathjax_source_is_isolated_from_viewer_chrome() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{equation*}\n  a^2\n\\end{equation*}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"class="math display""#));
+        assert!(out
+            .body_html
+            .contains(r#"data-mathjax-tex="\begin{equation*}"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="math-source">\begin{equation*}"#));
+        assert!(!out.body_html.contains(r#"<span class="math-source"><span"#));
     }
 
     #[test]
@@ -4084,7 +4114,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '34'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '35'"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
         assert!(out.html.contains("queueUntypesetMath"));

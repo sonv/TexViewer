@@ -9,7 +9,8 @@
 - Made the nvim helper use `curl --fail-with-body` so HTTP-level `/buffer`, `/cursor`, and `/jump` failures show up in `:MathpreviewStatus` instead of being treated as successful no-op pushes.
 - Requeued any still-raw `.math[data-hash]` nodes after WebSocket patches and full body swaps, fixing live updates that could show raw `\(a^2\)` until a browser refresh.
 - Kept reused-but-not-yet-typeset math nodes' raw HTML synchronized with the fresh server node, so MathJax reads the same TeX that the live patch just inserted.
-- Bumped the WebSocket shell protocol so already-open tabs reload onto the raw-math sweep and source-sync fix.
+- Split every math wrapper into viewer chrome plus a dedicated `.math-source` child, and made the MathJax adapter typeset only that source child. Display equation numbers, refkey chips, and label anchors are no longer part of the text MathJax scans.
+- Bumped the WebSocket shell protocol so already-open tabs reload onto the raw-math sweep and isolated MathJax source wrapper.
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.

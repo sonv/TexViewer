@@ -1686,6 +1686,7 @@
     copyAttr(oldEl, newEl, 'data-src');
     copyAttr(oldEl, newEl, 'data-refkey');
     copyAttr(oldEl, newEl, 'data-tex');
+    copyAttr(oldEl, newEl, 'data-mathjax-tex');
     copyAttr(oldEl, newEl, 'title');
     copyAttr(oldEl, newEl, 'tabindex');
     // MathJax reads the TeX from the element's text/HTML content, not from
@@ -1755,6 +1756,15 @@
       node.matches('.math[data-hash]') && !node.querySelector('mjx-container'));
   }
 
+  function syncMathSourceText(node) {
+    if (!mathNeedsTypeset(node)) return;
+    var tex = node.getAttribute('data-mathjax-tex');
+    var source = node.querySelector('.math-source');
+    if (source && tex !== null && source.textContent !== tex) {
+      source.textContent = tex;
+    }
+  }
+
   function queueUntypesetMath(root) {
     if (!root || !root.querySelectorAll) return;
     var nodes = Array.from(root.querySelectorAll('.math[data-hash]')).filter(mathNeedsTypeset);
@@ -1764,6 +1774,7 @@
   function queueTypeset(nodes) {
     nodes.forEach(function(node) {
       if (!mathNeedsTypeset(node)) return;
+      syncMathSourceText(node);
       pendingTypeset.add(node);
       node.classList.add('math-pending');
     });
@@ -2046,7 +2057,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '34';
+  var WS_PROTOCOL_VERSION = '35';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
