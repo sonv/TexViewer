@@ -1,4 +1,4 @@
-//! MathJax v3 SVG engine.
+//! MathJax v4 SVG engine.
 //!
 //! Picks up the renderer's `<span class="math" data-tex="...">` nodes and
 //! typesets them in the browser. Macros and `\usepackage{...}` mappings come

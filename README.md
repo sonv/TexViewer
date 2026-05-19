@@ -278,7 +278,7 @@ crates/core             parser + macro extractor + numbering + renderer (the lib
       ├ client.js         WebSocket + patch ops + source-sync + vim + search + UI
       └ default.css       page stylesheet
 crates/cli              mathpreview-cli binary (render / debug / serve)
-  └ vendor/mathjax/     trimmed MathJax 3 (tex-svg) served at /vendor/mathjax/*
+  └ vendor/mathjax/     trimmed MathJax 4 (tex-svg) served at /vendor/mathjax/*
 examples/               demo paper + companion .sty + nvim Lua plugin
 scripts/
   └ vendor-mathjax.sh   refresh vendor/mathjax/ from npm
@@ -313,7 +313,7 @@ See `DESIGN.md` for the full backlog.
   preserving the dependency trail. Closing a parent closes its children.
 - **◯ Trim vendored MathJax further.** Current vendor bundle is ~5 MB
   after removing the alternate output / input engines we never load. The
-  font-shard set (es5/output/svg/fonts/tex/) could be further audited
+  SVG font data under `output/svg/fonts/` could be further audited
   against the actual macro/package usage to drop unused shards.
 - **◯ SyncTeX-precision source sync.** Editor-cursor ↔ preview jumps work
   at source-word granularity for prose and element granularity for math

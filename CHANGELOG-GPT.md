@@ -1,5 +1,25 @@
 # CHANGELOG-GPT
 
+## 2026-05-19
+
+### Fixed
+
+- Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
+- Hardened proof/theorem paragraph transplanting by removing reused paragraph math from the old-node hash pool and skipping those reused chunks during the later math transplant pass.
+- Corrected the paragraph-transplant comment to describe the actual optimization: unchanged proof paragraphs avoid DOM replacement and MathJax work, while the changed block's incoming HTML is still parsed as one fragment.
+- Updated stale MathJax documentation/comments from v3/`es5` paths to the current MathJax 4 package-root layout.
+- Removed trailing whitespace from vendored MathJax markdown so `git diff --check` passes.
+
+### Verified
+
+- `cargo fmt --check`
+- `cargo check`
+- `cargo test`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `git diff --check`
+- `node --check crates/core/src/assets/client.js`
+- Render smoke tests for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` and `/Users/tsv/Work/KFP/SDE.tex`
+
 ## 2026-05-16
 
 ### Performance

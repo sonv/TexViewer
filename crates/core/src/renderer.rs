@@ -2,7 +2,7 @@
 //!
 //! Output is a single self-contained HTML document. Math nodes are emitted as
 //! engine-neutral `<span class="math" data-tex="\(...\)" data-hash="...">`
-//! markers; the active [`crate::engines::MathEngine`] (default: MathJax v3
+//! markers; the active [`crate::engines::MathEngine`] (default: MathJax v4
 //! SVG) typesets them in the browser. Swapping engines is a frontend bundle
 //! swap and does not require changing the AST walk.
 

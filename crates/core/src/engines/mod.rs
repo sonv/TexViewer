@@ -4,7 +4,7 @@
 //! a `<span class="math" data-tex="\(...\)" data-hash="...">` node. A
 //! [`MathEngine`] picks up those nodes in the browser and produces visible
 //! math. Today the only implementation is [`MathJaxEngine`], which loads
-//! MathJax v3 SVG output. A future PDF.js or Texpresso path slots in as a new
+//! MathJax v4 SVG output. A future PDF.js or Texpresso path slots in as a new
 //! impl without touching the AST → HTML walk.
 
 mod mathjax;

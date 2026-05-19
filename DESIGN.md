@@ -208,7 +208,7 @@ file picker, no settings UI beyond a small toolbar.
                        ┌──────────────────────────────────────────┐
                        │ Browser tab (or any future frontend)     │
                        │  • inline shell HTML + CSS + JS          │
-                       │  • MathJax v3 (SVG output)               │
+                       │  • MathJax v4 (SVG output)               │
                        │  • incremental update by content hash    │
                        │  • toolbar + per-proof fold              │
                        │  • (future) margin popups, hover preview │
@@ -806,7 +806,7 @@ attach exact display-row and glyph coordinates without changing the
 `/cursor` and `/jump` protocol.
 
 **Step 7 🚧 Distribution polish.** Done:
-  * Vendored MathJax 3 at `crates/cli/vendor/mathjax/` (trimmed
+  * Vendored MathJax 4 at `crates/cli/vendor/mathjax/` (trimmed
     ~5 MB). `serve` defaults its engine URL to the local copy;
     `render` keeps the jsdelivr CDN because its output is a standalone
     HTML file. Refresh via `scripts/vendor-mathjax.sh`.
@@ -901,8 +901,8 @@ futures-util          = "0.3"
 
 Frontend, served inline from the daemon (no build step, no node_modules):
 
-- MathJax v3 with `tex-svg` output (default; `tex-chtml` is a
-  one-line flip in `HtmlOptions`).
+- MathJax v4 with `tex-svg` output (default; other MathJax bundles are
+  engine-configuration changes).
 - MathJax extensions enabled dynamically based on the project's
   `\usepackage{...}` set (see `packages.rs`).
 - MathJax fonts loaded by MathJax itself from the same source URL.

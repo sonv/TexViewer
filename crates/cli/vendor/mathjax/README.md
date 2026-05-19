@@ -139,7 +139,7 @@ import MathJax from 'mathjax';
 await MathJax.init({ ... });
 ```
 
-where `{ ... }` is the MathJax configuration you want to use.  E.g., 
+where `{ ... }` is the MathJax configuration you want to use.  E.g.,
 
 ``` js
 import MathJax from 'mathjax';

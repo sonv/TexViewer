@@ -167,7 +167,7 @@ MathJax uses several permanent branches in the [MathJax source repository](https
   site.
 
 - **[master](https://github.com/mathjax/MathJax-src)** contains the latest
-  release of MathJax. This branch may be used in production. Do 
+  release of MathJax. This branch may be used in production. Do
   **NOT** use this branch to work on MathJax's source.
 
 These branches reflect version 3 of MathJax, which is substantially
@@ -198,7 +198,7 @@ built once that is done.  See the
 for details. For version 2, the source javascript files are not
 compressed until a release is made, so you should use the copies in
 the `unpacked` directory during development.
-  
+
 
 ### Submitting Pull Requests
 

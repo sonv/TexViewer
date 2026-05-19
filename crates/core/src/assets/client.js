@@ -662,7 +662,12 @@
     if (persist) {
       try { localStorage.setItem('mathpreview.marginMode', marginMode ? '1' : '0'); } catch (e) {}
     }
-    if (!marginMode) closeAllMarginCards();
+    if (!marginMode) {
+      closeAllMarginCards();
+      clearSidenoteLayout();
+    } else {
+      scheduleSidenoteLayout();
+    }
   }
 
   function marginEl() { return document.getElementById('margin'); }
@@ -1027,6 +1032,13 @@
     scheduleSidenoteLayout();
   }
 
+  function clearSidenoteLayout() {
+    var chips = document.querySelectorAll('main#page .sidenote');
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].style.transform = '';
+    }
+  }
+
   /// Stack overlapping sidenote chips dynamically.
   ///
   /// `\AB{...}` and `\SV[date]{...}` next to each other in the source
@@ -1047,9 +1059,8 @@
     if (!chips.length) return;
     // Reset transforms first so offsetHeight / offsetTop measure the
     // natural box without the previously-applied translate.
-    for (var i = 0; i < chips.length; i++) {
-      chips[i].style.transform = '';
-    }
+    clearSidenoteLayout();
+    if (!marginMode || !document.body.classList.contains('margin-mode')) return;
     // Force the browser to flush style/layout invalidations before we
     // read offsetTop / offsetHeight.
     void document.body.offsetHeight;
@@ -1648,6 +1659,20 @@
     return leftovers;
   }
 
+  function removeIndexedMath(root, oldByHash) {
+    root.querySelectorAll('.math[data-hash]').forEach(function(oldEl) {
+      var pool = oldByHash.get(oldEl.dataset.hash);
+      if (!pool) return;
+      for (var i = 0; i < pool.length; i++) {
+        if (pool[i] === oldEl) {
+          pool.splice(i, 1);
+          break;
+        }
+      }
+      if (!pool.length) oldByHash.delete(oldEl.dataset.hash);
+    });
+  }
+
   function copyAttr(dst, src, name) {
     var value = src.getAttribute(name);
     if (value === null) dst.removeAttribute(name);
@@ -1783,6 +1808,7 @@
     var reusedMath = 0, totalMath = 0;
     var replacedBlocks = 0, insertedBlocks = 0, removedBlocks = 0;
     var reusedBlocks = 0;
+    var reusedSubBlockAttr = 'data-mp-reused-subblock';
     var hasRebuild = ops.some(function(op) { return op.type === 'rebuild'; });
     var detachPage = ops.length > 8 || hasRebuild;
     var pageParent = detachPage ? page.parentNode : null;
@@ -1824,6 +1850,7 @@
 
     function transplantMath(scope) {
       scope.querySelectorAll('.math[data-hash]').forEach(function(newEl) {
+        if (newEl.closest('span.proof-para[' + reusedSubBlockAttr + ']')) return;
         totalMath++;
         var pool = sharedOldByHash.get(newEl.dataset.hash);
         if (pool && pool.length > 0) {
@@ -1837,16 +1864,23 @@
       });
     }
 
+    function clearReusedSubBlockMarkers(scope) {
+      scope.querySelectorAll('span.proof-para[' + reusedSubBlockAttr + ']').forEach(function(el) {
+        el.removeAttribute(reusedSubBlockAttr);
+      });
+    }
+
     /// Sub-block reuse: for every (old block, new fragment block) pair,
     /// transplant `.proof-para` children whose `data-subhash` matches
     /// between sides. This keeps the existing DOM (and all the typeset
     /// math nodes inside) for paragraphs that didn't change, so a
-    /// single-paragraph edit inside a long proof costs roughly the
-    /// price of one paragraph's HTML parse instead of the whole
-    /// proof's. Mirrors the math `transplantMath` reuse pattern but at
-    /// the paragraph level. Called BEFORE `transplantMath(frag)` so
-    /// the moved old paragraphs (which already contain their typeset
-    /// math) skip the math-pool walk entirely for their contents.
+    /// single-paragraph edit inside a long proof avoids DOM replacement
+    /// and re-typesetting for unchanged proof paragraphs. The incoming
+    /// HTML for the changed block is still parsed as one fragment; this
+    /// optimization reduces the later swap/typeset work. Called BEFORE
+    /// `transplantMath(frag)` so moved old paragraphs (which already
+    /// contain typeset math) can be removed from the math pool and
+    /// skipped by the math transplant pass.
     function transplantSubBlocks(oldBlock, newBlock) {
       if (!oldBlock || !newBlock) return;
       var oldParas = oldBlock.querySelectorAll('span.proof-para[data-subhash]');
@@ -1866,6 +1900,8 @@
         var pool = byHash.get(hash);
         if (pool && pool.length) {
           var oldPara = pool.shift();
+          removeIndexedMath(oldPara, sharedOldByHash);
+          oldPara.setAttribute(reusedSubBlockAttr, '1');
           newPara.replaceWith(oldPara);
           reused++;
         }
@@ -1895,6 +1931,7 @@
             transplantSubBlocks(blocks[start + pp], newFragBlocks[pp]);
           }
           transplantMath(frag);
+          clearReusedSubBlockMarkers(frag);
 
           for (var d = 0; d < removeCount; d++) {
             if (blocks[start + d] && blocks[start + d].parentNode === page) {
