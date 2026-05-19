@@ -4114,10 +4114,11 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '35'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '36'"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
         assert!(out.html.contains("queueUntypesetMath"));
+        assert!(out.html.contains("tex2svgPromise"));
         assert!(out.html.contains("mjx-container"));
         assert!(out.html.contains("oldEl.innerHTML = newEl.innerHTML"));
         assert!(out.html.contains(r#"id="search-panel""#));

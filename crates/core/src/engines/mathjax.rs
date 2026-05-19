@@ -13,6 +13,7 @@
 //!   * Engine-specific CSS rules (the `mjx-container` overflow handling that
 //!     keeps displays from blowing out the A4 column).
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use crate::engines::MathEngine;
@@ -149,16 +150,12 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
         );
     }
 
-    let package_short: Vec<String> = preamble
-        .packages_short
-        .iter()
-        .map(|s| json_string(s))
-        .collect();
-    let package_long: Vec<String> = preamble
-        .packages_long
-        .iter()
-        .map(|s| json_string(s))
-        .collect();
+    let mut package_short_set = BTreeSet::from(["ams".to_string()]);
+    package_short_set.extend(preamble.packages_short.iter().cloned());
+    let package_short: Vec<String> = package_short_set.iter().map(|s| json_string(s)).collect();
+    let mut package_long_set = BTreeSet::from(["[tex]/ams".to_string()]);
+    package_long_set.extend(preamble.packages_long.iter().cloned());
+    let package_long: Vec<String> = package_long_set.iter().map(|s| json_string(s)).collect();
     let loader_paths = local_font_path
         .as_deref()
         .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))

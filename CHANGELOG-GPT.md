@@ -10,7 +10,9 @@
 - Requeued any still-raw `.math[data-hash]` nodes after WebSocket patches and full body swaps, fixing live updates that could show raw `\(a^2\)` until a browser refresh.
 - Kept reused-but-not-yet-typeset math nodes' raw HTML synchronized with the fresh server node, so MathJax reads the same TeX that the live patch just inserted.
 - Split every math wrapper into viewer chrome plus a dedicated `.math-source` child, and made the MathJax adapter typeset only that source child. Display equation numbers, refkey chips, and label anchors are no longer part of the text MathJax scans.
-- Bumped the WebSocket shell protocol so already-open tabs reload onto the raw-math sweep and isolated MathJax source wrapper.
+- Switched the MathJax adapter from delimiter scanning to direct `tex2svgPromise` conversion using `data-mathjax-tex`, so live display environments such as `equation*` are sent to MathJax as TeX instead of being left as centered source text.
+- Loaded MathJax's `ams` extension by default because the renderer emits AMS-style display environments even when the LaTeX source relies on an AMS document class rather than an explicit `\usepackage{amsmath}`.
+- Bumped the WebSocket shell protocol so already-open tabs reload onto the direct MathJax feeder.
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.
