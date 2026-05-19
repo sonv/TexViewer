@@ -17,6 +17,9 @@
 - Added a lightweight `MutationObserver` fallback on `#page` that queues newly inserted raw `.math[data-hash]` nodes for MathJax, covering patch paths that insert math outside the explicit queue.
 - Made direct per-equation `tex2svgPromise` failures local to that equation, preventing one unsupported formula from aborting the whole live typeset batch.
 - Bumped the WebSocket shell protocol so already-open tabs reload onto the throttled live MathJax scheduler.
+- Serialized direct MathJax `tex2svgPromise` calls instead of launching the whole initial document at once, avoiding a startup-time MathJax 4 promise pile-up that could leave the first render raw.
+- Added an initial-typeset safety pass that retries once after startup so the page still queues math if the MathJax readiness callback races the client boot sequence.
+- Bumped the WebSocket shell protocol so already-open tabs reload onto the serialized startup typesetter.
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.

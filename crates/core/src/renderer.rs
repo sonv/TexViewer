@@ -4114,9 +4114,10 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '37'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '38'"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
+        assert!(out.html.contains("ensureInitialTypeset"));
         assert!(out.html.contains("queueUntypesetMath"));
         assert!(out.html.contains("MutationObserver"));
         assert!(out.html.contains("scheduleTypesetFlush"));

@@ -1131,6 +1131,11 @@
   }
 
   function refreshAfterInitialEngine(tries) {
+    if (window.__mpEngine && window.__mpEngine.isReady && window.__mpEngine.isReady()) {
+      queueInitialTypeset();
+      scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
+      return;
+    }
     if (window.__mpEngine && window.__mpEngine.ready(function() {
       queueInitialTypeset();
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
@@ -1138,6 +1143,11 @@
     if (tries > 0) {
       setTimeout(function() { refreshAfterInitialEngine(tries - 1); }, 150);
     }
+  }
+
+  function ensureInitialTypeset() {
+    if (initialTypesetQueued) return;
+    refreshAfterInitialEngine(1);
   }
 
   function theoremRole(thm) {
@@ -2090,7 +2100,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '37';
+  var WS_PROTOCOL_VERSION = '38';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -2252,6 +2262,7 @@
   scheduleNavigationRefresh();
   startMathObserver();
   refreshAfterInitialEngine(40);
+  setTimeout(ensureInitialTypeset, 1200);
   window.addEventListener('load', scheduleNavigationRefresh);
   window.addEventListener('resize', function() {
     updatePageScale();
