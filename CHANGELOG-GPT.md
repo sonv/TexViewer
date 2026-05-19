@@ -8,7 +8,8 @@
 - Filtered directory watcher events down to actual watched project files, so unrelated files such as swap files or local HTML exports in the same directory no longer trigger disk re-renders that can overwrite unsaved buffer previews.
 - Made the nvim helper use `curl --fail-with-body` so HTTP-level `/buffer`, `/cursor`, and `/jump` failures show up in `:MathpreviewStatus` instead of being treated as successful no-op pushes.
 - Requeued any still-raw `.math[data-hash]` nodes after WebSocket patches and full body swaps, fixing live updates that could show raw `\(a^2\)` until a browser refresh.
-- Bumped the WebSocket shell protocol so already-open tabs reload onto the raw-math sweep.
+- Kept reused-but-not-yet-typeset math nodes' raw HTML synchronized with the fresh server node, so MathJax reads the same TeX that the live patch just inserted.
+- Bumped the WebSocket shell protocol so already-open tabs reload onto the raw-math sweep and source-sync fix.
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.

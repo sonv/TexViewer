@@ -1688,6 +1688,13 @@
     copyAttr(oldEl, newEl, 'data-tex');
     copyAttr(oldEl, newEl, 'title');
     copyAttr(oldEl, newEl, 'tabindex');
+    // MathJax reads the TeX from the element's text/HTML content, not from
+    // `data-tex`. If a raw math node is reused before its deferred typeset
+    // pass runs, keep that raw source synchronized with the fresh server
+    // node. Already-typeset nodes keep their <mjx-container> subtree.
+    if (!oldEl.querySelector('mjx-container')) {
+      oldEl.innerHTML = newEl.innerHTML;
+    }
   }
 
   function pageBlocks(page) {
@@ -2039,7 +2046,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '33';
+  var WS_PROTOCOL_VERSION = '34';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
