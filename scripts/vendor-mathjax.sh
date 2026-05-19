@@ -84,6 +84,7 @@ mkdir -p "$VENDOR_DIR"
 mv "$PKG"/* "$VENDOR_DIR/"
 if [ -n "$FONT_PKG" ]; then
   mkdir -p "$VENDOR_DIR/mathjax-newcm-font"
+  cp "$FONT_PKG/svg.js" "$VENDOR_DIR/mathjax-newcm-font/svg.js"
   mv "$FONT_PKG/svg" "$VENDOR_DIR/mathjax-newcm-font/"
   cp "$FONT_PKG/package.json" "$VENDOR_DIR/mathjax-newcm-font/package.json"
 fi

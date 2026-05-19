@@ -8,6 +8,8 @@
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.
 - Vendored MathJax 4's New Computer Modern SVG font shards and pointed local `/vendor/mathjax/tex-svg.js` shells at them, fixing `\boldsymbol` / `\bm` rendering in `SDE.tex`.
+- Added the missing NewCM `svg.js` font-package entrypoint; without it MathJax startup failed before dynamic font shards such as `latin-b.js` could load.
+- Bumped the WebSocket shell protocol again so tabs that already hit the failed MathJax startup path reload onto the repaired font package.
 - Hardened proof/theorem paragraph transplanting by removing reused paragraph math from the old-node hash pool and skipping those reused chunks during the later math transplant pass.
 - Corrected the paragraph-transplant comment to describe the actual optimization: unchanged proof paragraphs avoid DOM replacement and MathJax work, while the changed block's incoming HTML is still parsed as one fragment.
 - Updated stale MathJax documentation/comments from v3/`es5` paths to the current MathJax 4 package-root layout.
