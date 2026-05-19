@@ -5,6 +5,8 @@
 ### Fixed
 
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
+- Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
+- Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.
 - Hardened proof/theorem paragraph transplanting by removing reused paragraph math from the old-node hash pool and skipping those reused chunks during the later math transplant pass.
 - Corrected the paragraph-transplant comment to describe the actual optimization: unchanged proof paragraphs avoid DOM replacement and MathJax work, while the changed block's incoming HTML is still parsed as one fragment.
 - Updated stale MathJax documentation/comments from v3/`es5` paths to the current MathJax 4 package-root layout.

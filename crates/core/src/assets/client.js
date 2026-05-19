@@ -1132,7 +1132,8 @@
 
   function refreshAfterInitialEngine(tries) {
     if (window.__mpEngine && window.__mpEngine.ready(function() {
-      scheduleNavigationRefresh();
+      queueInitialTypeset();
+      scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
     })) return;
     if (tries > 0) {
       setTimeout(function() { refreshAfterInitialEngine(tries - 1); }, 150);
@@ -1644,6 +1645,7 @@
   var pendingTypeset = new Set();
   var typesetTimer = 0;
   var typesetBusy = false;
+  var initialTypesetQueued = false;
   var TYPESET_IDLE_MS = 300;
 
   function clearRemovedMath(nodes) {
@@ -1752,6 +1754,14 @@
     }
     if (typesetTimer) clearTimeout(typesetTimer);
     typesetTimer = setTimeout(flushTypeset, TYPESET_IDLE_MS);
+  }
+
+  function queueInitialTypeset() {
+    if (initialTypesetQueued) return;
+    var page = pageEl();
+    if (!page) return;
+    initialTypesetQueued = true;
+    queueTypeset(Array.from(page.querySelectorAll('.math[data-hash]')));
   }
 
   async function flushTypeset() {
@@ -2016,7 +2026,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '30';
+  var WS_PROTOCOL_VERSION = '31';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

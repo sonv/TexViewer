@@ -190,7 +190,7 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
     displayOverflow: 'linebreak',
     linebreaks: {{ inline: true }}
   }},
-  startup: {{ typeset: true }}
+  startup: {{ typeset: false }}
 }};"#,
         packages_short = package_short.join(", "),
         packages_long = package_long.join(", "),
