@@ -1743,8 +1743,20 @@
     });
   }
 
+  function mathNeedsTypeset(node) {
+    return !!(node && node.isConnected && node.matches &&
+      node.matches('.math[data-hash]') && !node.querySelector('mjx-container'));
+  }
+
+  function queueUntypesetMath(root) {
+    if (!root || !root.querySelectorAll) return;
+    var nodes = Array.from(root.querySelectorAll('.math[data-hash]')).filter(mathNeedsTypeset);
+    queueTypeset(nodes);
+  }
+
   function queueTypeset(nodes) {
     nodes.forEach(function(node) {
+      if (!mathNeedsTypeset(node)) return;
       pendingTypeset.add(node);
       node.classList.add('math-pending');
     });
@@ -1761,7 +1773,7 @@
     var page = pageEl();
     if (!page) return;
     initialTypesetQueued = true;
-    queueTypeset(Array.from(page.querySelectorAll('.math[data-hash]')));
+    queueUntypesetMath(page);
   }
 
   async function flushTypeset() {
@@ -2004,6 +2016,7 @@
     }
 
     queueTypeset(needTypeset);
+    queueUntypesetMath(page);
 
     var total = Math.round(performance.now() - tStart);
     setStatus('live',
@@ -2026,7 +2039,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '32';
+  var WS_PROTOCOL_VERSION = '33';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -2138,6 +2151,7 @@
           var tSwap = performance.now();
 
           queueTypeset(needTypeset);
+          queueUntypesetMath(page);
 
           var tDone = performance.now();
           var total = Math.round(tDone - tStart);
