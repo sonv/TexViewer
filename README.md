@@ -94,6 +94,31 @@ open out.html
 # Open http://127.0.0.1:23636 in any browser.
 ```
 
+### MathJax and offline setup
+
+For the live viewer, MathJax works locally out of the box. The repository
+vendors MathJax 4's `tex-svg.js`, the TeX extensions used by real papers,
+and the New Computer Modern SVG font shards needed by `\boldsymbol` /
+`\bm` under `crates/cli/vendor/mathjax/`. `mathpreview-cli serve`
+defaults to:
+
+```sh
+--mathjax-url /vendor/mathjax/tex-svg.js
+```
+
+and the daemon serves that bundle at
+`http://127.0.0.1:23636/vendor/mathjax/...`. For normal use, the install
+path is just: build the Rust binary, run `serve`, open the browser. No
+`npm install`, CDN access, LaTeX install, or separate MathJax setup is
+needed for the HTML/SVG preview.
+
+`mathpreview-cli render` is different: it writes a standalone HTML file
+intended to be opened directly, so it uses the jsdelivr MathJax CDN by
+default. For fully offline preview, prefer `serve`. If you do want a
+static offline HTML setup, pass `--mathjax-url` to a MathJax bundle that
+your own HTTP server also serves; a `file://` HTML file cannot load
+`/vendor/mathjax/...` unless a local server is providing that path.
+
 The toolbar shows a status pill that reports timing on each update.
 The format depends on whether the daemon could send a patch or had to
 fall back to a full body re-render.
@@ -176,6 +201,9 @@ so they are real `.js` files you can lint with ESLint:
 npm install               # one-time
 npm run lint
 ```
+
+This `npm install` is only for linting the embedded viewer JavaScript; it
+is not required to run `mathpreview-cli serve`.
 
 The flat config in `eslint.config.js` runs `no-undef` (catches typo'd
 identifiers / forgotten renames), `no-unused-vars` (warning),
