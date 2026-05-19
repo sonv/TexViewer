@@ -30,6 +30,8 @@ echo "extracting $TARBALL"
 tar -xzf "$TARBALL" -C "$TMP_DIR"
 
 PKG="$TMP_DIR/package"
+MATHJAX_VERSION="$(node -p "require('$PKG/package.json').version")"
+FONT_PKG=""
 
 # Detect package layout: MathJax 3 puts bundles under `es5/`,
 # MathJax 4 puts them at the package root.
@@ -39,6 +41,12 @@ if [ -d "$PKG/es5" ]; then
 else
   ROOT="$PKG"
   echo "detected MathJax 4 layout (root)"
+  echo "fetching @mathjax/mathjax-newcm-font@$MATHJAX_VERSION from npm"
+  (cd "$TMP_DIR" && npm pack "@mathjax/mathjax-newcm-font@$MATHJAX_VERSION" >/dev/null)
+  FONT_TARBALL="$(ls "$TMP_DIR"/*newcm-font-*.tgz | head -1)"
+  mkdir -p "$TMP_DIR/font"
+  tar -xzf "$FONT_TARBALL" -C "$TMP_DIR/font"
+  FONT_PKG="$TMP_DIR/font/package"
 fi
 
 echo "trimming bundles we do not use"
@@ -74,5 +82,10 @@ rm -f \
 rm -rf "$VENDOR_DIR"
 mkdir -p "$VENDOR_DIR"
 mv "$PKG"/* "$VENDOR_DIR/"
+if [ -n "$FONT_PKG" ]; then
+  mkdir -p "$VENDOR_DIR/mathjax-newcm-font"
+  mv "$FONT_PKG/svg" "$VENDOR_DIR/mathjax-newcm-font/"
+  cp "$FONT_PKG/package.json" "$VENDOR_DIR/mathjax-newcm-font/package.json"
+fi
 
 echo "vendored $(du -sh "$VENDOR_DIR" | awk '{print $1}') under $VENDOR_DIR"

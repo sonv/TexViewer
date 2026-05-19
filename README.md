@@ -311,10 +311,10 @@ See `DESIGN.md` for the full backlog.
 - **◯ Nested margin-card expansion.** Clicking a `\ref` inside an
   already-pinned margin card should open a child card indented underneath,
   preserving the dependency trail. Closing a parent closes its children.
-- **◯ Trim vendored MathJax further.** Current vendor bundle is ~5 MB
-  after removing the alternate output / input engines we never load. The
-  SVG font data under `output/svg/fonts/` could be further audited
-  against the actual macro/package usage to drop unused shards.
+- **◯ Trim vendored MathJax further.** Current vendor bundle is ~13 MB
+  after keeping the New Computer Modern SVG font shards needed by
+  `\boldsymbol` / `\bm` and removing alternate output / input engines.
+  The SVG font shard set could be further audited against actual usage.
 - **◯ SyncTeX-precision source sync.** Editor-cursor ↔ preview jumps work
   at source-word granularity for prose and element granularity for math
   and refs. Full SyncTeX-style precision for exact display rows or

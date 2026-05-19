@@ -807,9 +807,10 @@ attach exact display-row and glyph coordinates without changing the
 
 **Step 7 🚧 Distribution polish.** Done:
   * Vendored MathJax 4 at `crates/cli/vendor/mathjax/` (trimmed
-    ~5 MB). `serve` defaults its engine URL to the local copy;
-    `render` keeps the jsdelivr CDN because its output is a standalone
-    HTML file. Refresh via `scripts/vendor-mathjax.sh`.
+    ~13 MB with the New Computer Modern SVG font shards needed by
+    `\boldsymbol` / `\bm`). `serve` defaults its engine URL to the local
+    copy; `render` keeps the jsdelivr CDN because its output is a
+    standalone HTML file. Refresh via `scripts/vendor-mathjax.sh`.
   * Pluggable rendering engine seam: `MathEngine` trait + `Engine`
     enum + `window.__mpEngine` adapter shim. Today's only impl is
     `MathJaxEngine`; adding e.g. a `PdfjsEngine` (real-LaTeX PDF
@@ -931,8 +932,10 @@ frontend, this is a Step 7 concern, not a Step 1 one. The user's
 local browser picks one engine.
 
 **Bundled MathJax size.** With fonts and the relevant extensions,
-MathJax is ~5 MB on disk. Default today is CDN; vendored shipping is
-Step 7. Lazy-load extensions per `\usepackage{...}` if size matters.
+MathJax is ~13 MB on disk. `serve` uses the vendored bundle so local
+previews have matching SVG fonts; standalone `render` output still uses
+the CDN by default. Lazy-load extensions per `\usepackage{...}` if size
+matters.
 
 **Incremental DOM swap edge cases.** The hash-based transplant trusts
 that math expressions with the same `data-hash` render identically.

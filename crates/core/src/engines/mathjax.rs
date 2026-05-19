@@ -46,7 +46,7 @@ impl MathEngine for MathJaxEngine {
     }
 
     fn head_html(&self, preamble: &ExtractedPreamble) -> String {
-        let config = mathjax_config(preamble);
+        let config = mathjax_config(preamble, mathjax_local_font_path(&self.script_url));
         let url = escape_attr(&self.script_url);
         format!("<script>\n{config}\n</script>\n<script src=\"{url}\" async></script>")
     }
@@ -114,7 +114,7 @@ const FALLBACK_MACROS: &[FallbackMacro] = &[
     ("replace", r"#2", 2, None),
 ];
 
-fn mathjax_config(preamble: &ExtractedPreamble) -> String {
+fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>) -> String {
     let mut macros = String::new();
     let mut first = true;
     let mut write_entry =
@@ -159,6 +159,10 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
         .iter()
         .map(|s| json_string(s))
         .collect();
+    let loader_paths = local_font_path
+        .as_deref()
+        .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))
+        .unwrap_or_default();
 
     format!(
         r#"window.MathJax = {{
@@ -179,7 +183,7 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
       {macros}
     }}
   }},
-  loader: {{ load: ['[tex]/noerrors', {packages_long}] }},
+  loader: {{ {loader_paths}load: ['[tex]/noerrors', {packages_long}] }},
   svg: {{
     fontCache: 'global',
     // Auto-break long display equations at low-priority operators when the
@@ -194,8 +198,21 @@ fn mathjax_config(preamble: &ExtractedPreamble) -> String {
 }};"#,
         packages_short = package_short.join(", "),
         packages_long = package_long.join(", "),
+        loader_paths = loader_paths,
         macros = macros,
     )
+}
+
+fn mathjax_local_font_path(script_url: &str) -> Option<String> {
+    if script_url.contains("://") {
+        return None;
+    }
+    let base = script_url.rsplit_once('/').map(|(base, _)| base)?;
+    if base.is_empty() {
+        Some("mathjax-newcm-font".to_string())
+    } else {
+        Some(format!("{base}/mathjax-newcm-font"))
+    }
 }
 
 fn json_string(s: &str) -> String {

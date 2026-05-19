@@ -4144,4 +4144,26 @@ mod tests {
             .contains("copyAttr(oldBlock, newBlock, 'data-src')"));
         assert!(!out.html.contains("user-select: all"));
     }
+
+    #[test]
+    fn local_mathjax_shell_points_to_vendored_newcm_svg_fonts() {
+        let opts = HtmlOptions {
+            engine: crate::engines::Engine::MathJax(crate::engines::MathJaxEngine::new(
+                "/vendor/mathjax/tex-svg.js",
+            )),
+            ..HtmlOptions::default()
+        };
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\documentclass{article}\n\\usepackage{bm}\n\\begin{document}\n$\\bm{E}$\n\\end{document}\n".to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert!(out
+            .html
+            .contains(r#"'mathjax-newcm': "/vendor/mathjax/mathjax-newcm-font""#));
+        assert!(out.html.contains("[tex]/boldsymbol"));
+        assert!(out.html.contains(r#""bm": ["\\boldsymbol{#1}", 1]"#));
+    }
 }
