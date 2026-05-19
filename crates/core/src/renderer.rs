@@ -780,17 +780,17 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
     let css = if opts.inline_css { DEFAULT_CSS } else { "" };
 
     let mut out = String::new();
-    // <head><title> uses the file stem (opts.title) so the browser tab
-    // is never blank.
-    let head_title = escape_html(&opts.title);
-    // The topbar's bold short-title slot is intentionally blank unless
-    // the LaTeX source provides `\title[short]{long}`. Authors who want
-    // a label in the topbar opt in via that optional argument.
+    // The topbar's bold short-title slot is filled from the optional
+    // argument of `\title[short]{long}`. We reuse the same value for the
+    // browser tab `<title>` when it's present (so the OS task switcher
+    // and tab strip surface the human-chosen short name); falling back
+    // to `opts.title` (the file stem) so the tab is never blank.
     let topbar_short = preamble
         .title_short
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let head_title = escape_html(topbar_short.unwrap_or(&opts.title));
     let topbar_title_html = match topbar_short {
         Some(s) => format!(
             r#"<strong class="topbar-doc-title">{s}</strong>"#,
@@ -823,31 +823,41 @@ fn wrap_in_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -
 </head>
 <body class="page-mode-a4">
 <header class="topbar">
-  <div class="topbar-doc">
-    {topbar_title_html}
-    {path_html}
+  <!-- Row 1: identity (doc title + source path) on the left, live-reload
+       status pill on the right. Keeps the most-glanced-at info clean and
+       single-line even when the action row below wraps. -->
+  <div class="topbar-row topbar-row-info">
+    <div class="topbar-doc">
+      {topbar_title_html}
+      {path_html}
+    </div>
+    <span class="status" id="ws-status" title="live-reload status"></span>
   </div>
-  <span class="status" id="ws-status" title="live-reload status"></span>
-  <span class="topbar-spacer"></span>
-  <!-- `toc` toggle moved to a fixed pill on the left edge (see
-       `#side-toggle` below). Kept reachable independent of the
-       top-banner visibility. -->
-  <span class="page-mode-toggle" data-page-mode="a4">
-    <button data-page-mode="a4" class="active" type="button">A4</button>
-    <button data-page-mode="dynamic" type="button">dynamic</button>
-  </span>
-  <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
-  <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
-  <button class="server-restart" id="server-restart" type="button" title="restart preview server">restart</button>
-  <button class="server-stop" id="server-stop" type="button" title="stop preview server">stop</button>
-  <span class="proof-toggle" data-mode="all">
-    <button data-mode="main">main only</button>
-    <button data-mode="supporting">+ supporting</button>
-    <button data-mode="all" class="active">all</button>
-  </span>
+  <!-- Row 2: view/proof toggles, then actions (print/restart/stop) pushed
+       to the right with margin-left:auto. On narrow widths the row wraps;
+       each pair stays grouped because segmented controls share a wrapper. -->
+  <div class="topbar-row topbar-row-actions">
+    <span class="page-mode-toggle" data-page-mode="a4">
+      <button data-page-mode="a4" class="active" type="button">A4</button>
+      <button data-page-mode="dynamic" type="button">dynamic</button>
+    </span>
+    <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
+    <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
+    <span class="proof-toggle" data-mode="all">
+      <button data-mode="main">main only</button>
+      <button data-mode="supporting">+ supporting</button>
+      <button data-mode="all" class="active">all</button>
+    </span>
+    <span class="topbar-actions-spacer"></span>
+    <button class="print-button" id="print-button" type="button" title="compile and open the PDF">print</button>
+    <button class="server-restart" id="server-restart" type="button" title="restart preview server">restart</button>
+    <button class="server-stop" id="server-stop" type="button" title="stop preview server">stop</button>
+  </div>
   <!-- The topbar hide/show toggle lives as a thin stripe on the left edge
        of the viewport (see #topbar-stripe below) so it stays reachable
-       when the margin column covers the right side of the screen. -->
+       when the margin column covers the right side of the screen.
+       The `toc` toggle is a fixed pill on the left edge (`#side-toggle`)
+       so it's reachable independent of the top-banner visibility. -->
 </header>
 <button class="topbar-stripe" id="topbar-stripe" type="button" aria-expanded="true" aria-controls="topbar-banner" title="toggle top banner"></button>
 <button class="side-toggle" id="side-toggle" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
@@ -4114,7 +4124,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '38'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '45'"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
         assert!(out.html.contains("ensureInitialTypeset"));

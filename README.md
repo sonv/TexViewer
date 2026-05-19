@@ -112,6 +112,18 @@ path is just: build the Rust binary, run `serve`, open the browser. No
 `npm install`, CDN access, LaTeX install, or separate MathJax setup is
 needed for the HTML/SVG preview.
 
+The body prose font (New Computer Modern 10pt — the same family
+MathJax's SVG glyphs are generated from, so prose and math share a
+typeface) is vendored too: four woff2 files under
+`crates/cli/vendor/newcm-text/woff2/`, served at
+`http://127.0.0.1:23636/vendor/newcm-text/...`. Bundled, not installed:
+no system font install is required. These four woff2 files are pulled
+into the binary via `include_bytes!`, so the release executable serves
+them without needing the surrounding source checkout at runtime — useful
+if you ship just the binary somewhere. (MathJax itself is too large to
+embed and still reads from `vendor/mathjax/` on disk.) The font is
+OFL-1.1 licensed (`crates/cli/vendor/newcm-text/LICENSE.txt`).
+
 `mathpreview-cli render` is different: it writes a standalone HTML file
 intended to be opened directly, so it uses the jsdelivr MathJax CDN by
 default. For fully offline preview, prefer `serve`. If you do want a
@@ -143,6 +155,15 @@ a Rust roundtrip unless they are controlling the daemon itself.
   `\cite` for ~250 ms shows a quick floating preview regardless of
   margin mode — the preview omits proofs so you see the statement
   alone.
+- `print` calls `POST /print`. The daemon runs `latexmk -pdf` (falling
+  back to `pdflatex` if latexmk isn't on `$PATH`) in the root file's
+  directory and streams the produced PDF back as `application/pdf`,
+  which the browser opens in a new tab. The output PDF path is read out
+  of the latexmk/pdflatex stdout (the "Output written on …" and "All
+  targets (…) are up-to-date" lines), so a project that sets `$out_dir`
+  in `.latexmkrc` (project-local or `~/.latexmkrc`) — `build/`, `out/`,
+  `_artifacts/2026-05/`, anything — is found without configuration. No
+  background polling: nothing runs until you click the button.
 - `restart` calls `POST /restart`, relaunches the daemon with the same
   command-line arguments, polls until the replacement server is ready,
   then reloads the page.
@@ -308,10 +329,12 @@ crates/core             parser + macro extractor + numbering + renderer (the lib
       ├ client.js         WebSocket + patch ops + source-sync + vim + search + UI
       └ default.css       page stylesheet
 crates/cli              mathpreview-cli binary (render / debug / serve)
-  └ vendor/mathjax/     trimmed MathJax 4 (tex-svg) served at /vendor/mathjax/*
+  ├ vendor/mathjax/     trimmed MathJax 4 (tex-svg) served at /vendor/mathjax/*
+  └ vendor/newcm-text/  NewCM 10pt woff2 body font served at /vendor/newcm-text/*
 examples/               demo paper + companion .sty + nvim Lua plugin
 scripts/
-  └ vendor-mathjax.sh   refresh vendor/mathjax/ from npm
+  ├ vendor-mathjax.sh     refresh vendor/mathjax/ from npm
+  └ vendor-newcm-text.sh  refresh vendor/newcm-text/ from npm
 CHANGELOG-GPT.md        codex session changelog
 CHANGELOG-claude.md     claude session changelog
 DESIGN.md               full design document

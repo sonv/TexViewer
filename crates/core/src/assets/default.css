@@ -1,3 +1,37 @@
+/* New Computer Modern web font for body prose. The MathJax SVG glyphs are
+   generated from this same family (NCM 10pt optical size by Antonis
+   Tsolomitis), so the surrounding text reads as a continuation of the math
+   rather than a different typeface clashing against it. Served by the
+   daemon out of `crates/cli/vendor/newcm-text/`. */
+@font-face {
+  font-family: 'NewCM Text';
+  src: url('/vendor/newcm-text/woff2/WebCM%20Serif%2010%20Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'NewCM Text';
+  src: url('/vendor/newcm-text/woff2/WebCM%20Serif%2010%20Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'NewCM Text';
+  src: url('/vendor/newcm-text/woff2/WebCM%20Serif%2010%20Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'NewCM Text';
+  src: url('/vendor/newcm-text/woff2/WebCM%20Serif%2010%20BoldItalic.woff2') format('woff2');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
   --fg: #1c1c1c;
   --muted: #666;
@@ -8,32 +42,62 @@
   --standard: #888;
   --omitted: #b25800;
   --border: #e0e0e0;
+  --border-strong: #c8c4ba;
+  --button-bg: #fff;
+  --button-bg-hover: #f6f4ee;
   --a4-width: 794px;
   --dynamic-width: 720px;
   --page-scale: 1;
   --page-pad-x: 64px;
   --refkey-gutter: 58px;
   --refkey-gap: 8px;
+  /* Reference height for everything that needs to sit just below the
+     sticky topbar (side-toggle pill, side-panel, margin column). Two
+     rows + padding + 1px bottom border lands around 80 px on default
+     font-size; the exact value is fine-tuned to match the rendered
+     header so absolute-positioned siblings line up flush. */
+  --topbar-height: 78px;
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 16px/1.42 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font: 16px/1.42 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
 }
 .topbar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   /* Left padding clears the fixed `.topbar-stripe` toggle so the
      document title isn't tucked under the square tab. */
-  padding: 10px 18px 10px 38px;
+  padding: 9px 18px 10px 38px;
   background: #fff;
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: 13px;
 }
-.topbar-spacer { flex: 1; }
+.topbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* Identity row: title block stretches; status pill anchors to the right
+   edge so it never collides with the title even at small widths. */
+.topbar-row-info .topbar-doc { flex: 1; }
+.topbar-row-info .status { margin-left: auto; flex-shrink: 0; }
+/* Action row: groups of toggles flow left-to-right; the spacer pushes
+   destructive / state-changing buttons (print, restart, stop) to the
+   right. `flex-wrap` keeps the layout intact when the viewport gets
+   narrow — wrapped lines stay aligned to the row start. */
+.topbar-row-actions {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  font-size: 12px;
+}
+.topbar-actions-spacer { flex: 1; min-width: 0; }
 
 /* Document title + source path block. Replaces the static "mathpreview"
    brand text — the path makes it obvious which file is being previewed
@@ -61,16 +125,33 @@ html, body {
   min-width: 0;
 }
 body.topbar-hidden .topbar { display: none; }
-.side-toggle,
 .refkey-toggle,
 .margin-toggle,
 .server-restart,
 .server-stop,
+.print-button,
 .page-mode-toggle button,
 .proof-toggle button {
-  border: 1px solid var(--border); background: #fff; padding: 4px 10px;
-  font: inherit; cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  padding: 4px 11px;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 5px;
+  color: var(--fg);
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
 }
+.refkey-toggle:hover,
+.margin-toggle:hover,
+.server-restart:hover:not(:disabled),
+.server-stop:hover:not(:disabled),
+.print-button:hover:not(.busy),
+.page-mode-toggle button:hover,
+.proof-toggle button:hover {
+  background: var(--button-bg-hover);
+  border-color: var(--border-strong);
+}
+.print-button.busy { opacity: 0.6; cursor: wait; }
 .server-restart:disabled,
 .server-stop:disabled { opacity: 0.55; cursor: wait; }
 .server-stop.is-start { border-color: var(--supporting); color: var(--supporting); }
@@ -82,7 +163,10 @@ body.topbar-hidden .topbar { display: none; }
 .side-toggle {
   position: fixed;
   left: 0;
-  top: 52px;
+  /* Anchor just below the sticky topbar so the pill never overlaps the
+     header content. `--topbar-height` is fine-tuned in :root to match
+     the two-row header. */
+  top: calc(var(--topbar-height) + 4px);
   z-index: 1000;
   height: 22px;
   min-width: 22px;
@@ -193,23 +277,46 @@ body.topbar-hidden .topbar { display: none; }
 .refkey-toggle.active,
 .margin-toggle.active,
 .page-mode-toggle button.active,
-.proof-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.proof-toggle button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+/* Segmented controls: square off the inner edges so the buttons read as
+   one connected pill instead of three loose chips. The wrapper hides
+   the seam where adjacent borders overlap. */
 .page-mode-toggle,
 .proof-toggle {
   display: inline-flex;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.page-mode-toggle button,
+.proof-toggle button {
+  border-radius: 0;
 }
 .page-mode-toggle button + button,
 .proof-toggle button + button {
   margin-left: -1px;
 }
+.page-mode-toggle button:first-child,
+.proof-toggle button:first-child {
+  border-top-left-radius: 5px;
+  border-bottom-left-radius: 5px;
+}
+.page-mode-toggle button:last-child,
+.proof-toggle button:last-child {
+  border-top-right-radius: 5px;
+  border-bottom-right-radius: 5px;
+}
 .side-panel {
   position: fixed;
   left: 16px;
-  /* Start below the floating toc toggle pill (at top: 52px, ~22 px
-     tall, with hover growing it to ~26 px) so the panel doesn't tuck
-     UNDER the button. Same offset regardless of topbar state — the
-     toc pill stays at top: 52px in both states. */
-  top: 86px;
+  /* Start below the floating toc toggle pill (which itself sits just
+     below the sticky topbar). The pill is ~22 px tall and grows to
+     ~26 px on hover, so we leave a ~32 px gap to clear it cleanly in
+     either state. */
+  top: calc(var(--topbar-height) + 32px);
   bottom: 16px;
   width: 236px;
   display: flex;
@@ -339,10 +446,13 @@ body.page-mode-dynamic main#page {
 @media (max-width: 720px) {
   .topbar {
     gap: 6px;
-    padding: 8px 10px;
-    flex-wrap: wrap;
+    padding: 8px 10px 9px 36px;
   }
-  .topbar-spacer { flex-basis: 100%; height: 0; }
+  /* Action row may wrap into a third visual line on very narrow widths;
+     bump the reference height so floating toggles and the margin column
+     still clear the header. */
+  :root { --topbar-height: 110px; }
+  .topbar-row-actions { gap: 6px; }
   main#page {
     --page-pad-x: 24px;
     --refkey-gutter: 52px;
@@ -777,7 +887,7 @@ body.margin-mode .sidenote {
 .sidenote-content {
   display: block;
   padding: 6px 9px;
-  font-family: 'Latin Modern Roman', 'CMU Serif', 'STIX Two Text', Georgia, serif;
+  font-family: 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'STIX Two Text', Georgia, serif;
   font-size: 13px;
   line-height: 1.4;
   color: var(--fg);
@@ -811,7 +921,7 @@ aside#margin { display: none; }
 body.margin-mode aside#margin {
   display: block;
   position: fixed;
-  top: 60px;
+  top: var(--topbar-height);
   right: 0;
   bottom: 0;
   width: min(540px, 36vw);

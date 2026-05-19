@@ -182,7 +182,16 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
   }},
   loader: {{ {loader_paths}load: ['[tex]/noerrors', {packages_long}] }},
   svg: {{
-    fontCache: 'global',
+    // `local` (not `global`) because our client adapter renders math via
+    // MathJax.tex2svgPromise(...) and inserts the returned SVG into the
+    // page directly. `global` puts glyph paths in a separate
+    // MJX-SVG-global-cache element that is only inserted by MathJax's
+    // updateDocument() pipeline — which tex2svgPromise does NOT call.
+    // The result is SVGs full of use-href pointers to MJX-NCM-* IDs in
+    // a cache that never lands in the DOM, so glyphs render as blank.
+    // `local` inlines each math's paths into its own <defs>, making the
+    // returned SVG self-contained.
+    fontCache: 'local',
     // Auto-break long display equations at low-priority operators when the
     // container is narrower than the rendered math. With MathJax 4's
     // improved linebreak heuristics this also handles inline math that
@@ -190,6 +199,18 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
     // and the sidenote chips.
     displayOverflow: 'linebreak',
     linebreaks: {{ inline: true }}
+  }},
+  // `tex-svg.js` in MathJax 4 bakes in the contextual menu + a11y
+  // pipeline (Speech Rule Engine), which fires off `sre/speech-worker.js`
+  // on the very first typeset and otherwise blocks the render promise
+  // from resolving. Our vendored bundle deliberately ships without the
+  // `sre/` directory (saves ~14 MB), so that worker 404s and every
+  // `tex2svgPromise` call hangs forever. Turning the `enrich` menu
+  // setting off cascades to `speech`, `braille`, `complexity`, and
+  // `explorer` (see MathJax 4's `enableEnrichment` wiring) so none of
+  // them try to load SRE.
+  options: {{
+    menuOptions: {{ settings: {{ enrich: false }} }}
   }},
   startup: {{ typeset: false }}
 }};"#,

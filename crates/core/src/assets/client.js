@@ -1246,6 +1246,49 @@
     scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
   }
 
+  /// Trigger a PDF compile on the daemon (`latexmk -pdf`, falling back
+  /// to `pdflatex` if latexmk isn't on `$PATH`) and open the produced
+  /// PDF in a new tab via a blob URL. The daemon discovers the output
+  /// path by parsing the run log, so custom `.latexmkrc` `$out_dir`
+  /// settings work without configuration here.
+  async function requestPrint(btn) {
+    if (btn.classList.contains('busy')) return;
+    btn.classList.add('busy');
+    var originalText = btn.textContent;
+    btn.textContent = 'compiling…';
+    try {
+      var res = await fetch('/print', { method: 'POST', cache: 'no-store' });
+      var contentType = res.headers.get('content-type') || '';
+      if (contentType.indexOf('application/pdf') === 0) {
+        var blob = await res.blob();
+        var url = URL.createObjectURL(blob);
+        var win = window.open(url, '_blank');
+        // Popup blockers sometimes refuse the open() above. Fall back to
+        // a same-tab navigation so the user always sees the PDF.
+        if (!win) window.location.href = url;
+        btn.textContent = originalText;
+        btn.classList.remove('busy');
+        return;
+      }
+      var body = await res.json().catch(function() { return {}; });
+      var msg = (body && body.error) ? body.error : ('print failed (HTTP ' + res.status + ')');
+      console.error('mathpreview print:', msg);
+      btn.textContent = 'compile failed';
+      btn.title = msg;
+      setTimeout(function() {
+        btn.textContent = originalText;
+        btn.classList.remove('busy');
+      }, 3500);
+    } catch (e) {
+      console.error('mathpreview print:', e);
+      btn.textContent = 'print error';
+      setTimeout(function() {
+        btn.textContent = originalText;
+        btn.classList.remove('busy');
+      }, 2000);
+    }
+  }
+
   async function restartServer() {
     var btn = document.getElementById('server-restart');
     if (btn) btn.disabled = true;
@@ -1509,6 +1552,11 @@
     if (stop) {
       if (manualStopRequested) startServer();
       else stopServer();
+      return;
+    }
+    var printBtn = e.target.closest('#print-button');
+    if (printBtn) {
+      requestPrint(printBtn);
       return;
     }
     var topbarStripe = e.target.closest('#topbar-stripe');
@@ -2100,7 +2148,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '38';
+  var WS_PROTOCOL_VERSION = '45';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;

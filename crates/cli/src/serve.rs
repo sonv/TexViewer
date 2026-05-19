@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "38";
+const WS_PROTOCOL_VERSION: &str = "45";
 
 #[derive(Clone)]
 struct AppState {
@@ -201,10 +201,12 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
         .route("/", get(serve_index))
         .route("/assets/*path", get(serve_asset))
         .route("/vendor/mathjax/*path", get(serve_vendor_mathjax))
+        .route("/vendor/newcm-text/*path", get(serve_vendor_newcm_text))
         .route("/ws", get(serve_ws))
         .route("/buffer", axum::routing::post(serve_buffer_push))
         .route("/cursor", post(serve_cursor))
         .route("/jump", get(serve_jump_poll).post(serve_jump))
+        .route("/print", post(serve_print))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
@@ -270,11 +272,59 @@ async fn serve_asset(
 /// checkout.
 const MATHJAX_VENDOR_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/mathjax");
 
+/// Body-text font woff2 files baked into the binary so the release
+/// executable doesn't need its source checkout at runtime. The MathJax
+/// bundle is too large to embed (~13 MB) and stays on disk; the body
+/// fonts are small (~800 KB total) and embedding them removes the
+/// awkwardness of a binary that breaks when the surrounding `vendor/`
+/// tree moves. See `crates/cli/vendor/newcm-text/` for provenance.
+const NEWCM_TEXT_FONTS: &[(&str, &[u8])] = &[
+    (
+        "woff2/WebCM Serif 10 Regular.woff2",
+        include_bytes!("../vendor/newcm-text/woff2/WebCM Serif 10 Regular.woff2"),
+    ),
+    (
+        "woff2/WebCM Serif 10 Italic.woff2",
+        include_bytes!("../vendor/newcm-text/woff2/WebCM Serif 10 Italic.woff2"),
+    ),
+    (
+        "woff2/WebCM Serif 10 Bold.woff2",
+        include_bytes!("../vendor/newcm-text/woff2/WebCM Serif 10 Bold.woff2"),
+    ),
+    (
+        "woff2/WebCM Serif 10 BoldItalic.woff2",
+        include_bytes!("../vendor/newcm-text/woff2/WebCM Serif 10 BoldItalic.woff2"),
+    ),
+];
+
 async fn serve_vendor_mathjax(AxumPath(path): AxumPath<String>) -> Response {
+    serve_vendor(MATHJAX_VENDOR_ROOT, &path).await
+}
+
+async fn serve_vendor_newcm_text(AxumPath(path): AxumPath<String>) -> Response {
     let Some(rel) = clean_asset_path(&path) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let root = match tokio::fs::canonicalize(MATHJAX_VENDOR_ROOT).await {
+    let rel_str = rel.to_string_lossy();
+    let Some((_, bytes)) = NEWCM_TEXT_FONTS.iter().find(|(name, _)| *name == rel_str) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = Body::from(*bytes).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("font/woff2"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400, immutable"),
+    );
+    response
+}
+
+async fn serve_vendor(vendor_root: &str, path: &str) -> Response {
+    let Some(rel) = clean_asset_path(path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let root = match tokio::fs::canonicalize(vendor_root).await {
         Ok(p) => p,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -516,6 +566,209 @@ async fn serve_jump_poll(
         Some(jump) => Json(jump).into_response(),
         None => axum::http::StatusCode::NO_CONTENT.into_response(),
     }
+}
+
+/// `POST /print` — runs `latexmk -pdf` on the project's root file and
+/// streams the produced PDF back. We trust `.latexmkrc` for build
+/// settings (engine choice, `$out_dir`, `$aux_dir`, etc.) and parse the
+/// run log to discover where it actually wrote the PDF, so a project
+/// with a custom output directory works the same as a default layout.
+async fn serve_print(State(state): State<AppState>) -> Response {
+    let root_file = state.current.read().await.root_file.clone();
+    eprintln!("mathpreview: print latexmk ({})", root_file.display());
+    match compile_pdf_via_latexmk(&root_file).await {
+        Ok(bytes) => {
+            let filename = root_file
+                .file_stem()
+                .map(|s| format!("{}.pdf", s.to_string_lossy()))
+                .unwrap_or_else(|| "output.pdf".to_string());
+            let mut response = Body::from(bytes).into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/pdf"),
+            );
+            // `inline` so the browser opens it in its PDF viewer rather
+            // than triggering a download dialog.
+            response.headers_mut().insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!("inline; filename=\"{filename}\""))
+                    .unwrap_or_else(|_| HeaderValue::from_static("inline")),
+            );
+            response
+        }
+        Err(msg) => {
+            eprintln!("mathpreview: print compile failed: {msg}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Run `latexmk -pdf` on the root file in its own directory. Returns the
+/// PDF bytes on success or a human-readable error string on failure.
+/// We rely on `latexmk` (rather than calling `pdflatex` directly) because
+/// it handles bib runs, multi-pass references, and any `.latexmkrc` in
+/// the project that may redirect output via `$out_dir` / `$aux_dir`.
+/// The output PDF path is discovered by parsing the run log rather than
+/// guessing common subdirectories: `.latexmkrc` is free to put the PDF
+/// anywhere (`build/`, `out/`, `_artifacts/2026-05/`, …) and the log
+/// always tells us where it actually landed. If `latexmk` isn't
+/// installed we fall back to a single `pdflatex` pass — enough for
+/// trivial papers; won't resolve `\cite{}` correctly.
+async fn compile_pdf_via_latexmk(root: &Path) -> Result<Vec<u8>, String> {
+    let dir = root
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let file = root
+        .file_name()
+        .ok_or_else(|| "root file has no name component".to_string())?;
+    let stem = root
+        .file_stem()
+        .ok_or_else(|| "root file has no stem".to_string())?;
+
+    // Try latexmk first.
+    let latexmk = tokio::process::Command::new("latexmk")
+        .args([
+            "-pdf",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-synctex=1",
+        ])
+        .arg(file)
+        .current_dir(&dir)
+        .output()
+        .await;
+
+    let used_fallback;
+    let status_ok;
+    let stdout_bytes;
+    let stderr_bytes;
+    match latexmk {
+        Ok(out) => {
+            used_fallback = false;
+            status_ok = out.status.success();
+            stdout_bytes = out.stdout;
+            stderr_bytes = out.stderr;
+        }
+        Err(_) => {
+            // latexmk missing — try pdflatex.
+            let pdflatex = tokio::process::Command::new("pdflatex")
+                .args(["-interaction=nonstopmode", "-halt-on-error"])
+                .arg(file)
+                .current_dir(&dir)
+                .output()
+                .await
+                .map_err(|e| format!("neither latexmk nor pdflatex is on $PATH: {e}"))?;
+            used_fallback = true;
+            status_ok = pdflatex.status.success();
+            stdout_bytes = pdflatex.stdout;
+            stderr_bytes = pdflatex.stderr;
+        }
+    }
+
+    if !status_ok {
+        let tool = if used_fallback { "pdflatex" } else { "latexmk" };
+        return Err(format!(
+            "{tool} failed:\n{}",
+            tail_log(&stdout_bytes, &stderr_bytes)
+        ));
+    }
+
+    let stdout_str = String::from_utf8_lossy(&stdout_bytes);
+    let stem_str = stem.to_string_lossy();
+    let pdf = locate_compiled_pdf(&stdout_str, &dir, &stem_str).ok_or_else(|| {
+        format!(
+            "compile succeeded but no output PDF found (parsed log + checked {}/, {}/build/, {}/out/, {}/_build/, {}/_output/)",
+            dir.display(),
+            dir.display(),
+            dir.display(),
+            dir.display(),
+            dir.display(),
+        )
+    })?;
+
+    tokio::fs::read(&pdf)
+        .await
+        .map_err(|e| format!("reading {}: {e}", pdf.display()))
+}
+
+/// Discover the produced PDF path. Strategy, in order:
+///   1. Scan the latexmk/pdflatex stdout for the lines they always emit
+///      with the resolved output path:
+///        - `Latexmk: All targets (<path>.pdf) are up-to-date`  (no-op run)
+///        - `Output written on <path>.pdf (N pages, ...).`      (pdflatex)
+///      These honour every `$out_dir` / `$aux_dir` setting the user
+///      put in `.latexmkrc`, so we don't have to model latexmk's
+///      config language ourselves.
+///   2. Fall back to a small set of common subdirectories
+///      (`./`, `build/`, `out/`, `_build/`, `_output/`) for the case
+///      where the log was empty or the regex missed.
+fn locate_compiled_pdf(stdout: &str, dir: &Path, stem: &str) -> Option<PathBuf> {
+    let try_path = |raw: &str| -> Option<PathBuf> {
+        let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
+        if trimmed.is_empty() || !trimmed.ends_with(".pdf") {
+            return None;
+        }
+        let p = Path::new(trimmed);
+        let abs = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            dir.join(p)
+        };
+        abs.is_file().then_some(abs)
+    };
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        // pdflatex's terminal status line is the most authoritative
+        // ground truth: it names the exact file it just wrote.
+        if let Some(rest) = line.strip_prefix("Output written on ") {
+            let path_part = rest.split(" (").next().unwrap_or(rest);
+            if let Some(found) = try_path(path_part) {
+                return Some(found);
+            }
+        }
+        // latexmk's no-op message when everything is already up to date —
+        // pdflatex isn't run, so the "Output written" line is missing,
+        // but latexmk still names the target.
+        if let Some(rest) = line.strip_prefix("Latexmk: All targets (") {
+            if let Some(end) = rest.find(')') {
+                if let Some(found) = try_path(&rest[..end]) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    for sub in &["", "build", "out", "_build", "_output"] {
+        let candidate = if sub.is_empty() {
+            dir.join(format!("{stem}.pdf"))
+        } else {
+            dir.join(sub).join(format!("{stem}.pdf"))
+        };
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn tail_log(stdout: &[u8], stderr: &[u8]) -> String {
+    let out = String::from_utf8_lossy(stdout);
+    let err = String::from_utf8_lossy(stderr);
+    let combined = format!("{out}{err}");
+    let lines: Vec<&str> = combined.lines().collect();
+    let tail = if lines.len() > 40 {
+        &lines[lines.len() - 40..]
+    } else {
+        &lines[..]
+    };
+    tail.join("\n")
 }
 
 fn normalize_source_path(path: PathBuf) -> PathBuf {
