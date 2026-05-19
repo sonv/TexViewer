@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Made live `/buffer` rendering accept both the root file and watched included `.tex` files. The daemon now keeps in-memory buffer overrides keyed by canonical path and re-renders the real root with those overrides spliced through `\input` / `\include` / `\subfile`.
+- Filtered directory watcher events down to actual watched project files, so unrelated files such as swap files or local HTML exports in the same directory no longer trigger disk re-renders that can overwrite unsaved buffer previews.
+- Made the nvim helper use `curl --fail-with-body` so HTTP-level `/buffer`, `/cursor`, and `/jump` failures show up in `:MathpreviewStatus` instead of being treated as successful no-op pushes.
 - Prevented hidden sidenote chips from being measured during margin layout, and reran the sidenote stacker when margin mode is enabled so chip transforms do not go stale.
 - Made initial math rendering deterministic by disabling MathJax's automatic head-script page scan and queueing the first typeset pass from the viewer client after the engine is ready.
 - Bumped the WebSocket shell protocol so already-open tabs reload once and pick up the deterministic initial-typeset path.
@@ -24,6 +27,7 @@
 - `git diff --check`
 - `node --check crates/core/src/assets/client.js`
 - Render smoke tests for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex` and `/Users/tsv/Work/KFP/SDE.tex`
+- Live `/buffer` smoke test with a root file that `\input`s a child file: posting the child buffer produced a WebSocket update for the root, and an unrelated file event in the watched directory did not revert the preview to disk content.
 
 ## 2026-05-16
 

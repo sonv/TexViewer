@@ -241,9 +241,11 @@ require("mathpreview").setup({
 ```
 
 This registers `TextChanged` / `TextChangedI` autocmds on `.tex` filetypes
-and POSTs the buffer to the daemon, debounced at 40 ms. nvim 0.10+ uses
-`vim.system` + `vim.uv`; older versions fall back to `jobstart` +
-`vim.loop`.
+and POSTs the buffer to the daemon, debounced at 40 ms. The daemon accepts
+the root file and watched `\input` / `\include` / `\subfile` children as
+in-memory overrides, so editing a chapter file can update the real root
+without saving. nvim 0.10+ uses `vim.system` + `vim.uv`; older versions
+fall back to `jobstart` + `vim.loop`.
 
 **User commands the plugin exposes:**
 
@@ -331,11 +333,10 @@ See `DESIGN.md` for the full backlog.
   modules concatenated via `include_str!` keeps the file tree readable
   and lets future engines plug in along the boundaries the engine seam
   already exposed.
-- **◯ Multi-buffer chapter editing.** `POST /buffer` only accepts the root
-  file's content. Editing an `\input`-ed `chapter1.tex` in nvim doesn't
-  live-update because the daemon ignores buffer pushes for non-root files.
-  Fix is a per-file buffer map on the daemon plus the nvim plugin sending
-  each buffer keyed by path.
+- **✓ Multi-buffer chapter editing.** `POST /buffer` accepts the root file
+  or any watched included `.tex` file. The daemon stores pushed buffers in
+  memory, re-renders the real root, and splices overrides through
+  `\input` / `\include` / `\subfile` without touching disk.
 - **◯ Nested margin-card expansion.** Clicking a `\ref` inside an
   already-pinned margin card should open a child card indented underneath,
   preserving the dependency trail. Closing a parent closes its children.

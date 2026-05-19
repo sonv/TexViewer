@@ -54,7 +54,6 @@ const WS_PROTOCOL_VERSION: &str = "32";
 
 #[derive(Clone)]
 struct AppState {
-    input: PathBuf,
     opts: HtmlOptions,
     current: Arc<RwLock<RenderOutput>>,
     tx: broadcast::Sender<String>,
@@ -62,6 +61,10 @@ struct AppState {
     watch_tx: std_mpsc::Sender<HashSet<PathBuf>>,
     /// Cached preamble + bib state, keyed on a hash of the preamble source.
     preamble_cache: Arc<RwLock<Option<PreambleCache>>>,
+    /// Unsaved editor buffers, keyed by canonical project file path.
+    /// `/buffer` can target the root or any watched included file; the
+    /// renderer then splices these sources into the real root project.
+    buffer_overrides: Arc<RwLock<HashMap<PathBuf, String>>>,
     /// Last broadcast block sequence — diff target for the next render.
     /// Updated atomically with each broadcast so reconnects and patches
     /// stay in sync.
@@ -179,13 +182,13 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
     let (watch_tx, watch_rx) = std_mpsc::channel::<HashSet<PathBuf>>();
     let last_blocks = initial.blocks.clone();
     let state = AppState {
-        input,
         opts,
         current: Arc::new(RwLock::new(initial)),
         tx,
         watched: Arc::new(RwLock::new(watched)),
         watch_tx,
         preamble_cache: Arc::new(RwLock::new(None)),
+        buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
         last_blocks: Arc::new(RwLock::new(last_blocks)),
         render_seq: Arc::new(AtomicU64::new(0)),
         jump_seq: Arc::new(AtomicU64::new(0)),
@@ -519,6 +522,10 @@ fn normalize_source_path(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+fn normalize_watch_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 async fn serve_restart() -> axum::http::StatusCode {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
@@ -584,11 +591,11 @@ fn restart_command(exe: &Path, args: &[String]) -> Command {
     command
 }
 
-/// `POST /buffer` — editor pushes the current buffer content. The path of
-/// the root file is identified via the `X-Mathpreview-Path` header. If absent,
-/// the daemon assumes the launched root. If present and it doesn't match the
-/// launched root, the request is rejected; multi-buffer substitution needs a
-/// project-aware protocol.
+/// `POST /buffer` — editor pushes the current buffer content. The pushed file
+/// is identified via the `X-Mathpreview-Path` header. If absent, the daemon
+/// assumes the root file. Root and watched included-file pushes are kept as
+/// in-memory overrides, then the real root project is re-rendered with those
+/// overrides spliced through `\input` / `\include` / `\subfile`.
 async fn serve_buffer_push(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -603,14 +610,18 @@ async fn serve_buffer_push(
         let current = state.current.read().await;
         current.root_file.clone()
     };
-    let root = match path_header.clone() {
+    let pushed_path = match path_header.clone() {
         Some(p) => p.canonicalize().unwrap_or(p),
         None => current_root.clone(),
     };
-    if root != current_root {
+    let is_known_project_file = {
+        let watched = state.watched.read().await;
+        pushed_path == current_root || watched.contains(&pushed_path)
+    };
+    if !is_known_project_file {
         eprintln!(
             "mathpreview: rejected buffer-push for {}; server root is {}",
-            root.display(),
+            pushed_path.display(),
             current_root.display(),
         );
         return axum::http::StatusCode::BAD_REQUEST;
@@ -627,7 +638,12 @@ async fn serve_buffer_push(
         return axum::http::StatusCode::ACCEPTED;
     }
 
-    match render_cached(&state, &root, body).await {
+    {
+        let mut overrides = state.buffer_overrides.write().await;
+        overrides.insert(pushed_path.clone(), body);
+    }
+
+    match render_cached(&state, &current_root).await {
         Ok((out, timing)) => {
             if !is_latest_render_attempt(&state, seq) {
                 eprintln!("mathpreview: buffer-push #{seq} {body_len}b → stale render discarded");
@@ -699,11 +715,15 @@ struct RenderTiming {
 async fn render_cached(
     state: &AppState,
     root: &Path,
-    source: String,
 ) -> anyhow::Result<(RenderOutput, RenderTiming)> {
     let mut t = RenderTiming::default();
     let t0 = std::time::Instant::now();
-    let project = project::load_project_from_source(root, source)?;
+    let overrides = state.buffer_overrides.read().await.clone();
+    let project = if overrides.is_empty() {
+        project::load_project(root)?
+    } else {
+        project::load_project_with_overrides(root, &overrides)?
+    };
     t.parse_ms = t0.elapsed().as_millis();
 
     // Preamble + bib + style — cached on the hash of the preamble source.
@@ -1201,7 +1221,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
     // notify-debouncer is sync; bridge into tokio via a std::sync::mpsc-style
     // channel polled from a dedicated thread that posts work back to a Tokio
     // task via an unbounded channel.
-    let (file_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (file_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<HashSet<PathBuf>>();
     let watched_for_thread = state.watched.clone();
 
     std::thread::spawn(move || {
@@ -1220,31 +1240,47 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             g.iter().cloned().collect()
         };
         let mut watched_dirs: HashSet<PathBuf> = HashSet::new();
-        let mut sync_watched_dirs = |files: HashSet<PathBuf>| {
-            for f in files {
-                let dir = f.parent().unwrap_or(Path::new(".")).to_path_buf();
-                if watched_dirs.insert(dir.clone()) {
-                    match debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
-                        Ok(()) => eprintln!("mathpreview: watching {}", dir.display()),
-                        Err(e) => eprintln!("mathpreview: failed to watch {}: {e}", dir.display()),
-                    }
+        let initial: HashSet<PathBuf> = initial.into_iter().collect();
+        let mut watched_files: HashSet<PathBuf> =
+            initial.iter().map(|f| normalize_watch_path(f)).collect();
+        for f in initial {
+            let dir = f.parent().unwrap_or(Path::new(".")).to_path_buf();
+            if watched_dirs.insert(dir.clone()) {
+                match debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
+                    Ok(()) => eprintln!("mathpreview: watching {}", dir.display()),
+                    Err(e) => eprintln!("mathpreview: failed to watch {}: {e}", dir.display()),
                 }
             }
-        };
-        sync_watched_dirs(initial.into_iter().collect());
+        }
 
         loop {
             while let Ok(files) = watch_rx.try_recv() {
-                sync_watched_dirs(files);
+                watched_files = files.iter().map(|f| normalize_watch_path(f)).collect();
+                for f in files {
+                    let dir = f.parent().unwrap_or(Path::new(".")).to_path_buf();
+                    if watched_dirs.insert(dir.clone()) {
+                        match debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
+                            Ok(()) => eprintln!("mathpreview: watching {}", dir.display()),
+                            Err(e) => {
+                                eprintln!("mathpreview: failed to watch {}: {e}", dir.display())
+                            }
+                        }
+                    }
+                }
             }
             match raw_rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(events) => match events {
                     Ok(evs) => {
-                        if evs.is_empty() {
+                        let changed = watched_event_paths(&evs, &watched_files);
+                        if changed.is_empty() {
                             continue;
                         }
-                        eprintln!("mathpreview: change detected ({} events)", evs.len());
-                        if file_tx.send(()).is_err() {
+                        eprintln!(
+                            "mathpreview: change detected ({} events, {} project files)",
+                            evs.len(),
+                            changed.len()
+                        );
+                        if file_tx.send(changed).is_err() {
                             break;
                         }
                     }
@@ -1261,18 +1297,30 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
     });
 
     tokio::spawn(async move {
-        while file_rx.recv().await.is_some() {
+        while let Some(mut changed_paths) = file_rx.recv().await {
             // Drain any queued ticks — we only need the latest state.
-            while file_rx.try_recv().is_ok() {}
+            while let Ok(more) = file_rx.try_recv() {
+                changed_paths.extend(more);
+            }
             let seq = begin_render_attempt(&state);
-            match render_project(&state.input, &state.opts) {
+            {
+                let mut overrides = state.buffer_overrides.write().await;
+                for path in &changed_paths {
+                    overrides.remove(path);
+                }
+            }
+            *state.preamble_cache.write().await = None;
+            let root = {
+                let current = state.current.read().await;
+                current.root_file.clone()
+            };
+            match render_cached(&state, &root).await.map(|(out, _)| out) {
                 Ok(new_output) => {
                     if !is_latest_render_attempt(&state, seq) {
                         eprintln!("mathpreview: file-change #{seq} stale render discarded");
                         continue;
                     }
                     update_watched(&state, &new_output).await;
-                    *state.preamble_cache.write().await = None;
                     let (op_count, kind) = broadcast_render(&state, new_output).await;
                     let mem = {
                         let blocks = state.last_blocks.read().await;
@@ -1300,18 +1348,35 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
     });
 }
 
+fn watched_event_paths(
+    events: &[notify_debouncer_full::DebouncedEvent],
+    watched_files: &HashSet<PathBuf>,
+) -> HashSet<PathBuf> {
+    let mut changed = HashSet::new();
+    for event in events {
+        for path in &event.paths {
+            let normalized = normalize_watch_path(path);
+            if watched_files.contains(&normalized) {
+                changed.insert(normalized);
+            }
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, is_buffer_renderable, is_latest_render_attempt,
-        websocket_needs_reload, AppState, PatchOp, PlanSlot, WS_PROTOCOL_VERSION,
+        watched_event_paths, websocket_needs_reload, AppState, PatchOp, PlanSlot,
+        WS_PROTOCOL_VERSION,
     };
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},
         sync::SyncIndex,
         ExtractedPreamble, RenderOutput,
     };
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
     use std::sync::{atomic::AtomicU64, mpsc as std_mpsc, Arc};
     use tokio::sync::{broadcast, RwLock};
@@ -1532,7 +1597,6 @@ Second paragraph here.
         let (tx, _) = broadcast::channel(1);
         let (watch_tx, _) = std_mpsc::channel();
         let state = AppState {
-            input: PathBuf::from("main.tex"),
             opts: HtmlOptions::default(),
             current: Arc::new(RwLock::new(RenderOutput {
                 html: String::new(),
@@ -1561,6 +1625,7 @@ Second paragraph here.
             watched: Arc::new(RwLock::new(HashSet::new())),
             watch_tx,
             preamble_cache: Arc::new(RwLock::new(None)),
+            buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
@@ -1571,6 +1636,23 @@ Second paragraph here.
         let newer = begin_render_attempt(&state);
         assert!(!is_latest_render_attempt(&state, older));
         assert!(is_latest_render_attempt(&state, newer));
+    }
+
+    #[test]
+    fn watcher_ignores_unwatched_directory_events() {
+        let watched_path = PathBuf::from("/tmp/mathpreview-main.tex");
+        let other_path = PathBuf::from("/tmp/mathpreview-main.tex.swp");
+        let mut watched = HashSet::new();
+        watched.insert(watched_path.clone());
+
+        let mut ignored = notify::Event::new(notify::EventKind::Any);
+        ignored.paths.push(other_path);
+        assert!(watched_event_paths(&[ignored.into()], &watched).is_empty());
+
+        let mut accepted = notify::Event::new(notify::EventKind::Any);
+        accepted.paths.push(watched_path.clone());
+        let changed = watched_event_paths(&[accepted.into()], &watched);
+        assert!(changed.contains(&watched_path));
     }
 
     fn rendered_block(id: &str, html: &str) -> RenderedBlock {

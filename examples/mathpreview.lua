@@ -109,6 +109,7 @@ local function push_buffer()
     "curl",
     "--silent",
     "--show-error",
+    "--fail-with-body",
     "--max-time", "5",
     "--header", "X-Mathpreview-Path: " .. path,
     "--data-binary", "@-",
@@ -142,6 +143,7 @@ local function post_cursor()
     "curl",
     "--silent",
     "--show-error",
+    "--fail-with-body",
     "--max-time", "2",
     "--header", "content-type: application/json",
     "--data-binary", "@-",
@@ -194,6 +196,7 @@ local function poll_jump()
     "curl",
     "--silent",
     "--show-error",
+    "--fail-with-body",
     "--max-time", "2",
     config.jump_url .. "?after=" .. tostring(last_jump_seq),
   }

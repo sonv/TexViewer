@@ -8,7 +8,7 @@
 //! returned in include-order. Cycles are detected; missing files become
 //! warnings (not crashes), per DESIGN §13.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -70,7 +70,7 @@ const INCLUDE_RE: &str = r"\\(?:input|include|subfile)\s*\{\s*([^}]+?)\s*\}";
 pub fn load_project(root: &Path) -> Result<Project> {
     let source =
         fs::read_to_string(root).with_context(|| format!("reading root {}", root.display()))?;
-    load_project_with_source(root, source)
+    load_project_with_source_and_overrides(root, source, &HashMap::new())
 }
 
 /// Load a project using `source` as the root file's content instead of
@@ -79,10 +79,25 @@ pub fn load_project(root: &Path) -> Result<Project> {
 /// `serve` to render directly from an editor buffer without writing the
 /// file out first.
 pub fn load_project_from_source(root: &Path, source: String) -> Result<Project> {
-    load_project_with_source(root, source)
+    load_project_with_source_and_overrides(root, source, &HashMap::new())
 }
 
-fn load_project_with_source(root: &Path, source: String) -> Result<Project> {
+/// Load a project while replacing selected files with in-memory buffer
+/// contents. Keys should be canonical file paths when possible.
+pub fn load_project_with_overrides(
+    root: &Path,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<Project> {
+    let source = read_source_with_overrides(root, overrides)
+        .with_context(|| format!("reading root {}", root.display()))?;
+    load_project_with_source_and_overrides(root, source, overrides)
+}
+
+fn load_project_with_source_and_overrides(
+    root: &Path,
+    source: String,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<Project> {
     let (preamble_src, body_src, body_start) = split_preamble(&source);
     let preamble = Preamble {
         source: preamble_src.to_string(),
@@ -109,6 +124,7 @@ fn load_project_with_source(root: &Path, source: String) -> Result<Project> {
         &mut files,
         &mut visited,
         &mut warnings,
+        overrides,
         0,
     );
 
@@ -118,6 +134,23 @@ fn load_project_with_source(root: &Path, source: String) -> Result<Project> {
         files,
         warnings,
     })
+}
+
+fn override_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn read_source_with_overrides(
+    path: &Path,
+    overrides: &HashMap<PathBuf, String>,
+) -> std::io::Result<String> {
+    if let Some(source) = overrides.get(&override_key(path)) {
+        return Ok(source.clone());
+    }
+    if let Some(source) = overrides.get(path) {
+        return Ok(source.clone());
+    }
+    fs::read_to_string(path)
 }
 
 /// Split the root source into (preamble, body), where body is everything
@@ -151,6 +184,7 @@ fn append_with_includes(
     out: &mut Vec<ProjectFile>,
     visited: &mut HashSet<PathBuf>,
     warnings: &mut Vec<String>,
+    overrides: &HashMap<PathBuf, String>,
     depth: usize,
 ) {
     if depth > 16 {
@@ -177,7 +211,7 @@ fn append_with_includes(
             last = m.end();
             continue;
         }
-        match fs::read_to_string(&canonical) {
+        match read_source_with_overrides(&canonical, overrides) {
             Ok(s) => {
                 let child_base = canonical.parent().unwrap_or(base).to_path_buf();
                 append_with_includes(
@@ -189,6 +223,7 @@ fn append_with_includes(
                     out,
                     visited,
                     warnings,
+                    overrides,
                     depth + 1,
                 );
             }
@@ -290,6 +325,33 @@ mod tests {
 
         assert!(flattened.contains("Before.\nChild.\n\nAfter."));
         assert!(!flattened.contains("\\input{child}"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn included_file_overrides_are_spliced_without_disk_write() {
+        let dir = temp_dir("include-override");
+        let root = dir.join("main.tex");
+        let child = dir.join("child.tex");
+        fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\nBefore.\n\\input{child}\nAfter.\n\\end{document}\n",
+        )
+        .unwrap();
+        fs::write(&child, "Disk child.\n").unwrap();
+
+        let mut overrides = HashMap::new();
+        overrides.insert(child.canonicalize().unwrap(), "Live child.\n".to_string());
+        let project = load_project_with_overrides(&root, &overrides).unwrap();
+        let flattened = project
+            .files
+            .iter()
+            .map(|f| f.source.as_str())
+            .collect::<String>();
+
+        assert!(flattened.contains("Before.\nLive child.\n\nAfter."));
+        assert!(!flattened.contains("Disk child."));
+        assert_eq!(fs::read_to_string(&child).unwrap(), "Disk child.\n");
         let _ = fs::remove_dir_all(dir);
     }
 }

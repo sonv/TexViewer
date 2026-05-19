@@ -116,12 +116,12 @@ What's built:
 - [x] ~~Vendored/offline MathJax distribution.~~
 - [x] ~~Keyed-LCS block diff with explicit move ops and cross-range MathJax transplant.~~
 - [x] ~~Pluggable rendering engine seam (`MathEngine` trait + `window.__mpEngine` shim).~~
+- [x] ~~Multi-buffer chapter editing (`/buffer` accepting non-root included files).~~
 - [ ] Nested margin-card expansion (clicking a ref inside a margin card opens a child card).
 - [ ] Popup-mode toggle for cross-references (floating cards near the click instead of a side column).
 - [ ] SyncTeX-style display-row and glyph-level source sync.
 - [ ] Better parser coverage for more LaTeX text constructs and packages.
 - [ ] Browser-level interaction tests for copy/selection, page layout, and proof filters.
-- [ ] Multi-buffer chapter editing (`/buffer` accepting non-root files).
 - [ ] CI: GitHub Actions running fmt/clippy/test/eslint on PRs.
 
 Remaining forward goals:
@@ -652,8 +652,11 @@ of inline JS that connects to `/ws`, swaps `#page` content on
 - `notify-debouncer-full` watches the directories containing every
   project file and triggers a re-render on save (120 ms debounce).
 - `POST /buffer` accepts an in-memory buffer override from an editor
-  plugin. `examples/mathpreview.lua` ships the nvim side: a
-  `TextChanged` autocmd debounced 40 ms that curls the buffer.
+  plugin for the root or a watched included `.tex` file. The daemon keeps
+  overrides keyed by canonical path and re-renders the real root with those
+  buffers spliced through `\input` / `\include` / `\subfile`.
+  `examples/mathpreview.lua` ships the nvim side: a `TextChanged` autocmd
+  debounced 40 ms that curls the buffer.
 
 Both paths feed the same broadcast channel. Mid-edit guard rejects
 unbalanced math (`$$…`, `\begin{...}` without close, unmatched braces)
