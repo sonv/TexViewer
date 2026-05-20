@@ -1058,6 +1058,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // literal backslash sequences.
             write_text_with_span(out, s, &n.span, ctx);
         }
+        NodeKind::Appendix => { /* numbering marker; no visible output */ }
         NodeKind::Comment(_) => { /* discard */ }
         NodeKind::Section {
             level,
@@ -4032,6 +4033,29 @@ mod tests {
         assert!(!out.body_html.contains("(eq:group)"));
         assert!(!out.body_html.contains("(eq:first)"));
         assert!(!out.body_html.contains("(eq:second)"));
+    }
+
+    #[test]
+    fn appendix_switches_section_and_equation_numbers() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\section{Main}\n\\appendix\n\\section{Derivation}\\label{app:derivation}\n\\begin{equation}\\label{eq:app}a=b\\end{equation}\nSee \\ref{app:derivation} and \\eqref{eq:app}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"<span class="sec-num">A</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num">(A.1)</span>"#));
+        assert!(out.body_html.contains(
+            r##"href="#app-derivation" data-target="app:derivation" data-kind="ref">A</a>"##
+        ));
+        assert!(out
+            .body_html
+            .contains(r##"href="#eq-app" data-target="eq:app" data-kind="eqref">(A.1)</a>"##));
+        assert!(!out.body_html.contains(r#"\appendix"#));
     }
 
     #[test]

@@ -1,5 +1,21 @@
 # CHANGELOG-GPT
 
+## 2026-05-20
+
+### Fixed
+
+- Added explicit `\appendix` support. The parser now treats it as a numbering marker instead of visible text, and subsequent article-style sections or book/report-style chapters switch to appendix letters such as `A`, `A.1`, etc.
+- Propagated appendix prefixes through section-scoped theorem, equation, and `subequations` numbering, so labels and references after `\appendix` render as `A.1`, `A.2a`, `A.2b`, etc.
+- Cleaned up a stale doc-comment indentation issue in the PDF locator comments so the current `clippy -D warnings` run stays green.
+
+### Verified
+
+- `cargo fmt --check`
+- `cargo test`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `git diff --check`
+- Render smoke test for `/Users/tsv/Work/LargeTimeLangevin/new-main.tex`, where `\appendix` now renders the derivation section as Appendix `A`.
+
 ## 2026-05-19
 
 ### Fixed

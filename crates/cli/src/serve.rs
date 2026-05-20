@@ -702,9 +702,9 @@ async fn compile_pdf_via_latexmk(root: &Path) -> Result<Vec<u8>, String> {
 ///      with the resolved output path:
 ///        - `Latexmk: All targets (<path>.pdf) are up-to-date`  (no-op run)
 ///        - `Output written on <path>.pdf (N pages, ...).`      (pdflatex)
-///      These honour every `$out_dir` / `$aux_dir` setting the user
-///      put in `.latexmkrc`, so we don't have to model latexmk's
-///      config language ourselves.
+///          These honour every `$out_dir` / `$aux_dir` setting the user
+///          put in `.latexmkrc`, so we don't have to model latexmk's
+///          config language ourselves.
 ///   2. Fall back to a small set of common subdirectories
 ///      (`./`, `build/`, `out/`, `_build/`, `_output/`) for the case
 ///      where the log was empty or the regex missed.

@@ -79,6 +79,9 @@ pub enum NodeKind {
         label: Option<String>,
         number: Option<String>,
     },
+    /// `\appendix` switches following section-scoped counters to appendix
+    /// numbering (`A`, `A.1`, ...). It emits no visible content itself.
+    Appendix,
     /// `\begin{theorem}[role=...]{name}` ... `\end{theorem}` (and friends).
     Theorem {
         env: String, // "theorem" / "lemma" / "proposition" / ...

@@ -186,8 +186,9 @@ pub fn assign_numbers(
 
 #[derive(Default)]
 struct State {
-    section: u32,
+    section_prefix: Option<String>,
     section_counters: [u32; 7],
+    appendix: bool,
     thm_in_section: u32,
     eq_in_section: u32,
     subequations: Vec<SubequationState>,
@@ -205,6 +206,13 @@ struct SubequationState {
 fn walk(nodes: &mut [Node], state: &mut State) {
     for node in nodes.iter_mut() {
         match &mut node.kind {
+            NodeKind::Appendix => {
+                state.appendix = true;
+                state.section_prefix = None;
+                state.section_counters = [0; 7];
+                state.thm_in_section = 0;
+                state.eq_in_section = 0;
+            }
             NodeKind::Section {
                 level,
                 title: _,
@@ -220,11 +228,15 @@ fn walk(nodes: &mut [Node], state: &mut State) {
                 // this default. Sub-sections don't reset the theorem counter
                 // — that matches AMS practice.
                 if *level <= 2 {
-                    state.section = state.section_counters[idx];
+                    state.section_prefix = Some(section_number(
+                        &state.section_counters,
+                        *level,
+                        state.appendix,
+                    ));
                     state.thm_in_section = 0;
                     state.eq_in_section = 0;
                 }
-                let n = section_number(&state.section_counters, *level);
+                let n = section_number(&state.section_counters, *level, state.appendix);
                 *number = Some(n.clone());
                 if let Some(l) = label {
                     record_label(&mut state.labels, l.clone(), &n, "Section");
@@ -238,7 +250,7 @@ fn walk(nodes: &mut [Node], state: &mut State) {
                 env, label, number, ..
             } => {
                 state.thm_in_section += 1;
-                let n = format_with_section(state.section, state.thm_in_section);
+                let n = format_with_section(state.section_prefix.as_deref(), state.thm_in_section);
                 *number = Some(n.clone());
                 let display_kind = display_kind_for(env);
                 if let Some(l) = label {
@@ -253,7 +265,7 @@ fn walk(nodes: &mut [Node], state: &mut State) {
             }
             NodeKind::Subequations { label, number } => {
                 state.eq_in_section += 1;
-                let n = format_with_section(state.section, state.eq_in_section);
+                let n = format_with_section(state.section_prefix.as_deref(), state.eq_in_section);
                 *number = Some(n.clone());
                 if let Some(l) = label {
                     record_label(&mut state.labels, l.clone(), &n, "Equation");
@@ -387,7 +399,7 @@ fn next_equation_number(state: &mut State) -> String {
     }
 
     state.eq_in_section += 1;
-    format_with_section(state.section, state.eq_in_section)
+    format_with_section(state.section_prefix.as_deref(), state.eq_in_section)
 }
 
 fn alphabetic_suffix(mut n: u32) -> String {
@@ -401,6 +413,10 @@ fn alphabetic_suffix(mut n: u32) -> String {
         n /= 26;
     }
     chars.iter().rev().collect()
+}
+
+fn alphabetic_section_prefix(n: u32) -> String {
+    alphabetic_suffix(n).to_ascii_uppercase()
 }
 
 fn label_from_raw(raw: &str) -> Option<String> {
@@ -585,16 +601,33 @@ fn has_latex_command(src: &str, command: &str) -> bool {
     false
 }
 
-fn format_with_section(section: u32, n: u32) -> String {
-    if section == 0 {
-        n.to_string()
-    } else {
-        format!("{section}.{n}")
+fn format_with_section(section: Option<&str>, n: u32) -> String {
+    match section {
+        Some(section) if !section.is_empty() => format!("{section}.{n}"),
+        _ => n.to_string(),
     }
 }
 
-fn section_number(counters: &[u32; 7], level: u8) -> String {
+fn section_number(counters: &[u32; 7], level: u8, appendix: bool) -> String {
     let idx = (level as usize).min(counters.len() - 1);
+    if appendix {
+        if idx == 1 {
+            return alphabetic_section_prefix(counters[1]);
+        }
+        if idx >= 2 {
+            let chapter = counters[1];
+            let top_idx = if chapter > 0 { 1 } else { 2 };
+            let mut parts = vec![alphabetic_section_prefix(counters[top_idx])];
+            parts.extend(
+                counters[top_idx + 1..=idx]
+                    .iter()
+                    .copied()
+                    .filter(|counter| *counter > 0)
+                    .map(|counter| counter.to_string()),
+            );
+            return parts.join(".");
+        }
+    }
     if idx <= 1 {
         return counters[idx].to_string();
     }
@@ -762,6 +795,49 @@ mod tests {
         assert_eq!(labels.number.get("eq:c").unwrap(), "1.1c");
         assert!(!labels.number.contains_key("eq:star"));
         assert_eq!(labels.number.get("eq:after").unwrap(), "1.2");
+    }
+
+    #[test]
+    fn appendix_sections_use_alphabetic_prefixes() {
+        let mut ns = nodes(
+            "\\section{Main}\\label{sec:main}\n\
+             \\begin{equation}\\label{eq:main}x\\end{equation}\n\
+             \\appendix\n\
+             \\section{Derivation}\\label{app:derivation}\n\
+             \\subsection{Detail}\\label{app:detail}\n\
+             \\begin{lemma}\\label{lem:app}y\\end{lemma}\n\
+             \\begin{equation}\\label{eq:app}z\\end{equation}\n\
+             \\begin{subequations}\\label{eq:app-group}\n\
+             \\begin{equation}\\label{eq:app-a}a\\end{equation}\n\
+             \\begin{equation}\\label{eq:app-b}b\\end{equation}\n\
+             \\end{subequations}\n",
+        );
+        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        assert_eq!(labels.number.get("sec:main").unwrap(), "1");
+        assert_eq!(labels.number.get("eq:main").unwrap(), "1.1");
+        assert_eq!(labels.number.get("app:derivation").unwrap(), "A");
+        assert_eq!(labels.number.get("app:detail").unwrap(), "A.1");
+        assert_eq!(labels.number.get("lem:app").unwrap(), "A.1");
+        assert_eq!(labels.number.get("eq:app").unwrap(), "A.1");
+        assert_eq!(labels.number.get("eq:app-group").unwrap(), "A.2");
+        assert_eq!(labels.number.get("eq:app-a").unwrap(), "A.2a");
+        assert_eq!(labels.number.get("eq:app-b").unwrap(), "A.2b");
+    }
+
+    #[test]
+    fn appendix_chapters_use_alphabetic_prefixes() {
+        let mut ns = nodes(
+            "\\chapter{Main}\\label{chap:main}\n\
+             \\appendix\n\
+             \\chapter{Auxiliary}\\label{chap:aux}\n\
+             \\section{Detail}\\label{sec:aux-detail}\n\
+             \\begin{equation}\\label{eq:aux}z\\end{equation}\n",
+        );
+        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        assert_eq!(labels.number.get("chap:main").unwrap(), "1");
+        assert_eq!(labels.number.get("chap:aux").unwrap(), "A");
+        assert_eq!(labels.number.get("sec:aux-detail").unwrap(), "A.1");
+        assert_eq!(labels.number.get("eq:aux").unwrap(), "A.1.1");
     }
 
     #[test]

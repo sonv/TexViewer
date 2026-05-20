@@ -309,6 +309,17 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                if cmd == "appendix" {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    self.advance_to(cmd_name_end);
+                    out.push(Node {
+                        kind: NodeKind::Appendix,
+                        span: self.span_from(cmd_start),
+                        children: vec![],
+                    });
+                    continue;
+                }
+
                 // Sectioning.
                 if let Some(level) = section_level(&cmd) {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
@@ -1477,6 +1488,13 @@ mod tests {
             }
             other => panic!("got {:?}", other),
         }
+    }
+
+    #[test]
+    fn appendix_command_is_marker() {
+        let n = parse(r"\appendix\section{Derivation}");
+        assert!(matches!(&n[0].kind, NodeKind::Appendix));
+        assert!(matches!(&n[1].kind, NodeKind::Section { title, .. } if title == "Derivation"));
     }
 
     #[test]
