@@ -2787,7 +2787,9 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '46'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '47'"));
+        assert!(out.html.contains("margin-card-grip"));
+        assert!(out.html.contains("initMarginDnd"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
         assert!(out.html.contains("ensureInitialTypeset"));

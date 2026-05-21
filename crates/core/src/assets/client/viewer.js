@@ -623,9 +623,20 @@
     var card = document.createElement('div');
     card.className = 'margin-card';
     card.dataset.pinKey = pinKeyFor(link);
+    card.draggable = true;
 
     var head = document.createElement('div');
     head.className = 'margin-card-header';
+    // Drag grip on the left side of the header. Visually signals that
+    // the card is draggable; the entire card is the actual drag source
+    // (HTML5 dnd doesn't let us scope draggable to a sub-element, but
+    // text selection inside the body still takes precedence over drag
+    // start because the browser checks mousedown intent).
+    var grip = document.createElement('span');
+    grip.className = 'margin-card-grip';
+    grip.setAttribute('aria-hidden', 'true');
+    grip.title = 'drag to reorder';
+    grip.textContent = '⋮⋮';
     // Title: LaTeX `\label{...}` / cite-key in a monospace chip. The
     // rendered "Theorem 2.1" / "(3.1)" label is intentionally NOT shown
     // here — the card body already displays it.
@@ -646,6 +657,7 @@
     close.setAttribute('aria-label', 'unpin');
     close.title = 'unpin';
     close.textContent = '×';
+    head.appendChild(grip);
     head.appendChild(title);
     head.appendChild(close);
 
@@ -656,6 +668,78 @@
     card.appendChild(head);
     card.appendChild(body);
     return card;
+  }
+
+  /// Drag-to-reorder for margin cards. Delegated to #margin-cards so the
+  /// handlers attach once even though cards come and go. The dragged card
+  /// gets `.dragging`; the card under the cursor gets `.drop-above` or
+  /// `.drop-below` based on which half of its bounding box the cursor is in.
+  /// pinnedRefs is a key → element Map; its order doesn't drive layout
+  /// (the DOM does), so we just move the node and let the Map keep its
+  /// entry intact.
+  var dragSourceCard = null;
+  function clearDropIndicators() {
+    var cards = document.querySelectorAll('#margin-cards .margin-card');
+    cards.forEach(function(c) {
+      c.classList.remove('drop-above');
+      c.classList.remove('drop-below');
+    });
+  }
+  function dropPositionFor(card, clientY) {
+    var rect = card.getBoundingClientRect();
+    return clientY < rect.top + rect.height / 2 ? 'above' : 'below';
+  }
+  function initMarginDnd() {
+    var cards = marginCardsEl();
+    if (!cards || cards.dataset.dndInit === '1') return;
+    cards.dataset.dndInit = '1';
+    cards.addEventListener('dragstart', function(e) {
+      var card = e.target && e.target.closest && e.target.closest('.margin-card');
+      if (!card || card.parentNode !== cards) return;
+      dragSourceCard = card;
+      card.classList.add('dragging');
+      // Some browsers need at least one setData call to start a drag.
+      try { e.dataTransfer.setData('text/plain', card.dataset.pinKey || ''); } catch (err) {}
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    cards.addEventListener('dragover', function(e) {
+      if (!dragSourceCard) return;
+      var card = e.target && e.target.closest && e.target.closest('.margin-card');
+      e.preventDefault(); // required to enable drop
+      e.dataTransfer.dropEffect = 'move';
+      clearDropIndicators();
+      if (!card || card === dragSourceCard) return;
+      var pos = dropPositionFor(card, e.clientY);
+      card.classList.add(pos === 'above' ? 'drop-above' : 'drop-below');
+    });
+    cards.addEventListener('dragleave', function(e) {
+      // Only clear when leaving the cards container entirely (not when
+      // moving between child cards), otherwise the indicator flickers.
+      if (e.target === cards) clearDropIndicators();
+    });
+    cards.addEventListener('drop', function(e) {
+      if (!dragSourceCard) return;
+      e.preventDefault();
+      var card = e.target && e.target.closest && e.target.closest('.margin-card');
+      if (card && card !== dragSourceCard) {
+        var pos = dropPositionFor(card, e.clientY);
+        if (pos === 'above') cards.insertBefore(dragSourceCard, card);
+        else cards.insertBefore(dragSourceCard, card.nextSibling);
+      } else if (!card) {
+        // Dropped on the container, not on a card → append to end.
+        cards.appendChild(dragSourceCard);
+      }
+      clearDropIndicators();
+      dragSourceCard.classList.remove('dragging');
+      dragSourceCard = null;
+    });
+    cards.addEventListener('dragend', function() {
+      clearDropIndicators();
+      if (dragSourceCard) {
+        dragSourceCard.classList.remove('dragging');
+        dragSourceCard = null;
+      }
+    });
   }
 
   function togglePinReference(link) {

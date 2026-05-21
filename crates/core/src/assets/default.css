@@ -1030,7 +1030,27 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   min-width: 0;
   overflow: hidden;
+  flex: 1;
 }
+/* Drag affordance on the left edge of the card header. The card itself
+   is `draggable="true"`; this grip is just a visual signal that the
+   card can be reordered. */
+.margin-card-grip {
+  cursor: grab;
+  color: var(--muted, #aaa);
+  font-size: 12px;
+  letter-spacing: -2px;
+  user-select: none;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.margin-card-grip:active { cursor: grabbing; }
+.margin-card.dragging { opacity: 0.4; }
+/* Drop indicator: a 2px accent line at the appropriate edge of the
+   target card. Cards are flush-stacked, so the line replaces the
+   default top/bottom border so it doesn't double up. */
+.margin-card.drop-above { box-shadow: inset 0 2px 0 0 var(--accent, #b04b00); }
+.margin-card.drop-below { box-shadow: inset 0 -2px 0 0 var(--accent, #b04b00); }
 /* LaTeX `\label{...}` key, shown as the primary title of a margin card.
    The rendered "Theorem 2.1" / "(3.1)" sits next to it in muted text. */
 .margin-card-key {
