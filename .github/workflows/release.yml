@@ -1,0 +1,137 @@
+# GitHub Actions release workflow.
+#
+# Fires on a `v*` tag push (the real release path) or on a manual
+# "Run workflow" click from the Actions tab (the dry-run path, useful
+# for verifying the matrix works without burning a real version number).
+#
+# What it does:
+#   1. Build `mathpreview-cli` in release mode for four target triples
+#      in parallel: macOS arm64, macOS x86_64, Linux x86_64, Linux arm64.
+#   2. Strip the binary, tarball it, generate a SHA-256 checksum.
+#   3. Upload each tarball + checksum as a workflow artifact.
+#   4. Once all four builds succeed, create a *draft* GitHub Release at
+#      the pushed tag with the tarballs attached and auto-generated
+#      notes from the commit log since the previous tag.
+#
+# The release is left as a draft so you can review the artifacts, edit
+# the auto-generated notes, and click "Publish release" yourself.
+# Nothing the workflow produces is visible to users until you do that.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to use when running manually (e.g. v0.0.0-dryrun). Not pushed; only used in the artifact filenames."
+        required: false
+        default: "v0.0.0-dryrun"
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.target }}-
+
+      # Sanity check before producing a binary that gets a release URL.
+      # Pinned to the same target the binary will build for so any
+      # target-specific breakage shows up here, not at runtime.
+      - name: Test
+        run: cargo test --release --target ${{ matrix.target }} --workspace
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p mathpreview-cli
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The tag drives the archive name. On tag-triggered runs github.ref_name
+          # is "v0.1.0"; on workflow_dispatch it's the manual input.
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="mathpreview-cli-${TAG}-${{ matrix.target }}"
+          mkdir -p staging dist
+          cp "target/${{ matrix.target }}/release/mathpreview-cli" staging/
+          # Strip release symbols. Skipped on Apple silicon arm64 cross
+          # builds — Linux strip can mangle Mach-O — but native macOS
+          # strip handles its own binaries fine.
+          strip staging/mathpreview-cli || true
+          (cd staging && tar czf "../dist/${NAME}.tar.gz" mathpreview-cli)
+          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: release
+    needs: build
+    # Skip the GitHub-Release step on manual dry runs: artifacts upload
+    # to the Actions tab where you can download them, but no Releases
+    # entry is created. Only real tag pushes create draft releases.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          # Auto-generated release notes from commits since the previous tag.
+          # Edit them in the GitHub UI before clicking Publish.
+          generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: true
