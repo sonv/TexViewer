@@ -29,6 +29,20 @@ on:
         required: false
         default: "v0.0.0-dryrun"
 
+# Opt every JavaScript-based action in this workflow into the Node.js 24
+# runtime now. As of mid-2026 the major actions/* releases (checkout,
+# cache, upload-artifact, download-artifact) are still pinned to Node 20
+# internally; GitHub starts forcing the Node 24 default on 2026-06-02
+# and removes Node 20 from runners on 2026-09-16. Setting this env var
+# at the workflow level makes the switch deterministic — no surprise
+# behaviour change on the rollout date, and the deprecation warnings
+# stop appearing in run logs.
+#
+# When upstream ships v5+ of these actions (which target Node 24
+# natively), bump the @v4 pins below and this env var can come out.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: build (${{ matrix.target }})
