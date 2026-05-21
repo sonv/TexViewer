@@ -213,10 +213,12 @@ re-typesets only the truly-new math.
 
 ### Lint the embedded JS
 
-The viewer JavaScript lives in `crates/core/src/assets/client.js`
-(engine-neutral) and `crates/core/src/engines/assets/mathjax.js` (the
-MathJax adapter). Both files are pulled into the binary via `include_str!`,
-so they are real `.js` files you can lint with ESLint:
+The viewer JavaScript is split across `crates/core/src/assets/client/`
+(`header.js` → `viewer.js` → `proof.js` → `patch.js` → `footer.js`,
+all engine-neutral, concatenated into one IIFE at compile time by
+`renderer/shell.rs`) and `crates/core/src/engines/assets/mathjax.js`
+(the MathJax adapter). Everything is pulled into the binary via
+`include_str!`, so they are real `.js` files you can lint with ESLint:
 
 ```sh
 npm install               # one-time
@@ -229,7 +231,11 @@ is not required to run `mathpreview-cli serve`.
 The flat config in `eslint.config.js` runs `no-undef` (catches typo'd
 identifiers / forgotten renames), `no-unused-vars` (warning),
 `no-unreachable`, and dupe-key/dupe-arg checks. Browser globals plus
-`window.__mpEngine` are declared so the bundle parses clean.
+`window.__mpEngine` are declared so the bundle parses clean. The five
+`client/*.js` files share scope through one outer IIFE, so the lint
+script concatenates them in `concat!` order and pipes the result to
+ESLint via `--stdin` — that lets `no-undef` see all cross-file
+references as if it were the original single bundle.
 
 ### Inspect what MathJax sees
 
@@ -325,8 +331,19 @@ crates/core             parser + macro extractor + numbering + renderer (the lib
   ├ engines/            MathEngine trait + Engine enum (dispatch)
   │   ├ mathjax.rs        MathJaxEngine: head config, adapter shim, extra CSS
   │   └ assets/           engine-specific frontend bits (window.__mpEngine, mjx CSS)
+  ├ renderer.rs         AST → HTML dispatcher + RenderCtx + render_inline_latex
+  ├ renderer/           focused submodules called by the dispatcher above
+  │   ├ util.rs           escape/sanitize/role helpers, latex token parsing
+  │   ├ shell.rs          wrap_in_shell + warnings panel + CLIENT_JS concat!
+  │   ├ math.rs           math rows, eq numbers, refs, floats, includegraphics
+  │   └ bib.rs            bibliography formatting (numeric / author-year)
   └ assets/             shared engine-neutral frontend bundle
-      ├ client.js         WebSocket + patch ops + source-sync + vim + search + UI
+      ├ client/           five .js pieces sharing one IIFE; concat! in shell.rs
+      │   ├ header.js       state + DOM/scroll/vim-pending helpers + IIFE open
+      │   ├ viewer.js       search, vim nav, side panel, margin cards, layout
+      │   ├ proof.js        theorem-role detection, applyMode, server controls
+      │   ├ patch.js        math sel/copy, event delegation, applyPatch, typeset queue
+      │   └ footer.js       WebSocket + bootstrap + IIFE close
       └ default.css       page stylesheet
 crates/cli              mathpreview-cli binary (render / debug / serve)
   ├ vendor/mathjax/     trimmed MathJax 4 (tex-svg) served at /vendor/mathjax/*
@@ -340,22 +357,23 @@ CHANGELOG-claude.md     claude session changelog
 DESIGN.md               full design document
 ```
 
-The `client.js` and `default.css` files are pulled into the Rust binary via
-`include_str!`, so editing them is just editing the file — no Rust string
-escaping, full editor support, and lint-friendly.
+The `client/*.js` and `default.css` files are pulled into the Rust binary via
+`include_str!` (`client/` files concatenated via `concat!` in `renderer/shell.rs`),
+so editing them is just editing the file — no Rust string escaping, full editor
+support, and lint-friendly.
 
 ## Roadmap
 
 Ordered roughly by what we plan to tackle next. ◯ marks queued items.
 See `DESIGN.md` for the full backlog.
 
-- **◯ Split client.js and renderer.rs.** After the recent Rebuild /
-  cross-range transplant work and the margin-card UI, `client.js` is
-  ~2000 lines doing many different things and `renderer.rs` is 3825
-  lines. Both still work — just dense. Splitting them into focused
-  modules concatenated via `include_str!` keeps the file tree readable
-  and lets future engines plug in along the boundaries the engine seam
-  already exposed.
+- **✓ Split client.js and renderer.rs.** `renderer.rs` (~4300 lines)
+  split into `renderer/{util,shell,math,bib}.rs` plus a thinner
+  dispatcher (~2800 lines). `client.js` (~2300 lines) split into five
+  scope-sharing pieces under `assets/client/` (`header → viewer →
+  proof → patch → footer`) concatenated by `concat!(include_str!(…),
+  …)` in `renderer/shell.rs`. ESLint runs through `--stdin` on the
+  assembled bundle so `no-undef` still catches typos across files.
 - **✓ Multi-buffer chapter editing.** `POST /buffer` accepts the root file
   or any watched included `.tex` file. The daemon stores pushed buffers in
   memory, re-renders the real root, and splices overrides through

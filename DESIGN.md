@@ -611,7 +611,9 @@ mathpreview/
 │   │   │   ├── packages.rs          # \usepackage → MathJax mapping
 │   │   │   ├── numbering.rs         # section / theorem / equation counters
 │   │   │   ├── bibtex.rs            # .bib parser + style detect + labels
-│   │   │   ├── renderer.rs          # AST → HTML (full + body) + client JS
+│   │   │   ├── renderer.rs          # AST → HTML dispatcher + RenderCtx + inline LaTeX
+│   │   │   ├── renderer/            # focused submodules (util / shell / math / bib)
+│   │   │   ├── assets/client/       # five .js pieces sharing one IIFE (concat!'d)
 │   │   │   └── sync.rs              # sync index (forward/inverse search)
 │   │   └── Cargo.toml
 │   └── cli/

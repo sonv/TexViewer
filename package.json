@@ -2,9 +2,11 @@
   "name": "mathpreview-frontend-lint",
   "private": true,
   "type": "module",
-  "description": "ESLint setup for the embedded viewer JavaScript bundles (crates/core/src/assets/client.js and the per-engine adapters under crates/core/src/engines/assets/).",
+  "description": "ESLint setup for the embedded viewer JavaScript bundles. The browser bundle lives as five files under crates/core/src/assets/client/ (header → viewer → proof → patch → footer) that share scope via one outer IIFE; lint concatenates them in renderer/shell.rs concat! order and feeds the result to ESLint via --stdin so cross-file references resolve.",
   "scripts": {
-    "lint": "eslint crates/core/src/assets/client.js crates/core/src/engines/assets/mathjax.js"
+    "lint:client": "cat crates/core/src/assets/client/header.js crates/core/src/assets/client/viewer.js crates/core/src/assets/client/proof.js crates/core/src/assets/client/patch.js crates/core/src/assets/client/footer.js | eslint --stdin --stdin-filename=crates/core/src/assets/client.js",
+    "lint:engine": "eslint crates/core/src/engines/assets/mathjax.js",
+    "lint": "npm run lint:client && npm run lint:engine"
   },
   "devDependencies": {
     "eslint": "^9.0.0",

@@ -22,7 +22,20 @@ use super::HtmlOptions;
 ///
 /// When the page is loaded statically (CLI `render` output, no server), the
 /// WebSocket fails silently and the page works as a static document.
-pub(super) const CLIENT_JS: &str = include_str!("../assets/client.js");
+///
+/// Assembled from `assets/client/{header,viewer,proof,patch,footer}.js`. The
+/// pieces share scope because they sit inside one outer `(function() { ...
+/// })()` IIFE: `header.js` opens it (with all the closure-shared `var`
+/// declarations) and `footer.js` closes it. Splits are line-aligned, not
+/// re-wrapped, so the concatenation is byte-equivalent to the single
+/// `client.js` file it replaces.
+pub(super) const CLIENT_JS: &str = concat!(
+    include_str!("../assets/client/header.js"),
+    include_str!("../assets/client/viewer.js"),
+    include_str!("../assets/client/proof.js"),
+    include_str!("../assets/client/patch.js"),
+    include_str!("../assets/client/footer.js"),
+);
 
 pub(super) const DEFAULT_CSS: &str = include_str!("../assets/default.css");
 
