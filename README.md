@@ -154,7 +154,20 @@ a Rust roundtrip unless they are controlling the daemon itself.
   unpin, or use the `×` button on the card. Hovering any `\ref` /
   `\cite` for ~250 ms shows a quick floating preview regardless of
   margin mode — the preview omits proofs so you see the statement
-  alone.
+  alone. Cards can be reordered by dragging from the `⋮⋮` grip in
+  each card's header (drop indicator is an accent line above or below
+  the target card). Two more pin entry points:
+  - Click any **refkey chip in the left margin** (the `keys` toggle
+    must be on to make the chips visible) — including the per-row
+    chips on multi-row `align` / `gather` displays — to pin that
+    target without touching the body.
+  - Press `:` to open a vim-style command line at the bottom; `:pin
+    <key>` pins, `:unpin <key>` removes, `:clear` empties the margin.
+    `:p` / `:u` abbreviations work. Tab cycles fuzzy matches in a
+    wildmenu strip above the input (substring beats subsequence,
+    prefix beats mid-string; `:unpin` narrows to currently-pinned
+    keys); ArrowDown/ArrowUp also cycle; clicking a chip commits
+    immediately. Esc closes; empty-Backspace also closes.
 - `print` calls `POST /print`. The daemon runs `latexmk -pdf` (falling
   back to `pdflatex` if latexmk isn't on `$PATH`) in the root file's
   directory and streams the produced PDF back as `application/pdf`,
@@ -180,8 +193,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - Vim-style keyboard navigation works in the viewer: `h`/`j`/`k`/`l`
   scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages,
   `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
-  between search matches, and `Ctrl-o` returns to the previous recorded
-  place. These bindings are ignored while typing in editable controls.
+  between search matches, `:` opens the command line (see `margin`
+  above), and `Ctrl-o` returns to the previous recorded place. These
+  bindings are ignored while typing in editable controls.
 
 **Patch path** (small change, the common case):
 
