@@ -1865,12 +1865,15 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
 
         match (name, arg) {
             ("ref", Some((key, next))) | ("pageref", Some((key, next))) => {
+                let kind_str = if name == "pageref" { "pageref" } else { "ref" };
                 let text = labels.resolve_ref(crate::ast::RefKind::Ref, key);
                 let target = sanitize_id(key);
                 write!(
                     out,
-                    r##"<a class="ref" href="#{t}">{label}</a>"##,
+                    r##"<a class="ref" href="#{t}" data-target="{key}" data-kind="{kind_str}">{label}</a>"##,
                     t = escape_attr(&target),
+                    key = escape_attr(key),
+                    kind_str = kind_str,
                     label = escape_html(&text)
                 )
                 .unwrap();
@@ -1879,12 +1882,18 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             ("cref", Some((key, next)))
             | ("Cref", Some((key, next)))
             | ("autoref", Some((key, next))) => {
+                let kind_str = match name {
+                    "autoref" => "autoref",
+                    _ => "cref",
+                };
                 let text = labels.resolve_ref(crate::ast::RefKind::Cref, key);
                 let target = sanitize_id(key);
                 write!(
                     out,
-                    r##"<a class="ref" href="#{t}">{label}</a>"##,
+                    r##"<a class="ref" href="#{t}" data-target="{key}" data-kind="{kind_str}">{label}</a>"##,
                     t = escape_attr(&target),
+                    key = escape_attr(key),
+                    kind_str = kind_str,
                     label = escape_html(&text)
                 )
                 .unwrap();
@@ -1895,8 +1904,9 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
                 let target = sanitize_id(key);
                 write!(
                     out,
-                    r##"<a class="ref" href="#{t}">{label}</a>"##,
+                    r##"<a class="ref" href="#{t}" data-target="{key}" data-kind="eqref">{label}</a>"##,
                     t = escape_attr(&target),
+                    key = escape_attr(key),
                     label = escape_html(&text)
                 )
                 .unwrap();
@@ -2213,6 +2223,41 @@ mod tests {
         assert!(
             out.body_html.contains(r#"data-tex="\(L^p\)""#),
             "math span should carry the $L^p$ payload; got: {}",
+            out.body_html,
+        );
+    }
+
+    /// Margin cards build their refkey chip from `data-target` on the clicked
+    /// `<a class="ref">`. Refs that appear inside title-like fields (section
+    /// titles, theorem names, captions) go through `render_inline_latex`,
+    /// which used to emit the link without `data-target`/`data-kind` — so
+    /// clicking a `\ref` in a section title pinned a chip-less card. Assert
+    /// every ref site carries the target key.
+    #[test]
+    fn refs_inside_inline_latex_fields_carry_data_target() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{proposition}\\label{prop:foo}\nStatement.\n\\end{proposition}\n\\section{See \\ref{prop:foo} and \\eqref{eq:x} and \\autoref{prop:foo}}\n\\begin{equation}\\label{eq:x}\na=b\n\\end{equation}\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            out.body_html
+                .contains(r##"data-target="prop:foo" data-kind="ref""##),
+            "section-title \\ref should carry data-target/data-kind; got: {}",
+            out.body_html,
+        );
+        assert!(
+            out.body_html
+                .contains(r##"data-target="eq:x" data-kind="eqref""##),
+            "section-title \\eqref should carry data-target/data-kind; got: {}",
+            out.body_html,
+        );
+        assert!(
+            out.body_html
+                .contains(r##"data-target="prop:foo" data-kind="autoref""##),
+            "section-title \\autoref should carry data-target/data-kind; got: {}",
             out.body_html,
         );
     }
