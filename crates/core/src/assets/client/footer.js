@@ -8,7 +8,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '45';
+  var WS_PROTOCOL_VERSION = '46';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -167,6 +167,49 @@
     setMarginMode(false, false);
     setTopbarHidden(false, false);
   }
+  // Typed-refkey input in the margin column. Enter pins the target;
+  // Escape clears + blurs. A short-lived feedback span next to the input
+  // surfaces "not found" / "already pinned" without console noise.
+  var pinInput = document.getElementById('margin-pin-input');
+  var pinFeedback = document.getElementById('margin-pin-feedback');
+  var pinFeedbackTimer = 0;
+  function setPinFeedback(text, isError) {
+    if (!pinFeedback) return;
+    pinFeedback.textContent = text || '';
+    pinFeedback.classList.toggle('error', !!isError);
+    if (pinFeedbackTimer) clearTimeout(pinFeedbackTimer);
+    if (text) {
+      pinFeedbackTimer = setTimeout(function() {
+        pinFeedback.textContent = '';
+        pinFeedback.classList.remove('error');
+        pinFeedbackTimer = 0;
+      }, 2200);
+    }
+  }
+  if (pinInput) {
+    pinInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var result = pinByRefkey(pinInput.value);
+        if (result.ok) {
+          pinInput.value = '';
+          if (result.reason === 'already-pinned') {
+            setPinFeedback('already pinned', false);
+          } else {
+            setPinFeedback('', false);
+          }
+        } else if (result.reason === 'not-found') {
+          setPinFeedback('no \\label by that name', true);
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        pinInput.value = '';
+        setPinFeedback('', false);
+        pinInput.blur();
+      }
+    });
+  }
+
   scheduleNavigationRefresh();
   startMathObserver();
   refreshAfterInitialEngine(40);

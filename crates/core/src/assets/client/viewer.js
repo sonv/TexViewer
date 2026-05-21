@@ -540,7 +540,10 @@
     }
   }
 
-  function marginEl() { return document.getElementById('margin'); }
+  /// The cards stack lives inside #margin-cards so the toolbar (typed-
+  /// refkey input + feedback span) at the top of #margin survives a
+  /// "close all" wipe and isn't accidentally rebuilt on every card pin.
+  function marginCardsEl() { return document.getElementById('margin-cards'); }
 
   /// Toggle the `margin-has-cards` body class. Layout rules that shift
   /// the page content (`#page-shell`) live behind that class so the
@@ -551,8 +554,8 @@
   }
 
   function closeAllMarginCards() {
-    var m = marginEl();
-    if (m) m.innerHTML = '';
+    var cards = marginCardsEl();
+    if (cards) cards.innerHTML = '';
     pinnedRefs.clear();
     updateMarginCardsClass();
   }
@@ -670,11 +673,59 @@
     if (!marginMode) setMarginMode(true, true);
     var clone = clonePreviewContent(link, target);
     var card = buildMarginCard(link, clone);
-    var margin = marginEl();
-    if (!margin) return;
-    margin.appendChild(card);
+    var cards = marginCardsEl();
+    if (!cards) return;
+    cards.appendChild(card);
     pinnedRefs.set(key, card);
     updateMarginCardsClass();
+  }
+
+  /// Synthesise a `<a class="ref" data-target="…">` for an arbitrary refkey
+  /// and pin its target as a margin card, so the user can pull up a
+  /// statement by typing its `\label{…}` instead of scrolling to a `\ref`.
+  /// Lookup mirrors the click path: try the element whose `data-refkey`
+  /// matches first, then the sanitized id (so `prop:foo` finds `id="prop-foo"`),
+  /// then a `<dt data-key>` for `\bibitem`-style cite keys.
+  function pinByRefkey(rawKey) {
+    var key = (rawKey || '').trim();
+    if (!key) return { ok: false, reason: 'empty' };
+    var sanitized = key.replace(/[^a-zA-Z0-9_-]/g, '-');
+    var target = document.querySelector('#page [data-refkey="' + cssEscape(key) + '"]') ||
+                 document.getElementById(sanitized) ||
+                 document.querySelector('#page dt[data-key="' + cssEscape(key) + '"]');
+    if (!target) return { ok: false, reason: 'not-found' };
+    if (pinnedRefs.has(key)) {
+      var existing = pinnedRefs.get(key);
+      if (existing && existing.scrollIntoView) {
+        existing.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      return { ok: true, reason: 'already-pinned' };
+    }
+    var isBib = target.tagName === 'DT';
+    var synthetic = document.createElement('a');
+    synthetic.className = isBib ? 'cite' : 'ref';
+    synthetic.setAttribute('href', '#' + sanitized);
+    synthetic.setAttribute(isBib ? 'data-key' : 'data-target', key);
+    if (!marginMode) setMarginMode(true, true);
+    var clone = clonePreviewContent(synthetic, target);
+    var card = buildMarginCard(synthetic, clone);
+    var cards = marginCardsEl();
+    if (!cards) return { ok: false, reason: 'no-margin' };
+    cards.appendChild(card);
+    pinnedRefs.set(key, card);
+    updateMarginCardsClass();
+    return { ok: true, reason: 'pinned' };
+  }
+
+  /// CSS.escape() is widely supported but ancient browsers / headless
+  /// environments lack it. Fall back to escaping just the characters that
+  /// can appear in a LaTeX label (`:`, `.`, `/`) so the attribute selector
+  /// parses.
+  function cssEscape(value) {
+    if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, function(ch) {
+      return '\\' + ch;
+    });
   }
 
   function isPinnableLink(target) {

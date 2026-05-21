@@ -2776,6 +2776,10 @@ mod tests {
         assert!(out.html.contains(r#"id="server-restart""#));
         assert!(out.html.contains(r#"id="server-stop""#));
         assert!(out.html.contains(r#"id="topbar-stripe""#));
+        assert!(out.html.contains(r#"id="margin-pin-input""#));
+        assert!(out.html.contains(r#"id="margin-pin-feedback""#));
+        assert!(out.html.contains(r#"id="margin-cards""#));
+        assert!(out.html.contains("pinByRefkey"));
         assert!(out.html.contains("setRefkeysVisible"));
         assert!(out.html.contains("mathpreview.refkeys"));
         assert!(out.html.contains("refkey-visible"));
@@ -2783,7 +2787,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '45'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '46'"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
         assert!(out.html.contains("ensureInitialTypeset"));
