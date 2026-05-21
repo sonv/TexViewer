@@ -50,15 +50,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS x86_64 is cross-compiled from arm64. GitHub dropped the
+        # `macos-13` Intel runners from the free tier in 2024–25, so we
+        # build both Apple targets on `macos-14` (Apple Silicon): the
+        # arm64 build runs natively, the x86_64 build uses Rust's
+        # cross-compile path against Apple's universal SDK. Linux
+        # x86_64 and arm64 each build natively on their own runner.
         include:
           - os: macos-14
             target: aarch64-apple-darwin
-          - os: macos-13
+            cross_compile: false
+          - os: macos-14
             target: x86_64-apple-darwin
+            cross_compile: true   # arm64 host → x86_64 darwin
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            cross_compile: false
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            cross_compile: false
 
     steps:
       - name: Checkout
@@ -68,6 +78,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # Cross-compiled macOS x86_64 binaries can't execute on an arm64
+      # host without Rosetta 2 — which isn't pre-installed on macos-14
+      # runners. Install it just for that one matrix entry so the
+      # `cargo test --target …` step below works. ~30 s, runs once.
+      - name: Install Rosetta 2 (x86_64 macOS cross-compile only)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: softwareupdate --install-rosetta --agree-to-license
 
       - name: Cache cargo
         uses: actions/cache@v4
