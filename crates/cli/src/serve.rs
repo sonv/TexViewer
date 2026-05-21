@@ -265,19 +265,20 @@ async fn serve_asset(
     }
 }
 
-/// Compile-time path to the vendored MathJax bundle. MathJax 4 ships its
-/// bundles at the package root (no more `es5/` subdirectory like in v3).
-/// Resolved from `CARGO_MANIFEST_DIR` so the daemon finds the bundle
-/// whether it's run via `cargo run` or as a release binary in the same
-/// checkout.
-const MATHJAX_VENDOR_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/mathjax");
+/// Vendored MathJax 4 bundle, embedded into the binary at compile time
+/// (~14 MB across ~100 files). `include_dir!` walks the directory at
+/// build time and emits a static tree; `MATHJAX.get_file(rel)` returns
+/// the file's bytes at runtime. This removes the previous runtime
+/// dependency on `crates/cli/vendor/mathjax/` being reachable from the
+/// binary's working directory — release binaries are now self-contained.
+static MATHJAX: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/vendor/mathjax");
 
 /// Body-text font woff2 files baked into the binary so the release
-/// executable doesn't need its source checkout at runtime. The MathJax
-/// bundle is too large to embed (~13 MB) and stays on disk; the body
-/// fonts are small (~800 KB total) and embedding them removes the
-/// awkwardness of a binary that breaks when the surrounding `vendor/`
-/// tree moves. See `crates/cli/vendor/newcm-text/` for provenance.
+/// executable doesn't need its source checkout at runtime. NCM is small
+/// (~800 KB total) and the explicit list survives editor renames better
+/// than the directory walk used for MathJax above. See
+/// `crates/cli/vendor/newcm-text/` for provenance.
 const NEWCM_TEXT_FONTS: &[(&str, &[u8])] = &[
     (
         "woff2/WebCM Serif 10 Regular.woff2",
@@ -297,8 +298,43 @@ const NEWCM_TEXT_FONTS: &[(&str, &[u8])] = &[
     ),
 ];
 
+/// Content-type lookup keyed on file extension. Shared between the
+/// embedded MathJax tree and the on-disk project asset path so both
+/// serve `.js` / `.woff2` / `.svg` with the same MIME.
+fn content_type_for_ext(ext: Option<&str>) -> &'static str {
+    match ext {
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("ttf") => "font/ttf",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+fn vendor_response(bytes: &'static [u8], content_type: &'static str) -> Response {
+    let mut response = Body::from(bytes).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400, immutable"),
+    );
+    response
+}
+
 async fn serve_vendor_mathjax(AxumPath(path): AxumPath<String>) -> Response {
-    serve_vendor(MATHJAX_VENDOR_ROOT, &path).await
+    let Some(rel) = clean_asset_path(&path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(file) = MATHJAX.get_file(&rel) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = content_type_for_ext(rel.extension().and_then(|e| e.to_str()));
+    vendor_response(file.contents(), content_type)
 }
 
 async fn serve_vendor_newcm_text(AxumPath(path): AxumPath<String>) -> Response {
@@ -309,56 +345,7 @@ async fn serve_vendor_newcm_text(AxumPath(path): AxumPath<String>) -> Response {
     let Some((_, bytes)) = NEWCM_TEXT_FONTS.iter().find(|(name, _)| *name == rel_str) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut response = Body::from(*bytes).into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("font/woff2"));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400, immutable"),
-    );
-    response
-}
-
-async fn serve_vendor(vendor_root: &str, path: &str) -> Response {
-    let Some(rel) = clean_asset_path(path) else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let root = match tokio::fs::canonicalize(vendor_root).await {
-        Ok(p) => p,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let candidate = root.join(rel);
-    let canonical = match tokio::fs::canonicalize(&candidate).await {
-        Ok(p) => p,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
-    };
-    if !canonical.starts_with(&root) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let bytes = match tokio::fs::read(&canonical).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let content_type = match canonical.extension().and_then(|e| e.to_str()) {
-        Some("js") => "application/javascript; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("woff2") => "font/woff2",
-        Some("woff") => "font/woff",
-        Some("ttf") => "font/ttf",
-        Some("svg") => "image/svg+xml",
-        Some("json") => "application/json; charset=utf-8",
-        _ => "application/octet-stream",
-    };
-    let mut response = Body::from(bytes).into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400, immutable"),
-    );
-    response
+    vendor_response(bytes, "font/woff2")
 }
 
 async fn read_project_asset(

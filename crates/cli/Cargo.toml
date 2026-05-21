@@ -29,3 +29,4 @@ notify-debouncer-full.workspace = true
 futures-util.workspace = true
 memory-stats.workspace = true
 libc.workspace = true
+include_dir.workspace = true
