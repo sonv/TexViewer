@@ -28,6 +28,14 @@ local config = {
   jump_poll_ms = 120,
   sync = true,
   auto_open_browser = true,
+  -- Override the MathJax bundle URL the daemon serves to the browser.
+  -- nil → use the vendored, embedded `/vendor/mathjax/tex-svg.js` (works
+  -- offline, default). Set to a CDN like
+  -- `https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js` to skip the
+  -- embedded bundle and load MathJax over the network — useful if you
+  -- want to pull a newer MathJax release without rebuilding the binary,
+  -- or if you're behind a corporate proxy that caches CDN assets.
+  mathjax_url = nil,
   -- Per-session URLs, written when start_daemon() picks a port.
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
@@ -340,8 +348,13 @@ function M.start(opts)
       vim.log.levels.ERROR)
     return
   end
+  local spawn_args = { cmd, "serve", root, "--port", tostring(port) }
+  if config.mathjax_url and config.mathjax_url ~= "" then
+    table.insert(spawn_args, "--mathjax-url")
+    table.insert(spawn_args, config.mathjax_url)
+  end
   local job = vim.fn.jobstart(
-    { cmd, "serve", root, "--port", tostring(port) },
+    spawn_args,
     {
       on_exit = function(_, code)
         local exited_root = daemon_root or "<unknown>"

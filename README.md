@@ -126,27 +126,116 @@ cargo build --release -p mathpreview-cli
 
 ### 2. The nvim plugin
 
-Point your plugin manager at this repo. With **lazy.nvim**:
+The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`
+in this repo. Any plugin manager that puts a checkout's `lua/` and
+`plugin/` on `runtimepath` works. Pick the snippet for whatever
+manager you already use; if you're not using one, the **Manual
+install** path at the bottom of this section works too.
+
+#### lazy.nvim
+
+The minimal version — drop into your `lazy` spec:
+
+```lua
+{ "sonv/TexViewer", ft = { "tex", "plaintex", "latex" } }
+```
+
+The fuller version with lazy-load triggers and an explicit `opts` table:
 
 ```lua
 {
   "sonv/TexViewer",
-  ft = { "tex", "plaintex", "latex" },
+  ft  = { "tex", "plaintex", "latex" },
   cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus" },
-  -- optional: only needed if mathpreview-cli isn't on $PATH or you
-  -- want to disable browser auto-open / change debounces.
-  -- opts = { cmd = "/usr/local/bin/mathpreview-cli", auto_open_browser = true },
+  -- All `opts` keys are optional; the defaults work for the standard case.
+  opts = {
+    -- Absolute path to the binary if it isn't on $PATH.
+    -- cmd = "/usr/local/bin/mathpreview-cli",
+
+    -- Set to false if you don't want :MathPreview to also open a browser tab.
+    -- auto_open_browser = true,
+
+    -- Use a CDN-hosted MathJax instead of the embedded bundle. nil = embedded.
+    -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+
+    -- Filetypes that trigger automatic buffer pushes on TextChanged.
+    -- filetypes = { "tex", "plaintex", "latex" },
+
+    -- Debounces (ms). The push debounce is the keystroke→render latency
+    -- floor; the cursor debounce throttles forward-sync POSTs.
+    -- debounce_ms = 40,
+    -- cursor_debounce_ms = 80,
+
+    -- Set sync = false to disable cursor/jump bidirectional sync entirely.
+    -- sync = true,
+  },
+  config = function(_, opts)
+    require("mathpreview").setup(opts)
+  end,
 }
 ```
 
-With **packer.nvim**:
+#### packer.nvim
 
 ```lua
-use { "sonv/TexViewer", ft = { "tex", "plaintex", "latex" } }
+use {
+  "sonv/TexViewer",
+  ft = { "tex", "plaintex", "latex" },
+  config = function()
+    require("mathpreview").setup({
+      -- See the lazy.nvim block above for the full options list.
+      -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+    })
+  end,
+}
 ```
 
-The plugin registers four commands; no `require("mathpreview").setup()`
-is needed unless you want to override defaults.
+#### vim-plug
+
+In your `init.vim` (or wherever your plug block lives):
+
+```vim
+Plug 'sonv/TexViewer'
+```
+
+Then in `init.lua` (or a `lua << EOF` block in `init.vim`), if you want
+to override any defaults:
+
+```lua
+require("mathpreview").setup({
+  -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+})
+```
+
+Plain `Plug 'sonv/TexViewer'` is enough — `setup()` is only needed for
+overrides.
+
+#### Manual install (no plugin manager)
+
+nvim's [native package mechanism](https://neovim.io/doc/user/repeat.html#packages)
+loads anything under `~/.config/nvim/pack/*/start/*` at startup.
+Clone this repo to that path and nvim picks the plugin up on the
+next launch:
+
+```sh
+mkdir -p ~/.config/nvim/pack/sonv/start
+git clone https://github.com/sonv/TexViewer ~/.config/nvim/pack/sonv/start/mathpreview
+```
+
+The four `:MathPreview*` commands become available without any
+`init.lua` edit. To pin to a release tag instead of tracking `main`:
+
+```sh
+cd ~/.config/nvim/pack/sonv/start/mathpreview
+git checkout v0.1.0
+```
+
+To override defaults, add a `require("mathpreview").setup({ … })` call
+to your `init.lua` (any time after nvim startup is fine; the plugin
+defers daemon work until you actually run `:MathPreview`).
+
+To update later: `git pull` from inside that directory. To remove:
+`rm -rf` it.
 
 ### 3. Use it
 
@@ -190,10 +279,10 @@ mathpreview-cli serve path/to/paper.tex
 
 ### MathJax and offline setup
 
-For the live viewer, MathJax works locally out of the box. The repository
-vendors MathJax 4's `tex-svg.js`, the TeX extensions used by real papers,
-and the New Computer Modern SVG font shards needed by `\boldsymbol` /
-`\bm` under `crates/cli/vendor/mathjax/`. `mathpreview-cli serve`
+The default works offline. MathJax 4 (`tex-svg.js`, TeX extensions, and
+the New Computer Modern SVG font shards needed by `\boldsymbol` / `\bm`
+— ~14 MB total) is **embedded into the binary** via `include_dir!`
+along with the four NCM body-text woff2 files. `mathpreview-cli serve`
 defaults to:
 
 ```sh
@@ -201,29 +290,40 @@ defaults to:
 ```
 
 and the daemon serves that bundle at
-`http://127.0.0.1:23636/vendor/mathjax/...`. For normal use, the install
-path is just: build the Rust binary, run `serve`, open the browser. No
-`npm install`, CDN access, LaTeX install, or separate MathJax setup is
-needed for the HTML/SVG preview.
+`http://127.0.0.1:23636/vendor/mathjax/...` directly from the embedded
+in-memory tree. No `npm install`, no CDN access, no LaTeX install, and
+no separate MathJax setup is needed for the HTML/SVG preview, even
+after you move the binary somewhere else on disk.
 
 The body prose font (New Computer Modern 10pt — the same family
 MathJax's SVG glyphs are generated from, so prose and math share a
-typeface) is vendored too: four woff2 files under
-`crates/cli/vendor/newcm-text/woff2/`, served at
-`http://127.0.0.1:23636/vendor/newcm-text/...`. Bundled, not installed:
-no system font install is required. These four woff2 files are pulled
-into the binary via `include_bytes!`, so the release executable serves
-them without needing the surrounding source checkout at runtime — useful
-if you ship just the binary somewhere. (MathJax itself is too large to
-embed and still reads from `vendor/mathjax/` on disk.) The font is
-OFL-1.1 licensed (`crates/cli/vendor/newcm-text/LICENSE.txt`).
+typeface) is OFL-1.1 licensed
+(`crates/cli/vendor/newcm-text/LICENSE.txt`).
+
+**Loading MathJax from the network instead.** If you'd rather pull
+MathJax over the network — for instance to pick up a newer MathJax
+release without rebuilding the binary, or because your corporate proxy
+caches CDN assets aggressively — pass `--mathjax-url` to the daemon
+with any MathJax 4 build URL:
+
+```sh
+mathpreview-cli serve path/to/paper.tex \
+  --mathjax-url https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js
+```
+
+From the nvim plugin, set `mathjax_url` in `setup()`:
+
+```lua
+require("mathpreview").setup({
+  mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+})
+```
 
 `mathpreview-cli render` is different: it writes a standalone HTML file
 intended to be opened directly, so it uses the jsdelivr MathJax CDN by
-default. For fully offline preview, prefer `serve`. If you do want a
-static offline HTML setup, pass `--mathjax-url` to a MathJax bundle that
-your own HTTP server also serves; a `file://` HTML file cannot load
-`/vendor/mathjax/...` unless a local server is providing that path.
+default (`file://` pages can't hit the daemon's `/vendor/mathjax/`).
+For fully offline static HTML, point `--mathjax-url` at a MathJax bundle
+served by an HTTP server you control.
 
 The toolbar shows a status pill that reports timing on each update.
 The format depends on whether the daemon could send a patch or had to
@@ -400,6 +500,10 @@ are fine for the standard case. Override only if you need to:
 require("mathpreview").setup({
   cmd = "/usr/local/bin/mathpreview-cli", -- non-$PATH binary location
   auto_open_browser = false,              -- skip the browser launch on :MathPreview
+  -- nil = use the binary's embedded MathJax bundle (offline default).
+  -- Set to any MathJax 4 build URL to load over the network instead —
+  -- the plugin forwards it to the daemon as --mathjax-url.
+  mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
   filetypes = { "tex", "plaintex", "latex" },
   debounce_ms = 40,
   cursor_debounce_ms = 80,
