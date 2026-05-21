@@ -1621,8 +1621,8 @@ fn watched_event_paths(
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, is_buffer_renderable, is_latest_render_attempt,
-        watched_event_paths, websocket_needs_reload, AppState, PatchOp, PlanSlot,
-        WS_PROTOCOL_VERSION,
+        serve_buffer_push, watched_event_paths, websocket_needs_reload, AppState, PatchOp,
+        PlanSlot, WS_PROTOCOL_VERSION,
     };
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},
@@ -2194,5 +2194,179 @@ Second paragraph here.
             })
             .collect();
         assert_eq!(indices, vec![7, 4, 1]);
+    }
+
+    fn empty_preamble() -> ExtractedPreamble {
+        ExtractedPreamble {
+            macros: Vec::new(),
+            packages_short: Vec::new(),
+            packages_long: Vec::new(),
+            unmapped_packages: Vec::new(),
+            warnings: Vec::new(),
+            raw_preamble: String::new(),
+            title: None,
+            title_short: None,
+            author: None,
+            authors: Vec::new(),
+            author_details: Vec::new(),
+            date: None,
+            sidenote_wrappers: Vec::new(),
+        }
+    }
+
+    /// Multi-file editing: `POST /buffer` with `X-Mathpreview-Path` pointing at
+    /// an `\input`-ed child must store the body keyed by canonical child path
+    /// and have the next render splice it in instead of the disk content.
+    #[tokio::test]
+    async fn buffer_push_with_child_path_splices_override_into_root_render() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mp-buffer-push-child-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        let child = dir.join("child.tex");
+        std::fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\nBefore.\n\\input{child}\nAfter.\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(&child, "Diskchild\n").unwrap();
+
+        let root_canon = root.canonicalize().unwrap();
+        let child_canon = child.canonicalize().unwrap();
+
+        let (tx, _rx) = broadcast::channel(8);
+        let (watch_tx, _watch_rx) = std_mpsc::channel();
+        let mut watched_set = HashSet::new();
+        watched_set.insert(root_canon.clone());
+        watched_set.insert(child_canon.clone());
+
+        let state = AppState {
+            opts: HtmlOptions::default(),
+            current: Arc::new(RwLock::new(RenderOutput {
+                html: String::new(),
+                body_html: String::new(),
+                blocks: Vec::new(),
+                sync: SyncIndex::new(),
+                root_file: root_canon.clone(),
+                preamble: empty_preamble(),
+                included_files: vec![child_canon.clone()],
+            })),
+            tx,
+            watched: Arc::new(RwLock::new(watched_set)),
+            watch_tx,
+            preamble_cache: Arc::new(RwLock::new(None)),
+            buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            last_blocks: Arc::new(RwLock::new(Vec::new())),
+            render_seq: Arc::new(AtomicU64::new(0)),
+            jump_seq: Arc::new(AtomicU64::new(0)),
+            pending_jump: Arc::new(RwLock::new(None)),
+        };
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-mathpreview-path",
+            axum::http::HeaderValue::from_str(child_canon.to_str().unwrap()).unwrap(),
+        );
+
+        let status = serve_buffer_push(
+            axum::extract::State(state.clone()),
+            headers,
+            "Livechild\n".to_string(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+
+        let overrides = state.buffer_overrides.read().await;
+        assert_eq!(
+            overrides.get(&child_canon).map(String::as_str),
+            Some("Livechild\n"),
+            "override map must be keyed by the canonical child path",
+        );
+        drop(overrides);
+
+        let current = state.current.read().await;
+        // Prose is split into per-word source-sync spans; check for the unique
+        // override token and the absence of the on-disk token instead of a
+        // contiguous substring.
+        assert!(
+            current.body_html.contains(">Livechild<"),
+            "rendered body should splice the override; got: {}",
+            current.body_html,
+        );
+        assert!(
+            !current.body_html.contains("Diskchild"),
+            "rendered body should not contain disk content; got: {}",
+            current.body_html,
+        );
+        assert!(
+            current.body_html.contains(">Before<") && current.body_html.contains(">After<"),
+            "rendered body should still contain surrounding root content; got: {}",
+            current.body_html,
+        );
+        drop(current);
+
+        assert_eq!(
+            std::fs::read_to_string(&child).unwrap(),
+            "Diskchild\n",
+            "buffer-push must not write the override to disk",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `POST /buffer` with a path that's neither the root nor a watched
+    /// included file must be rejected without poisoning the override map.
+    #[tokio::test]
+    async fn buffer_push_rejects_path_outside_project() {
+        let (tx, _rx) = broadcast::channel(8);
+        let (watch_tx, _watch_rx) = std_mpsc::channel();
+        let mut watched_set = HashSet::new();
+        let root = PathBuf::from("/tmp/mathpreview-stranger-root.tex");
+        watched_set.insert(root.clone());
+
+        let state = AppState {
+            opts: HtmlOptions::default(),
+            current: Arc::new(RwLock::new(RenderOutput {
+                html: String::new(),
+                body_html: String::new(),
+                blocks: Vec::new(),
+                sync: SyncIndex::new(),
+                root_file: root,
+                preamble: empty_preamble(),
+                included_files: Vec::new(),
+            })),
+            tx,
+            watched: Arc::new(RwLock::new(watched_set)),
+            watch_tx,
+            preamble_cache: Arc::new(RwLock::new(None)),
+            buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            last_blocks: Arc::new(RwLock::new(Vec::new())),
+            render_seq: Arc::new(AtomicU64::new(0)),
+            jump_seq: Arc::new(AtomicU64::new(0)),
+            pending_jump: Arc::new(RwLock::new(None)),
+        };
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-mathpreview-path",
+            axum::http::HeaderValue::from_static("/tmp/mathpreview-not-in-project.tex"),
+        );
+
+        let status = serve_buffer_push(
+            axum::extract::State(state.clone()),
+            headers,
+            "stranger body\n".to_string(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            state.buffer_overrides.read().await.is_empty(),
+            "rejected buffer-push must not insert into the override map",
+        );
     }
 }

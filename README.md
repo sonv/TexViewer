@@ -381,10 +381,6 @@ See `DESIGN.md` for the full backlog.
 
 ## What's not done yet
 
-- **Multi-file editing.** The buffer-push path replaces the *root* file's
-  content; if you edit a `\input`-ed child, you'd need the editor plugin
-  to send each buffer keyed by path. The server-side substitution map
-  exists in the architecture but isn't exercised.
 - **Nested margin-card expansion + popup mode.** First-pass margin
   cards (click-to-pin + hover preview) work, but clicking a `\ref`
   *inside* an already-pinned card doesn't yet open a child card, and
