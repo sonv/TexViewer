@@ -2721,15 +2721,15 @@ mod tests {
 
         assert!(out.body_html.contains(r#"class="eq-num-list""#));
         assert!(out.body_html.contains(r#"class="eq-refkey-list""#));
-        assert!(out
-            .body_html
-            .contains(r#"<span class="eq-refkey-chip">eq:a</span>"#));
-        assert!(out
-            .body_html
-            .contains(r#"<span class="eq-refkey-chip" id="eq-b">eq:b</span>"#));
-        assert!(out
-            .body_html
-            .contains(r#"<span class="eq-refkey-chip" id="eq-c">eq:c</span>"#));
+        assert!(out.body_html.contains(
+            r#"<span class="eq-refkey-chip" data-target="eq:a" tabindex="0" title="pin eq:a to margin">eq:a</span>"#
+        ));
+        assert!(out.body_html.contains(
+            r#"<span class="eq-refkey-chip" id="eq-b" data-target="eq:b" tabindex="0" title="pin eq:b to margin">eq:b</span>"#
+        ));
+        assert!(out.body_html.contains(
+            r#"<span class="eq-refkey-chip" id="eq-c" data-target="eq:c" tabindex="0" title="pin eq:c to margin">eq:c</span>"#
+        ));
         assert!(out
             .body_html
             .contains(r#"<span class="eq-num-row">(1.1)</span>"#));
@@ -2787,9 +2787,10 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '47'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '48'"));
         assert!(out.html.contains("margin-card-grip"));
         assert!(out.html.contains("initMarginDnd"));
+        assert!(out.html.contains("decorateRefkeyChips"));
         assert!(out.html.contains("startup: { typeset: false }"));
         assert!(out.html.contains("queueInitialTypeset"));
         assert!(out.html.contains("ensureInitialTypeset"));
@@ -2812,9 +2813,8 @@ mod tests {
         assert!(out.html.contains("clearSearchSession"));
         assert!(out.html.contains("searchPanelIsOpen"));
         assert!(out.html.contains("math-search-glyph-active"));
-        assert!(out
-            .html
-            .contains(r#"body.refkey-visible [data-refkey]:not(.label-anchor)::after"#));
+        assert!(out.html.contains(r#"[data-refkey]:not(.label-anchor)"#));
+        assert!(out.html.contains(r#"body.refkey-visible .refkey-chip"#));
         assert!(out
             .html
             .contains(r#"right: calc(100% + var(--refkey-gap));"#));

@@ -52,7 +52,10 @@ pub(super) fn equation_row_refkey_html(
     }
 
     let row_count = row_numbers.len().max(labels_by_row.len());
-    let mut out = String::from(r#"<span class="eq-refkey-list" aria-hidden="true">"#);
+    // Note: this list is no longer aria-hidden; each chip is now clickable
+    // (mirrors the .refkey-chip injected by the viewer for non-row labels)
+    // so screen readers can reach the pin-by-refkey shortcut too.
+    let mut out = String::from(r#"<span class="eq-refkey-list">"#);
     for row_index in 0..row_count {
         out.push_str(r#"<span class="eq-refkey-row">"#);
         if let Some(labels) = labels_by_row.get(row_index) {
@@ -64,8 +67,9 @@ pub(super) fn equation_row_refkey_html(
                 };
                 write!(
                     out,
-                    r#"<span class="eq-refkey-chip"{id}>{label}</span>"#,
+                    r#"<span class="eq-refkey-chip"{id} data-target="{key}" tabindex="0" title="pin {key} to margin">{label}</span>"#,
                     id = id_attr,
+                    key = escape_attr(label),
                     label = escape_html(label),
                 )
                 .unwrap();

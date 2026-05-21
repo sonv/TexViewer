@@ -812,6 +812,30 @@
     });
   }
 
+  /// Inject a clickable `<button class="refkey-chip">` into every
+  /// `[data-refkey]` element under `root`, so the marginal refkey
+  /// indicators (the chips that appear when the `keys` toggle is on) act
+  /// as pin-to-margin shortcuts. Idempotent: a `data-refkey-decorated`
+  /// flag on the parent skips already-injected chips so this can run
+  /// after every patch. Excludes `.label-anchor` (zero-content markers
+  /// for `\label` placed before the actual rendered element).
+  function decorateRefkeyChips(root) {
+    if (!root) return;
+    var nodes = root.querySelectorAll('[data-refkey]:not(.label-anchor):not([data-refkey-decorated])');
+    nodes.forEach(function(el) {
+      var key = el.getAttribute('data-refkey');
+      if (!key) return;
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'refkey-chip';
+      chip.dataset.target = key;
+      chip.title = 'click to pin ' + key + ' to margin';
+      chip.textContent = key;
+      el.appendChild(chip);
+      el.setAttribute('data-refkey-decorated', '1');
+    });
+  }
+
   function isPinnableLink(target) {
     if (!target || !target.closest) return null;
     return target.closest('#page a.ref[href^="#"], #page a.cite[href^="#"]');

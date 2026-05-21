@@ -576,6 +576,16 @@ body.refkey-visible .eq-refkey-list {
   font-weight: 500;
   line-height: 1.35;
   white-space: nowrap;
+  cursor: pointer;
+}
+.eq-refkey-chip:hover {
+  background: #fff;
+  border-color: var(--accent, #b04b00);
+  color: var(--accent, #b04b00);
+}
+.eq-refkey-chip:focus-visible {
+  outline: 2px solid var(--accent, #b04b00);
+  outline-offset: 1px;
 }
 /* The first line of a paragraph after a display equation shouldn't indent
    (LaTeX's "this paragraph continues" rule). Without paragraph wrappers we
@@ -777,15 +787,20 @@ body.refkey-visible .eq-refkey-list {
   margin-top: 0.55em;
 }
 .label-anchor { position: relative; top: -4.5rem; }
-body.refkey-visible [data-refkey]:not(.label-anchor) {
+/* Refkey chips. Each [data-refkey] that's NOT a label-anchor gets a child
+   `<button class="refkey-chip">` injected by `decorateRefkeyChips()` after
+   every render. The chip lives in the left margin (position absolute on
+   the relatively-positioned parent) and clicking it pins the parent's
+   target as a margin card. Visibility is gated by `body.refkey-visible`,
+   the same toggle that used to drive the `::after` pseudo-element. */
+[data-refkey]:not(.label-anchor) {
   position: relative;
 }
-body.refkey-visible [data-refkey]:not(.label-anchor)::after {
-  content: attr(data-refkey);
+.refkey-chip {
+  display: none;
   position: absolute;
   right: calc(100% + var(--refkey-gap));
   top: 0.05em;
-  display: block;
   margin: 0;
   padding: 1px 5px;
   border: 1px solid #d8d5cc;
@@ -801,19 +816,22 @@ body.refkey-visible [data-refkey]:not(.label-anchor)::after {
   text-align: right;
   text-transform: none;
   white-space: nowrap;
-  pointer-events: none;
+  cursor: pointer;
   z-index: 2;
 }
-body.refkey-visible .math.display[data-refkey]::after {
-  top: 50%;
-  transform: translateY(-50%);
+body.refkey-visible .refkey-chip { display: block; }
+.refkey-chip:hover {
+  background: #fff;
+  border-color: var(--accent, #b04b00);
+  color: var(--accent, #b04b00);
 }
-body.refkey-visible .thm[data-refkey]::after {
-  top: 0.72em;
+.refkey-chip:focus-visible {
+  outline: 2px solid var(--accent, #b04b00);
+  outline-offset: 1px;
 }
-body.refkey-visible .float-placeholder[data-refkey]::after {
-  top: 0;
-}
+.math.display > .refkey-chip { top: 50%; transform: translateY(-50%); }
+.thm > .refkey-chip { top: 0.72em; }
+.float-placeholder > .refkey-chip { top: 0; }
 .status { font-size: 11px; padding: 2px 6px; border-radius: 3px; color: var(--muted); }
 .status.live { color: #1e7e1e; }
 .status.dead { color: #b22222; }

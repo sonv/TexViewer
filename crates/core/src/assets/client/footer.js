@@ -8,7 +8,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '47';
+  var WS_PROTOCOL_VERSION = '48';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -39,6 +39,7 @@
           await applyPatch(msg.ops, msg.blocks);
           applyMode(currentProofMode);
           setRefkeysVisible(refkeysVisible, false);
+          decorateRefkeyChips(document.getElementById('page'));
           restoreSourceHighlight();
           restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
@@ -136,6 +137,7 @@
             memSuffix(window._lastRss));
           applyMode(currentProofMode);
           setRefkeysVisible(refkeysVisible, false);
+          decorateRefkeyChips(document.getElementById('page'));
           restoreSourceHighlight();
           restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
@@ -211,6 +213,7 @@
   }
 
   initMarginDnd();
+  decorateRefkeyChips(document.getElementById('page'));
   scheduleNavigationRefresh();
   startMathObserver();
   refreshAfterInitialEngine(40);

@@ -165,6 +165,17 @@
   });
   document.addEventListener('scroll', hideHoverPreview, { passive: true });
   document.addEventListener('click', function(e) {
+    // Refkey chip in the left margin → pin its target as a margin card.
+    // Same path as the typed-refkey input; works for theorems, sections,
+    // floats, equations, and the per-row .eq-refkey-chip in multi-row
+    // math environments.
+    var refkeyChip = e.target.closest('.refkey-chip, .eq-refkey-chip[data-target]');
+    if (refkeyChip) {
+      e.preventDefault();
+      e.stopPropagation();
+      pinByRefkey(refkeyChip.dataset.target || refkeyChip.textContent || '');
+      return;
+    }
     var restart = e.target.closest('#server-restart');
     if (restart) {
       restartServer();
@@ -314,6 +325,16 @@
       e.preventDefault();
       head.closest('.proof').classList.toggle('folded');
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
+      return;
+    }
+
+    // Keyboard activation for the .eq-refkey-chip span (the per-row
+    // equation refkey chips are spans with tabindex=0, not <button>s,
+    // so we wire Enter/Space ourselves).
+    var eqChip = e.target.closest('.eq-refkey-chip[data-target]');
+    if (eqChip && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      pinByRefkey(eqChip.dataset.target || eqChip.textContent || '');
       return;
     }
 
