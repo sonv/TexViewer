@@ -2776,10 +2776,11 @@ mod tests {
         assert!(out.html.contains(r#"id="server-restart""#));
         assert!(out.html.contains(r#"id="server-stop""#));
         assert!(out.html.contains(r#"id="topbar-stripe""#));
-        assert!(out.html.contains(r#"id="margin-pin-input""#));
-        assert!(out.html.contains(r#"id="margin-pin-feedback""#));
         assert!(out.html.contains(r#"id="margin-cards""#));
+        assert!(out.html.contains(r#"id="cmdline""#));
+        assert!(out.html.contains(r#"id="cmdline-input""#));
         assert!(out.html.contains("pinByRefkey"));
+        assert!(out.html.contains("openCmdline"));
         assert!(out.html.contains("setRefkeysVisible"));
         assert!(out.html.contains("mathpreview.refkeys"));
         assert!(out.html.contains("refkey-visible"));
@@ -2787,7 +2788,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '48'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '49'"));
         assert!(out.html.contains("margin-card-grip"));
         assert!(out.html.contains("initMarginDnd"));
         assert!(out.html.contains("decorateRefkeyChips"));

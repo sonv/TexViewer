@@ -153,12 +153,13 @@ pub(super) fn wrap_in_shell(
   </main>
 </div>
 <aside id="margin">
-  <div class="margin-toolbar">
-    <input type="text" class="margin-pin-input" id="margin-pin-input" placeholder="type a \label key, Enter to pin" autocomplete="off" spellcheck="false" aria-label="pin a reference by typing its \label key">
-    <span class="margin-pin-feedback" id="margin-pin-feedback" aria-live="polite"></span>
-  </div>
   <div class="margin-cards" id="margin-cards"></div>
 </aside>
+<div class="cmdline" id="cmdline" hidden>
+  <span class="cmdline-prompt" aria-hidden="true">:</span>
+  <input type="text" class="cmdline-input" id="cmdline-input" autocomplete="off" spellcheck="false" aria-label="command">
+  <span class="cmdline-feedback" id="cmdline-feedback" aria-live="polite"></span>
+</div>
 <script>
 {engine_adapter_js}
 {client_js}

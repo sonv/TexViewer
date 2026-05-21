@@ -957,40 +957,50 @@ body.margin-mode aside#margin > * {
 }
 body.topbar-hidden.margin-mode aside#margin { top: 0; }
 
-/* Toolbar pinned at the top of the margin column. Holds the typed-refkey
-   input so the user can pin a card without scrolling to the source ref. */
-.margin-toolbar {
+/* Vim-style command line. Hidden by default; press `:` (when not in an
+   editable target) to open with a ":" prefix. Supported commands:
+     :pin <key>     pin <key>'s target as a margin card
+     :unpin <key>   remove the matching card
+     :clear         remove all pinned margin cards
+   Enter executes, Esc closes, empty Backspace also closes. */
+.cmdline {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10001;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 6px 12px;
   background: #fbfaf7;
-  border-top: 1px solid var(--rule, #ddd);
-  border-left: 1px solid var(--rule, #ddd);
+  border-top: 1px solid var(--rule, #d8d5cc);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
 }
-.margin-pin-input {
+.cmdline[hidden] { display: none; }
+.cmdline-prompt {
+  color: var(--accent, #b04b00);
+  font-weight: 600;
+  user-select: none;
+}
+.cmdline-input {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--rule, #d8d5cc);
-  border-radius: 3px;
-  background: #fff;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--text, #222);
-}
-.margin-pin-input:focus {
+  border: none;
+  background: transparent;
   outline: none;
-  border-color: var(--accent, #b04b00);
-  box-shadow: 0 0 0 1px var(--accent, #b04b00);
+  font: inherit;
+  color: var(--text, #222);
+  padding: 0;
 }
-.margin-pin-feedback {
+.cmdline-feedback {
   font-size: 11px;
   color: var(--muted, #888);
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   white-space: nowrap;
 }
-.margin-pin-feedback.error { color: #b22222; }
+.cmdline-feedback.error { color: #b22222; }
 
 /* When at least one card is pinned (`body.margin-has-cards`), pin the
    #page-shell against the margin column. `margin-right` is set to

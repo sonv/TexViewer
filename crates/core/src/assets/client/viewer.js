@@ -394,6 +394,10 @@
         clearVimPending();
         openSearchPanel();
         return true;
+      case ':':
+        clearVimPending();
+        openCmdline('');
+        return true;
       case 'n':
         clearVimPending();
         runSearch(false);
@@ -799,6 +803,126 @@
     pinnedRefs.set(key, card);
     updateMarginCardsClass();
     return { ok: true, reason: 'pinned' };
+  }
+
+  function unpinByRefkey(rawKey) {
+    var key = (rawKey || '').trim();
+    if (!key) return { ok: false, reason: 'empty' };
+    if (!pinnedRefs.has(key)) return { ok: false, reason: 'not-pinned' };
+    var card = pinnedRefs.get(key);
+    if (card && card.parentNode) card.parentNode.removeChild(card);
+    pinnedRefs.delete(key);
+    updateMarginCardsClass();
+    return { ok: true, reason: 'unpinned' };
+  }
+
+  /// Vim-style command line. Hidden by default; `:` (from outside an
+  /// editable target) opens it with the prompt focused. The supported
+  /// command set is intentionally small — anything richer should be
+  /// designed before adding here.
+  ///   :pin <key>     pin <key>'s target as a margin card
+  ///   :unpin <key>   remove the matching card (no-op if not pinned)
+  ///   :clear         remove all pinned cards
+  /// Enter executes, Esc closes, empty-Backspace also closes.
+  var cmdlineFeedbackTimer = 0;
+  function cmdlineEl() { return document.getElementById('cmdline'); }
+  function cmdlineInputEl() { return document.getElementById('cmdline-input'); }
+  function cmdlineFeedbackEl() { return document.getElementById('cmdline-feedback'); }
+  function setCmdlineFeedback(text, isError) {
+    var fb = cmdlineFeedbackEl();
+    if (!fb) return;
+    fb.textContent = text || '';
+    fb.classList.toggle('error', !!isError);
+    if (cmdlineFeedbackTimer) clearTimeout(cmdlineFeedbackTimer);
+    if (text && !isError) {
+      cmdlineFeedbackTimer = setTimeout(function() {
+        if (cmdlineFeedbackEl()) cmdlineFeedbackEl().textContent = '';
+        cmdlineFeedbackTimer = 0;
+      }, 1800);
+    }
+  }
+  function openCmdline(initial) {
+    var line = cmdlineEl();
+    var input = cmdlineInputEl();
+    if (!line || !input) return;
+    line.hidden = false;
+    input.value = initial || '';
+    setCmdlineFeedback('', false);
+    // Defer focus so the `:` that opened the cmdline (or any other
+    // synthetic key from the dispatcher) isn't typed into the input.
+    setTimeout(function() {
+      input.focus();
+      input.select();
+    }, 0);
+  }
+  function closeCmdline() {
+    var line = cmdlineEl();
+    var input = cmdlineInputEl();
+    if (line) line.hidden = true;
+    if (input) {
+      input.value = '';
+      input.blur();
+    }
+    setCmdlineFeedback('', false);
+  }
+  function runCmd(raw) {
+    var text = (raw || '').trim();
+    if (!text) return closeCmdline();
+    var space = text.indexOf(' ');
+    var cmd = (space < 0 ? text : text.slice(0, space)).toLowerCase();
+    var arg = space < 0 ? '' : text.slice(space + 1).trim();
+    if (cmd === 'pin' || cmd === 'p') {
+      if (!arg) {
+        setCmdlineFeedback('usage: :pin <key>', true);
+        return;
+      }
+      var r = pinByRefkey(arg);
+      if (r.ok) {
+        closeCmdline();
+        if (r.reason === 'already-pinned') setCmdlineFeedback('already pinned', false);
+      } else if (r.reason === 'not-found') {
+        setCmdlineFeedback('no \\label by that name', true);
+      } else {
+        setCmdlineFeedback('pin failed: ' + r.reason, true);
+      }
+      return;
+    }
+    if (cmd === 'unpin' || cmd === 'u') {
+      if (!arg) {
+        setCmdlineFeedback('usage: :unpin <key>', true);
+        return;
+      }
+      var u = unpinByRefkey(arg);
+      if (u.ok) closeCmdline();
+      else setCmdlineFeedback(u.reason === 'not-pinned' ? 'not pinned' : 'unpin failed', true);
+      return;
+    }
+    if (cmd === 'clear') {
+      closeAllMarginCards();
+      closeCmdline();
+      return;
+    }
+    setCmdlineFeedback('unknown command: ' + cmd, true);
+  }
+  function initCmdline() {
+    var input = cmdlineInputEl();
+    if (!input || input.dataset.cmdlineInit === '1') return;
+    input.dataset.cmdlineInit = '1';
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runCmd(input.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeCmdline();
+      } else if (e.key === 'Backspace' && input.value === '') {
+        e.preventDefault();
+        closeCmdline();
+      }
+    });
+    // Closing on blur would be nice but it fights with the user clicking
+    // the feedback span / loose focus mid-edit. Stay open until Enter or
+    // Esc explicitly closes.
   }
 
   /// CSS.escape() is widely supported but ancient browsers / headless
