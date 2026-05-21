@@ -825,9 +825,159 @@
   ///   :clear         remove all pinned cards
   /// Enter executes, Esc closes, empty-Backspace also closes.
   var cmdlineFeedbackTimer = 0;
+  var cmdlineSuggestions = [];
+  var cmdlineSuggestionIndex = -1;
+  var CMDLINE_MAX_SUGGESTIONS = 12;
   function cmdlineEl() { return document.getElementById('cmdline'); }
   function cmdlineInputEl() { return document.getElementById('cmdline-input'); }
   function cmdlineFeedbackEl() { return document.getElementById('cmdline-feedback'); }
+  function cmdlineSuggestionsEl() { return document.getElementById('cmdline-suggestions'); }
+
+  /// Collect every available refkey from the page in one pass. Source set:
+  ///   * `[data-refkey]` on theorems, sections, equations, floats
+  ///   * `[data-target]` on per-row `.eq-refkey-chip` (align / gather)
+  ///   * `[data-key]` on `<dt>` bib entries
+  /// Returned sorted alphabetically; dedup via Set.
+  function collectAllRefkeys() {
+    var keys = new Set();
+    var page = document.getElementById('page');
+    if (!page) return [];
+    page.querySelectorAll('[data-refkey]:not(.label-anchor)').forEach(function(el) {
+      var k = el.getAttribute('data-refkey');
+      if (k) keys.add(k);
+    });
+    page.querySelectorAll('.eq-refkey-chip[data-target]').forEach(function(el) {
+      var k = el.getAttribute('data-target');
+      if (k) keys.add(k);
+    });
+    page.querySelectorAll('dt[data-key]').forEach(function(el) {
+      var k = el.getAttribute('data-key');
+      if (k) keys.add(k);
+    });
+    return Array.from(keys).sort();
+  }
+
+  /// Fuzzy match score: substring hits rank above subsequence hits, and
+  /// among ties shorter candidates win (closer to a prefix completion).
+  /// Returns 0 for no match.
+  function fuzzyScore(query, candidate) {
+    if (!query) return 1;
+    var q = query.toLowerCase();
+    var c = candidate.toLowerCase();
+    var idx = c.indexOf(q);
+    if (idx !== -1) {
+      // Substring: prefix hits beat mid-string hits; shorter beats longer.
+      return 1000 - idx * 10 - Math.max(0, c.length - q.length);
+    }
+    // Subsequence walk (every char of q appears in c in order).
+    var qi = 0;
+    for (var i = 0; i < c.length && qi < q.length; i++) {
+      if (c.charCodeAt(i) === q.charCodeAt(qi)) qi++;
+    }
+    if (qi !== q.length) return 0;
+    return 100 - Math.max(0, c.length - q.length);
+  }
+
+  function suggestionsForArg(arg) {
+    var keys = collectAllRefkeys();
+    var scored = [];
+    for (var i = 0; i < keys.length; i++) {
+      var s = fuzzyScore(arg, keys[i]);
+      if (s > 0) scored.push({ key: keys[i], score: s });
+    }
+    scored.sort(function(a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.key.localeCompare(b.key);
+    });
+    return scored.map(function(s) { return s.key; });
+  }
+
+  function parseCmdline(text) {
+    var t = text || '';
+    var space = t.indexOf(' ');
+    var cmd = (space < 0 ? t : t.slice(0, space)).toLowerCase();
+    var arg = space < 0 ? '' : t.slice(space + 1);
+    return { cmd: cmd, arg: arg, hasSpace: space >= 0 };
+  }
+
+  /// Show suggestions for `:pin <prefix>` / `:unpin <prefix>` only.
+  /// `:clear` and unknown commands → hide the strip.
+  function refreshCmdlineSuggestions() {
+    var strip = cmdlineSuggestionsEl();
+    var input = cmdlineInputEl();
+    if (!strip || !input) return;
+    var parsed = parseCmdline(input.value);
+    var wantsArg = (parsed.cmd === 'pin' || parsed.cmd === 'p' ||
+                    parsed.cmd === 'unpin' || parsed.cmd === 'u');
+    if (!wantsArg || !parsed.hasSpace) {
+      cmdlineSuggestions = [];
+      cmdlineSuggestionIndex = -1;
+      strip.hidden = true;
+      strip.replaceChildren();
+      return;
+    }
+    var matches = suggestionsForArg(parsed.arg.trim());
+    // For :unpin, narrow to currently-pinned keys so completion is
+    // useful — `:unpin <Tab>` should cycle what's actually on screen.
+    if (parsed.cmd === 'unpin' || parsed.cmd === 'u') {
+      matches = matches.filter(function(k) { return pinnedRefs.has(k); });
+    }
+    cmdlineSuggestions = matches;
+    cmdlineSuggestionIndex = -1;
+    renderCmdlineSuggestions();
+  }
+  function renderCmdlineSuggestions() {
+    var strip = cmdlineSuggestionsEl();
+    if (!strip) return;
+    if (!cmdlineSuggestions.length) {
+      strip.hidden = true;
+      strip.replaceChildren();
+      return;
+    }
+    strip.hidden = false;
+    strip.replaceChildren();
+    var show = cmdlineSuggestions.slice(0, CMDLINE_MAX_SUGGESTIONS);
+    show.forEach(function(key, i) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cmdline-suggestion';
+      if (i === cmdlineSuggestionIndex) btn.classList.add('active');
+      btn.dataset.suggestionIndex = String(i);
+      btn.textContent = key;
+      strip.appendChild(btn);
+    });
+    if (cmdlineSuggestions.length > CMDLINE_MAX_SUGGESTIONS) {
+      var more = document.createElement('span');
+      more.className = 'cmdline-suggestion-overflow';
+      more.textContent = '+' + (cmdlineSuggestions.length - CMDLINE_MAX_SUGGESTIONS) + ' more';
+      strip.appendChild(more);
+    }
+  }
+  function cycleCmdlineSuggestion(delta) {
+    if (!cmdlineSuggestions.length) return false;
+    var max = Math.min(cmdlineSuggestions.length, CMDLINE_MAX_SUGGESTIONS);
+    if (cmdlineSuggestionIndex < 0) {
+      cmdlineSuggestionIndex = delta > 0 ? 0 : max - 1;
+    } else {
+      cmdlineSuggestionIndex = ((cmdlineSuggestionIndex + delta) % max + max) % max;
+    }
+    var input = cmdlineInputEl();
+    if (input) {
+      var parsed = parseCmdline(input.value);
+      // Replace the arg with the selected suggestion but keep the
+      // original command spelling (so `:p ` doesn't turn into `:pin `).
+      var head = parsed.hasSpace
+        ? input.value.slice(0, input.value.indexOf(' ') + 1)
+        : input.value + ' ';
+      input.value = head + cmdlineSuggestions[cmdlineSuggestionIndex];
+      // Caret to end so further typing extends the completion.
+      try {
+        input.setSelectionRange(input.value.length, input.value.length);
+      } catch (e) {}
+    }
+    renderCmdlineSuggestions();
+    return true;
+  }
   function setCmdlineFeedback(text, isError) {
     var fb = cmdlineFeedbackEl();
     if (!fb) return;
@@ -848,6 +998,7 @@
     line.hidden = false;
     input.value = initial || '';
     setCmdlineFeedback('', false);
+    refreshCmdlineSuggestions();
     // Defer focus so the `:` that opened the cmdline (or any other
     // synthetic key from the dispatcher) isn't typed into the input.
     setTimeout(function() {
@@ -864,6 +1015,13 @@
       input.blur();
     }
     setCmdlineFeedback('', false);
+    cmdlineSuggestions = [];
+    cmdlineSuggestionIndex = -1;
+    var strip = cmdlineSuggestionsEl();
+    if (strip) {
+      strip.hidden = true;
+      strip.replaceChildren();
+    }
   }
   function runCmd(raw) {
     var text = (raw || '').trim();
@@ -918,8 +1076,39 @@
       } else if (e.key === 'Backspace' && input.value === '') {
         e.preventDefault();
         closeCmdline();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        cycleCmdlineSuggestion(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'ArrowDown') {
+        if (cmdlineSuggestions.length) {
+          e.preventDefault();
+          cycleCmdlineSuggestion(1);
+        }
+      } else if (e.key === 'ArrowUp') {
+        if (cmdlineSuggestions.length) {
+          e.preventDefault();
+          cycleCmdlineSuggestion(-1);
+        }
       }
     });
+    input.addEventListener('input', function() {
+      refreshCmdlineSuggestions();
+    });
+    // Clicking a suggestion chip commits it and runs the command.
+    var strip = cmdlineSuggestionsEl();
+    if (strip) {
+      strip.addEventListener('mousedown', function(e) {
+        // mousedown (not click) so the input doesn't lose focus first.
+        var btn = e.target && e.target.closest && e.target.closest('.cmdline-suggestion');
+        if (!btn) return;
+        e.preventDefault();
+        var idx = parseInt(btn.dataset.suggestionIndex, 10);
+        if (isNaN(idx) || idx < 0) return;
+        cmdlineSuggestionIndex = idx - 1; // cycle of +1 lands on idx
+        cycleCmdlineSuggestion(1);
+        runCmd(input.value);
+      });
+    }
     // Closing on blur would be nice but it fights with the user clicking
     // the feedback span / loose focus mid-edit. Stay open until Enter or
     // Esc explicitly closes.

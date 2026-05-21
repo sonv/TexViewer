@@ -974,16 +974,52 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   right: 0;
   bottom: 0;
   z-index: 10001;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  display: block;
   background: #fbfaf7;
   border-top: 1px solid var(--rule, #d8d5cc);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
 }
 .cmdline[hidden] { display: none; }
+.cmdline-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+}
+/* Wildmenu-style suggestion strip above the input. Renders one chip
+   per matching refkey for :pin / :unpin; Tab cycles. */
+.cmdline-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--rule, #e5e2d8);
+  background: #fff;
+}
+.cmdline-suggestions[hidden] { display: none; }
+.cmdline-suggestion {
+  padding: 1px 6px;
+  border: 1px solid #d8d5cc;
+  border-radius: 3px;
+  background: #fbfaf7;
+  color: var(--muted, #666);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cmdline-suggestion:hover { color: var(--text, #222); border-color: var(--accent, #b04b00); }
+.cmdline-suggestion.active {
+  background: var(--accent, #b04b00);
+  border-color: var(--accent, #b04b00);
+  color: #fff;
+}
+.cmdline-suggestion-overflow {
+  font-size: 11px;
+  color: var(--muted, #999);
+  align-self: center;
+  padding: 0 4px;
+}
 .cmdline-prompt {
   color: var(--accent, #b04b00);
   font-weight: 600;

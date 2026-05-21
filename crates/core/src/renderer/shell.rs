@@ -156,9 +156,12 @@ pub(super) fn wrap_in_shell(
   <div class="margin-cards" id="margin-cards"></div>
 </aside>
 <div class="cmdline" id="cmdline" hidden>
-  <span class="cmdline-prompt" aria-hidden="true">:</span>
-  <input type="text" class="cmdline-input" id="cmdline-input" autocomplete="off" spellcheck="false" aria-label="command">
-  <span class="cmdline-feedback" id="cmdline-feedback" aria-live="polite"></span>
+  <div class="cmdline-suggestions" id="cmdline-suggestions" hidden></div>
+  <div class="cmdline-row">
+    <span class="cmdline-prompt" aria-hidden="true">:</span>
+    <input type="text" class="cmdline-input" id="cmdline-input" autocomplete="off" spellcheck="false" aria-label="command">
+    <span class="cmdline-feedback" id="cmdline-feedback" aria-live="polite"></span>
+  </div>
 </div>
 <script>
 {engine_adapter_js}
