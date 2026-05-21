@@ -538,27 +538,24 @@ The `fontURL` must point at bundled fonts shipped inside the Tauri app's assets.
 
 ## 9. nvim integration
 
-**Built today: buffer-push live updates.** `examples/mathpreview.lua` is
-a self-contained Lua plugin (no plugin manager required). Source it
-from `init.lua`:
+**Built today: buffer-push live updates.** `lua/mathpreview/init.lua`
+(with command stubs in `plugin/mathpreview.lua`) is a real nvim plugin
+that any plugin manager can install by pointing at this repo. The
+plugin registers `:MathPreview`, `:MathPreviewStop`,
+`:MathPreviewRestart`, `:MathPreviewStatus`. `:MathPreview` finds the
+first free port in `23636..23651`, spawns `mathpreview-cli serve
+<buffer> --port <port>` as a background `jobstart`, opens the system
+browser at `http://127.0.0.1:<port>/`, then attaches the `TextChanged`
+/ `TextChangedI` autocmds (40 ms debounce, header `X-Mathpreview-Path`
+identifies the file) and `CursorMoved` / `CursorMovedI` autocmds.
+`VimLeavePre` reaps the daemon so quitting nvim doesn't leave a stray
+server bound. nvim 0.10+ uses `vim.system` + `vim.uv`; older nvims
+fall back to `jobstart` + `vim.loop`.
 
-```lua
-vim.cmd("luafile /path/to/mathpreview/examples/mathpreview.lua")
-```
-
-It registers `TextChanged` / `TextChangedI` autocmds on `.tex` filetypes
-and POSTs the current buffer to `http://127.0.0.1:23636/buffer` with a
-40 ms debounce. Header `X-Mathpreview-Path` identifies the file. nvim
-0.10+ uses `vim.system` + `vim.uv`; older nvims fall back to
-`jobstart` + `vim.loop`. User commands `:MathpreviewStatus`,
-`:MathpreviewPush`, `:MathpreviewEnable`, `:MathpreviewDisable` expose
-the runtime state for debugging.
-
-User launches the daemon separately:
-`mathpreview-cli serve path/to/any-file-in-project.tex`. The daemon
-resolves the root, opens HTTP on `127.0.0.1:23636`, and accepts both
-disk-watch (any editor) and buffer-push (nvim plugin) sources of
-truth.
+If the user prefers to drive the daemon themselves, the binary still
+runs as a standalone CLI: `mathpreview-cli serve path/to/any-file.tex`
+binds 127.0.0.1:23636 (or whatever `--port` says), and any browser tab
+pointed at the same URL works.
 
 **Built: first-pass forward / inverse source sync.** This uses HTTP for
 editor commands plus the existing WebSocket for browser updates, so the
@@ -566,7 +563,7 @@ nvim plugin stays dependency-light and does not need an
 `NVIM_LISTEN_ADDRESS` RPC socket.
 
 - **Forward search path** (nvim cursor → preview): `CursorMoved` and
-  `CursorMovedI` in `examples/mathpreview.lua` debounce and POST
+  `CursorMovedI` in `lua/mathpreview/init.lua` debounce and POST
   `{file,line,col}` to `/cursor`. The daemon looks up the best matching
   `SyncIndex` entry, broadcasts
   `{event:"source-cursor", file, line, col, element_id}` to every
@@ -574,7 +571,6 @@ nvim plugin stays dependency-light and does not need an
   rendered word or element. The browser uses a dynamic scroll band:
   it does nothing while the target is between 25% and 75% of the
   viewport, and otherwise scrolls it to the 25% line.
-  `:MathpreviewSync` forces one cursor sync manually.
 - **Inverse search path** (preview → nvim cursor): double-clicking or
   Alt/Cmd-clicking rendered content finds the nearest ancestor with
   `data-src="file:line:col"` and POSTs it to `/jump`. The daemon stores
@@ -597,8 +593,12 @@ mathpreview/
 ├── DESIGN.md                        # this document
 ├── examples/
 │   ├── paper.tex                    # demo paper with role annotations
-│   ├── mathpreview.sty              # companion LaTeX style file
-│   └── mathpreview.lua              # nvim plugin (TextChanged → POST)
+│   └── mathpreview.sty              # companion LaTeX style file
+├── lua/
+│   └── mathpreview/
+│       └── init.lua                 # nvim plugin: daemon spawn + buffer push
+├── plugin/
+│   └── mathpreview.lua              # auto-sourced — registers :MathPreview*
 ├── crates/
 │   ├── core/                        # the rendering library
 │   │   ├── src/
@@ -657,7 +657,7 @@ of inline JS that connects to `/ws`, swaps `#page` content on
   plugin for the root or a watched included `.tex` file. The daemon keeps
   overrides keyed by canonical path and re-renders the real root with those
   buffers spliced through `\input` / `\include` / `\subfile`.
-  `examples/mathpreview.lua` ships the nvim side: a `TextChanged` autocmd
+  `lua/mathpreview/init.lua` ships the nvim side: a `TextChanged` autocmd
   debounced 40 ms that curls the buffer.
 
 Both paths feed the same broadcast channel. Mid-edit guard rejects

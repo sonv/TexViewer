@@ -9,7 +9,11 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sonv/mathpreview"
+repository = "https://github.com/sonv/TexViewer"
+homepage = "https://github.com/sonv/TexViewer"
+authors = ["Truong-Son Van <van.truongson@gmail.com>"]
+readme = "README.md"
+rust-version = "1.82"
 
 [workspace.dependencies]
 anyhow    = "1"

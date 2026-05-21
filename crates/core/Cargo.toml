@@ -3,6 +3,14 @@ name = "mathpreview-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+description = "Parser, macro extractor, numbering, and HTML renderer used by the mathpreview-cli LaTeX preview daemon. Pure rendering — no async, no I/O beyond reading files the caller passes paths to."
+keywords = ["latex", "parser", "mathjax", "rendering"]
+categories = ["parser-implementations", "rendering"]
 
 [dependencies]
 anyhow.workspace = true

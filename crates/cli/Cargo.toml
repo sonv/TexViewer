@@ -3,6 +3,14 @@ name = "mathpreview-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+description = "Live-rendering LaTeX preview daemon for nvim/vimtex (the companion binary to the mathpreview.nvim plugin). Serves an interactive HTML view over WebSocket with role-tagged proofs, clickable cross-references, and a pinned-margin column."
+keywords = ["latex", "preview", "mathjax", "neovim", "vimtex"]
+categories = ["command-line-utilities", "rendering", "web-programming::http-server"]
 
 [[bin]]
 name = "mathpreview-cli"

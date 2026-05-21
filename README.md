@@ -12,8 +12,12 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   to a self-contained HTML file.
 - **Live-reload server** (`mathpreview-cli serve`) — HTTP page + WebSocket
   push. Browser tab reflects edits within ~5–10 ms of a keystroke pause.
-- **nvim integration** via a small Lua file: `TextChanged` autocmd → curl
-  POST → daemon. No disk writes, no git pollution.
+- **nvim integration** via the bundled `mathpreview.nvim` plugin
+  (`lua/mathpreview/`, `plugin/mathpreview.lua`): `:MathPreview` in a
+  `.tex` buffer spawns the daemon on a free port (default 23636,
+  scanning up to 23651), opens the browser tab, and pushes the buffer
+  on every `TextChanged`. No disk writes, no git pollution. `VimLeavePre`
+  reaps the daemon so quitting nvim doesn't leave it bound.
 - **nvim ↔ HTML source sync**: cursor movement in nvim can scroll and
   highlight the matching rendered word/math/ref element, and double-click
   or Alt/Cmd-click in the browser can jump nvim back to the source line.
@@ -80,18 +84,108 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   brings end-to-end keystroke latency on a 300-equation paper from
   ~250 ms to single-digit milliseconds for normal text edits.
 
-## Quick start
+## Install
+
+mathpreview ships as two pieces that live in this same repo: a Rust
+binary (`mathpreview-cli`) and an nvim plugin (`mathpreview.nvim`). The
+plugin auto-spawns the binary, so for the standard nvim workflow you
+install both, run `:MathPreview` in a `.tex` buffer, and ignore the
+daemon thereafter.
+
+### 1. The binary
+
+Pick whichever fits your toolchain:
+
+**Pre-built tarball** (no Rust toolchain needed). Download the matching
+archive from the [Releases page](https://github.com/sonv/TexViewer/releases),
+extract it, and put `mathpreview-cli` somewhere on your `$PATH`:
 
 ```sh
-cargo build --release
+# macOS arm64 example — substitute your platform / version
+curl -sSL https://github.com/sonv/TexViewer/releases/download/v0.1.0/mathpreview-cli-v0.1.0-darwin-arm64.tar.gz \
+  | tar xz -C /usr/local/bin/
+mathpreview-cli --version
+```
 
-# Static one-shot HTML
-./target/release/mathpreview-cli render examples/paper.tex -o out.html
+On first run macOS Gatekeeper will quarantine the binary; either right-click
+→ Open in Finder once, or run `xattr -d com.apple.quarantine $(which mathpreview-cli)`.
+
+**`cargo install`** (Rust users): builds from source, picks up the
+embedded MathJax + NCM font assets the same way the release binary does.
+
+```sh
+cargo install --git https://github.com/sonv/TexViewer mathpreview-cli
+```
+
+**Build from this checkout** (contributors):
+
+```sh
+cargo build --release -p mathpreview-cli
+# binary at target/release/mathpreview-cli
+```
+
+### 2. The nvim plugin
+
+Point your plugin manager at this repo. With **lazy.nvim**:
+
+```lua
+{
+  "sonv/TexViewer",
+  ft = { "tex", "plaintex", "latex" },
+  cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus" },
+  -- optional: only needed if mathpreview-cli isn't on $PATH or you
+  -- want to disable browser auto-open / change debounces.
+  -- opts = { cmd = "/usr/local/bin/mathpreview-cli", auto_open_browser = true },
+}
+```
+
+With **packer.nvim**:
+
+```lua
+use { "sonv/TexViewer", ft = { "tex", "plaintex", "latex" } }
+```
+
+The plugin registers four commands; no `require("mathpreview").setup()`
+is needed unless you want to override defaults.
+
+### 3. Use it
+
+Open any `.tex` file and run:
+
+```vim
+:MathPreview
+```
+
+The plugin spawns `mathpreview-cli serve <buffer> --port <free>` in the
+background, opens your default browser at `http://127.0.0.1:<port>/`,
+and starts pushing the buffer on every `TextChanged`. The browser tab
+shows the rendered document with the toolbar described in
+[Viewer controls](#viewer-controls); `:` opens a vim-style command line
+for `:pin`/`:unpin`/`:clear`.
+
+Other commands:
+
+- `:MathPreviewStop` — kill the daemon. (Also fires automatically on
+  `VimLeavePre`.)
+- `:MathPreviewRestart` — stop, then start. Useful after preamble
+  changes the daemon's macro cache misses.
+- `:MathPreviewStatus` — echoes daemon PID/port, last push time, push
+  counters, and the resolved binary path.
+
+### CLI directly (no plugin)
+
+If you'd rather skip the plugin (e.g. previewing a paper without nvim
+open), invoke the binary directly:
+
+```sh
+# Static one-shot HTML — uses jsdelivr MathJax CDN by default.
+mathpreview-cli render path/to/paper.tex -o out.html
 open out.html
 
-# Live-reload server (defaults to 127.0.0.1:23636)
-./target/release/mathpreview-cli serve examples/paper.tex
-# Open http://127.0.0.1:23636 in any browser.
+# Live-reload server (default 127.0.0.1:23636). Edits to the file on
+# disk trigger re-renders; without the plugin pushing buffers,
+# you'll re-render on save rather than per-keystroke.
+mathpreview-cli serve path/to/paper.tex
 ```
 
 ### MathJax and offline setup
@@ -265,54 +359,60 @@ macros that were filtered out.
 
 ## nvim setup
 
-Source `examples/mathpreview.lua` from your `init.lua`:
+The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`
+in this repo. Any plugin manager that adds a checkout's `lua/` and
+`plugin/` directories to `runtimepath` works — see [Install](#install)
+above for lazy.nvim / packer snippets.
 
-```lua
-vim.cmd("luafile /absolute/path/to/mathpreview/examples/mathpreview.lua")
-```
+The four commands `plugin/mathpreview.lua` registers on startup:
 
-Or, if you keep the file on your runtimepath:
+| Command | What it does |
+| --- | --- |
+| `:MathPreview` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the browser tab. Attach `TextChanged` / `CursorMoved` autocmds and start the `/jump` poll. If the daemon is already running, just reopen the browser tab. |
+| `:MathPreviewStop` | Kill the daemon, detach autocmds, stop the poll. Also fires from `VimLeavePre`. |
+| `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after preamble changes the daemon's macro cache misses. |
+| `:MathPreviewStatus` | `print(vim.inspect(...))` of the runtime state: PID/port, root file, push and cursor counts, last error, resolved binary path, nvim version. |
+
+The daemon takes the root file's path on its command line and walks the
+project from there. The plugin then POSTs the *current buffer's* path on
+every `TextChanged` via `X-Mathpreview-Path`, and the daemon splices it
+in as an in-memory override against the real root project — so editing
+a `\input{chapter1}` child file updates the rendered root document
+without writing to disk. nvim 0.10+ uses `vim.system` + `vim.uv`; older
+versions fall back to `jobstart` + `vim.loop`.
+
+`CursorMoved` / `CursorMovedI` POST the current source position to
+`/cursor`. The browser scrolls to and flashes the nearest rendered
+word/math/ref element. It does not scroll while that element is between
+25% and 75% of the viewport; once it leaves that band, it lands the
+element at the 25% line. To jump the other direction, double-click or
+Alt/Cmd-click rendered content in the browser; the plugin polls `/jump`
+and moves the editor cursor to that source location. Blank
+paragraph-separator lines inside theorem/proof environments also have
+invisible source anchors, so placing the cursor on an empty line syncs
+to that whitespace instead of jumping to the top of the enclosing
+environment.
+
+**`setup()` is optional.** The defaults in `lua/mathpreview/init.lua`
+are fine for the standard case. Override only if you need to:
 
 ```lua
 require("mathpreview").setup({
-  url         = "http://127.0.0.1:23636/buffer",
+  cmd = "/usr/local/bin/mathpreview-cli", -- non-$PATH binary location
+  auto_open_browser = false,              -- skip the browser launch on :MathPreview
+  filetypes = { "tex", "plaintex", "latex" },
   debounce_ms = 40,
-  filetypes   = { "tex", "plaintex", "latex" },
+  cursor_debounce_ms = 80,
+  jump_poll_ms = 120,
+  sync = true,                            -- false to disable cursor/jump roundtrip
 })
 ```
 
-This registers `TextChanged` / `TextChangedI` autocmds on `.tex` filetypes
-and POSTs the buffer to the daemon, debounced at 40 ms. The daemon accepts
-the root file and watched `\input` / `\include` / `\subfile` children as
-in-memory overrides, so editing a chapter file can update the real root
-without saving. nvim 0.10+ uses `vim.system` + `vim.uv`; older versions
-fall back to `jobstart` + `vim.loop`.
-
-**User commands the plugin exposes:**
-
-```
-:MathpreviewStatus    -- push count, last error, autocmd state, filetype
-:MathpreviewPush      -- force one push now (bypasses debounce / filter)
-:MathpreviewSync      -- force one cursor-to-preview sync now
-:MathpreviewDisable   -- pause auto-pushes
-:MathpreviewEnable    -- resume
-```
-
-If `MathpreviewStatus` shows zero `autocmds_count`, the file wasn't
-loaded. If `last_error` is set, that's the curl side (server not running,
-wrong URL, etc.).
-
-With the default config, `CursorMoved` / `CursorMovedI` also POST the
-current source position to `/cursor`. The browser scrolls to and flashes
-the nearest rendered word/math/ref element. It does not scroll while that
-element is between 25% and 75% of the viewport; once it leaves that band,
-it lands the element at the 25% line. To jump the other direction,
-double-click or Alt/Cmd-click rendered content in the browser; the nvim
-plugin polls `/jump` and moves the editor cursor to that source location.
-Blank paragraph-separator lines inside theorem/proof environments also
-have invisible source anchors, so placing the cursor on an empty line
-syncs to that whitespace instead of jumping to the top of the enclosing
-environment.
+**Troubleshooting.** If `:MathPreviewStatus` shows `daemon_running =
+false` after `:MathPreview`, check `:messages` for the spawn error
+(usually "binary not found" — set `cmd` in `setup()` to an absolute
+path). If `last_error` is set, that's curl's view of the daemon (port
+mismatch, daemon crashed, etc.); `:MathPreviewRestart` usually fixes it.
 
 ## How it stays fast
 
@@ -362,7 +462,11 @@ crates/core             parser + macro extractor + numbering + renderer (the lib
 crates/cli              mathpreview-cli binary (render / debug / serve)
   ├ vendor/mathjax/     trimmed MathJax 4 (tex-svg) served at /vendor/mathjax/*
   └ vendor/newcm-text/  NewCM 10pt woff2 body font served at /vendor/newcm-text/*
-examples/               demo paper + companion .sty + nvim Lua plugin
+lua/mathpreview/        nvim plugin implementation (start/stop/restart/status)
+  └ init.lua              daemon-spawn, port scan, browser launch, push/poll
+plugin/                 auto-sourced by nvim — registers :MathPreview commands
+  └ mathpreview.lua       command stubs that lazy-require lua/mathpreview
+examples/               demo .tex paper + companion .sty
 scripts/
   ├ vendor-mathjax.sh     refresh vendor/mathjax/ from npm
   └ vendor-newcm-text.sh  refresh vendor/newcm-text/ from npm
