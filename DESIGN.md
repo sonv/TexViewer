@@ -978,3 +978,157 @@ would follow naturally. It did. Once Step 3 ran, priorities for the
 remaining steps reordered around the user's actual editing workflow
 rather than the original §8 feature list. The role/margin/popup work
 in §8 remains as the next slot.
+
+## 14. Slide mode (v0.2.0 design addendum)
+
+Drafted 2026-05-21 for sign-off before v0.2.0 implementation. Goal: the
+same viewer renders Beamer slides as live, navigable presentations
+while you draft them — closing the iteration gap Beamer-with-pdflatex
+leaves open (5–15 s compile, click PDF viewer, repeat).
+
+**Audience and wedge.** The existing user base writes Beamer. No tool
+in 2026 gives them a fast live preview *of their actual `.tex` source*.
+Slidev / Marp / reveal.js target Markdown / Vue / web-author audiences,
+not LaTeX-source mathematicians. mathpreview's existing pipeline
+(sub-10 ms keystroke latency, MathJax node reuse, source sync) is
+already ~90% of what slide-prep needs; the gap is layout and
+navigation.
+
+### 14.1. Source recognition
+
+Single new AST node:
+
+```rust
+NodeKind::Slide {
+    title: Option<String>,        // \frametitle{...} or \begin{frame}{Title}
+    options: Vec<String>,         // \begin{frame}[plain,t,allowframebreaks]
+    notes: Option<String>,        // \note{...} attached to the frame
+    overlay_max: Option<u32>,     // largest <N> seen in \pause / \only<N>
+}
+```
+
+with the existing `children: Vec<Node>` carrying everything between
+`\begin{frame}` and `\end{frame}`. `parser.rs` already recognises
+arbitrary `\begin{env}…\end{env}` — adding a `frame` branch alongside
+the `theorem` / `proof` / `align` handlers is ~80 lines.
+
+Markdown slides come later (`---` between blocks, see §14.7) and emit
+the same `NodeKind::Slide`; downstream code stays format-agnostic.
+
+### 14.2. View contract
+
+A new body class `page-mode-slide`, joining the existing `page-mode-a4`
+and `page-mode-dynamic`. Layout invariants when active:
+
+- Exactly one `<article class="slide" data-slide-index="N">` is
+  visible at a time. Others are in the DOM (so MathJax stays typeset)
+  but `display: none`.
+- The visible slide fills the viewport at a stable 16:9 aspect ratio
+  with all content scaled via CSS `transform: scale(...)` so math
+  stays vector-sharp.
+- The topbar shrinks to a thin strip showing slide N / total + a
+  "drafting" affordance back to A4 / dynamic mode.
+- Margin column, side pane, and refkey toggle are hidden in slide
+  mode (they're paper-document affordances).
+
+Switching modes is a body-class toggle; no re-render, no re-typeset.
+Toolbar's existing `A4 | dynamic` segmented control gains a third
+`slides` button, conditionally shown when at least one
+`NodeKind::Slide` is in the AST.
+
+### 14.3. Navigation
+
+| Key | Action |
+|---|---|
+| `→` / `Space` / `n` | next slide |
+| `←` / `p` | previous slide |
+| `g` then `<N><Enter>` | jump to slide N |
+| `Esc` | open overview grid (4×4 thumbnails of all slides, click to jump) |
+| `f` | toggle fullscreen via the Fullscreen API |
+| `o` | open presenter window (see §14.5) |
+| `b` / `.` | "black-out" slide (push a black overlay div, like Beamer's `\beamergotobutton{}`) |
+
+All of these slot into the existing `handleVimNavigation` switch in
+`viewer.js`; vim users' muscle memory carries over.
+
+### 14.4. Live edits during slide mode
+
+The current keystroke→update pipeline applies unchanged: block-level
+patches arrive at `/ws`, the slide div with the affected
+`data-blockhash` is updated in place. If the edit crosses a
+`\begin{frame}…\end{frame}` boundary the diff may emit a `rebuild` op
+just for that slide range — same machinery, narrower scope.
+
+Source sync flips to slide-aware: clicking inside a slide jumps the
+nvim cursor as usual; `CursorMoved` in nvim auto-advances the slide
+display to whichever frame contains the cursor position.
+
+### 14.5. Presenter mode
+
+`window.open()`'d second window subscribes to the same WebSocket. Its
+view is split:
+
+```
+┌───────────────────────────┬────────────────────────┐
+│  current slide (large)    │   next slide (small)   │
+│                           ├────────────────────────┤
+│                           │   speaker notes        │
+└───────────────────────────┴────────────────────────┘
+   elapsed: 12:43           remaining: ~17:00
+```
+
+Communication between the two windows: `BroadcastChannel` API. Main
+window broadcasts `{ event: "slide-changed", index }` on every nav;
+presenter listens and updates. No daemon involvement.
+
+Speaker notes come from Beamer's `\note{...}`; the parser extracts
+the contents into `Slide.notes`. Rendered text in the notes pane —
+not MathJax-typeset (notes are usually plain English).
+
+### 14.6. PDF export
+
+The existing `print` toolbar button (`POST /print` → `latexmk`)
+already builds Beamer fine. No change. The output is the canonical
+PDF version of the deck.
+
+### 14.7. Markdown slides (deferred to v0.3.0 with general Markdown
+support)
+
+When Markdown lands, the slide-break convention is `---` on its own
+line (Slidev / Marp / Quarto consensus). The markdown parser splits
+at those breaks and emits `NodeKind::Slide` for each chunk. Front
+matter (`title:` / `notes:` / `theme:`) goes into a slide-level YAML
+block at the top of each slide. Nothing else changes — the view
+contract, navigation, and presenter mode are identical regardless of
+source format.
+
+### 14.8. Out of scope for v0.2.0
+
+These are deliberately deferred to keep the v0.2.0 scope tight; revisit
+based on user feedback once the basic mode lands.
+
+- **Slide transitions / animations.** Beamer's `\pause` / `\only<N>` /
+  `\onslide<N>` are visually nice but each one is its own little parser
+  and view-contract bundle. The `overlay_max` field is already in the
+  AST node spec so a later release can wire it up without re-touching
+  the parser; v0.2.0 just renders all overlays as one final slide.
+- **Theme support.** Beamer themes are LaTeX macros; the rendered
+  HTML/CSS doesn't honour `\usetheme{Berkeley}` etc. v0.2.0 ships one
+  default slide CSS (clean, sans-serif heading + serif body, same NCM
+  body font).
+- **Embedded video / interactive widgets.** Out.
+- **Multi-monitor presenter mode.** The single-presenter-window design
+  handles 95 % of the case (main display + presenter window dragged to
+  the laptop screen).
+
+### 14.9. Open questions for the user
+
+1. Default slide CSS — keep the current paper look but bigger, or
+   adopt a cleaner sans-serif look that reads from across a room?
+2. `\frame{...}` (short form, no `\begin`/`\end`) appears in some old
+   Beamer source. Support, or require `\begin{frame}`?
+3. Should the slide-mode toggle persist per project (localStorage) or
+   reset to `A4` on every session?
+4. Speaker notes in Beamer can also be a `\note{...}` *outside* the
+   frame block (between two frames). Parse those as attached to the
+   *previous* frame, or require `\note` inside?
