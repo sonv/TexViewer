@@ -577,6 +577,11 @@ body.refkey-visible .eq-refkey-list {
   line-height: 1.35;
   white-space: nowrap;
   cursor: pointer;
+  /* The parent .eq-refkey-list sets pointer-events:none so the empty
+     space in the chip column doesn't steal clicks meant for the math
+     glyphs behind it. The chips themselves still need to receive
+     clicks (now that they pin to margin), so re-enable on the chip. */
+  pointer-events: auto;
 }
 .eq-refkey-chip:hover {
   background: #fff;

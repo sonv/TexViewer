@@ -2788,7 +2788,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '49'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '50'"));
         assert!(out.html.contains("margin-card-grip"));
         assert!(out.html.contains("initMarginDnd"));
         assert!(out.html.contains("decorateRefkeyChips"));
