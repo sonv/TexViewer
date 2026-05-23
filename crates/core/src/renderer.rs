@@ -2772,6 +2772,9 @@ mod tests {
         assert!(out.html.contains(r#"data-page-mode="a4""#));
         assert!(out.html.contains(r#"data-page-mode="dynamic""#));
         assert!(out.html.contains(r#"id="refkey-toggle""#));
+        assert!(out.html.contains(r#"id="theme-toggle""#));
+        assert!(out.html.contains("setTheme"));
+        assert!(out.html.contains("mathpreview.theme"));
         assert!(out.html.contains(r#"data-refkeys="hidden""#));
         assert!(out.html.contains(r#"id="server-restart""#));
         assert!(out.html.contains(r#"id="server-stop""#));

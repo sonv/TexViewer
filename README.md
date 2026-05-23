@@ -362,6 +362,12 @@ a Rust roundtrip unless they are controlling the daemon itself.
     prefix beats mid-string; `:unpin` narrows to currently-pinned
     keys); ArrowDown/ArrowUp also cycle; clicking a chip commits
     immediately. Esc closes; empty-Backspace also closes.
+- `☾` / `☀` toggles dark mode. The choice is persisted in
+  `localStorage["mathpreview.theme"]`; on first load the viewer follows
+  your OS `prefers-color-scheme`. The toggle re-skins the topbar, side
+  panel, paper surface, theorem boxes, refkey chips, margin cards,
+  command line, sidenotes, and warnings; MathJax SVG glyphs use
+  `currentColor` and follow the body text colour automatically.
 - `print` calls `POST /print`. The daemon runs `latexmk -pdf` (falling
   back to `pdflatex` if latexmk isn't on `$PATH`) in the root file's
   directory and streams the produced PDF back as `application/pdf`,
@@ -390,6 +396,21 @@ a Rust roundtrip unless they are controlling the daemon itself.
   between search matches, `:` opens the command line (see `margin`
   above), and `Ctrl-o` returns to the previous recorded place. These
   bindings are ignored while typing in editable controls.
+- **Math-only search.** Prefix the `/` query with `m:` (`m:n`,
+  `m:\alpha`, `m:α`) or wrap it LaTeX-style (`$n$`, `$\alpha$`) to
+  skip body text and only match SVG math glyphs. A single Latin or
+  Greek character, or a known `\command`, auto-widens to every
+  stylistic variant MathJax may emit — italic, bold, bold-italic,
+  script, fraktur, double-struck, sans, sans-bold, sans-italic,
+  sans-bold-italic, monospace — so `m:n` reliably finds the italic-`n`
+  inside `$n^2$` even though its SVG codepoint is U+1D45B and not
+  U+006E. The same widening covers the BMP fallbacks (italic-h at
+  U+210E, ℝ at U+211D, ℕ at U+2115, etc.).
+- **Search panel layout.** The `/` panel is a two-row grid sitting
+  centered against the bottom of the viewport: the `/` label + input
+  take the full width on row 1, and the shortcut hint wraps onto
+  row 2 so it never squeezes the input. Panel maxes out at 720 px;
+  the input is 15 px with a purple focus ring.
 
 **Patch path** (small change, the common case):
 

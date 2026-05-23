@@ -15,7 +15,41 @@ summary.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Search panel layout.** The `/` panel is now a two-row grid: the `/`
+  label + input occupy the full width on row 1; the shortcut hint
+  (`Enter next · Shift+Enter previous · Esc close · prefix m: / $ for
+  math-only`) wraps onto row 2 instead of competing with the input for
+  horizontal space. Panel max-width is 720 px (was 520 px), input
+  padding is 7 × 10 px with a 15 px font, and the input shows a purple
+  focus ring.
+
+### Added
+
+- **Dark theme.** Topbar `☾` / `☀` button toggles `body.theme-dark`,
+  persisted under `localStorage["mathpreview.theme"]`. First-load
+  default follows the OS `prefers-color-scheme`. CSS overrides re-skin
+  the topbar, side panel, paper surface, theorem boxes, refkey chips,
+  command line, margin cards, hover preview, sidenotes, and warnings.
+  MathJax 4 SVG glyphs use `fill="currentColor"` and follow the body
+  text colour automatically.
+- **Math-search sigil.** Prefix the `/` query with `m:` (e.g. `m:n`)
+  or wrap LaTeX-style (`$n$` / `$n`) to force math-only mode. The
+  search router skips `window.find` for sigil queries so single-letter
+  searches can no longer get stuck cycling through body matches before
+  reaching the equations.
+- **Math-search glyph widening.** A single-character Latin or Greek
+  query, or a `\command` whose Unicode mapping is known, now matches
+  every stylistic variant MathJax may emit — italic, bold, bold-italic,
+  script, fraktur, double-struck, sans, sans-bold, sans-italic,
+  sans-bold-italic, monospace — by expanding the codepoint through the
+  Mathematical Alphanumeric Symbols block (U+1D400..U+1D7FF) plus the
+  irregular BMP holes (italic-h at U+210E, ℝ at U+211D, ℕ at U+2115,
+  etc.). Searching `n` or `α` now hits the italic variant inside an
+  equation; previously it silently missed because the SVG glyph's
+  `data-c` was the math-italic codepoint, not the ASCII / base Greek
+  codepoint.
 
 ## [0.1.0] — 2026-05-21
 

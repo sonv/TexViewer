@@ -115,6 +115,7 @@ pub(super) fn wrap_in_shell(
     </span>
     <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
     <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
       <button data-mode="main">main only</button>
       <button data-mode="supporting">+ supporting</button>
@@ -136,7 +137,7 @@ pub(super) fn wrap_in_shell(
 <div class="search-panel" id="search-panel" hidden>
   <label for="search-input">/</label>
   <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
-  <span class="search-help">Enter next · Shift+Enter previous · Esc close</span>
+  <span class="search-help">Enter next · Shift+Enter previous · Esc close · prefix <code>m:</code> or <code>$</code> for math-only</span>
 </div>
 {warnings_html}
 <aside class="side-panel" id="viewer-side" aria-label="document navigation">

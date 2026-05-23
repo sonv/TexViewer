@@ -231,6 +231,11 @@
       setMarginMode(!marginMode, true);
       return;
     }
+    var themeToggle = e.target.closest('#theme-toggle');
+    if (themeToggle) {
+      setTheme(themeMode === 'dark' ? 'light' : 'dark', true);
+      return;
+    }
     var marginClose = e.target.closest('.margin-card-close');
     if (marginClose) {
       var card = marginClose.closest('.margin-card');

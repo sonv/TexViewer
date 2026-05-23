@@ -161,6 +161,13 @@
     setRefkeysVisible(localStorage.getItem('mathpreview.refkeys') === '1', false);
     setMarginMode(localStorage.getItem('mathpreview.marginMode') === '1', false);
     setTopbarHidden(localStorage.getItem('mathpreview.topbarHidden') === '1', false);
+    var storedTheme = localStorage.getItem('mathpreview.theme');
+    if (storedTheme === 'dark' || storedTheme === 'light') {
+      setTheme(storedTheme, false);
+    } else {
+      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setTheme(prefersDark ? 'dark' : 'light', false);
+    }
   } catch (e) {
     setPageMode('a4');
     setSideTab('index');
@@ -168,6 +175,7 @@
     setRefkeysVisible(false, false);
     setMarginMode(false, false);
     setTopbarHidden(false, false);
+    setTheme('light', false);
   }
   initCmdline();
   initMarginDnd();

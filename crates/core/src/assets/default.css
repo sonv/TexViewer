@@ -127,6 +127,7 @@ html, body {
 body.topbar-hidden .topbar { display: none; }
 .refkey-toggle,
 .margin-toggle,
+.theme-toggle,
 .server-restart,
 .server-stop,
 .print-button,
@@ -143,6 +144,7 @@ body.topbar-hidden .topbar { display: none; }
 }
 .refkey-toggle:hover,
 .margin-toggle:hover,
+.theme-toggle:hover,
 .server-restart:hover:not(:disabled),
 .server-stop:hover:not(:disabled),
 .print-button:hover:not(.busy),
@@ -151,6 +153,26 @@ body.topbar-hidden .topbar { display: none; }
   background: var(--button-bg-hover);
   border-color: var(--border-strong);
 }
+/* Theme toggle: icon-only button with a fixed width so the moon ↔ sun
+   swap doesn't jiggle the neighbouring buttons. The icon rotates on
+   hover (moon swings, sun spins) and gets a soft glow when active. */
+.theme-toggle {
+  width: 30px;
+  padding: 4px 0;
+  text-align: center;
+  line-height: 1;
+}
+.theme-toggle-icon {
+  display: inline-block;
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 240ms cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+.theme-toggle:hover .theme-toggle-icon { transform: rotate(-14deg); }
+.theme-toggle.active .theme-toggle-icon {
+  text-shadow: 0 0 6px rgba(255, 200, 120, 0.55);
+}
+.theme-toggle.active:hover .theme-toggle-icon { transform: rotate(40deg); }
 .print-button.busy { opacity: 0.6; cursor: wait; }
 .server-restart:disabled,
 .server-stop:disabled { opacity: 0.55; cursor: wait; }
@@ -244,12 +266,20 @@ body.topbar-hidden .topbar { display: none; }
   left: 50%;
   bottom: 14px;
   z-index: 12;
-  display: flex;
+  display: grid;
+  /* Row 1: `/` label + input, full width.
+     Row 2: help text, full width — so the long shortcut hint can't
+     squeeze the input. */
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "label input"
+    "help  help";
   align-items: center;
-  gap: 7px;
-  width: min(520px, calc(100vw - 28px));
+  column-gap: 9px;
+  row-gap: 6px;
+  width: min(720px, calc(100vw - 28px));
   transform: translateX(-50%);
-  padding: 8px 10px;
+  padding: 10px 14px 11px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
@@ -258,24 +288,53 @@ body.topbar-hidden .topbar { display: none; }
 }
 .search-panel[hidden] { display: none; }
 .search-panel label {
+  grid-area: label;
   color: var(--accent);
   font-weight: 700;
+  font-size: 16px;
+  line-height: 1;
 }
 .search-panel input {
-  flex: 1;
+  grid-area: input;
   min-width: 0;
+  width: 100%;
   border: 1px solid var(--border);
-  padding: 4px 7px;
+  border-radius: 4px;
+  padding: 7px 10px;
   font: inherit;
+  font-size: 15px;
+  line-height: 1.25;
+  background: var(--paper);
+  color: var(--fg);
+}
+.search-panel input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(91, 62, 162, 0.18);
+}
+body.theme-dark .search-panel input:focus {
+  box-shadow: 0 0 0 2px rgba(179, 157, 232, 0.28);
 }
 .search-help {
+  grid-area: help;
   color: var(--muted);
   font-size: 11px;
-  white-space: nowrap;
+  /* Allow wrap on narrow viewports so the panel doesn't overflow. */
+  white-space: normal;
+  line-height: 1.4;
 }
+.search-help code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.04);
+}
+body.theme-dark .search-help code { background: rgba(255, 255, 255, 0.07); }
 .side-toggle.active,
 .refkey-toggle.active,
 .margin-toggle.active,
+.theme-toggle.active,
 .page-mode-toggle button.active,
 .proof-toggle button.active {
   background: var(--accent);
@@ -1203,3 +1262,77 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
 }
 
 .ref:hover, .cite:hover { cursor: pointer; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Dark theme. Toggled by the topbar `dark` button (`setTheme()` in
+   viewer.js), persisted under `mathpreview.theme`, falling back to the
+   OS `prefers-color-scheme` on first load. Strategy is two-layer:
+
+     1. Override the design-token CSS variables on `body.theme-dark` so
+        every selector that already says `var(--fg)` / `var(--paper)` /
+        `var(--button-bg)` flips for free.
+     2. Patch the dozen-or-so selectors that hardcoded `#fff` or pastel
+        shades back when this was a light-only stylesheet.
+
+   MathJax 4 SVG glyphs render with `fill="currentColor"`, so they
+   follow the body's `color: var(--fg)` and need no separate override.
+   ─────────────────────────────────────────────────────────────────── */
+body.theme-dark {
+  --fg: #e6e3da;
+  --muted: #8f8a7e;
+  --bg: #1a1c20;
+  --paper: #23262c;
+  --accent: #b39de8;
+  --supporting: #7eb3e4;
+  --standard: #8a8a8a;
+  --omitted: #d29257;
+  --border: #353941;
+  --border-strong: #4a4e57;
+  --button-bg: #2a2d34;
+  --button-bg-hover: #353941;
+}
+body.theme-dark .topbar { background: #23262c; border-bottom-color: #353941; }
+body.theme-dark .search-panel { background: rgba(35, 38, 44, 0.96); }
+body.theme-dark .side-panel { background: rgba(35, 38, 44, 0.96); border-color: #353941; }
+body.theme-dark .side-tab { background: #2a2d34; color: var(--fg); }
+body.theme-dark .side-link:hover,
+body.theme-dark .side-link.active { background: #2f333b; }
+body.theme-dark main#page { border-color: #353941; }
+body.theme-dark .thm { background: #2a2d34; }
+body.theme-dark .eq-refkey-chip,
+body.theme-dark .refkey-chip,
+body.theme-dark .cmdline-suggestion { background: #2a2d34; border-color: #3d414a; color: var(--muted); }
+body.theme-dark .eq-refkey-chip:hover,
+body.theme-dark .refkey-chip:hover { background: #353941; color: var(--accent); border-color: var(--accent); }
+body.theme-dark .cmdline { background: #23262c; border-top-color: #353941; }
+body.theme-dark .cmdline-suggestions { background: #1f2127; border-bottom-color: #353941; }
+body.theme-dark .margin-card { background: #23262c; border-top-color: #353941; border-left-color: #353941; }
+body.theme-dark .margin-card:last-child { border-bottom-color: #353941; }
+body.theme-dark .margin-card-header { border-bottom-color: #353941; }
+body.theme-dark .margin-card-key { background: rgba(255, 255, 255, 0.06); color: var(--accent); }
+body.theme-dark .margin-card-close:hover { color: #fff; }
+body.theme-dark .hover-preview { background: #23262c; border-color: #4a4e57; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55); }
+body.theme-dark details.warnings { background: #3a2e1c; border-color: #6a5530; color: var(--fg); }
+body.theme-dark .sidenote { background: #2d2719; border-color: #6a5530; }
+body.theme-dark .sidenote-marker { color: #d9b76b; border-bottom-color: #6a5530; }
+body.theme-dark .sidenote-content { background: #2a2417; }
+body.theme-dark .sidenote-sv { background: #1f2a1a; border-color: #4a6a3a; }
+body.theme-dark .sidenote-sv .sidenote-marker { color: #a8d690; border-bottom-color: #4a6a3a; }
+body.theme-dark .sidenote-sv .sidenote-content { background: #1c2618; }
+body.theme-dark .sidenote-ab { background: #1a242a; border-color: #3a607a; }
+body.theme-dark .sidenote-ab .sidenote-marker { color: #8fc3da; border-bottom-color: #3a607a; }
+body.theme-dark .sidenote-ab .sidenote-content { background: #18222a; }
+body.theme-dark .status.live { color: #74c074; }
+body.theme-dark .status.dead { color: #e08080; }
+body.theme-dark .cmdline-feedback.error { color: #e08080; }
+body.theme-dark .cite.missing { color: #6a6a6a; }
+body.theme-dark .page-guide { border-top-color: rgba(179, 157, 232, 0.40); }
+body.theme-dark .math.math-selected,
+body.theme-dark .math:focus,
+body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
+body.theme-dark .source-space.source-active::after { border-left-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
+body.theme-dark .math.math-search-hit { background: rgba(216, 151, 0, 0.16); }
+body.theme-dark .math.math-search-active { outline-color: rgba(216, 151, 0, 0.85); background: rgba(216, 151, 0, 0.22); }
+/* PDF previews are external bitmaps with a white page — keep their
+   white surround so the page edge stays crisp instead of bleeding into
+   the dark theme background. */

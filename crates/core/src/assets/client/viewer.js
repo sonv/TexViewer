@@ -123,32 +123,115 @@
     return /\\|[_^{}$]/.test(query || '');
   }
 
-  function glyphCharsForTeXCommand(command) {
-    var cps = TEX_SYMBOL_CODEPOINTS[command];
-    if (!cps) return [];
-    return cps.map(function(cp) { return String.fromCodePoint(cp); });
+  /// Parse an explicit math-search sigil out of the raw query string.
+  ///   `m:foo`   → force math mode, search "foo"
+  ///   `$foo$`   → force math mode, search "foo" (LaTeX-style wrap)
+  ///   `$foo`    → ditto (trailing `$` optional)
+  /// Anything else passes through as a plain search. The sigil makes the
+  /// search routine skip `window.find`, which otherwise gets stuck cycling
+  /// through body-text matches and never reaches the SVG math glyphs —
+  /// the original reason `/n` would "miss" italic-n inside an equation.
+  function parseSearchQuery(query) {
+    var trimmed = (query || '').trim();
+    if (!trimmed) return { core: '', forceMath: false };
+    var prefix = /^m:(.+)$/.exec(trimmed);
+    if (prefix) return { core: prefix[1].trim(), forceMath: true };
+    if (trimmed.charAt(0) === '$') {
+      return { core: stripMathDelimiters(trimmed), forceMath: true };
+    }
+    return { core: trimmed, forceMath: false };
   }
+
+  /// Map a base codepoint to the set of "stylistic variant" codepoints
+  /// MathJax may emit for it. Math italic letters live in the
+  /// Mathematical Alphanumeric Symbols block (U+1D400..U+1D7FF), not at
+  /// the base ASCII / Greek codepoint, so a literal `n` in the search box
+  /// would never match an italic-n SVG glyph (`data-c="1D45B"`) without
+  /// this expansion. Returns codepoints, not characters — caller decides.
+  ///
+  /// Coverage: A-Z, a-z, 0-9 (13 / 13 / 5 stylistic ranges respectively),
+  /// plus uppercase and lowercase Greek (5 ranges each). The "reserved"
+  /// holes inside these ranges (e.g. italic-h at U+1D455 is reserved
+  /// because the character is actually U+210E) are filled by
+  /// [`MATH_BMP_HOLES`] for the affected Latin letters.
+  function expandMathGlyphCodepoints(cp) {
+    var out = [cp];
+    var i;
+    if (cp >= 0x41 && cp <= 0x5A) {
+      i = cp - 0x41;
+      [0x1D400, 0x1D434, 0x1D468, 0x1D49C, 0x1D4D0, 0x1D504, 0x1D538,
+       0x1D56C, 0x1D5A0, 0x1D5D4, 0x1D608, 0x1D63C, 0x1D670].forEach(function(b) {
+        out.push(b + i);
+      });
+    } else if (cp >= 0x61 && cp <= 0x7A) {
+      i = cp - 0x61;
+      [0x1D41A, 0x1D44E, 0x1D482, 0x1D4B6, 0x1D4EA, 0x1D51E, 0x1D552,
+       0x1D586, 0x1D5BA, 0x1D5EE, 0x1D622, 0x1D656, 0x1D68A].forEach(function(b) {
+        out.push(b + i);
+      });
+    } else if (cp >= 0x30 && cp <= 0x39) {
+      i = cp - 0x30;
+      [0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6].forEach(function(b) {
+        out.push(b + i);
+      });
+    } else if (cp >= 0x0391 && cp <= 0x03A9) {
+      i = cp - 0x0391;
+      [0x1D6A8, 0x1D6E2, 0x1D71C, 0x1D756, 0x1D790].forEach(function(b) {
+        out.push(b + i);
+      });
+    } else if (cp >= 0x03B1 && cp <= 0x03C9) {
+      i = cp - 0x03B1;
+      [0x1D6C2, 0x1D6FC, 0x1D736, 0x1D770, 0x1D7AA].forEach(function(b) {
+        out.push(b + i);
+      });
+    }
+    return out;
+  }
+
+  /// Letters whose math-stylistic variant lives at a BMP codepoint
+  /// outside the Mathematical Alphanumeric Symbols block. Without this
+  /// the script / fraktur / double-struck / italic-h cases would silently
+  /// miss when the search query is the underlying ASCII letter.
+  var MATH_BMP_HOLES = {
+    'h': [0x210E],
+    'B': [0x212C], 'C': [0x2102, 0x212D], 'E': [0x2130], 'F': [0x2131],
+    'H': [0x210B, 0x210C, 0x210D], 'I': [0x2110, 0x2111],
+    'L': [0x2112], 'M': [0x2133], 'N': [0x2115], 'P': [0x2119],
+    'Q': [0x211A], 'R': [0x211B, 0x211C, 0x211D],
+    'Z': [0x2124, 0x2128],
+    'e': [0x212F], 'g': [0x210A], 'o': [0x2134]
+  };
 
   function mathSearchSpec(query) {
     var core = stripMathDelimiters(query);
     var texNeedles = [];
-    var glyphChars = [];
+    var glyphCps = new Set();
     if (core) texNeedles.push(core);
     if (query && query !== core) texNeedles.push(query);
+    function addBaseCp(cp) {
+      expandMathGlyphCodepoints(cp).forEach(function(c) { glyphCps.add(c); });
+    }
     var command = /^\\([A-Za-z]+)$/.exec(core);
     if (command) {
-      glyphChars = glyphCharsForTeXCommand(command[1]);
+      (TEX_SYMBOL_CODEPOINTS[command[1]] || []).forEach(addBaseCp);
       texNeedles.push('\\' + command[1]);
     } else if (core && Array.from(core).length === 1) {
-      glyphChars.push(core);
+      addBaseCp(core.codePointAt(0));
+      var holes = MATH_BMP_HOLES[core];
+      if (holes) holes.forEach(function(c) { glyphCps.add(c); });
     } else if (/^[A-Za-z]+$/.test(core)) {
-      glyphChars = glyphCharsForTeXCommand(core);
-      if (glyphChars.length) texNeedles.push('\\' + core);
+      var cps = TEX_SYMBOL_CODEPOINTS[core] || [];
+      if (cps.length) {
+        cps.forEach(addBaseCp);
+        texNeedles.push('\\' + core);
+      }
     }
+    var glyphChars = [];
+    glyphCps.forEach(function(cp) { glyphChars.push(String.fromCodePoint(cp)); });
     return {
       core: core,
       texNeedles: Array.from(new Set(texNeedles.filter(Boolean))),
-      glyphChars: Array.from(new Set(glyphChars))
+      glyphChars: glyphChars
     };
   }
 
@@ -320,6 +403,17 @@
     lastSearchQuery = query;
     if (input && document.activeElement === input) input.blur();
     var recorded = recordViewerPlace();
+    var parsed = parseSearchQuery(query);
+    // Explicit math-mode sigil: skip `window.find` entirely. Otherwise
+    // single-letter searches (e.g. `m:n` to find italic-n inside an
+    // equation) get stuck cycling through body-text matches first.
+    if (parsed.forceMath) {
+      if (parsed.core && runMathSearch(parsed.core, backwards)) return true;
+      if (mathSearchQuery) clearSearchSession();
+      if (recorded) viewerJumpStack.pop();
+      setStatus('dead', '○ no math match ' + parsed.core);
+      return false;
+    }
     if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
       return true;
     }
@@ -522,6 +616,24 @@
     }
     if (persist) {
       try { localStorage.setItem('mathpreview.refkeys', refkeysVisible ? '1' : '0'); } catch (e) {}
+    }
+  }
+
+  function setTheme(mode, persist) {
+    themeMode = (mode === 'dark') ? 'dark' : 'light';
+    document.body.classList.toggle('theme-dark', themeMode === 'dark');
+    var btn = document.getElementById('theme-toggle');
+    if (btn) {
+      var on = themeMode === 'dark';
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.setAttribute('title', on ? 'light mode' : 'dark mode');
+      btn.setAttribute('aria-label', on ? 'switch to light mode' : 'switch to dark mode');
+      var icon = btn.querySelector('.theme-toggle-icon');
+      if (icon) icon.textContent = on ? '☀' : '☾';
+    }
+    if (persist) {
+      try { localStorage.setItem('mathpreview.theme', themeMode); } catch (e) {}
     }
   }
 

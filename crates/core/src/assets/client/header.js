@@ -5,6 +5,7 @@
   var currentSideOpen = false;
   var refkeysVisible = false;
   var marginMode = false;
+  var themeMode = 'light';
   var pinnedRefs = new Map();
   var hoverPreviewTimer = 0;
   var hoverPreviewEl = null;
