@@ -399,8 +399,10 @@ a Rust roundtrip unless they are controlling the daemon itself.
   scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages,
   `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
   between search matches, `:` opens the command line (see `margin`
-  above), and `Ctrl-o` returns to the previous recorded place. These
-  bindings are ignored while typing in editable controls.
+  above), `t` toggles the index/pages side panel, and `Ctrl-o` jumps
+  back and forth between the current place and the previous one
+  (pressing it repeatedly ping-pongs between the two). These bindings
+  are ignored while typing in editable controls.
 - **Math-only search.** Prefix the `/` query with `m:` (`m:n`,
   `m:\alpha`, `m:α`) or wrap it LaTeX-style (`$n$`, `$\alpha$`) to
   skip body text and only match SVG math glyphs. A single Latin or

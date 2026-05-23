@@ -1,3 +1,6 @@
+    var current = { x: window.scrollX || 0, y: window.scrollY || 0 };
+    viewerJumpStack.push(current);
+    if (viewerJumpStack.length > 100) viewerJumpStack.shift();
     window.scrollTo({ left: place.x, top: place.y, behavior: 'smooth' });
     setStatus('live', '● previous place');
     return true;
@@ -499,6 +502,10 @@
       case 'N':
         clearVimPending();
         runSearch(true);
+        return true;
+      case 't':
+        clearVimPending();
+        setSideOpen(!currentSideOpen, true);
         return true;
       default:
         clearVimPending();

@@ -17,6 +17,23 @@ summary.
 
 Nothing yet.
 
+## [0.1.4] — 2026-05-23
+
+### Added
+
+- **`t` keybinding** toggles the index/pages side panel from the
+  viewer (same effect as clicking the `toc` pill, and persists to
+  `localStorage["mathpreview.sideOpen"]`). Inert while focus is in an
+  editable control.
+
+### Changed
+
+- **`Ctrl-o` now ping-pongs.** Previously it walked back through the
+  jump stack one entry at a time and you could not return to where
+  you came from. It now swaps the current scroll position with the
+  top of the stack, so pressing `Ctrl-o` repeatedly bounces between
+  the two most recent places.
+
 ## [0.1.3] — 2026-05-23
 
 ### Changed
@@ -210,6 +227,7 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/sonv/TexViewer/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sonv/TexViewer/releases/tag/v0.1.3
 [0.1.0]: https://github.com/sonv/TexViewer/releases/tag/v0.1.0
