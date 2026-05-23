@@ -3,6 +3,11 @@
 A live, browser-based preview server for LaTeX papers — keystroke-level
 updates, no PDF roundtrip, no LaTeX engine on the user's machine.
 
+
+https://github.com/user-attachments/assets/3b17927b-9769-4b5d-85a4-be38bb80dca8
+
+
+
 The full design rationale (including the architectural pivot from the
 original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 
