@@ -15,6 +15,10 @@ summary.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.2] — 2026-05-23
+
 ### Changed
 
 - **Search panel layout.** The `/` panel is now a two-row grid: the `/`
@@ -206,5 +210,6 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/sonv/TexViewer/releases/tag/v0.1.2
 [0.1.0]: https://github.com/sonv/TexViewer/releases/tag/v0.1.0
