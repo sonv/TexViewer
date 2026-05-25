@@ -28,7 +28,7 @@ use bib::format_bib_entry;
 use math::{
     equation_number_html, equation_row_refkey_html, label_alias_anchors,
     render_latex_text_with_math, resolve_math_refs, strip_labels, write_float_placeholder,
-    write_flow_marker,
+    write_flow_marker, write_inline_math_span,
 };
 use shell::wrap_in_shell;
 use util::{
@@ -1690,6 +1690,34 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             i += 1;
             continue;
         }
+        // Inline math `$…$`. Title-like fields and the recursive inner content
+        // of `\emph{…}` / `\textbf{…}` reach this function directly, so without
+        // this branch the `$` and its body leak through as literal source. A
+        // `$` nested inside a command argument arrives here via that recursion,
+        // after the command's braces have already been consumed, so matching
+        // the next unescaped `$` at this level is sufficient.
+        if b == b'$' {
+            let mut k = i + 1;
+            while k < bytes.len() {
+                if bytes[k] == b'\\' && k + 1 < bytes.len() {
+                    k += 2;
+                    continue;
+                }
+                if bytes[k] == b'$' {
+                    break;
+                }
+                k += 1;
+            }
+            if k < bytes.len() {
+                write_inline_math_span(&mut out, &s[i + 1..k]);
+                i = k + 1;
+                continue;
+            }
+            // Unbalanced `$` — emit it literally and move on.
+            out.push('$');
+            i += 1;
+            continue;
+        }
         // Paragraph break: two or more consecutive newlines (with possible
         // intermediate whitespace) → `<br><br>`. A single newline is just
         // inter-word whitespace, as in LaTeX.
@@ -2223,6 +2251,55 @@ mod tests {
         assert!(
             out.body_html.contains(r#"data-tex="\(L^p\)""#),
             "math span should carry the $L^p$ payload; got: {}",
+            out.body_html,
+        );
+    }
+
+    #[test]
+    fn paper_title_inline_math_is_typeset() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\title{The $L^p$ space}\n\\begin{document}\n\\maketitle\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let start = out
+            .body_html
+            .find(r#"<h1 class="paper-title">"#)
+            .expect("paper-title h1");
+        let end = start + out.body_html[start..].find("</h1>").expect("h1 close");
+        let title = &out.body_html[start..end];
+        assert!(
+            title.contains(r#"<span class="math inline""#) && title.contains(r#"data-tex="\(L^p\)""#),
+            "math in \\title should be MathJax-typeset; got: {title}",
+        );
+        assert!(
+            !title.contains("$L^p$"),
+            "literal $L^p$ should not survive in the title; got: {title}",
+        );
+    }
+
+    #[test]
+    fn inline_math_inside_emph_is_typeset() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nText \\emph{with $x^2$ inside}.\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            out.body_html.contains(r#"<em>"#)
+                && out.body_html.contains(r#"<span class="math inline""#)
+                && out.body_html.contains(r#"data-tex="\(x^2\)""#),
+            "math inside \\emph should be MathJax-typeset; got: {}",
+            out.body_html,
+        );
+        assert!(
+            !out.body_html.contains("$x^2$"),
+            "literal $x^2$ should not survive inside \\emph; got: {}",
             out.body_html,
         );
     }

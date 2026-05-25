@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.5] — 2026-05-25
+
+### Fixed
+
+- **Inline math in text-like fields now renders.** `$…$` inside
+  `\title`, `\author`, `\date`, list-item markers, and the inner
+  content of `\emph` / `\textbf` / `\texttt` / `\textsc` was leaking
+  through as literal source instead of being typeset, because
+  `render_inline_latex` had no `$…$` branch (only the section-title /
+  theorem-name path did). It now emits the same MathJax span the rest
+  of the document uses.
+
 ## [0.1.4] — 2026-05-23
 
 ### Added
@@ -227,7 +239,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/sonv/TexViewer/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sonv/TexViewer/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sonv/TexViewer/releases/tag/v0.1.3
 [0.1.0]: https://github.com/sonv/TexViewer/releases/tag/v0.1.0

@@ -359,6 +359,22 @@ fn skip_row_separator_spacing(src: &str, mut i: usize) -> usize {
     before_ws
 }
 
+/// Emit a lightweight inline math span (no source-sync id) for `body`, the
+/// LaTeX between a `$…$` pair. Shared by `render_latex_text_with_math` and the
+/// `$…$` branch of `render_inline_latex` so both produce identical markup.
+pub(super) fn write_inline_math_span(out: &mut String, body: &str) {
+    let copy_tex = format!(r"\({body}\)");
+    write!(
+        out,
+        r#"<span class="math inline" data-hash="{hash}" data-tex="{copy_tex}" data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX"><span class="math-source">\({math}\)</span></span>"#,
+        hash = fnv_hash(&format!("i:{body}")),
+        copy_tex = escape_attr(&copy_tex),
+        mathjax_tex = escape_attr(&copy_tex),
+        math = escape_math(body),
+    )
+    .unwrap();
+}
+
 pub(super) fn render_latex_text_with_math(s: &str, labels: &LabelTable) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -399,17 +415,7 @@ pub(super) fn render_latex_text_with_math(s: &str, labels: &LabelTable) -> Strin
             text_start = s.len();
             break;
         }
-        let body = &s[math_start..i];
-        let copy_tex = format!(r"\({body}\)");
-        write!(
-            out,
-            r#"<span class="math inline" data-hash="{hash}" data-tex="{copy_tex}" data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX"><span class="math-source">\({math}\)</span></span>"#,
-            hash = fnv_hash(&format!("i:{body}")),
-            copy_tex = escape_attr(&copy_tex),
-            mathjax_tex = escape_attr(&copy_tex),
-            math = escape_math(body),
-        )
-        .unwrap();
+        write_inline_math_span(&mut out, &s[math_start..i]);
         i += 1;
         text_start = i;
     }
