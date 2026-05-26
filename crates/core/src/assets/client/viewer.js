@@ -1588,7 +1588,8 @@
   /// chips, and folded proof bodies all sit off the main text flow, so their
   /// client rects would land at misleading y-coordinates.
   var LINENO_SKIP = '.lineno-layer, .page-guide-layer, .sidenote, .margin-col,' +
-    ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded, .para-indent-marker';
+    ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded,' +
+    ' .para-indent-marker, .warnings';
   function linenoSkip(node, page) {
     var el = node.parentNode;
     while (el && el !== page) {

@@ -17,6 +17,15 @@ summary.
 
 Nothing yet.
 
+## [0.1.7] — 2026-05-26
+
+### Fixed
+
+- **Line numbers counted the render-warnings panel.** v0.1.6 moved the
+  warnings `<details>` inside `#page`, but the line-number walker numbers
+  every text node in `#page`, so the panel's text picked up line numbers.
+  Added `.warnings` to the line-numbering skip list.
+
 ## [0.1.6] — 2026-05-26
 
 ### Added
@@ -271,7 +280,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/sonv/TexViewer/releases/tag/v0.1.7
 [0.1.6]: https://github.com/sonv/TexViewer/releases/tag/v0.1.6
 [0.1.5]: https://github.com/sonv/TexViewer/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sonv/TexViewer/releases/tag/v0.1.4
