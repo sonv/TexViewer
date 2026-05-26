@@ -346,6 +346,12 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - `keys` toggles LaTeX refkeys for labeled sections, theorem boxes,
   floats, display equations, and loose labels. Visible keys sit in the
   page margin, and multi-row displays show row-level keys.
+- `lines` toggles typeset line numbers (LaTeX `lineno`-style): every
+  *wrapped* visual line of body text gets a number in the left margin,
+  recomputed on render, resize, zoom, and A4 ⇄ dynamic switches. Display
+  equations are not numbered (MathJax emits SVG with no text), matching
+  `lineno`'s default; a paragraph with inline math still numbers
+  normally. Persisted in `localStorage["mathpreview.lineNumbers"]`.
 - `margin` toggles a right-hand column of pinned reference cards. With
   margin mode on, clicking a `\ref` or `\cite` link pins the referenced
   theorem / equation / bibliography entry into the margin (typeset

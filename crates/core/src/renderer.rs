@@ -2849,6 +2849,9 @@ mod tests {
         assert!(out.html.contains(r#"data-page-mode="a4""#));
         assert!(out.html.contains(r#"data-page-mode="dynamic""#));
         assert!(out.html.contains(r#"id="refkey-toggle""#));
+        assert!(out.html.contains(r#"id="lineno-toggle""#));
+        assert!(out.html.contains("setLineNumbers"));
+        assert!(out.html.contains("mathpreview.lineNumbers"));
         assert!(out.html.contains(r#"id="theme-toggle""#));
         assert!(out.html.contains("setTheme"));
         assert!(out.html.contains("mathpreview.theme"));

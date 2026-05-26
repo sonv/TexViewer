@@ -226,6 +226,11 @@
       setRefkeysVisible(!refkeysVisible, true);
       return;
     }
+    var linenoToggle = e.target.closest('#lineno-toggle');
+    if (linenoToggle) {
+      setLineNumbers(!lineNumbersVisible, true);
+      return;
+    }
     var marginToggle = e.target.closest('#margin-toggle');
     if (marginToggle) {
       setMarginMode(!marginMode, true);

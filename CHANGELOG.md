@@ -17,6 +17,38 @@ summary.
 
 Nothing yet.
 
+## [0.1.6] — 2026-05-26
+
+### Added
+
+- **Typeset line numbers.** New `lines` toolbar toggle numbers every
+  wrapped visual line of body text in the left margin, LaTeX
+  `lineno`-style. Computed client-side from each line's client rect and
+  recomputed on render, MathJax typeset, resize, zoom, and A4 ⇄ dynamic
+  switches. Display equations are skipped (SVG has no text nodes),
+  matching `lineno`'s default; inline-math paragraphs still number.
+  Persisted under `localStorage["mathpreview.lineNumbers"]`.
+
+### Changed
+
+- **Render-warnings panel moved to the end.** The macro/unmapped-package
+  `<details>` notice now renders as the last element inside the page
+  instead of above the document, so it no longer pushes the paper down.
+
+### Fixed
+
+- **Dark mode: light strip at the end of the document.** `<html>`'s
+  background stayed light in dark mode because `--bg` was overridden on
+  `body.theme-dark` while `html { background: var(--bg) }` resolves the
+  variable at the root level. `setTheme()` now toggles `theme-dark` on
+  `<html>` too, and the token block matches `.theme-dark`, so the root
+  background flips and over-scroll / trailing margin no longer shows
+  cream.
+- **Dark mode: invisible `:` command-line text.** `.cmdline-input` (and
+  suggestion hover) used `var(--text, …)`, an undefined variable, so the
+  text always fell back to near-black and vanished on the dark command
+  line. Switched to `var(--fg)`.
+
 ## [0.1.5] — 2026-05-25
 
 ### Fixed
@@ -239,7 +271,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/sonv/TexViewer/releases/tag/v0.1.6
 [0.1.5]: https://github.com/sonv/TexViewer/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sonv/TexViewer/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sonv/TexViewer/releases/tag/v0.1.3

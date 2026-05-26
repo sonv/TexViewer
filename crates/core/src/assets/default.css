@@ -126,6 +126,7 @@ html, body {
 }
 body.topbar-hidden .topbar { display: none; }
 .refkey-toggle,
+.lineno-toggle,
 .margin-toggle,
 .theme-toggle,
 .server-restart,
@@ -143,6 +144,7 @@ body.topbar-hidden .topbar { display: none; }
   transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
 }
 .refkey-toggle:hover,
+.lineno-toggle:hover,
 .margin-toggle:hover,
 .theme-toggle:hover,
 .server-restart:hover:not(:disabled),
@@ -333,6 +335,7 @@ body.theme-dark .search-panel input:focus {
 body.theme-dark .search-help code { background: rgba(255, 255, 255, 0.07); }
 .side-toggle.active,
 .refkey-toggle.active,
+.lineno-toggle.active,
 .margin-toggle.active,
 .theme-toggle.active,
 .page-mode-toggle button.active,
@@ -493,6 +496,27 @@ body.page-mode-dynamic main#page {
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: 10px;
   line-height: 1.4;
+}
+/* Typeset line numbers (lineno-style): one number per wrapped visual line,
+   right-aligned in the page's left padding so they sit just outside the
+   text column. Positions are computed in JS from each line's client rect. */
+.lineno-layer {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.lineno-num {
+  position: absolute;
+  left: 0;
+  width: calc(var(--page-pad-x) - 12px);
+  text-align: right;
+  color: var(--muted);
+  opacity: 0.65;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  user-select: none;
 }
 @media (max-width: 1340px) {
   .side-panel {
@@ -908,7 +932,7 @@ body.refkey-visible .refkey-chip { display: block; }
 .latex-list .item-body { margin-bottom: 0.12em; }
 details.warnings {
   max-width: 720px;
-  margin: 12px auto 0;
+  margin: 28px auto 0;
   padding: 6px 12px;
   background: #fff5e6;
   border: 1px solid #f0c98a;
@@ -1067,7 +1091,7 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   white-space: nowrap;
   cursor: pointer;
 }
-.cmdline-suggestion:hover { color: var(--text, #222); border-color: var(--accent, #b04b00); }
+.cmdline-suggestion:hover { color: var(--fg, #222); border-color: var(--accent, #b04b00); }
 .cmdline-suggestion.active {
   background: var(--accent, #b04b00);
   border-color: var(--accent, #b04b00);
@@ -1091,7 +1115,7 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   background: transparent;
   outline: none;
   font: inherit;
-  color: var(--text, #222);
+  color: var(--fg, #222);
   padding: 0;
 }
 .cmdline-feedback {
@@ -1276,8 +1300,14 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
 
    MathJax 4 SVG glyphs render with `fill="currentColor"`, so they
    follow the body's `color: var(--fg)` and need no separate override.
+
+   The token block matches `.theme-dark` (not just `body.theme-dark`) so
+   the class also flips when set on `<html>` — `setTheme()` toggles it on
+   both. That keeps `html { background: var(--bg) }` dark; otherwise the
+   root element resolves `--bg` at its own (light) level and a cream strip
+   shows below the body / on over-scroll.
    ─────────────────────────────────────────────────────────────────── */
-body.theme-dark {
+.theme-dark {
   --fg: #e6e3da;
   --muted: #8f8a7e;
   --bg: #1a1c20;

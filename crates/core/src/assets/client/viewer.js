@@ -626,8 +626,29 @@
     }
   }
 
+  function setLineNumbers(visible, persist) {
+    lineNumbersVisible = !!visible;
+    document.body.classList.toggle('lineno-visible', lineNumbersVisible);
+    var btn = document.getElementById('lineno-toggle');
+    if (btn) {
+      btn.classList.toggle('active', lineNumbersVisible);
+      btn.setAttribute('aria-pressed', lineNumbersVisible ? 'true' : 'false');
+    }
+    if (lineNumbersVisible) {
+      scheduleLineNumbers();
+    } else {
+      clearLineNumbers();
+    }
+    if (persist) {
+      try { localStorage.setItem('mathpreview.lineNumbers', lineNumbersVisible ? '1' : '0'); } catch (e) {}
+    }
+  }
+
   function setTheme(mode, persist) {
     themeMode = (mode === 'dark') ? 'dark' : 'light';
+    // Toggle on <html> too, so `html { background: var(--bg) }` flips — the
+    // root element resolves --bg at its own level, not the body's.
+    document.documentElement.classList.toggle('theme-dark', themeMode === 'dark');
     document.body.classList.toggle('theme-dark', themeMode === 'dark');
     var btn = document.getElementById('theme-toggle');
     if (btn) {
@@ -1491,6 +1512,7 @@
     navNeedsIndex = false;
     navNeedsPages = false;
     scheduleSidenoteLayout();
+    if (lineNumbersVisible) scheduleLineNumbers();
   }
 
   function clearSidenoteLayout() {
@@ -1552,6 +1574,103 @@
         prevBottom = top + height;
       }
     }
+  }
+
+  function clearLineNumbers() {
+    var page = pageEl();
+    if (!page) return;
+    var old = page.querySelector('.lineno-layer');
+    if (old) old.remove();
+  }
+
+  /// Does `node` live inside a region we should not line-number? The gutter
+  /// layers, the absolutely-positioned margin column / sidenotes / refkey
+  /// chips, and folded proof bodies all sit off the main text flow, so their
+  /// client rects would land at misleading y-coordinates.
+  var LINENO_SKIP = '.lineno-layer, .page-guide-layer, .sidenote, .margin-col,' +
+    ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded, .para-indent-marker';
+  function linenoSkip(node, page) {
+    var el = node.parentNode;
+    while (el && el !== page) {
+      if (el.nodeType === 1 && el.matches && el.matches(LINENO_SKIP)) return true;
+      el = el.parentNode;
+    }
+    return false;
+  }
+
+  /// Number every *visual* (wrapped) line of rendered text, lineno-style.
+  ///
+  /// MathJax emits SVG with no text nodes, so display equations are not
+  /// numbered (matching LaTeX's `lineno`, which skips display math by
+  /// default); a paragraph with inline math still numbers normally because
+  /// its surrounding text nodes produce line rects. We walk every text node
+  /// in `#page`, collect a client rect per wrapped line fragment, then merge
+  /// fragments that share a visual line (e.g. `text \emph{x} text`) by
+  /// comparing top offsets. Recomputed on render and resize.
+  function layoutLineNumbers() {
+    var page = pageEl();
+    if (!page) return;
+    clearLineNumbers();
+    if (!lineNumbersVisible) return;
+
+    var pageRect = page.getBoundingClientRect();
+    var walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        if (!node.nodeValue || !/\S/.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        if (linenoSkip(node, page)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    var entries = [];
+    var range = document.createRange();
+    var node;
+    while ((node = walker.nextNode())) {
+      range.selectNodeContents(node);
+      var rects = range.getClientRects();
+      for (var r = 0; r < rects.length; r++) {
+        var rect = rects[r];
+        if (rect.width === 0 && rect.height === 0) continue;
+        entries.push({ top: rect.top - pageRect.top, h: rect.height });
+      }
+    }
+    if (!entries.length) return;
+
+    entries.sort(function(a, b) { return a.top - b.top; });
+
+    // Merge fragments on the same visual line: a new line starts only when
+    // the top jumps by more than half the previous line's height.
+    var lines = [];
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var last = lines.length ? lines[lines.length - 1] : null;
+      if (!last || e.top - last.top > Math.max(4, last.h * 0.5)) {
+        lines.push({ top: e.top, h: e.h });
+      } else if (e.h > last.h) {
+        last.h = e.h;
+      }
+    }
+
+    var layer = document.createElement('div');
+    layer.className = 'lineno-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    for (var k = 0; k < lines.length; k++) {
+      var num = document.createElement('span');
+      num.className = 'lineno-num';
+      num.style.top = Math.round(lines[k].top) + 'px';
+      num.textContent = String(k + 1);
+      layer.appendChild(num);
+    }
+    page.appendChild(layer);
+  }
+
+  function scheduleLineNumbers() {
+    if (lineNumbersScheduled) return;
+    lineNumbersScheduled = true;
+    requestAnimationFrame(function() {
+      lineNumbersScheduled = false;
+      layoutLineNumbers();
+    });
   }
 
   /// Run `layoutSidenotes` on the next animation frame.

@@ -114,6 +114,7 @@ pub(super) fn wrap_in_shell(
       <button data-page-mode="dynamic" type="button">dynamic</button>
     </span>
     <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
+    <button class="lineno-toggle" id="lineno-toggle" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
     <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
@@ -139,7 +140,6 @@ pub(super) fn wrap_in_shell(
   <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
   <span class="search-help">Enter next · Shift+Enter previous · Esc close · prefix <code>m:</code> or <code>$</code> for math-only</span>
 </div>
-{warnings_html}
 <aside class="side-panel" id="viewer-side" aria-label="document navigation">
   <div class="side-tabs" role="tablist" aria-label="navigation mode">
     <button class="side-tab active" type="button" data-side-tab="index" role="tab" aria-selected="true">Index</button>
@@ -151,6 +151,7 @@ pub(super) fn wrap_in_shell(
 <div id="page-shell">
   <main id="page" data-proof-mode="all" data-refkeys="hidden">
 {body}
+{warnings_html}
   </main>
 </div>
 <aside id="margin">

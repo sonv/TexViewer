@@ -4,6 +4,8 @@
   var currentPageMode = 'a4';
   var currentSideOpen = false;
   var refkeysVisible = false;
+  var lineNumbersVisible = false;
+  var lineNumbersScheduled = false;
   var marginMode = false;
   var themeMode = 'light';
   var pinnedRefs = new Map();
