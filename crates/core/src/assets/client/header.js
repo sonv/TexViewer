@@ -19,11 +19,16 @@
   var pageGuideVisualHeightPx = 0;
   var pageGuideCount = 1;
   var currentPageScale = 1;
+  var currentUserZoom = 1;
+  var ZOOM_MIN = 0.5;
+  var ZOOM_MAX = 3;
+  var ZOOM_STEP = 0.1;
   var NAV_IDLE_MS = 220;
   var NAV_RENDER_IDLE_MS = 900;
   var NAV_RESIZE_IDLE_MS = 120;
   var A4_CSS_WIDTH = 794;
   var A4_RATIO = 297 / 210;
+  var DYNAMIC_BASE_WIDTH = 720;
   var navNeedsIndex = true;
   var navNeedsPages = true;
   var lastHeadingSignature = '';

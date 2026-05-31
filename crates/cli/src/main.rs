@@ -55,6 +55,14 @@ enum Cmd {
         /// URL or path for MathJax. Same flag as `render`.
         #[arg(long)]
         mathjax_url: Option<String>,
+        /// Shell command run for Cmd/Ctrl-click "reveal source" requests.
+        /// `{file}` (shell-quoted), `{line}`, and `{col}` are substituted
+        /// before the command is handed to `sh -c`. The default jumps to
+        /// the source line inside a running nvim instance that listens on
+        /// the socket in `$NVIM_LISTEN_ADDRESS` (set automatically when
+        /// you launch nvim with `--listen` or inside a Neovim terminal).
+        #[arg(long, default_value = r#"nvim --server "$NVIM_LISTEN_ADDRESS" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
+        editor: String,
     },
 }
 
@@ -66,6 +74,7 @@ fn main() -> Result<()> {
             host,
             port,
             mathjax_url,
+            editor,
         } => {
             // serve-mode default: use the vendored bundle so the page works offline.
             // Render-mode keeps the CDN default since its output is a standalone file.
@@ -85,7 +94,7 @@ fn main() -> Result<()> {
                 }
             }
             let rt = tokio::runtime::Runtime::new()?;
-            return rt.block_on(serve::run(input, host, port, opts));
+            return rt.block_on(serve::run(input, host, port, opts, editor));
         }
         Cmd::Render {
             input,

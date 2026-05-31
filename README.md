@@ -405,10 +405,23 @@ a Rust roundtrip unless they are controlling the daemon itself.
   scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages,
   `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
   between search matches, `:` opens the command line (see `margin`
-  above), `t` toggles the index/pages side panel, and `Ctrl-o` jumps
+  above), `t` toggles the index/pages side panel, `B` toggles the top
+  banner (keyboard counterpart to the thin stripe), and `Ctrl-o` jumps
   back and forth between the current place and the previous one
   (pressing it repeatedly ping-pongs between the two). These bindings
   are ignored while typing in editable controls.
+- **Content zoom.** `+` / `-` zoom the page (header and sidebar stay
+  put), `0` resets, and `=` auto-fits the page width to the viewport.
+  `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
+  only scale the paper. The zoom factor is persisted in
+  `localStorage["mathpreview.userZoom"]`.
+- **Cmd/Ctrl-click → editor.** Modifier-click on any rendered token
+  spawns the editor configured via `--editor` at the source line —
+  the IDE-style "reveal in source" gesture. Default template lands
+  inside the running nvim instance whose listen socket is in
+  `$NVIM_LISTEN_ADDRESS`; override with e.g. `--editor='code -g
+  {file}:{line}'`. Alt-click still posts to `/jump` for users running
+  the polling-based nvim plugin.
 - **Math-only search.** Prefix the `/` query with `m:` (`m:n`,
   `m:\alpha`, `m:α`) or wrap it LaTeX-style (`$n$`, `$\alpha$`) to
   skip body text and only match SVG math glyphs. A single Latin or

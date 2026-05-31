@@ -154,6 +154,8 @@
     };
   }
   try {
+    var storedZoom = parseFloat(localStorage.getItem('mathpreview.userZoom'));
+    if (isFinite(storedZoom) && storedZoom > 0) setUserZoom(storedZoom, false);
     setPageMode(localStorage.getItem('mathpreview.pageMode') || 'a4');
     setSideTab(localStorage.getItem('mathpreview.sideTab') || 'index');
     var storedSideOpen = localStorage.getItem('mathpreview.sideOpen');

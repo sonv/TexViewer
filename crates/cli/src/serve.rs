@@ -74,6 +74,10 @@ struct AppState {
     render_seq: Arc<AtomicU64>,
     jump_seq: Arc<AtomicU64>,
     pending_jump: Arc<RwLock<Option<SourceJump>>>,
+    /// `sh -c` template for the Cmd/Ctrl-click reveal-source feature.
+    /// `{file}` (shell-quoted), `{line}`, and `{col}` are substituted
+    /// in before exec. Empty string disables the feature.
+    editor_cmd: Arc<String>,
 }
 
 struct PreambleCache {
@@ -158,7 +162,13 @@ fn fnv_hash(s: &str) -> u64 {
     h
 }
 
-pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> Result<()> {
+pub async fn run(
+    input: PathBuf,
+    host: String,
+    port: u16,
+    opts: HtmlOptions,
+    editor_cmd: String,
+) -> Result<()> {
     let initial = render_project(&input, &opts)
         .with_context(|| format!("initial render of {}", input.display()))?;
     let mut watched: HashSet<PathBuf> = HashSet::new();
@@ -193,6 +203,7 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
         render_seq: Arc::new(AtomicU64::new(0)),
         jump_seq: Arc::new(AtomicU64::new(0)),
         pending_jump: Arc::new(RwLock::new(None)),
+        editor_cmd: Arc::new(editor_cmd),
     };
 
     spawn_watcher(state.clone(), watch_rx);
@@ -206,6 +217,7 @@ pub async fn run(input: PathBuf, host: String, port: u16, opts: HtmlOptions) -> 
         .route("/buffer", axum::routing::post(serve_buffer_push))
         .route("/cursor", post(serve_cursor))
         .route("/jump", get(serve_jump_poll).post(serve_jump))
+        .route("/reveal-source", post(serve_reveal_source))
         .route("/print", post(serve_print))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
@@ -553,6 +565,79 @@ async fn serve_jump_poll(
         Some(jump) => Json(jump).into_response(),
         None => axum::http::StatusCode::NO_CONTENT.into_response(),
     }
+}
+
+/// `POST /reveal-source` — spawn the configured editor command so the
+/// user's editor jumps to a given `(file, line)`. Triggered from the
+/// browser by Cmd/Ctrl-clicking on a rendered token. The command
+/// template is whatever the daemon was started with (`--editor`); we
+/// just substitute `{file}` / `{line}` / `{col}` and shell out via
+/// `sh -c`. Returns 204 on success, 502 if the command exits non-zero
+/// or fails to spawn (so the browser can surface a status pill).
+async fn serve_reveal_source(
+    State(state): State<AppState>,
+    Json(req): Json<SourceRequest>,
+) -> Response {
+    let template = state.editor_cmd.as_str().trim();
+    if template.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "reveal-source disabled (empty --editor)" })),
+        )
+            .into_response();
+    }
+    let file = normalize_source_path(req.file);
+    let file_str = file.to_string_lossy();
+    let cmd = template
+        .replace("{file}", &shell_quote(&file_str))
+        .replace("{line}", &req.line.max(1).to_string())
+        .replace("{col}", &req.col.unwrap_or(1).max(1).to_string());
+    let result = tokio::process::Command::new("sh")
+        .args(["-c", &cmd])
+        .output()
+        .await;
+    match result {
+        Ok(out) if out.status.success() => StatusCode::NO_CONTENT.into_response(),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            eprintln!(
+                "mathpreview: reveal-source command exited {} ({}:{}): {stderr}",
+                out.status, file_str, req.line
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": format!("editor exited {}: {stderr}", out.status),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("mathpreview: reveal-source spawn failed: {e}");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("spawn failed: {e}") })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Single-quote a string for use as one shell argument. Closes the
+/// single-quoted run around any embedded `'` and re-opens it so the
+/// result still parses as one POSIX shell token regardless of contents.
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// `POST /print` — runs `latexmk -pdf` on the project's root file and
@@ -1870,6 +1955,7 @@ Second paragraph here.
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
+            editor_cmd: Arc::new(String::new()),
         };
 
         let older = begin_render_attempt(&state);
@@ -2252,6 +2338,7 @@ Second paragraph here.
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
+            editor_cmd: Arc::new(String::new()),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -2336,6 +2423,7 @@ Second paragraph here.
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
+            editor_cmd: Arc::new(String::new()),
         };
 
         let mut headers = axum::http::HeaderMap::new();

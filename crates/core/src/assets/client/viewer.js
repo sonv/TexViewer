@@ -437,6 +437,32 @@
     return found;
   }
 
+  // Content-only zoom. Cmd/Ctrl + `+`/`-`/`0` mirrors the browser zoom
+  // shortcut but only scales the page (not the header / sidebar). Bare
+  // `+`/`-`/`0` also work for keyboard-first usage. `=` (unshifted) is
+  // the auto-fit-to-width shortcut so the user can quickly re-fill the
+  // viewport after a manual zoom.
+  function handleZoomKeys(e) {
+    if (e.defaultPrevented || e.altKey || isEditableTarget(e.target)) return false;
+    var withModifier = (e.metaKey || e.ctrlKey);
+    var key = e.key;
+    if (withModifier && !e.shiftKey) {
+      if (key === '=' || key === '+') { bumpUserZoom(ZOOM_STEP); return true; }
+      if (key === '-' || key === '_') { bumpUserZoom(-ZOOM_STEP); return true; }
+      if (key === '0') { resetUserZoom(); return true; }
+      return false;
+    }
+    if (!withModifier) {
+      // Bare `+` requires Shift on most layouts, so treat Shift+`=` as
+      // zoom-in too. Unshifted `=` is auto-fit-to-width.
+      if (key === '+' || (key === '=' && e.shiftKey)) { bumpUserZoom(ZOOM_STEP); return true; }
+      if (key === '=') { fitToWidth(); return true; }
+      if (key === '-' || key === '_') { bumpUserZoom(-ZOOM_STEP); return true; }
+      if (key === '0') { resetUserZoom(); return true; }
+    }
+    return false;
+  }
+
   function handleVimNavigation(e) {
     if (e.defaultPrevented || e.altKey || e.metaKey || isEditableTarget(e.target)) return false;
     var vh = window.innerHeight || document.documentElement.clientHeight || 800;
@@ -506,6 +532,10 @@
       case 't':
         clearVimPending();
         setSideOpen(!currentSideOpen, true);
+        return true;
+      case 'B':
+        clearVimPending();
+        setTopbarHidden(!topbarHidden, true);
         return true;
       default:
         clearVimPending();
@@ -594,6 +624,38 @@
     e.stopPropagation();
     revealSourceElement(el.id, false);
     postSourceJump(info);
+    return true;
+  }
+
+  async function postRevealSource(info) {
+    if (!info) return;
+    try {
+      var res = await fetch('/reveal-source', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(info)
+      });
+      if (res.status === 204) {
+        setStatus('live', '● editor → ' + info.line + ':' + info.col);
+      } else {
+        var msg = '';
+        try { msg = (await res.json()).error || ''; } catch (e) {}
+        setStatus('dead', '○ editor jump failed' + (msg ? ': ' + msg : ''));
+      }
+    } catch (e) {
+      setStatus('dead', '○ editor jump failed');
+    }
+  }
+
+  function requestRevealSource(e) {
+    var el = sourceElementFromTarget(e.target);
+    var info = el ? parseDataSrc(el.getAttribute('data-src')) : null;
+    if (!info) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    revealSourceElement(el.id, false);
+    postRevealSource(info);
     return true;
   }
 
@@ -1380,19 +1442,62 @@
     var page = pageEl();
     var shell = pageShellEl();
     if (!page || !shell) return;
+    var available = Math.max(320, document.documentElement.clientWidth - 32);
     if (currentPageMode === 'a4') {
-      var available = Math.max(320, document.documentElement.clientWidth - 32);
-      currentPageScale = Math.min(1, available / A4_CSS_WIDTH);
-      document.documentElement.style.setProperty('--page-scale', currentPageScale.toFixed(4));
-      shell.style.width = Math.round(A4_CSS_WIDTH * currentPageScale) + 'px';
+      var fit = Math.min(1, available / A4_CSS_WIDTH);
+      currentPageScale = fit;
+      var combined = fit * currentUserZoom;
+      document.documentElement.style.setProperty('--page-scale', combined.toFixed(4));
+      shell.style.width = Math.round(A4_CSS_WIDTH * combined) + 'px';
       if (typeof contentHeight !== 'number') contentHeight = page.scrollHeight;
-      shell.style.height = Math.ceil(contentHeight * currentPageScale) + 'px';
+      shell.style.height = Math.ceil(contentHeight * combined) + 'px';
     } else {
       currentPageScale = 1;
-      document.documentElement.style.setProperty('--page-scale', '1');
-      shell.style.width = '';
-      shell.style.height = '';
+      // Dynamic mode: the page's natural width is the smaller of
+      // DYNAMIC_BASE_WIDTH and the viewport room available *before*
+      // applying the user's zoom — that way zooming in scales the
+      // text rather than shrinking the column.
+      var naturalWidth = Math.min(
+        DYNAMIC_BASE_WIDTH,
+        available / Math.max(currentUserZoom, 1e-6)
+      );
+      document.documentElement.style.setProperty(
+        '--page-natural-width', Math.round(naturalWidth) + 'px'
+      );
+      document.documentElement.style.setProperty('--page-scale', currentUserZoom.toFixed(4));
+      shell.style.width = Math.round(naturalWidth * currentUserZoom) + 'px';
+      if (typeof contentHeight !== 'number') contentHeight = page.scrollHeight;
+      shell.style.height = Math.ceil(contentHeight * currentUserZoom) + 'px';
     }
+  }
+
+  function clampUserZoom(z) {
+    if (!isFinite(z)) return 1;
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  }
+
+  function setUserZoom(z, persist) {
+    currentUserZoom = clampUserZoom(z);
+    updatePageScale();
+    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    if (persist) {
+      try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
+    }
+  }
+
+  function bumpUserZoom(delta) {
+    var next = Math.round((currentUserZoom + delta) * 100) / 100;
+    setUserZoom(next, true);
+  }
+
+  function resetUserZoom() {
+    setUserZoom(1, true);
+  }
+
+  function fitToWidth() {
+    var available = Math.max(320, document.documentElement.clientWidth - 32);
+    var base = (currentPageMode === 'a4') ? A4_CSS_WIDTH : DYNAMIC_BASE_WIDTH;
+    setUserZoom(available / base, true);
   }
 
   function pageGuideMetrics() {

@@ -53,30 +53,30 @@
   --refkey-gap: 8px;
   /* Reference height for everything that needs to sit just below the
      sticky topbar (side-toggle pill, side-panel, margin column). Two
-     rows + padding + 1px bottom border lands around 80 px on default
+     rows + padding + 1px bottom border lands around 60 px on default
      font-size; the exact value is fine-tuned to match the rendered
      header so absolute-positioned siblings line up flush. */
-  --topbar-height: 78px;
+  --topbar-height: 60px;
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 16px/1.42 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font: 18px/1.42 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
 }
 .topbar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   /* Left padding clears the fixed `.topbar-stripe` toggle so the
      document title isn't tucked under the square tab. */
-  padding: 9px 18px 10px 38px;
+  padding: 4px 12px 4px 36px;
   background: #fff;
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 12px;
 }
 .topbar-row {
   display: flex;
@@ -470,8 +470,9 @@ body.page-mode-a4 main#page {
   transform-origin: top left;
 }
 body.page-mode-dynamic main#page {
-  width: 100%;
-  transform: none;
+  width: var(--page-natural-width, 100%);
+  transform: scale(var(--page-scale));
+  transform-origin: top left;
 }
 .page-guide-layer {
   position: absolute;

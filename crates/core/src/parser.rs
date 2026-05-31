@@ -453,6 +453,40 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                // Old-style font-switch commands (`\bf`, `\em`, `\it`,
+                // `\tt`, `\sc` and their long forms) take no argument —
+                // they change the font for the rest of the enclosing
+                // group. Keep them inline in the text buffer so the
+                // wrapping `{…}` reaches the renderer as one chunk and
+                // the inline-latex pass can emit `<strong>` / `<em>` /
+                // etc. around the body. Treating them as OpaqueCmd
+                // here would split the group across nodes and drop the
+                // styling.
+                if matches!(
+                    cmd.as_str(),
+                    "bf" | "bfseries"
+                        | "em"
+                        | "it"
+                        | "itshape"
+                        | "emshape"
+                        | "tt"
+                        | "ttfamily"
+                        | "sc"
+                        | "scshape"
+                        | "rm"
+                        | "rmfamily"
+                        | "sf"
+                        | "sffamily"
+                ) {
+                    if text_start.is_none() {
+                        text_start = Some(cmd_start);
+                    }
+                    text_buf.push('\\');
+                    text_buf.push_str(&cmd);
+                    self.advance_to(cmd_name_end);
+                    continue;
+                }
+
                 // Unknown command — opaque, but keep the args so the renderer
                 // could surface them. For now, take the raw token slice.
                 flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);

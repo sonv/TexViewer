@@ -17,6 +17,45 @@ summary.
 
 Nothing yet.
 
+## [0.1.8] — 2026-05-31
+
+### Added
+
+- **Content-only zoom.** `+` / `-` zoom the page (and `0` resets, `=`
+  auto-fits to viewport width) without scaling the header or sidebar.
+  `Cmd`/`Ctrl` + `+`/`-`/`0` also work. Applies the user zoom on top of
+  the existing A4 auto-fit so the same scale value behaves intuitively
+  in both page modes. Persisted under
+  `localStorage["mathpreview.userZoom"]`.
+- **Capital `B` toggles the top banner.** Keyboard counterpart to the
+  thin stripe on the left edge — useful for filling the viewport with
+  paper content side-by-side with an editor.
+- **Cmd/Ctrl-click → open source in editor.** Modifier-click on any
+  rendered token spawns the configured editor at the source line.
+  Configurable via a new `--editor` serve flag (default: a `nvim
+  --server "$NVIM_LISTEN_ADDRESS" --remote-send` invocation that lands
+  inside the nvim instance whose listen socket is in your env).
+  Alt-click still posts to `/jump` for users running the polling-based
+  nvim plugin.
+
+### Changed
+
+- **Default body text bumped from 16 px to 18 px** so the paper is
+  readable at native browser zoom — friends reported the previous size
+  required browser zoom, which also magnified the toolbar.
+- **Compact top banner.** Reduced padding and inter-row gap; reference
+  `--topbar-height` from 78 px to 60 px.
+
+### Fixed
+
+- **Old-style font switches `{\bf foo}`, `{\em foo}`, `{\it foo}`,
+  `{\tt foo}`, `{\sc foo}` no longer drop the styling.** The parser
+  was emitting `\bf` etc. as opaque commands without arguments, which
+  the renderer then dropped silently — only the surrounded text
+  survived. Keep these no-arg switches inline in the text buffer so
+  the inline-latex pass can detect the brace group and wrap the body
+  in `<strong>` / `<em>` / `<code>` / `<span class="sc">`.
+
 ## [0.1.7] — 2026-05-26
 
 ### Fixed
@@ -280,7 +319,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/sonv/TexViewer/releases/tag/v0.1.8
 [0.1.7]: https://github.com/sonv/TexViewer/releases/tag/v0.1.7
 [0.1.6]: https://github.com/sonv/TexViewer/releases/tag/v0.1.6
 [0.1.5]: https://github.com/sonv/TexViewer/releases/tag/v0.1.5

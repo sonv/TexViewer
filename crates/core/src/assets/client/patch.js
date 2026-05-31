@@ -252,7 +252,16 @@
       }
       return;
     }
-    if ((e.altKey || e.metaKey) && requestSourceJump(e)) {
+    // Cmd-click (macOS) / Ctrl-click (Linux/Windows) → spawn the
+    // configured editor (`--editor` template) at the source line.
+    // Mirrors the "reveal in editor" gesture every IDE-style PDF
+    // viewer offers. Alt-click stays on the polling-based `/jump`
+    // path for users who run the nvim plugin instead of letting the
+    // daemon spawn their editor.
+    if ((e.metaKey || e.ctrlKey) && requestRevealSource(e)) {
+      return;
+    }
+    if (e.altKey && requestSourceJump(e)) {
       return;
     }
     // In margin mode, plain click on a \ref or \cite pins it to the
@@ -345,6 +354,11 @@
     if (eqChip && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       pinByRefkey(eqChip.dataset.target || eqChip.textContent || '');
+      return;
+    }
+
+    if (handleZoomKeys(e)) {
+      e.preventDefault();
       return;
     }
 

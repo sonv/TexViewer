@@ -689,6 +689,21 @@ fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderC
 
         let token_end = if ch == '\\' {
             latex_source_token_end(s, i).unwrap_or_else(|| i + ch.len_utf8())
+        } else if ch == '{' {
+            // Keep `{` glued to its matching `}` when the group opens
+            // with a font-switch command (e.g. `{\bf foo}`), so the
+            // wrapping styling reaches `render_inline_latex` as one
+            // unit instead of getting tokenised away. For other groups
+            // we still pass the `{` through as a single char so the
+            // existing brace-stripping behaviour is preserved.
+            if let Some(end) = font_switch_group_end(s, i) {
+                end
+            } else {
+                let start = i;
+                i += ch.len_utf8();
+                out.push_str(&render_inline_latex(&s[start..i], ctx.labels));
+                continue;
+            }
         } else if is_source_word_char(ch) {
             source_word_end(s, i)
         } else {
@@ -716,6 +731,66 @@ fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderC
         i = token_end;
     }
     out
+}
+
+/// If `start` points at `{` and the group opens with an old-style
+/// font-switch command (`\bf`, `\em`, `\it`, `\tt`, `\sc` and their
+/// `\bfseries` / `\itshape` / `\ttfamily` / `\scshape` long forms),
+/// return the index just past the matching `}`. Used by the source-span
+/// tokeniser so the whole `{\bf …}` chunk is rendered as one unit.
+fn font_switch_group_end(s: &str, start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+    let mut k = start + 1;
+    while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+        k += 1;
+    }
+    if k >= bytes.len() || bytes[k] != b'\\' {
+        return None;
+    }
+    let n_start = k + 1;
+    let mut n_end = n_start;
+    while n_end < bytes.len() && bytes[n_end].is_ascii_alphabetic() {
+        n_end += 1;
+    }
+    let cmd = &s[n_start..n_end];
+    let is_font_switch = matches!(
+        cmd,
+        "bf" | "bfseries"
+            | "em"
+            | "it"
+            | "itshape"
+            | "emshape"
+            | "tt"
+            | "ttfamily"
+            | "sc"
+            | "scshape"
+    );
+    if !is_font_switch {
+        return None;
+    }
+    let mut depth = 1i32;
+    let mut q = n_end;
+    while q < bytes.len() {
+        match bytes[q] {
+            b'\\' if q + 1 < bytes.len() => {
+                q += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(q + 1);
+                }
+            }
+            _ => {}
+        }
+        q += 1;
+    }
+    None
 }
 
 fn source_word_end(s: &str, start: usize) -> usize {
@@ -1746,7 +1821,67 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             // LaTeX grouping braces have no visual effect — strip them so
             // text like `Hello {grouping} world` reads as `Hello grouping
             // world` rather than literally including the braces.
-            if b == b'{' || b == b'}' {
+            if b == b'{' {
+                // Old-style font-switch group: `{\bf foo}`, `{\em foo}`,
+                // `{\it foo}`, `{\tt foo}`, `{\sc foo}`. The switch
+                // command takes no arg in LaTeX — it changes the font
+                // for the rest of the enclosing group. Detect that
+                // shape so the wrapping styling actually reaches HTML
+                // (otherwise the command falls through to "unknown,
+                // drop silently" and only the plain text survives).
+                let mut k = i + 1;
+                while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
+                    k += 1;
+                }
+                if k < bytes.len() && bytes[k] == b'\\' {
+                    let n_start = k + 1;
+                    let mut n_end = n_start;
+                    while n_end < bytes.len() && bytes[n_end].is_ascii_alphabetic() {
+                        n_end += 1;
+                    }
+                    let cmd = &s[n_start..n_end];
+                    let wrap: Option<(&str, &str)> = match cmd {
+                        "bf" | "bfseries" => Some(("<strong>", "</strong>")),
+                        "em" | "it" | "itshape" | "emshape" => Some(("<em>", "</em>")),
+                        "tt" | "ttfamily" => Some(("<code>", "</code>")),
+                        "sc" | "scshape" => Some((r#"<span class="sc">"#, "</span>")),
+                        _ => None,
+                    };
+                    if let Some((open, close)) = wrap {
+                        // Find the matching closing brace at depth 0.
+                        let body_start = n_end;
+                        let mut depth = 1i32;
+                        let mut q = body_start;
+                        while q < bytes.len() {
+                            match bytes[q] {
+                                b'\\' if q + 1 < bytes.len() => {
+                                    q += 2;
+                                    continue;
+                                }
+                                b'{' => depth += 1,
+                                b'}' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            q += 1;
+                        }
+                        if q < bytes.len() {
+                            out.push_str(open);
+                            out.push_str(&render_inline_latex(&s[body_start..q], labels));
+                            out.push_str(close);
+                            i = q + 1;
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            if b == b'}' {
                 i += 1;
                 continue;
             }
@@ -2300,6 +2435,37 @@ mod tests {
         assert!(
             !out.body_html.contains("$x^2$"),
             "literal $x^2$ should not survive inside \\emph; got: {}",
+            out.body_html,
+        );
+    }
+
+    #[test]
+    fn old_style_font_switches_render_as_strong_em() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nA {\\bf bold word}, {\\em emph word}, {\\it italic word}, and {\\tt code word}.\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            out.body_html.contains("<strong>") && out.body_html.contains("bold word</strong>"),
+            "{{\\bf …}} should wrap in <strong>; got: {}",
+            out.body_html,
+        );
+        assert!(
+            out.body_html.contains("<em>") && out.body_html.contains("emph word</em>"),
+            "{{\\em …}} should wrap in <em>; got: {}",
+            out.body_html,
+        );
+        assert!(
+            out.body_html.contains("italic word</em>"),
+            "{{\\it …}} should wrap in <em>; got: {}",
+            out.body_html,
+        );
+        assert!(
+            out.body_html.contains("<code>") && out.body_html.contains("code word</code>"),
+            "{{\\tt …}} should wrap in <code>; got: {}",
             out.body_html,
         );
     }
