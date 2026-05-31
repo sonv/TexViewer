@@ -17,6 +17,33 @@ summary.
 
 Nothing yet.
 
+## [0.1.10] — 2026-05-31
+
+### Added
+
+- **Macro override cascade.** Define your own `\newcommand` replacements
+  for any macro the paper uses — for example, swapping a
+  `\DeclarePairedDelimiterX`-defined `\set` for a plain
+  `\newcommand{\set}[1]{\{#1\}}` so MathJax can render it. Files are
+  discovered in cascade order, with later definitions winning by name:
+  1. Bundled built-ins
+  2. The paper's preamble (including local `.sty` / `.tex`)
+  3. `~/.config/mathpreview/macros.tex` (or `$XDG_CONFIG_HOME/...`) —
+     personal overrides applied to every paper
+  4. `.mathpreview-macros.tex` walking up from the input file — repo-
+     specific overrides that can ship alongside the source
+  5. `--macros <file>` CLI flag (repeatable) — one-off overrides
+- **New `discover_macro_overrides` core API** wiring the same cascade
+  for any library caller (Tauri shell, plugin, custom front-end).
+
+### Changed
+
+- **Hardcoded `FALLBACK_MACROS` moved into a bundled
+  `assets/builtin-macros.tex`** parsed through the same extractor as
+  the paper preamble. Adding a new built-in stub is now a one-line
+  `.tex` edit instead of a Rust source change; users can read the
+  bundled file to see exactly what's silently shimmed.
+
 ## [0.1.9] — 2026-05-31
 
 ### Fixed
@@ -345,7 +372,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/sonv/TexViewer/releases/tag/v0.1.10
 [0.1.9]: https://github.com/sonv/TexViewer/releases/tag/v0.1.9
 [0.1.8]: https://github.com/sonv/TexViewer/releases/tag/v0.1.8
 [0.1.7]: https://github.com/sonv/TexViewer/releases/tag/v0.1.7

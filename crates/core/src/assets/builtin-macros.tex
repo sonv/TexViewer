@@ -1,0 +1,49 @@
+% mathpreview built-in macro overrides.
+%
+% Best-effort stubs for macros that real papers reach for but which the
+% preamble extractor cannot translate from the source — typically because
+% the author's definition delegates to an @-internal helper (e.g.
+% `\given` -> `\SV@given{\delimsize}` from svmacro.sty) that uses TeX
+% primitives MathJax cannot expand. Without a stub, every equation that
+% touches one of these commands fails to render.
+%
+% These are the lowest-priority entries in the cascade:
+%   builtins (this file)
+%     -> paper preamble macros
+%       -> ~/.config/mathpreview/macros.tex
+%         -> .mathpreview-macros.tex in the project root
+%           -> --macros CLI flag
+% Later definitions override earlier ones by name, so any author who
+% provides a cleaner `\newcommand{\given}{...}` in their preamble — or
+% in any of the user override files — wins automatically.
+
+% \given / \st from svmacro.sty-style packages: spaced pipe used in
+% `P(A \given B)` and `\{x \st x > 0\}`.
+\newcommand{\given}{\,|\,}
+\newcommand{\st}{\,|\,}
+
+% \bm from the `bm` package. MathJax's `[tex]/boldsymbol` extension
+% provides `\boldsymbol` but does not alias `\bm`, so author macros like
+% `\newcommand{\E}{\bm{E}}` (svmacro.sty) break every equation they touch.
+\newcommand{\bm}[1]{\boldsymbol{#1}}
+
+% \underaccent from the `accents` package — closest pure-MathJax fit.
+\newcommand{\underaccent}[2]{\underset{#1}{#2}}
+
+% \xspace is a no-op in math contexts.
+\newcommand{\xspace}{}
+
+% \defeq (svmacro / mathtools-style) rendered as a stylized `:=`.
+\newcommand{\defeq}{\stackrel{\scriptscriptstyle\mathrm{def}}{=}}
+
+% Sidenote / annotation commands authors use for review comments.
+% `\sidenote[opts]{text}` from a typical svmacro.sty / tcolorbox bridge.
+% Stubbed to render as empty in math contexts — author-private review
+% notes are noise in a live preview.
+\newcommand{\sidenote}[2][]{}
+
+% Edit-tracking commands from marktext-style packages.
+\newcommand{\add}[1]{#1}
+\newcommand{\remove}[1]{}
+\newcommand{\highlight}[1]{#1}
+\newcommand{\replace}[2]{#2}

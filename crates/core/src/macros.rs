@@ -78,9 +78,93 @@ pub struct ExtractedPreamble {
     pub sidenote_wrappers: Vec<String>,
 }
 
-/// Extract macros and package mappings for a loaded project.
+/// Bundled built-in macro overrides. Loaded as the first (lowest-priority)
+/// step of every extraction so that anything an author or user file later
+/// re-defines automatically wins via the extractor's last-wins semantics.
+const BUILTIN_MACROS_TEX: &str = include_str!("assets/builtin-macros.tex");
+
+/// Per-project macro override filename. Looked up by walking upward from
+/// the document root, the same way Git looks for `.git`.
+pub const PROJECT_MACROS_FILENAME: &str = ".mathpreview-macros.tex";
+
+/// Discover override file paths in cascade order (lowest → highest
+/// priority). Caller passes any additional explicit paths (e.g. from a
+/// `--macros` CLI flag) as `extra`; those land at the end of the
+/// returned list so they win over both global and project files.
+///
+/// Lookup order:
+///   1. `$XDG_CONFIG_HOME/mathpreview/macros.tex` (falls back to
+///      `~/.config/mathpreview/macros.tex` if `XDG_CONFIG_HOME` unset).
+///   2. The nearest `.mathpreview-macros.tex` walking up from `root_dir`.
+///   3. Each path in `extra`, in order.
+///
+/// Non-existent paths are still returned — `extract_preamble_with_overrides`
+/// (via `finish_render`) tolerates missing files so callers can blindly
+/// pass the result without stat-checking each entry.
+pub fn discover_macro_overrides(root_dir: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(p) = global_macros_path() {
+        if p.is_file() {
+            out.push(p);
+        }
+    }
+    if let Some(p) = find_project_macros(root_dir) {
+        out.push(p);
+    }
+    out.extend(extra.iter().cloned());
+    out
+}
+
+fn global_macros_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("mathpreview").join("macros.tex"))
+}
+
+fn find_project_macros(start: &Path) -> Option<PathBuf> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        let candidate = dir.join(PROJECT_MACROS_FILENAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// One user-supplied macro override file, in cascade order. Later entries
+/// in the slice override earlier ones on name collision.
+#[derive(Debug, Clone)]
+pub struct MacroOverride {
+    /// Display path for warnings / debug panel (typically the file path).
+    pub label: PathBuf,
+    /// Raw `.tex` contents — same syntax as a preamble (`\newcommand` etc.).
+    pub source: String,
+}
+
+/// Extract macros and package mappings for a loaded project. Equivalent to
+/// [`extract_preamble_with_overrides`] with no extra overrides — kept for
+/// callers that don't need the cascade.
 pub fn extract_preamble(project: &Project) -> Result<ExtractedPreamble> {
+    extract_preamble_with_overrides(project, &[])
+}
+
+/// Extract macros + package mappings, then layer the override files on
+/// top in the order given. Cascade: bundled built-ins → paper preamble
+/// (including local `.sty` / `.tex` it references) → each override in
+/// `overrides` (ordered lowest to highest priority).
+pub fn extract_preamble_with_overrides(
+    project: &Project,
+    overrides: &[MacroOverride],
+) -> Result<ExtractedPreamble> {
     let mut extractor = Extractor::new();
+
+    // 1) Bundled built-ins (lowest priority).
+    extractor.scan(BUILTIN_MACROS_TEX, Path::new("<builtin-macros.tex>"));
+
+    // 2) Paper preamble.
     extractor.scan(&project.preamble.source, &project.preamble.file);
 
     // Step 3 of DESIGN §6 — scan local .sty / .tex referenced from the preamble.
@@ -104,6 +188,11 @@ pub fn extract_preamble(project: &Project) -> Result<ExtractedPreamble> {
                 continue;
             }
         }
+    }
+
+    // 3) User overrides, in cascade order (later wins on name collision).
+    for ov in overrides {
+        extractor.scan(&ov.source, &ov.label);
     }
 
     Ok(extractor.finish())
@@ -1056,6 +1145,121 @@ mod tests {
         let mut e = Extractor::new();
         e.scan(src, Path::new("test.tex"));
         e.finish()
+    }
+
+    /// Cascade the same way `extract_preamble_with_overrides` does, but
+    /// driven by string inputs so tests don't have to construct a full
+    /// `Project`. The order matches the production cascade:
+    /// builtins → paper preamble → each override (later wins).
+    fn cascade(paper_preamble: &str, override_sources: &[(&str, &str)]) -> Vec<ExtractedMacro> {
+        let mut e = Extractor::new();
+        e.scan(BUILTIN_MACROS_TEX, Path::new("<builtin-macros.tex>"));
+        e.scan(paper_preamble, Path::new("paper.tex"));
+        for (label, src) in override_sources {
+            e.scan(src, Path::new(label));
+        }
+        e.finish().macros
+    }
+
+    fn find_by_name<'a>(ms: &'a [ExtractedMacro], name: &str) -> Option<&'a ExtractedMacro> {
+        ms.iter().find(|m| m.name == name)
+    }
+
+    #[test]
+    fn cascade_builtins_only_keeps_every_fallback() {
+        let ms = cascade("", &[]);
+        for name in [
+            "given",
+            "st",
+            "bm",
+            "underaccent",
+            "xspace",
+            "defeq",
+            "sidenote",
+            "add",
+            "remove",
+            "highlight",
+            "replace",
+        ] {
+            assert!(
+                find_by_name(&ms, name).is_some(),
+                "missing built-in {name}",
+            );
+        }
+    }
+
+    #[test]
+    fn cascade_paper_preamble_overrides_builtin() {
+        let ms = cascade(r"\newcommand{\bm}{__paper__}", &[]);
+        let bm = find_by_name(&ms, "bm").expect("\\bm present");
+        assert_eq!(bm.body, "__paper__");
+        assert_eq!(bm.source_file, Path::new("paper.tex"));
+    }
+
+    #[test]
+    fn cascade_override_wins_over_paper_preamble() {
+        let ms = cascade(
+            r"\newcommand{\bm}[1]{__paper__{#1}}",
+            &[(
+                "global.tex",
+                r"\newcommand{\bm}[1]{__override__{#1}}",
+            )],
+        );
+        let bm = find_by_name(&ms, "bm").expect("\\bm present");
+        assert_eq!(bm.body, "__override__{#1}");
+        assert_eq!(bm.source_file, Path::new("global.tex"));
+    }
+
+    #[test]
+    fn cascade_second_override_wins_over_first() {
+        let ms = cascade(
+            "",
+            &[
+                ("global.tex", r"\newcommand{\foo}{global}"),
+                ("project.tex", r"\newcommand{\foo}{project}"),
+            ],
+        );
+        let foo = find_by_name(&ms, "foo").expect("\\foo present");
+        assert_eq!(foo.body, "project");
+        assert_eq!(foo.source_file, Path::new("project.tex"));
+    }
+
+    #[test]
+    fn cascade_missing_override_file_is_skipped_by_caller() {
+        // `finish_render` filters missing files via `fs::read_to_string`
+        // before reaching the extractor — we just confirm the contract
+        // here: passing zero overrides leaves built-ins + preamble alone.
+        let ms = cascade(r"\newcommand{\bar}{B}", &[]);
+        assert_eq!(find_by_name(&ms, "bar").map(|m| m.body.as_str()), Some("B"));
+    }
+
+    #[test]
+    fn discover_finds_project_macros_in_ancestor() {
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-discover-{}",
+            std::process::id(),
+        ));
+        let nested = tmp.join("chapters");
+        std::fs::create_dir_all(&nested).unwrap();
+        let project_file = tmp.join(PROJECT_MACROS_FILENAME);
+        std::fs::write(&project_file, r"\newcommand{\foo}{F}").unwrap();
+        // Use an env-isolated discovery to keep the test from picking up
+        // the developer's real ~/.config/mathpreview/macros.tex.
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_home = std::env::var_os("HOME");
+        let isolated = tmp.join("fake-home");
+        std::fs::create_dir_all(&isolated).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &isolated);
+        std::env::set_var("HOME", &isolated);
+        let found = discover_macro_overrides(&nested, &[]);
+        // Restore env before any assertion that might panic.
+        if let Some(v) = prev_xdg { std::env::set_var("XDG_CONFIG_HOME", v); } else { std::env::remove_var("XDG_CONFIG_HOME"); }
+        if let Some(v) = prev_home { std::env::set_var("HOME", v); } else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(
+            found.iter().any(|p| p.ends_with(PROJECT_MACROS_FILENAME)),
+            "project macros file not discovered from nested dir: {found:?}",
+        );
     }
 
     #[test]

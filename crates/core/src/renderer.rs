@@ -54,6 +54,13 @@ pub struct HtmlOptions {
     /// Whether to embed the default stylesheet inline. Off if you want to
     /// supply your own.
     pub inline_css: bool,
+    /// Extra macro override files, in cascade order (lowest to highest
+    /// priority). Layered on top of the paper preamble inside
+    /// `macros::extract_preamble_with_overrides`, so later entries
+    /// override earlier ones on name collision. Populated by the daemon's
+    /// global / project / `--macros` discovery; the static `render`
+    /// pipeline leaves it empty.
+    pub macro_overrides: Vec<PathBuf>,
 }
 
 impl Default for HtmlOptions {
@@ -63,6 +70,7 @@ impl Default for HtmlOptions {
             title: "mathpreview".into(),
             source_path: None,
             inline_css: true,
+            macro_overrides: Vec::new(),
         }
     }
 }

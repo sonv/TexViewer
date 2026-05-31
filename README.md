@@ -504,6 +504,43 @@ Prints the resolved root, included files, MathJax extension list, the full
 macro table (name, arity, body, source file), and any warnings about
 macros that were filtered out.
 
+### Override macros for the viewer
+
+Some macro definitions don't translate cleanly to MathJax — typically
+anything using `\DeclarePairedDelimiter`, `\xparse`, or
+`\NewDocumentCommand`, or anything whose body reaches for `@`-internal
+TeX primitives. Drop a plain `\newcommand` replacement into a macros
+file and the viewer will use it instead of the source's version.
+
+Cascade (lowest → highest priority — later definitions override earlier
+ones by name):
+
+1. Bundled built-ins (`crates/core/src/assets/builtin-macros.tex` — the
+   amber-printed unmapped-package warnings hint at which macros need
+   coverage; the bundled file is what's already provided).
+2. The paper's own preamble macros.
+3. `~/.config/mathpreview/macros.tex` (or
+   `$XDG_CONFIG_HOME/mathpreview/macros.tex`) — your personal overrides
+   applied to every paper.
+4. `.mathpreview-macros.tex` walking up from the input file — repo-
+   specific overrides that ship alongside the source.
+5. `--macros <file>` on the `serve` or `render` subcommand (repeatable).
+
+A typical file:
+
+```tex
+% .mathpreview-macros.tex — markdown-friendly approximations
+\newcommand{\st}{\mid}
+\newcommand{\set}[1]{\{#1\}}
+\newcommand{\given}{\mid}
+```
+
+The override's signature has to match how the macro is called in the
+body. `\DeclarePairedDelimiter[..size..]{..body..}` calls become plain
+`\set{..body..}` calls if you express the override as
+`\newcommand{\set}[1]{...}` — the optional `[size]` argument is
+silently dropped (an "approximate output" tradeoff).
+
 ## nvim setup
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`

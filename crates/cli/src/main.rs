@@ -36,6 +36,11 @@ enum Cmd {
         /// Document <title>. Defaults to the input file's stem.
         #[arg(long)]
         title: Option<String>,
+        /// Extra macro override file(s), appended to the cascade after
+        /// the global `~/.config/mathpreview/macros.tex` and the
+        /// project-local `.mathpreview-macros.tex`.
+        #[arg(long = "macros", value_name = "FILE")]
+        macros: Vec<PathBuf>,
     },
     /// Print the extracted preamble (macros + packages) MathJax will see —
     /// mirrors `latex-preview.nvim`'s debug command.
@@ -63,6 +68,12 @@ enum Cmd {
         /// you launch nvim with `--listen` or inside a Neovim terminal).
         #[arg(long, default_value = r#"nvim --server "$NVIM_LISTEN_ADDRESS" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
         editor: String,
+        /// Extra macro override file(s), appended to the cascade after
+        /// the global `~/.config/mathpreview/macros.tex` and the
+        /// project-local `.mathpreview-macros.tex`. Repeat the flag to
+        /// stack overrides; later flags win on name collision.
+        #[arg(long = "macros", value_name = "FILE")]
+        macros: Vec<PathBuf>,
     },
 }
 
@@ -75,10 +86,22 @@ fn main() -> Result<()> {
             port,
             mathjax_url,
             editor,
+            macros: extra_macros,
         } => {
             // serve-mode default: use the vendored bundle so the page works offline.
             // Render-mode keeps the CDN default since its output is a standalone file.
             let url = mathjax_url.unwrap_or_else(|| "/vendor/mathjax/tex-svg.js".to_string());
+            // Resolve the macro-override cascade once at startup. The
+            // discovery walks upward from the input file looking for a
+            // project-local `.mathpreview-macros.tex`, then prepends the
+            // global file (if it exists) and appends any `--macros`
+            // flags. Result is in cascade order (lowest → highest
+            // priority); HtmlOptions hands it to the extractor on every
+            // render.
+            let macro_overrides = mathpreview_core::discover_macro_overrides(
+                input.parent().unwrap_or_else(|| std::path::Path::new(".")),
+                &extra_macros,
+            );
             let opts = HtmlOptions {
                 title: input
                     .file_stem()
@@ -86,6 +109,7 @@ fn main() -> Result<()> {
                     .unwrap_or("mathpreview")
                     .to_string(),
                 engine: Engine::MathJax(MathJaxEngine::new(url)),
+                macro_overrides,
                 ..HtmlOptions::default()
             };
             if let Ok(ms) = std::env::var("MATHPREVIEW_RESTART_DELAY_MS") {
@@ -101,6 +125,7 @@ fn main() -> Result<()> {
             output,
             mathjax_url,
             title,
+            macros: extra_macros,
         } => {
             let title = title.unwrap_or_else(|| {
                 input
@@ -109,8 +134,13 @@ fn main() -> Result<()> {
                     .unwrap_or("mathpreview")
                     .to_string()
             });
+            let macro_overrides = mathpreview_core::discover_macro_overrides(
+                input.parent().unwrap_or_else(|| std::path::Path::new(".")),
+                &extra_macros,
+            );
             let mut opts = HtmlOptions {
                 title,
+                macro_overrides,
                 ..HtmlOptions::default()
             };
             if let Some(url) = mathjax_url {

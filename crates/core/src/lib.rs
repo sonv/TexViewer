@@ -21,7 +21,9 @@ use anyhow::Result;
 
 pub use ast::{Node, NodeKind, Pos, Role, Span};
 pub use engines::{Engine, MathEngine, MathJaxEngine};
-pub use macros::{ExtractedMacro, ExtractedPreamble};
+pub use macros::{
+    discover_macro_overrides, ExtractedMacro, ExtractedPreamble, MacroOverride,
+};
 pub use packages::PackageMap;
 pub use renderer::{HtmlOptions, RenderOutput, RenderedBlock};
 pub use sync::SyncIndex;
@@ -56,7 +58,21 @@ fn finish_render(
     project: project::Project,
     opts: &HtmlOptions,
 ) -> Result<RenderOutput> {
-    let preamble = macros::extract_preamble(&project)?;
+    // Load the explicit override files listed in `opts.macro_overrides`.
+    // Missing files are skipped silently — the daemon's discovery helper
+    // is allowed to point at "would-be" paths (e.g. `.mathpreview-macros.tex`
+    // that doesn't exist yet) without failing the render.
+    let overrides: Vec<MacroOverride> = opts
+        .macro_overrides
+        .iter()
+        .filter_map(|p| {
+            std::fs::read_to_string(p).ok().map(|source| MacroOverride {
+                label: p.clone(),
+                source,
+            })
+        })
+        .collect();
+    let preamble = macros::extract_preamble_with_overrides(&project, &overrides)?;
     let bib = bibtex::load_project_bib(&project)?;
     let bib_style = bibtex::detect_project_bib_style(&project);
     let mut body = parser::parse_body(&project)?;
