@@ -17,6 +17,32 @@ summary.
 
 Nothing yet.
 
+## [0.1.9] — 2026-05-31
+
+### Fixed
+
+- **Tall trailing white space below the document on long papers.** The
+  page-shell's JS-computed height was based on `page.scrollHeight`,
+  which is inflated by the absolutely-positioned page-guide markers
+  inside `main#page`. On a long paper that adds hundreds of pixels of
+  dead strip after the content. Switched to `page.offsetHeight`
+  (visible content only) for the shell sizing and for the page-guide
+  count, so the shell now ends right at the visible page bottom and
+  guides don't extend past it.
+- **Warnings panel reads as part of the paper frame.** Moved
+  `<details class="warnings">` out of `<main id="page">` so the
+  amber notice sits below the white paper, on the backdrop, instead
+  of inside the reading frame. Tightened the gap between the paper
+  and the warnings panel via `:has(+ details.warnings)`, and added a
+  matching `margin-mode.margin-has-cards` rule so the panel tracks
+  the shell's offset when the margin column is pinned.
+
+### Changed
+
+- **WS protocol bumped to v52** so any tab still attached to a v0.1.8
+  daemon picks up the new HTML/CSS automatically on the next
+  reconnect.
+
 ## [0.1.8] — 2026-05-31
 
 ### Added
@@ -319,7 +345,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/sonv/TexViewer/releases/tag/v0.1.9
 [0.1.8]: https://github.com/sonv/TexViewer/releases/tag/v0.1.8
 [0.1.7]: https://github.com/sonv/TexViewer/releases/tag/v0.1.7
 [0.1.6]: https://github.com/sonv/TexViewer/releases/tag/v0.1.6

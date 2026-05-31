@@ -151,9 +151,9 @@ pub(super) fn wrap_in_shell(
 <div id="page-shell">
   <main id="page" data-proof-mode="all" data-refkeys="hidden">
 {body}
-{warnings_html}
   </main>
 </div>
+{warnings_html}
 <aside id="margin">
   <div class="margin-cards" id="margin-cards"></div>
 </aside>

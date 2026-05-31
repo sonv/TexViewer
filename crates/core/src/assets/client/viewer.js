@@ -1443,13 +1443,19 @@
     var shell = pageShellEl();
     if (!page || !shell) return;
     var available = Math.max(320, document.documentElement.clientWidth - 32);
+    // `offsetHeight` is the page's visible CSS height (content + padding
+    // + border). We deliberately avoid `scrollHeight` because the
+    // absolutely-positioned `.page-guide` markers inside `main#page`
+    // extend the scroll box well past the visible bottom of the page,
+    // which would inflate the shell and leave a tall dead strip after
+    // the document. `offsetHeight` ignores that overflow.
     if (currentPageMode === 'a4') {
       var fit = Math.min(1, available / A4_CSS_WIDTH);
       currentPageScale = fit;
       var combined = fit * currentUserZoom;
       document.documentElement.style.setProperty('--page-scale', combined.toFixed(4));
       shell.style.width = Math.round(A4_CSS_WIDTH * combined) + 'px';
-      if (typeof contentHeight !== 'number') contentHeight = page.scrollHeight;
+      if (typeof contentHeight !== 'number') contentHeight = page.offsetHeight;
       shell.style.height = Math.ceil(contentHeight * combined) + 'px';
     } else {
       currentPageScale = 1;
@@ -1466,7 +1472,7 @@
       );
       document.documentElement.style.setProperty('--page-scale', currentUserZoom.toFixed(4));
       shell.style.width = Math.round(naturalWidth * currentUserZoom) + 'px';
-      if (typeof contentHeight !== 'number') contentHeight = page.scrollHeight;
+      if (typeof contentHeight !== 'number') contentHeight = page.offsetHeight;
       shell.style.height = Math.ceil(contentHeight * currentUserZoom) + 'px';
     }
   }
@@ -1568,12 +1574,15 @@
     if (!page || !pages) return;
     pages.setAttribute('aria-label', currentPageMode === 'a4' ? 'A4 pages' : 'dynamic pages');
 
-    var totalHeight = page.scrollHeight;
-    updatePageScale(totalHeight);
+    // `offsetHeight` is the page's visible CSS height; `scrollHeight`
+    // would include the absolutely-positioned guides themselves, which
+    // would inflate both the shell and the scroll area on every refresh
+    // and leave a tall dead strip past the document.
+    updatePageScale(page.offsetHeight);
     var metrics = pageGuideMetrics();
     pageGuideLayoutHeightPx = metrics.layoutHeight;
     pageGuideVisualHeightPx = metrics.visualHeight;
-    pageGuideCount = Math.max(1, Math.ceil(totalHeight / pageGuideLayoutHeightPx));
+    pageGuideCount = Math.max(1, Math.ceil(page.offsetHeight / pageGuideLayoutHeightPx));
     var signature = currentPageMode + '|' + pageGuideCount + '|' + Math.round(pageGuideLayoutHeightPx);
     if (signature === lastPageGuideSignature) {
       updateActivePage();
@@ -1694,7 +1703,7 @@
   /// client rects would land at misleading y-coordinates.
   var LINENO_SKIP = '.lineno-layer, .page-guide-layer, .sidenote, .margin-col,' +
     ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded,' +
-    ' .para-indent-marker, .warnings';
+    ' .para-indent-marker';
   function linenoSkip(node, page) {
     var el = node.parentNode;
     while (el && el !== page) {

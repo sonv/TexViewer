@@ -446,9 +446,11 @@ body.side-panel-closed .side-panel { transform: translateX(calc(-100% - 24px)); 
 }
 #page-shell {
   width: min(var(--dynamic-width), calc(100vw - 32px));
-  margin: 28px auto 64px;
+  margin: 28px auto 24px;
   overflow: visible;
 }
+/* Tighten the gap below the paper when the warnings panel follows it. */
+#page-shell:has(+ details.warnings) { margin-bottom: 12px; }
 body.topbar-hidden #page-shell { margin-top: 18px; }
 body.page-mode-a4 #page-shell {
   width: var(--a4-width);
@@ -931,12 +933,17 @@ body.refkey-visible .refkey-chip { display: block; }
 .latex-list.description { display: grid; grid-template-columns: max-content 1fr; column-gap: 0.6em; padding-left: 0; }
 .latex-list.description .item-marker { font-weight: 600; }
 .latex-list .item-body { margin-bottom: 0.12em; }
+/* Render-warnings panel. Lives *outside* the white paper box so any
+   list of unmapped packages / skipped macros doesn't masquerade as
+   trailing whitespace inside the paper. Kept in its familiar amber
+   box so it stays glanceable as a "things you should know" footer. */
 details.warnings {
   max-width: 720px;
-  margin: 28px auto 0;
+  margin: 0 auto 24px;
   padding: 6px 12px;
   background: #fff5e6;
   border: 1px solid #f0c98a;
+  border-radius: 3px;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: 13px;
 }
@@ -1134,7 +1141,8 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
    on the LEFT instead of the right, so any empty space lives away from
    the cards — the reading field reads as continuous with the margin
    strip rather than floating in the middle of the viewport. */
-body.margin-mode.margin-has-cards #page-shell {
+body.margin-mode.margin-has-cards #page-shell,
+body.margin-mode.margin-has-cards details.warnings {
   margin-left: auto;
   margin-right: min(540px, 36vw);
 }
