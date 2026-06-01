@@ -627,6 +627,42 @@
     return true;
   }
 
+  // Source-jump trigger picked by the user via [viewer.source-jump]
+  // trigger in config.toml. The daemon injects the choice as
+  // `window.__mpConfig.sourceJumpTrigger`; we default to `cmd-click`
+  // when the config block isn't present (older daemons, render-only
+  // pipeline, etc.).
+  function sourceJumpTrigger() {
+    var cfg = window.__mpConfig && window.__mpConfig.sourceJumpTrigger;
+    return cfg || 'cmd-click';
+  }
+
+  // Whether the current event matches the configured reveal-source
+  // trigger. `eventType` is "click" or "dblclick" depending on which
+  // listener invoked it — the four trigger options split between those
+  // two event types.
+  function matchesRevealTrigger(e, eventType) {
+    var t = sourceJumpTrigger();
+    if (eventType === 'dblclick') {
+      return t === 'double-click';
+    }
+    // For click-based triggers, require the matching modifier and the
+    // absence of the others so the user doesn't double-fire (e.g.
+    // Shift+Cmd+click won't trigger when "cmd-click" is the chosen
+    // gesture — that's likely a text-selection chord).
+    if (eventType !== 'click') return false;
+    switch (t) {
+      case 'cmd-click':
+        return (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
+      case 'ctrl-click':
+        return e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+      case 'alt-click':
+        return e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+      default:
+        return false;
+    }
+  }
+
   async function postRevealSource(info) {
     if (!info) return;
     try {

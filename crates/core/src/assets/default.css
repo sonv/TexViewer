@@ -57,13 +57,17 @@
      font-size; the exact value is fine-tuned to match the rendered
      header so absolute-positioned siblings line up flush. */
   --topbar-height: 60px;
+  /* Body font size for the rendered paper. Default 18px; the daemon
+     overrides this from `[viewer] font-size = N` in config.toml by
+     re-declaring `--body-font-size` in a trailing `<style>` block. */
+  --body-font-size: 18px;
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 18px/1.42 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font: var(--body-font-size)/1.42 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
 }
 .topbar {
   display: flex;

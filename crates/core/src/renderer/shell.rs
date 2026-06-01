@@ -50,6 +50,21 @@ pub(super) fn wrap_in_shell(
     let engine_css = engine.extra_css();
     let warnings_html = warnings_panel(preamble);
     let css = if opts.inline_css { DEFAULT_CSS } else { "" };
+    // Config-driven overrides emitted after the bundled CSS so they win
+    // by source order, and as a separate `<script>` so client JS can read
+    // the values at init without round-tripping through localStorage.
+    let config_css = format!(
+        ":root {{ --body-font-size: {}px; }}",
+        opts.viewer_config.font_size,
+    );
+    // The trigger string comes from a finite enum (cmd-click / ctrl-click
+    // / alt-click / double-click) with no JSON-special characters, so a
+    // plain quote-wrap is sufficient and avoids dragging in an escape
+    // helper from another module.
+    let config_js = format!(
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}" }};"#,
+        trigger = opts.viewer_config.source_jump_trigger.as_str(),
+    );
 
     let mut out = String::new();
     // The topbar's bold short-title slot is filled from the optional
@@ -90,7 +105,8 @@ pub(super) fn wrap_in_shell(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{head_title}</title>
-<style>{css}{engine_css}</style>
+<style>{css}{engine_css}{config_css}</style>
+<script>{config_js}</script>
 {engine_head}
 </head>
 <body class="page-mode-a4">

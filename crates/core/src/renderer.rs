@@ -61,6 +61,10 @@ pub struct HtmlOptions {
     /// global / project / `--macros` discovery; the static `render`
     /// pipeline leaves it empty.
     pub macro_overrides: Vec<PathBuf>,
+    /// User-resolved viewer preferences (font-size, source-jump trigger,
+    /// …). Loaded from the TOML config cascade by the daemon; static
+    /// `render` callers get the built-in defaults.
+    pub viewer_config: crate::config::ResolvedViewerConfig,
 }
 
 impl Default for HtmlOptions {
@@ -71,6 +75,7 @@ impl Default for HtmlOptions {
             source_path: None,
             inline_css: true,
             macro_overrides: Vec::new(),
+            viewer_config: crate::config::ResolvedConfig::default().viewer,
         }
     }
 }
@@ -3045,7 +3050,7 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '52'"));
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '53'"));
         assert!(out.html.contains("margin-card-grip"));
         assert!(out.html.contains("initMarginDnd"));
         assert!(out.html.contains("decorateRefkeyChips"));

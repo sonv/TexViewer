@@ -41,6 +41,11 @@ enum Cmd {
         /// project-local `.mathpreview-macros.tex`.
         #[arg(long = "macros", value_name = "FILE")]
         macros: Vec<PathBuf>,
+        /// Extra TOML config file(s), appended to the cascade after the
+        /// global `~/.config/mathpreview/config.toml` and the project-
+        /// local `.mathpreview.toml`.
+        #[arg(long = "config", value_name = "FILE")]
+        config: Vec<PathBuf>,
     },
     /// Print the extracted preamble (macros + packages) MathJax will see —
     /// mirrors `latex-preview.nvim`'s debug command.
@@ -74,6 +79,11 @@ enum Cmd {
         /// stack overrides; later flags win on name collision.
         #[arg(long = "macros", value_name = "FILE")]
         macros: Vec<PathBuf>,
+        /// Extra TOML config file(s), appended to the cascade after the
+        /// global `~/.config/mathpreview/config.toml` and the project-
+        /// local `.mathpreview.toml`. Later files win per field.
+        #[arg(long = "config", value_name = "FILE")]
+        config: Vec<PathBuf>,
     },
 }
 
@@ -87,10 +97,12 @@ fn main() -> Result<()> {
             mathjax_url,
             editor,
             macros: extra_macros,
+            config: extra_configs,
         } => {
             // serve-mode default: use the vendored bundle so the page works offline.
             // Render-mode keeps the CDN default since its output is a standalone file.
             let url = mathjax_url.unwrap_or_else(|| "/vendor/mathjax/tex-svg.js".to_string());
+            let input_dir = input.parent().unwrap_or_else(|| std::path::Path::new("."));
             // Resolve the macro-override cascade once at startup. The
             // discovery walks upward from the input file looking for a
             // project-local `.mathpreview-macros.tex`, then prepends the
@@ -98,10 +110,25 @@ fn main() -> Result<()> {
             // flags. Result is in cascade order (lowest → highest
             // priority); HtmlOptions hands it to the extractor on every
             // render.
-            let macro_overrides = mathpreview_core::discover_macro_overrides(
-                input.parent().unwrap_or_else(|| std::path::Path::new(".")),
-                &extra_macros,
-            );
+            let macro_overrides =
+                mathpreview_core::discover_macro_overrides(input_dir, &extra_macros);
+            // Same cascade for TOML config: global → project → --config.
+            let config_files =
+                mathpreview_core::discover_config_files(input_dir, &extra_configs);
+            let (viewer_config, applied_configs) =
+                match mathpreview_core::load_and_merge_config(&config_files) {
+                    Ok((resolved, applied)) => (resolved.viewer, applied),
+                    Err(e) => {
+                        eprintln!("mathpreview: config load failed, using defaults — {e:#}");
+                        (
+                            mathpreview_core::ResolvedConfig::default().viewer,
+                            Vec::new(),
+                        )
+                    }
+                };
+            for p in &applied_configs {
+                eprintln!("mathpreview: applied config {}", p.display());
+            }
             let opts = HtmlOptions {
                 title: input
                     .file_stem()
@@ -110,6 +137,7 @@ fn main() -> Result<()> {
                     .to_string(),
                 engine: Engine::MathJax(MathJaxEngine::new(url)),
                 macro_overrides,
+                viewer_config,
                 ..HtmlOptions::default()
             };
             if let Ok(ms) = std::env::var("MATHPREVIEW_RESTART_DELAY_MS") {
@@ -126,6 +154,7 @@ fn main() -> Result<()> {
             mathjax_url,
             title,
             macros: extra_macros,
+            config: extra_configs,
         } => {
             let title = title.unwrap_or_else(|| {
                 input
@@ -134,13 +163,18 @@ fn main() -> Result<()> {
                     .unwrap_or("mathpreview")
                     .to_string()
             });
-            let macro_overrides = mathpreview_core::discover_macro_overrides(
-                input.parent().unwrap_or_else(|| std::path::Path::new(".")),
-                &extra_macros,
-            );
+            let input_dir = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let macro_overrides =
+                mathpreview_core::discover_macro_overrides(input_dir, &extra_macros);
+            let viewer_config = mathpreview_core::load_and_merge_config(
+                &mathpreview_core::discover_config_files(input_dir, &extra_configs),
+            )
+            .map(|(r, _)| r.viewer)
+            .unwrap_or_else(|_| mathpreview_core::ResolvedConfig::default().viewer);
             let mut opts = HtmlOptions {
                 title,
                 macro_overrides,
+                viewer_config,
                 ..HtmlOptions::default()
             };
             if let Some(url) = mathjax_url {

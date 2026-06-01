@@ -150,6 +150,13 @@
     clearSelectedMath();
   });
   document.addEventListener('dblclick', function(e) {
+    // Double-click drives reveal-source (editor spawn) when the user
+    // chose "double-click" in config; otherwise it stays on the
+    // polling-based `/jump` path so nvim-plugin users keep working.
+    if (matchesRevealTrigger(e, 'dblclick')) {
+      requestRevealSource(e);
+      return;
+    }
     requestSourceJump(e);
   });
   document.addEventListener('mouseover', function(e) {
@@ -252,16 +259,17 @@
       }
       return;
     }
-    // Cmd-click (macOS) / Ctrl-click (Linux/Windows) → spawn the
-    // configured editor (`--editor` template) at the source line.
-    // Mirrors the "reveal in editor" gesture every IDE-style PDF
-    // viewer offers. Alt-click stays on the polling-based `/jump`
-    // path for users who run the nvim plugin instead of letting the
-    // daemon spawn their editor.
-    if ((e.metaKey || e.ctrlKey) && requestRevealSource(e)) {
+    // Reveal-source (editor spawn) fires on whichever click gesture
+    // the user picked in `[viewer.source-jump] trigger = "..."`. The
+    // default is "cmd-click" (which also matches Ctrl-click on Linux).
+    if (matchesRevealTrigger(e, 'click') && requestRevealSource(e)) {
       return;
     }
-    if (e.altKey && requestSourceJump(e)) {
+    // Alt-click keeps driving the polling-based `/jump` path for users
+    // running the nvim plugin instead of letting the daemon spawn their
+    // editor — unless alt-click is itself the configured reveal trigger,
+    // in which case the branch above already handled it.
+    if (e.altKey && sourceJumpTrigger() !== 'alt-click' && requestSourceJump(e)) {
       return;
     }
     // In margin mode, plain click on a \ref or \cite pins it to the

@@ -504,6 +504,41 @@ Prints the resolved root, included files, MathJax extension list, the full
 macro table (name, arity, body, source file), and any warnings about
 macros that were filtered out.
 
+### Configure the viewer
+
+User preferences live in TOML — same discovery cascade as the macro
+overrides, applied per field with last-wins semantics:
+
+1. Built-in defaults
+2. `~/.config/mathpreview/config.toml` (or `$XDG_CONFIG_HOME/...`)
+3. `.mathpreview.toml` walking up from the input file
+4. `--config <file>` on `serve` or `render` (repeatable)
+
+```toml
+# ~/.config/mathpreview/config.toml — applies to every paper
+[viewer]
+font-size = 18                  # body text size in CSS pixels
+
+[viewer.source-jump]
+# Which click gesture sends `POST /reveal-source` to spawn `--editor`
+# at the source line. "cmd-click" also matches Ctrl-click on Linux.
+trigger = "cmd-click"           # | "ctrl-click" | "alt-click" | "double-click"
+```
+
+Drop a `.mathpreview.toml` in the project root to override per-paper:
+
+```toml
+# .mathpreview.toml — committed alongside the source
+[viewer]
+font-size = 20
+
+[viewer.source-jump]
+trigger = "double-click"
+```
+
+Unknown keys are an error so typos surface immediately instead of
+silently doing nothing.
+
 ### Override macros for the viewer
 
 Some macro definitions don't translate cleanly to MathJax — typically

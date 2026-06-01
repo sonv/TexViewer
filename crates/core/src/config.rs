@@ -1,0 +1,321 @@
+//! User preferences loaded from TOML.
+//!
+//! Discovery order (last layer wins per field):
+//!   1. Built-in defaults (the `Default` impls below)
+//!   2. `~/.config/mathpreview/config.toml` (or `$XDG_CONFIG_HOME/...`)
+//!   3. `.mathpreview.toml` walking up from the document root
+//!   4. `--config <file>` CLI flag
+//!
+//! All fields are `Option<T>` so that an unset value at a layer falls
+//! through to the previous layer cleanly. Apply the merged config with
+//! [`Config::with_defaults`] to fill missing fields with the documented
+//! defaults; the result has `non-Option` accessors that always answer.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+pub const PROJECT_CONFIG_FILENAME: &str = ".mathpreview.toml";
+
+/// Top-level config object. Every field is optional at the TOML layer so
+/// the cascade can do "later wins" merging without conflating "unset" and
+/// "set to default". The `viewer` table is also optional so an empty
+/// config file is valid.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Config {
+    #[serde(default)]
+    pub viewer: ViewerConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ViewerConfig {
+    /// Body font size in CSS pixels. Default 18.
+    pub font_size: Option<u32>,
+    #[serde(default)]
+    pub source_jump: SourceJumpConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SourceJumpConfig {
+    /// Which click gesture in the viewer should ask the daemon to open
+    /// the editor at the source line. Default `cmd-click` (which also
+    /// matches Ctrl-click on Linux — the JS handler accepts either Meta
+    /// or Ctrl when this is set).
+    pub trigger: Option<SourceJumpTrigger>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceJumpTrigger {
+    CmdClick,
+    CtrlClick,
+    AltClick,
+    DoubleClick,
+}
+
+impl SourceJumpTrigger {
+    /// String tag the client JS reads. Kept as a separate method (instead
+    /// of leaning on `Display`) so the wire format is explicit.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceJumpTrigger::CmdClick => "cmd-click",
+            SourceJumpTrigger::CtrlClick => "ctrl-click",
+            SourceJumpTrigger::AltClick => "alt-click",
+            SourceJumpTrigger::DoubleClick => "double-click",
+        }
+    }
+}
+
+/// Resolved config — every field has a value (either user-supplied or
+/// the built-in default). This is the shape the renderer consumes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedConfig {
+    pub viewer: ResolvedViewerConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedViewerConfig {
+    pub font_size: u32,
+    pub source_jump_trigger: SourceJumpTrigger,
+}
+
+impl Default for ResolvedConfig {
+    fn default() -> Self {
+        Self {
+            viewer: ResolvedViewerConfig {
+                font_size: 18,
+                source_jump_trigger: SourceJumpTrigger::CmdClick,
+            },
+        }
+    }
+}
+
+impl Config {
+    /// Merge `other` into `self`. Each `Option` field from `other`
+    /// overwrites the corresponding field in `self` if it is `Some`,
+    /// otherwise the existing value is kept. Nested `*Config` structs
+    /// merge recursively. Standard config-cascade semantics: the call
+    /// order is `lower.merge(higher)`, so later layers win per field.
+    pub fn merge(&mut self, other: Config) {
+        self.viewer.merge(other.viewer);
+    }
+
+    /// Collapse this partial config into the resolved shape used by the
+    /// renderer, filling any unset field with its built-in default.
+    pub fn resolve(self) -> ResolvedConfig {
+        let defaults = ResolvedConfig::default();
+        ResolvedConfig {
+            viewer: ResolvedViewerConfig {
+                font_size: self.viewer.font_size.unwrap_or(defaults.viewer.font_size),
+                source_jump_trigger: self
+                    .viewer
+                    .source_jump
+                    .trigger
+                    .unwrap_or(defaults.viewer.source_jump_trigger),
+            },
+        }
+    }
+
+    /// Parse a TOML string into a `Config`. Returns an error with the
+    /// source path attached for context if the file is malformed.
+    pub fn parse(source: &str, label: &Path) -> Result<Self> {
+        toml::from_str::<Config>(source)
+            .with_context(|| format!("parsing config file {}", label.display()))
+    }
+
+    /// Read and parse a single config file. Returns `Ok(None)` if the
+    /// file doesn't exist (the cascade tolerates absent layers); returns
+    /// an error only if the file *exists* but cannot be parsed.
+    pub fn load_optional(path: &Path) -> Result<Option<Self>> {
+        match std::fs::read_to_string(path) {
+            Ok(src) => Self::parse(&src, path).map(Some),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(anyhow::Error::new(e)
+                .context(format!("reading config file {}", path.display()))),
+        }
+    }
+}
+
+impl ViewerConfig {
+    fn merge(&mut self, other: ViewerConfig) {
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
+        }
+        self.source_jump.merge(other.source_jump);
+    }
+}
+
+impl SourceJumpConfig {
+    fn merge(&mut self, other: SourceJumpConfig) {
+        if other.trigger.is_some() {
+            self.trigger = other.trigger;
+        }
+    }
+}
+
+/// Discover all config files in cascade order (lowest → highest priority).
+/// Caller passes any extra explicit paths (e.g. from a `--config` CLI
+/// flag); those land at the end so they win over both global and project.
+///
+/// Lookup order:
+///   1. `$XDG_CONFIG_HOME/mathpreview/config.toml`
+///      (or `~/.config/mathpreview/config.toml`)
+///   2. The nearest `.mathpreview.toml` walking up from `root_dir`
+///   3. Each path in `extra`, in order
+pub fn discover_config_files(root_dir: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(p) = global_config_path() {
+        if p.is_file() {
+            out.push(p);
+        }
+    }
+    if let Some(p) = find_project_config(root_dir) {
+        out.push(p);
+    }
+    out.extend(extra.iter().cloned());
+    out
+}
+
+/// Load + merge every config file in `paths` (cascade order, later
+/// wins) and resolve the result with built-in defaults. Returns the
+/// resolved config plus the list of files that were actually applied
+/// (useful for surfacing to the user via `debug` output).
+pub fn load_and_merge(paths: &[PathBuf]) -> Result<(ResolvedConfig, Vec<PathBuf>)> {
+    let mut merged = Config::default();
+    let mut applied = Vec::new();
+    for p in paths {
+        if let Some(layer) = Config::load_optional(p)? {
+            merged.merge(layer);
+            applied.push(p.clone());
+        }
+    }
+    Ok((merged.resolve(), applied))
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("mathpreview").join("config.toml"))
+}
+
+fn find_project_config(start: &Path) -> Option<PathBuf> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        let candidate = dir.join(PROJECT_CONFIG_FILENAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_config_resolves_to_defaults() {
+        let cfg = Config::default().resolve();
+        assert_eq!(cfg, ResolvedConfig::default());
+        assert_eq!(cfg.viewer.font_size, 18);
+        assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
+    }
+
+    #[test]
+    fn parses_font_size_and_trigger() {
+        let src = r#"
+[viewer]
+font-size = 22
+
+[viewer.source-jump]
+trigger = "double-click"
+"#;
+        let cfg = Config::parse(src, Path::new("test.toml")).unwrap();
+        let resolved = cfg.resolve();
+        assert_eq!(resolved.viewer.font_size, 22);
+        assert_eq!(
+            resolved.viewer.source_jump_trigger,
+            SourceJumpTrigger::DoubleClick
+        );
+    }
+
+    #[test]
+    fn merge_later_wins_per_field() {
+        let mut lower = Config::parse(
+            r#"[viewer]
+font-size = 16
+[viewer.source-jump]
+trigger = "alt-click"
+"#,
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let higher = Config::parse(
+            r#"[viewer]
+font-size = 20
+"#, // note: no source-jump section
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        lower.merge(higher);
+        let resolved = lower.resolve();
+        // higher overrode font-size:
+        assert_eq!(resolved.viewer.font_size, 20);
+        // higher omitted source-jump, so lower's value survived:
+        assert_eq!(
+            resolved.viewer.source_jump_trigger,
+            SourceJumpTrigger::AltClick,
+        );
+    }
+
+    #[test]
+    fn unknown_field_errors() {
+        let res = Config::parse(
+            r#"[viewer]
+font-size = 18
+weird-extra-field = "oops"
+"#,
+            Path::new("test.toml"),
+        );
+        assert!(res.is_err(), "unknown field should be a parse error");
+    }
+
+    #[test]
+    fn missing_file_yields_none() {
+        let res = Config::load_optional(Path::new("/definitely/does/not/exist.toml")).unwrap();
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn discover_finds_project_config_in_ancestor() {
+        let tmp = std::env::temp_dir().join(format!("mp-config-discover-{}", std::process::id()));
+        let nested = tmp.join("chapters");
+        std::fs::create_dir_all(&nested).unwrap();
+        let project_file = tmp.join(PROJECT_CONFIG_FILENAME);
+        std::fs::write(
+            &project_file,
+            "[viewer]\nfont-size = 19\n",
+        )
+        .unwrap();
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_home = std::env::var_os("HOME");
+        let isolated = tmp.join("fake-home");
+        std::fs::create_dir_all(&isolated).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &isolated);
+        std::env::set_var("HOME", &isolated);
+        let found = discover_config_files(&nested, &[]);
+        if let Some(v) = prev_xdg { std::env::set_var("XDG_CONFIG_HOME", v); } else { std::env::remove_var("XDG_CONFIG_HOME"); }
+        if let Some(v) = prev_home { std::env::set_var("HOME", v); } else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(
+            found.iter().any(|p| p.ends_with(PROJECT_CONFIG_FILENAME)),
+            "project config not discovered from nested dir: {found:?}",
+        );
+    }
+}

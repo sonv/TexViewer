@@ -5,6 +5,7 @@
 
 pub mod ast;
 pub mod bibtex;
+pub mod config;
 pub mod engines;
 pub mod macros;
 pub mod numbering;
@@ -20,6 +21,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 pub use ast::{Node, NodeKind, Pos, Role, Span};
+pub use config::{
+    discover_config_files, load_and_merge as load_and_merge_config, Config, ResolvedConfig,
+    ResolvedViewerConfig, SourceJumpTrigger,
+};
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{
     discover_macro_overrides, ExtractedMacro, ExtractedPreamble, MacroOverride,

@@ -17,6 +17,31 @@ summary.
 
 Nothing yet.
 
+## [0.1.11] — 2026-06-01
+
+### Added
+
+- **TOML config cascade.** Personal preferences in
+  `~/.config/mathpreview/config.toml`; per-project overrides in
+  `.mathpreview.toml` (walks up from the input file); one-off
+  `--config <file>` CLI flag on both `serve` and `render`. Later
+  layers win per field. First two settings flowing through:
+  - `[viewer] font-size = N` — body font size in CSS pixels (default
+    18). Overrides the `--body-font-size` variable in the rendered
+    page.
+  - `[viewer.source-jump] trigger = "..."` — `"cmd-click"` |
+    `"ctrl-click"` | `"alt-click"` | `"double-click"`. Picks which
+    gesture sends a `POST /reveal-source` to spawn the configured
+    editor. Default `"cmd-click"` (which also matches Ctrl-click on
+    Linux, the previous hardcoded behaviour).
+- **New core API:** `Config`, `ResolvedConfig`, `SourceJumpTrigger`,
+  `discover_config_files`, `load_and_merge_config`.
+
+### Changed
+
+- **WS protocol bumped to v53** so v0.1.10 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.10] — 2026-05-31
 
 ### Added
@@ -372,7 +397,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/sonv/TexViewer/releases/tag/v0.1.11
 [0.1.10]: https://github.com/sonv/TexViewer/releases/tag/v0.1.10
 [0.1.9]: https://github.com/sonv/TexViewer/releases/tag/v0.1.9
 [0.1.8]: https://github.com/sonv/TexViewer/releases/tag/v0.1.8
