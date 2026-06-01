@@ -149,6 +149,21 @@
   document.addEventListener('mousedown', function(e) {
     clearSelectedMath();
   });
+  // Macros dialog wiring: file picker + scope radio change.
+  document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'macros-dialog-file') {
+      onMacrosFilePicked(e);
+      return;
+    }
+    if (e.target && e.target.name === 'scope') {
+      syncMacrosCustomPathEnabled();
+      return;
+    }
+    if (e.target && e.target.name === 'config-scope') {
+      syncConfigCustomPathEnabled();
+      return;
+    }
+  });
   document.addEventListener('dblclick', function(e) {
     // Double-click drives reveal-source (editor spawn) when the user
     // chose "double-click" in config; otherwise it stays on the
@@ -253,6 +268,35 @@
     if (macrosSave) {
       e.preventDefault();
       submitMacrosDialog();
+      return;
+    }
+    var macrosLoad = e.target.closest('#macros-dialog-loadbtn');
+    if (macrosLoad) {
+      e.preventDefault();
+      loadMacrosDialogFile();
+      return;
+    }
+    var macrosUse = e.target.closest('#macros-dialog-usebtn');
+    if (macrosUse) {
+      e.preventDefault();
+      registerMacrosOverride();
+      return;
+    }
+    var configToggle = e.target.closest('#config-toggle');
+    if (configToggle) {
+      openConfigDialog();
+      return;
+    }
+    var configCancel = e.target.closest('#config-dialog-cancel');
+    if (configCancel) {
+      e.preventDefault();
+      closeConfigDialog();
+      return;
+    }
+    var configSave = e.target.closest('#config-dialog-save');
+    if (configSave) {
+      e.preventDefault();
+      submitConfigDialog();
       return;
     }
     var marginToggle = e.target.closest('#margin-toggle');

@@ -34,8 +34,50 @@ pub struct Config {
 pub struct ViewerConfig {
     /// Body font size in CSS pixels. Default 18.
     pub font_size: Option<u32>,
+    /// Initial page mode for new clients. localStorage still wins once
+    /// the user toggles in-browser; this sets the *default* for a
+    /// fresh tab. `"a4"` or `"dynamic"`.
+    pub default_page_mode: Option<PageMode>,
+    /// Initial theme for new clients. Same localStorage-wins semantics
+    /// as `default-page-mode`. `"system"` follows the OS
+    /// `prefers-color-scheme`.
+    pub default_theme: Option<Theme>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PageMode {
+    A4,
+    Dynamic,
+}
+
+impl PageMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PageMode::A4 => "a4",
+            PageMode::Dynamic => "dynamic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Theme {
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,6 +122,8 @@ pub struct ResolvedConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedViewerConfig {
     pub font_size: u32,
+    pub default_page_mode: PageMode,
+    pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
 }
 
@@ -88,6 +132,8 @@ impl Default for ResolvedConfig {
         Self {
             viewer: ResolvedViewerConfig {
                 font_size: 18,
+                default_page_mode: PageMode::A4,
+                default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
             },
         }
@@ -111,6 +157,14 @@ impl Config {
         ResolvedConfig {
             viewer: ResolvedViewerConfig {
                 font_size: self.viewer.font_size.unwrap_or(defaults.viewer.font_size),
+                default_page_mode: self
+                    .viewer
+                    .default_page_mode
+                    .unwrap_or(defaults.viewer.default_page_mode),
+                default_theme: self
+                    .viewer
+                    .default_theme
+                    .unwrap_or(defaults.viewer.default_theme),
                 source_jump_trigger: self
                     .viewer
                     .source_jump
@@ -145,6 +199,12 @@ impl ViewerConfig {
         if other.font_size.is_some() {
             self.font_size = other.font_size;
         }
+        if other.default_page_mode.is_some() {
+            self.default_page_mode = other.default_page_mode;
+        }
+        if other.default_theme.is_some() {
+            self.default_theme = other.default_theme;
+        }
         self.source_jump.merge(other.source_jump);
     }
 }
@@ -165,17 +225,22 @@ impl SourceJumpConfig {
 ///   1. `$XDG_CONFIG_HOME/mathpreview/config.toml`
 ///      (or `~/.config/mathpreview/config.toml`)
 ///   2. The nearest `.mathpreview.toml` walking up from `root_dir`
+///      — falling back to `root_dir/.mathpreview.toml` if no ancestor
+///      file exists yet
 ///   3. Each path in `extra`, in order
+///
+/// Non-existent paths are still returned so the daemon picks them up
+/// the moment they're created (by `POST /config/set` or by the user's
+/// editor). `load_and_merge` silently skips missing files.
 pub fn discover_config_files(root_dir: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(p) = global_config_path() {
-        if p.is_file() {
-            out.push(p);
-        }
-    }
-    if let Some(p) = find_project_config(root_dir) {
         out.push(p);
     }
+    out.push(
+        find_project_config(root_dir)
+            .unwrap_or_else(|| root_dir.join(PROJECT_CONFIG_FILENAME)),
+    );
     out.extend(extra.iter().cloned());
     out
 }

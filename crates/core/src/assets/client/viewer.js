@@ -1244,12 +1244,94 @@
     var dlg = macrosDialogEl();
     if (!dlg || typeof dlg.showModal !== 'function') return;
     setMacrosDialogFeedback('', false);
+    syncMacrosCustomPathEnabled();
     // Don't clobber unsubmitted text if the user reopens after a cancel.
     dlg.showModal();
     setTimeout(function() {
       var input = macrosDialogInputEl();
       if (input) input.focus();
     }, 0);
+  }
+
+  // Custom-path input is only sensible when the "custom" scope radio is
+  // selected; otherwise grey it out so the user knows their typed path
+  // won't be used.
+  function syncMacrosCustomPathEnabled() {
+    var pathInput = document.getElementById('macros-dialog-custom-path');
+    if (!pathInput) return;
+    var radio = document.querySelector('input[name="scope"]:checked');
+    var isCustom = radio && radio.value === 'custom';
+    pathInput.disabled = !isCustom;
+    if (isCustom) {
+      setTimeout(function() { pathInput.focus(); }, 0);
+    }
+  }
+
+  function loadMacrosDialogFile() {
+    var picker = document.getElementById('macros-dialog-file');
+    if (picker) picker.click();
+  }
+
+  // Hand the daemon a file path to *use* as a live override layer
+  // without copying its contents. The browser file picker only gives
+  // us the file name (security), not an absolute path, so this works
+  // off the custom-path text input — the user types where the file
+  // actually lives on their filesystem.
+  async function registerMacrosOverride() {
+    var pathInput = document.getElementById('macros-dialog-custom-path');
+    var path = pathInput && (pathInput.value || '').trim();
+    if (!path) {
+      setMacrosDialogFeedback(
+        'Type the file\'s filesystem path in the "Custom path" field, then click "Use as override".',
+        false
+      );
+      return;
+    }
+    setMacrosDialogFeedback('Registering…', true);
+    try {
+      var res = await fetch('/macros/register', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: path }),
+      });
+      var body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        setMacrosDialogFeedback((body && body.error) || 'register failed', false);
+        return;
+      }
+      var file = body && body.file ? body.file : path;
+      setStatus('live', '● using ' + file + ' as override');
+      setMacrosDialogFeedback('Registered ' + file, true);
+    } catch (e) {
+      setMacrosDialogFeedback(String(e && e.message || e), false);
+    }
+  }
+
+  async function onMacrosFilePicked(e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      var text = await file.text();
+      var input = macrosDialogInputEl();
+      if (input) {
+        // Append rather than replace so the user doesn't lose what
+        // they've typed; gives them control.
+        input.value = input.value
+          ? input.value.replace(/\s+$/, '') + '\n' + text
+          : text;
+      }
+      // Pre-populate the custom-path input so "Save" with scope=custom
+      // writes back to the same file they just loaded — common
+      // workflow when editing an existing override.
+      var pathInput = document.getElementById('macros-dialog-custom-path');
+      if (pathInput && file.name) pathInput.value = file.name;
+      setMacrosDialogFeedback('Loaded ' + file.name, true);
+    } catch (err) {
+      setMacrosDialogFeedback('Read failed: ' + (err && err.message || err), false);
+    }
+    e.target.value = '';
   }
 
   function closeMacrosDialog() {
@@ -1268,13 +1350,23 @@
     }
     var scopeInput = document.querySelector('input[name="scope"]:checked');
     var scope = scopeInput ? scopeInput.value : 'project';
+    var payload = { scope: scope, line: line };
+    if (scope === 'custom') {
+      var pathInput = document.getElementById('macros-dialog-custom-path');
+      var customPath = pathInput && (pathInput.value || '').trim();
+      if (!customPath) {
+        setMacrosDialogFeedback('Custom path is required for scope=custom.', false);
+        return;
+      }
+      payload.path = customPath;
+    }
     setMacrosDialogFeedback('Saving…', true);
     try {
       var res = await fetch('/macros/append', {
         method: 'POST',
         cache: 'no-store',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scope: scope, line: line }),
+        body: JSON.stringify(payload),
       });
       var body = null;
       try { body = await res.json(); } catch (e) {}
@@ -1289,6 +1381,109 @@
       closeMacrosDialog();
     } catch (e) {
       setMacrosDialogFeedback(String(e && e.message || e), false);
+    }
+  }
+
+  function configDialogEl() { return document.getElementById('config-dialog'); }
+  function configFeedbackEl() { return document.getElementById('config-dialog-feedback'); }
+
+  function setConfigFeedback(msg, ok) {
+    var fb = configFeedbackEl();
+    if (!fb) return;
+    fb.textContent = msg || '';
+    fb.classList.toggle('ok', !!ok);
+  }
+
+  // Populate the dialog with the values currently in effect for this
+  // session — config defaults from `__mpConfig` for the values we
+  // expose, and the computed CSS body font for `font-size`. Falls
+  // back to the documented defaults when a value isn't determinable.
+  function prefillConfigDialog() {
+    var cfg = window.__mpConfig || {};
+    var fontSize = parseInt(
+      getComputedStyle(document.documentElement).getPropertyValue('--body-font-size'),
+      10
+    );
+    if (!isFinite(fontSize) || fontSize <= 0) fontSize = 18;
+    var fs = document.getElementById('config-font-size');
+    if (fs) fs.value = String(fontSize);
+    var trig = document.getElementById('config-source-jump-trigger');
+    if (trig) trig.value = cfg.sourceJumpTrigger || 'cmd-click';
+    var mode = document.getElementById('config-default-page-mode');
+    if (mode) mode.value = cfg.defaultPageMode || 'a4';
+    var theme = document.getElementById('config-default-theme');
+    if (theme) theme.value = cfg.defaultTheme || 'system';
+  }
+
+  function syncConfigCustomPathEnabled() {
+    var pathInput = document.getElementById('config-dialog-custom-path');
+    if (!pathInput) return;
+    var radio = document.querySelector('input[name="config-scope"]:checked');
+    var isCustom = radio && radio.value === 'custom';
+    pathInput.disabled = !isCustom;
+    if (isCustom) {
+      setTimeout(function() { pathInput.focus(); }, 0);
+    }
+  }
+
+  function openConfigDialog() {
+    var dlg = configDialogEl();
+    if (!dlg || typeof dlg.showModal !== 'function') return;
+    setConfigFeedback('', false);
+    prefillConfigDialog();
+    syncConfigCustomPathEnabled();
+    dlg.showModal();
+    setTimeout(function() {
+      var fs = document.getElementById('config-font-size');
+      if (fs) fs.focus();
+    }, 0);
+  }
+
+  function closeConfigDialog() {
+    var dlg = configDialogEl();
+    if (dlg && dlg.open) dlg.close();
+  }
+
+  async function submitConfigDialog() {
+    var scopeInput = document.querySelector('input[name="config-scope"]:checked');
+    var scope = scopeInput ? scopeInput.value : 'project';
+    var payload = { scope: scope, values: {} };
+    if (scope === 'custom') {
+      var pathInput = document.getElementById('config-dialog-custom-path');
+      var customPath = pathInput && (pathInput.value || '').trim();
+      if (!customPath) {
+        setConfigFeedback('Custom path is required for scope=custom.', false);
+        return;
+      }
+      payload.path = customPath;
+    }
+    var fontSize = parseInt(document.getElementById('config-font-size').value, 10);
+    if (isFinite(fontSize) && fontSize > 0) payload.values['viewer.font-size'] = fontSize;
+    var trig = document.getElementById('config-source-jump-trigger').value;
+    if (trig) payload.values['viewer.source-jump.trigger'] = trig;
+    var mode = document.getElementById('config-default-page-mode').value;
+    if (mode) payload.values['viewer.default-page-mode'] = mode;
+    var theme = document.getElementById('config-default-theme').value;
+    if (theme) payload.values['viewer.default-theme'] = theme;
+    setConfigFeedback('Saving…', true);
+    try {
+      var res = await fetch('/config/set', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      var body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        setConfigFeedback((body && body.error) || 'save failed', false);
+        return;
+      }
+      var file = body && body.file ? body.file : '(file)';
+      setStatus('live', '● wrote config → ' + file);
+      closeConfigDialog();
+    } catch (e) {
+      setConfigFeedback(String(e && e.message || e), false);
     }
   }
 

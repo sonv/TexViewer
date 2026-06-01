@@ -154,22 +154,26 @@ pub fn validate_override_line(line: &str) -> Result<String> {
 /// Lookup order:
 ///   1. `$XDG_CONFIG_HOME/mathpreview/macros.tex` (falls back to
 ///      `~/.config/mathpreview/macros.tex` if `XDG_CONFIG_HOME` unset).
-///   2. The nearest `.mathpreview-macros.tex` walking up from `root_dir`.
+///   2. The nearest `.mathpreview-macros.tex` walking up from `root_dir`
+///      — falling back to `root_dir/.mathpreview-macros.tex` if no
+///      ancestor file exists yet.
 ///   3. Each path in `extra`, in order.
 ///
-/// Non-existent paths are still returned — `extract_preamble_with_overrides`
-/// (via `finish_render`) tolerates missing files so callers can blindly
-/// pass the result without stat-checking each entry.
+/// Non-existent paths are **still returned** so the daemon can wire its
+/// file watcher to them: a `.mathpreview-macros.tex` you haven't
+/// created yet will be picked up live the moment you (or the macros
+/// dialog) writes to it. The actual reader (`finish_render`,
+/// `extract_preamble_with_overrides` callers, `load_override_layers`
+/// in the daemon) silently skips missing files.
 pub fn discover_macro_overrides(root_dir: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(p) = global_macros_path() {
-        if p.is_file() {
-            out.push(p);
-        }
-    }
-    if let Some(p) = find_project_macros(root_dir) {
         out.push(p);
     }
+    out.push(
+        find_project_macros(root_dir)
+            .unwrap_or_else(|| root_dir.join(PROJECT_MACROS_FILENAME)),
+    );
     out.extend(extra.iter().cloned());
     out
 }

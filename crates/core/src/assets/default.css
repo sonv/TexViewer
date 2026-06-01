@@ -132,6 +132,7 @@ body.topbar-hidden .topbar { display: none; }
 .refkey-toggle,
 .lineno-toggle,
 .macros-toggle,
+.config-toggle,
 .margin-toggle,
 .theme-toggle,
 .server-restart,
@@ -151,6 +152,7 @@ body.topbar-hidden .topbar { display: none; }
 .refkey-toggle:hover,
 .lineno-toggle:hover,
 .macros-toggle:hover,
+.config-toggle:hover,
 .margin-toggle:hover,
 .theme-toggle:hover,
 .server-restart:hover:not(:disabled),
@@ -1094,6 +1096,27 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
+.macros-dialog-load {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.macros-dialog-loadbtn,
+.macros-dialog-usebtn {
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 5px;
+  color: var(--fg);
+}
+.macros-dialog-loadbtn:hover,
+.macros-dialog-usebtn:hover {
+  background: var(--button-bg-hover);
+  border-color: var(--border-strong);
+}
 .macros-dialog-input {
   width: 100%;
   box-sizing: border-box;
@@ -1105,6 +1128,49 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   background: var(--bg);
   color: var(--fg);
   resize: vertical;
+}
+.macros-dialog-custom-input {
+  display: block;
+  margin-top: 4px;
+  margin-left: 22px;
+  width: calc(100% - 22px);
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.macros-dialog-custom-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Config dialog reuses the macros-dialog scaffolding but needs its own
+   grid for the label/input pairs (config has typed inputs, macros has
+   a single textarea). */
+.config-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.config-fields label {
+  display: grid;
+  grid-template-columns: 1fr 180px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.config-fields input[type="number"],
+.config-fields select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
 }
 .macros-dialog-input:focus {
   outline: 2px solid var(--accent);

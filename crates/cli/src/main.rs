@@ -146,7 +146,7 @@ fn main() -> Result<()> {
                 }
             }
             let rt = tokio::runtime::Runtime::new()?;
-            return rt.block_on(serve::run(input, host, port, opts, editor));
+            return rt.block_on(serve::run(input, host, port, opts, editor, config_files));
         }
         Cmd::Render {
             input,

@@ -62,8 +62,10 @@ pub(super) fn wrap_in_shell(
     // plain quote-wrap is sufficient and avoids dragging in an escape
     // helper from another module.
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}" }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}" }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
+        page = opts.viewer_config.default_page_mode.as_str(),
+        theme = opts.viewer_config.default_theme.as_str(),
     );
 
     let mut out = String::new();
@@ -132,6 +134,7 @@ pub(super) fn wrap_in_shell(
     <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
     <button class="lineno-toggle" id="lineno-toggle" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
     <button class="macros-toggle" id="macros-toggle" type="button" title="add a \\newcommand override for the viewer">macros</button>
+    <button class="config-toggle" id="config-toggle" type="button" title="edit viewer config (font size, source-jump trigger, default mode/theme)">config</button>
     <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
@@ -176,13 +179,19 @@ pub(super) fn wrap_in_shell(
 </aside>
 <dialog class="macros-dialog" id="macros-dialog">
   <form method="dialog" class="macros-dialog-form" id="macros-dialog-form">
-    <h2 class="macros-dialog-title">Add macro override</h2>
+    <h2 class="macros-dialog-title">Add macro overrides</h2>
     <p class="macros-dialog-hint">
-      A plain <code>\newcommand</code> line, appended to your chosen
-      file. The viewer re-renders so the override takes effect
-      immediately.
+      Paste or load one or more <code>\newcommand</code> lines, then
+      pick where to save them. The viewer re-renders so the overrides
+      take effect immediately. Or use <em>Use as override</em> to add
+      a file as a live, watched layer without copying its text.
     </p>
-    <textarea class="macros-dialog-input" id="macros-dialog-input" rows="3"
+    <div class="macros-dialog-load">
+      <button type="button" class="macros-dialog-loadbtn" id="macros-dialog-loadbtn">Load file…</button>
+      <button type="button" class="macros-dialog-usebtn" id="macros-dialog-usebtn">Use as override</button>
+      <input type="file" id="macros-dialog-file" accept=".tex,.sty,text/plain" hidden>
+    </div>
+    <textarea class="macros-dialog-input" id="macros-dialog-input" rows="6"
               spellcheck="false" autocomplete="off"
               placeholder="\newcommand{{\st}}{{\mid}}"></textarea>
     <fieldset class="macros-dialog-scope">
@@ -191,11 +200,67 @@ pub(super) fn wrap_in_shell(
         Project <code>.mathpreview-macros.tex</code></label>
       <label><input type="radio" name="scope" value="global">
         Global <code>~/.config/mathpreview/macros.tex</code></label>
+      <label><input type="radio" name="scope" value="custom">
+        Custom path
+        <input type="text" id="macros-dialog-custom-path" class="macros-dialog-custom-input"
+               placeholder="~/my-macros.tex or extras/macros.tex" disabled></label>
     </fieldset>
     <div class="macros-dialog-feedback" id="macros-dialog-feedback" aria-live="polite"></div>
     <div class="macros-dialog-actions">
       <button type="button" class="macros-dialog-cancel" id="macros-dialog-cancel">Cancel</button>
       <button type="submit" class="macros-dialog-save" id="macros-dialog-save">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="macros-dialog config-dialog" id="config-dialog">
+  <form method="dialog" class="macros-dialog-form" id="config-dialog-form">
+    <h2 class="macros-dialog-title">Viewer config</h2>
+    <p class="macros-dialog-hint">
+      Saves to a TOML file in the same cascade as the macros dialog.
+      Existing formatting and comments are preserved.
+    </p>
+    <fieldset class="macros-dialog-scope config-fields">
+      <legend>Fields</legend>
+      <label>Body font size (px)
+        <input type="number" id="config-font-size" min="10" max="40" step="1">
+      </label>
+      <label>Source-jump trigger
+        <select id="config-source-jump-trigger">
+          <option value="cmd-click">Cmd-click (Ctrl on Linux)</option>
+          <option value="ctrl-click">Ctrl-click only</option>
+          <option value="alt-click">Alt-click</option>
+          <option value="double-click">Double-click</option>
+        </select>
+      </label>
+      <label>Default page mode
+        <select id="config-default-page-mode">
+          <option value="a4">A4</option>
+          <option value="dynamic">Dynamic</option>
+        </select>
+      </label>
+      <label>Default theme
+        <select id="config-default-theme">
+          <option value="system">System (match OS)</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+    </fieldset>
+    <fieldset class="macros-dialog-scope">
+      <legend>Save to</legend>
+      <label><input type="radio" name="config-scope" value="project" checked>
+        Project <code>.mathpreview.toml</code></label>
+      <label><input type="radio" name="config-scope" value="global">
+        Global <code>~/.config/mathpreview/config.toml</code></label>
+      <label><input type="radio" name="config-scope" value="custom">
+        Custom path
+        <input type="text" id="config-dialog-custom-path" class="macros-dialog-custom-input"
+               placeholder="~/my-config.toml or extras/config.toml" disabled></label>
+    </fieldset>
+    <div class="macros-dialog-feedback" id="config-dialog-feedback" aria-live="polite"></div>
+    <div class="macros-dialog-actions">
+      <button type="button" class="macros-dialog-cancel" id="config-dialog-cancel">Cancel</button>
+      <button type="submit" class="macros-dialog-save" id="config-dialog-save">Save</button>
     </div>
   </form>
 </dialog>

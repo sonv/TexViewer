@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "54";
+const WS_PROTOCOL_VERSION: &str = "55";
 
 #[derive(Clone)]
 struct AppState {
@@ -78,13 +78,89 @@ struct AppState {
     /// `{file}` (shell-quoted), `{line}`, and `{col}` are substituted
     /// in before exec. Empty string disables the feature.
     editor_cmd: Arc<String>,
+    /// Macro override files registered at runtime via `POST /macros/register`
+    /// (the dialog's "Use as override" button). Live alongside the
+    /// startup-discovered cascade in `opts.macro_overrides` and feed
+    /// into every render's effective override list. Watched for
+    /// live-reload the same way the startup files are.
+    session_macros: Arc<RwLock<Vec<PathBuf>>>,
+    /// TOML config cascade — the discovered file paths checked again
+    /// on every render so a fresh `POST /config/set` (or an in-editor
+    /// edit to one of the files) immediately takes effect on the next
+    /// render. `opts.viewer_config` is treated as a startup snapshot;
+    /// the *live* value lives here.
+    config_paths: Arc<Vec<PathBuf>>,
+    viewer_config: Arc<RwLock<mathpreview_core::ResolvedViewerConfig>>,
 }
 
 struct PreambleCache {
     hash: u64,
+    /// Combined fingerprint of the override-file paths and (when they
+    /// exist on disk) their contents. Invalidates the cache when any
+    /// layer of the override cascade changes — including a fresh
+    /// `POST /macros/append` writing to the file.
+    overrides_hash: u64,
     preamble: ExtractedPreamble,
     bib: HashMap<String, BibEntry>,
     bib_style: BibStyle,
+}
+
+/// Build the effective override-cascade for the current render. Returns
+/// the startup-discovered paths from `opts.macro_overrides` first
+/// (lowest priority), then the session-registered paths from
+/// `/macros/register` (higher priority — most recently added wins on
+/// name collision). Dedupes so the same path doesn't appear twice if a
+/// session register matches the project file.
+async fn effective_override_paths(state: &AppState) -> Vec<PathBuf> {
+    let session = state.session_macros.read().await.clone();
+    let mut out = Vec::with_capacity(state.opts.macro_overrides.len() + session.len());
+    let mut seen = std::collections::HashSet::new();
+    for p in state.opts.macro_overrides.iter().chain(session.iter()) {
+        if seen.insert(p.clone()) {
+            out.push(p.clone());
+        }
+    }
+    out
+}
+
+/// Read every override file in `paths` whose path resolves to an
+/// existing file. Missing files are skipped silently (matches what
+/// `finish_render` in core does), so the daemon can list "would-be"
+/// paths like a `.mathpreview-macros.tex` that hasn't been created
+/// yet without failing the render.
+fn load_override_layers(paths: &[PathBuf]) -> Vec<mathpreview_core::MacroOverride> {
+    paths
+        .iter()
+        .filter_map(|p| {
+            std::fs::read_to_string(p)
+                .ok()
+                .map(|source| mathpreview_core::MacroOverride {
+                    label: p.clone(),
+                    source,
+                })
+        })
+        .collect()
+}
+
+/// Hash the override-file paths AND the contents of the files that
+/// were actually read. Cheap fingerprint included in the cache key.
+fn fingerprint_overrides(
+    paths: &[PathBuf],
+    loaded: &[mathpreview_core::MacroOverride],
+) -> u64 {
+    let mut acc = String::new();
+    for p in paths {
+        acc.push_str(&p.display().to_string());
+        acc.push('\n');
+    }
+    acc.push_str("---\n");
+    for ov in loaded {
+        acc.push_str(&ov.label.display().to_string());
+        acc.push('\n');
+        acc.push_str(&ov.source);
+        acc.push('\n');
+    }
+    fnv_hash(&acc)
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +244,7 @@ pub async fn run(
     port: u16,
     opts: HtmlOptions,
     editor_cmd: String,
+    config_paths: Vec<PathBuf>,
 ) -> Result<()> {
     let initial = render_project(&input, &opts)
         .with_context(|| format!("initial render of {}", input.display()))?;
@@ -191,6 +268,7 @@ pub async fn run(
     let (tx, _rx) = broadcast::channel::<String>(16);
     let (watch_tx, watch_rx) = std_mpsc::channel::<HashSet<PathBuf>>();
     let last_blocks = initial.blocks.clone();
+    let initial_viewer_config = opts.viewer_config.clone();
     let state = AppState {
         opts,
         current: Arc::new(RwLock::new(initial)),
@@ -204,6 +282,9 @@ pub async fn run(
         jump_seq: Arc::new(AtomicU64::new(0)),
         pending_jump: Arc::new(RwLock::new(None)),
         editor_cmd: Arc::new(editor_cmd),
+        session_macros: Arc::new(RwLock::new(Vec::new())),
+        config_paths: Arc::new(config_paths),
+        viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
     };
 
     spawn_watcher(state.clone(), watch_rx);
@@ -219,6 +300,8 @@ pub async fn run(
         .route("/jump", get(serve_jump_poll).post(serve_jump))
         .route("/reveal-source", post(serve_reveal_source))
         .route("/macros/append", post(serve_macros_append))
+        .route("/macros/register", post(serve_macros_register))
+        .route("/config/set", post(serve_config_set))
         .route("/print", post(serve_print))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
@@ -641,13 +724,18 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
-/// Request body for `POST /macros/append`: which scope to target
-/// (`"global"` or `"project"`) and the literal `\newcommand`-shaped
-/// line to append.
+/// Request body for `POST /macros/append`. `scope` is `"global"`,
+/// `"project"`, or `"custom"`. When `scope == "custom"`, `path` must
+/// hold the target file path; for the other two scopes the daemon
+/// resolves the path itself (XDG / project root walk).
 #[derive(Debug, Deserialize)]
 struct MacrosAppendRequest {
     scope: String,
     line: String,
+    /// Required when `scope == "custom"`; ignored otherwise. May be
+    /// absolute or relative to the document root.
+    #[serde(default)]
+    path: Option<String>,
 }
 
 /// `POST /macros/append` — append a `\newcommand` definition to the
@@ -662,18 +750,6 @@ async fn serve_macros_append(
     State(state): State<AppState>,
     Json(req): Json<MacrosAppendRequest>,
 ) -> Response {
-    let scope = match mathpreview_core::MacrosScope::from_str(&req.scope) {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("unknown scope: {}; expected \"global\" or \"project\"", req.scope),
-                })),
-            )
-                .into_response();
-        }
-    };
     let line = req.line.trim_end_matches(['\n', '\r']);
     if line.trim().is_empty() {
         return (
@@ -698,16 +774,10 @@ async fn serve_macros_append(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let target = match mathpreview_core::resolve_override_path(&root_dir, scope) {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "cannot resolve global macros path (HOME / XDG_CONFIG_HOME unset)",
-                })),
-            )
-                .into_response();
+    let target = match resolve_save_target(&req.scope, req.path.as_deref(), &root_dir) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            return (code, Json(serde_json::json!({ "error": msg }))).into_response();
         }
     };
 
@@ -735,6 +805,337 @@ async fn serve_macros_append(
         "file": target,
     }))
     .into_response()
+}
+
+/// Request body for `POST /config/set`. `scope` is `"project"` |
+/// `"global"` | `"custom"`; `path` is required only when `scope ==
+/// "custom"`. `values` is a flat map of dotted keys to JSON-typed
+/// values: `{"viewer.font-size": 22, "viewer.source-jump.trigger":
+/// "double-click"}`. Numbers serialize as TOML integers, strings as
+/// TOML strings, booleans as TOML booleans.
+#[derive(Debug, Deserialize)]
+struct ConfigSetRequest {
+    scope: String,
+    #[serde(default)]
+    path: Option<String>,
+    values: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// `POST /config/set` — write one or more config fields to the chosen
+/// TOML file (global / project / custom path), preserving any existing
+/// formatting + comments via `toml_edit`. After a successful write the
+/// daemon re-renders so the new defaults flow into the HTML on the
+/// next reload.
+async fn serve_config_set(
+    State(state): State<AppState>,
+    Json(req): Json<ConfigSetRequest>,
+) -> Response {
+    if req.values.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "no values to set" })),
+        )
+            .into_response();
+    }
+    let root_file = state.current.read().await.root_file.clone();
+    let root_dir = root_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let target = match resolve_config_save_target(&req.scope, req.path.as_deref(), &root_dir) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+        }
+    };
+
+    let existing = match std::fs::read_to_string(&target) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("read {} failed: {e}", target.display())
+                })),
+            )
+                .into_response();
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = match existing.parse() {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("parse {} failed: {e}", target.display())
+                })),
+            )
+                .into_response();
+        }
+    };
+    for (dotted, value) in &req.values {
+        if let Err(msg) = set_dotted_key(&mut doc, dotted, value) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some(parent) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("mkdir {} failed: {e}", parent.display())
+                })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(e) = std::fs::write(&target, doc.to_string()) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("write {} failed: {e}", target.display())
+            })),
+        )
+            .into_response();
+    }
+
+    // Re-read the config cascade from disk so the live `viewer_config`
+    // reflects the value we just wrote. Failures here are non-fatal:
+    // the file was saved successfully; we just couldn't refresh in
+    // place. The user can restart the daemon to pick it up.
+    match mathpreview_core::load_and_merge_config(state.config_paths.as_ref()) {
+        Ok((resolved, _)) => {
+            *state.viewer_config.write().await = resolved.viewer;
+        }
+        Err(e) => {
+            eprintln!("mathpreview: config reload failed: {e:#}");
+        }
+    }
+
+    if let Err(e) = trigger_rerender(&state, &root_file).await {
+        eprintln!("mathpreview: config-set re-render failed: {e:#}");
+    }
+
+    eprintln!(
+        "mathpreview: wrote {} field(s) to {}",
+        req.values.len(),
+        target.display()
+    );
+    Json(serde_json::json!({ "file": target, "fields": req.values.len() })).into_response()
+}
+
+/// Resolve the target file for a config-save action. Same scope rules
+/// as macros, but the path falls back to the relevant `*.toml` file
+/// when one isn't found by walking up.
+fn resolve_config_save_target(
+    scope: &str,
+    custom_path: Option<&str>,
+    root_dir: &Path,
+) -> Result<PathBuf, (StatusCode, String)> {
+    match scope {
+        "global" => global_config_path().ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cannot resolve global config path (HOME / XDG_CONFIG_HOME unset)".to_string(),
+        )),
+        "project" => Ok(find_project_config_path(root_dir)
+            .unwrap_or_else(|| root_dir.join(mathpreview_core::config::PROJECT_CONFIG_FILENAME))),
+        "custom" | _ => resolve_save_target(scope, custom_path, root_dir),
+    }
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("mathpreview").join("config.toml"))
+}
+
+fn find_project_config_path(start: &Path) -> Option<PathBuf> {
+    let mut cur: Option<&Path> = Some(start);
+    while let Some(dir) = cur {
+        let candidate = dir.join(mathpreview_core::config::PROJECT_CONFIG_FILENAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Walk `doc` along `dotted` (e.g. `"viewer.source-jump.trigger"`) and
+/// set the leaf key to the TOML value derived from the JSON `value`.
+/// Creates intermediate tables as needed. Returns `Err` on
+/// type-mismatch (JSON null, array, or object), which the dialog
+/// hasn't been designed to send.
+fn set_dotted_key(
+    doc: &mut toml_edit::DocumentMut,
+    dotted: &str,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    let segments: Vec<&str> = dotted.split('.').collect();
+    if segments.len() < 2 {
+        return Err(format!("expected a dotted key like \"viewer.font-size\"; got {dotted:?}"));
+    }
+    let (leaf, parents) = segments.split_last().unwrap();
+    let mut cur: &mut toml_edit::Item = doc.as_item_mut();
+    for seg in parents {
+        let table = cur.as_table_like_mut().ok_or_else(|| {
+            format!("path through {seg} is not a TOML table")
+        })?;
+        if !table.contains_key(seg) {
+            table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        cur = table.get_mut(seg).expect("just inserted");
+    }
+    let table = cur
+        .as_table_like_mut()
+        .ok_or_else(|| format!("path through {} is not a TOML table", parents.join(".")))?;
+    let toml_value = json_to_toml_value(value)?;
+    table.insert(leaf, toml_edit::Item::Value(toml_value));
+    Ok(())
+}
+
+fn json_to_toml_value(v: &serde_json::Value) -> Result<toml_edit::Value, String> {
+    use serde_json::Value::*;
+    match v {
+        String(s) => Ok(s.clone().into()),
+        Bool(b) => Ok((*b).into()),
+        Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into())
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into())
+            } else {
+                Err(format!("unsupported numeric value: {n}"))
+            }
+        }
+        Null | Array(_) | Object(_) => Err(format!(
+            "config values must be string / number / bool; got {v}",
+        )),
+    }
+}
+
+/// Request body for `POST /macros/register`. `path` may be absolute,
+/// `~/...`, or relative to the document root; the daemon resolves it
+/// to an absolute path before storing.
+#[derive(Debug, Deserialize)]
+struct MacrosRegisterRequest {
+    path: String,
+}
+
+/// `POST /macros/register` — add `path` to the runtime override cascade.
+/// The file is watched (so edits hot-reload), included in the cache
+/// fingerprint, and merged into the override list on every render.
+/// Idempotent: registering the same path twice is a no-op.
+async fn serve_macros_register(
+    State(state): State<AppState>,
+    Json(req): Json<MacrosRegisterRequest>,
+) -> Response {
+    let raw = req.path.trim();
+    if raw.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "empty path" })),
+        )
+            .into_response();
+    }
+    let root_file = state.current.read().await.root_file.clone();
+    let root_dir = root_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // Reuse the same path-resolution rules as scope=custom so the
+    // user can paste the exact same string into either input.
+    let target = match resolve_save_target("custom", Some(raw), &root_dir) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+        }
+    };
+
+    {
+        let mut session = state.session_macros.write().await;
+        if !session.iter().any(|p| p == &target) {
+            session.push(target.clone());
+        }
+    }
+
+    if let Err(e) = trigger_rerender(&state, &root_file).await {
+        eprintln!("mathpreview: macros register re-render failed: {e:#}");
+    }
+
+    eprintln!("mathpreview: registered override {}", target.display());
+    Json(serde_json::json!({ "file": target })).into_response()
+}
+
+/// Resolve a save target from a wire `scope` + optional `path`. Shared
+/// by both the macros and the config dialogs since both surface the
+/// same Project / Global / Custom radio. Returns an HTTP-status-paired
+/// error message ready to be turned into a 4xx response.
+fn resolve_save_target(
+    scope: &str,
+    custom_path: Option<&str>,
+    root_dir: &Path,
+) -> Result<PathBuf, (StatusCode, String)> {
+    match scope {
+        "global" => mathpreview_core::resolve_override_path(
+            root_dir,
+            mathpreview_core::MacrosScope::Global,
+        )
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cannot resolve global path (HOME / XDG_CONFIG_HOME unset)".to_string(),
+        )),
+        "project" => mathpreview_core::resolve_override_path(
+            root_dir,
+            mathpreview_core::MacrosScope::Project,
+        )
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cannot resolve project path".to_string(),
+        )),
+        "custom" => {
+            let raw = custom_path
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or((
+                    StatusCode::BAD_REQUEST,
+                    "scope=custom requires a non-empty path".to_string(),
+                ))?;
+            // Expand `~` to $HOME so the dialog accepts the same shape
+            // the user types in a shell.
+            let expanded: PathBuf = if let Some(rest) = raw.strip_prefix("~/") {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .join(rest)
+            } else if raw == "~" {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+            } else {
+                PathBuf::from(raw)
+            };
+            // Relative paths anchor at the document root so a user can
+            // type "macros/extra.tex" without thinking about CWD.
+            let absolute = if expanded.is_absolute() {
+                expanded
+            } else {
+                root_dir.join(expanded)
+            };
+            Ok(absolute)
+        }
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            format!(r#"unknown scope: {other}; expected "global", "project", or "custom""#),
+        )),
+    }
 }
 
 /// Append a macro line to `target`, creating parent dirs + the file
@@ -1150,7 +1551,10 @@ fn watched_set(out: &RenderOutput, extras: &[PathBuf]) -> HashSet<PathBuf> {
 }
 
 async fn update_watched(state: &AppState, out: &RenderOutput) {
-    let watched = watched_set(out, &state.opts.macro_overrides);
+    let effective = effective_override_paths(state).await;
+    let mut extras = effective;
+    extras.extend(state.config_paths.iter().cloned());
+    let watched = watched_set(out, &extras);
     {
         let mut guard = state.watched.write().await;
         *guard = watched.clone();
@@ -1182,22 +1586,33 @@ async fn render_cached(
     };
     t.parse_ms = t0.elapsed().as_millis();
 
-    // Preamble + bib + style — cached on the hash of the preamble source.
-    // Editing the body keeps the preamble identical, so this is a clean hit.
+    // Preamble + bib + style — cached on the hash of the preamble source
+    // *and* the override-file fingerprint, so an edit to (or a fresh
+    // `POST /macros/append` against) any layer of the cascade still
+    // invalidates the cache cleanly. Editing only the body keeps both
+    // hashes identical, which is the common-case hit we want.
     let pre_hash = fnv_hash(&project.preamble.source);
+    let effective_paths = effective_override_paths(state).await;
+    let overrides = load_override_layers(&effective_paths);
+    let overrides_hash = fingerprint_overrides(&effective_paths, &overrides);
     let t1 = std::time::Instant::now();
     let (preamble, bib, bib_style) = {
         let guard = state.preamble_cache.read().await;
-        if let Some(c) = guard.as_ref().filter(|c| c.hash == pre_hash) {
+        if let Some(c) = guard
+            .as_ref()
+            .filter(|c| c.hash == pre_hash && c.overrides_hash == overrides_hash)
+        {
             t.cache_hit = true;
             (c.preamble.clone(), c.bib.clone(), c.bib_style)
         } else {
             drop(guard);
-            let preamble = macros::extract_preamble(&project)?;
+            let preamble =
+                macros::extract_preamble_with_overrides(&project, &overrides)?;
             let bib = bibtex::load_project_bib(&project)?;
             let bib_style = bibtex::detect_bib_style(&preamble.raw_preamble);
             *state.preamble_cache.write().await = Some(PreambleCache {
                 hash: pre_hash,
+                overrides_hash,
                 preamble: preamble.clone(),
                 bib: bib.clone(),
                 bib_style,
@@ -1217,6 +1632,19 @@ async fn render_cached(
 
     let t4 = std::time::Instant::now();
     let mut sync = SyncIndex::new();
+    // Reload the config cascade from disk on every render so an edit
+    // to `.mathpreview.toml` in your editor (or a `POST /config/set`
+    // from the dialog) takes effect without restarting the daemon.
+    // The files are tiny TOML so the parse cost is negligible compared
+    // to the rest of the render.
+    if let Ok((resolved, _)) =
+        mathpreview_core::load_and_merge_config(state.config_paths.as_ref())
+    {
+        *state.viewer_config.write().await = resolved.viewer;
+    }
+    let live_viewer_config = state.viewer_config.read().await.clone();
+    let mut render_opts = state.opts.clone();
+    render_opts.viewer_config = live_viewer_config;
     let rendered = renderer::render(
         &body,
         &preamble,
@@ -1224,7 +1652,7 @@ async fn render_cached(
         &bib,
         bib_style,
         &mut sync,
-        &state.opts,
+        &render_opts,
     );
     t.render_ms = t4.elapsed().as_millis();
 
@@ -2087,6 +2515,11 @@ Second paragraph here.
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
             editor_cmd: Arc::new(String::new()),
+            session_macros: Arc::new(RwLock::new(Vec::new())),
+            config_paths: Arc::new(Vec::new()),
+            viewer_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedConfig::default().viewer,
+            )),
         };
 
         let older = begin_render_attempt(&state);
@@ -2470,6 +2903,11 @@ Second paragraph here.
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
             editor_cmd: Arc::new(String::new()),
+            session_macros: Arc::new(RwLock::new(Vec::new())),
+            config_paths: Arc::new(Vec::new()),
+            viewer_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedConfig::default().viewer,
+            )),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -2555,6 +2993,11 @@ Second paragraph here.
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
             editor_cmd: Arc::new(String::new()),
+            session_macros: Arc::new(RwLock::new(Vec::new())),
+            config_paths: Arc::new(Vec::new()),
+            viewer_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedConfig::default().viewer,
+            )),
         };
 
         let mut headers = axum::http::HeaderMap::new();

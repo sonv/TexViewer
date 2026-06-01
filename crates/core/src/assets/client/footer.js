@@ -8,7 +8,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '54';
+  var WS_PROTOCOL_VERSION = '55';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -154,9 +154,14 @@
     };
   }
   try {
+    // Config-supplied defaults apply only when the user hasn't already
+    // picked a value via the in-browser toggle (which writes to
+    // localStorage). The user's local choice always wins.
+    var cfg = window.__mpConfig || {};
     var storedZoom = parseFloat(localStorage.getItem('mathpreview.userZoom'));
     if (isFinite(storedZoom) && storedZoom > 0) setUserZoom(storedZoom, false);
-    setPageMode(localStorage.getItem('mathpreview.pageMode') || 'a4');
+    var storedMode = localStorage.getItem('mathpreview.pageMode');
+    setPageMode(storedMode || cfg.defaultPageMode || 'a4');
     setSideTab(localStorage.getItem('mathpreview.sideTab') || 'index');
     var storedSideOpen = localStorage.getItem('mathpreview.sideOpen');
     setSideOpen(storedSideOpen === null ? window.innerWidth > 1340 : storedSideOpen === '1', false);
@@ -168,8 +173,14 @@
     if (storedTheme === 'dark' || storedTheme === 'light') {
       setTheme(storedTheme, false);
     } else {
-      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      setTheme(prefersDark ? 'dark' : 'light', false);
+      var cfgTheme = cfg.defaultTheme;
+      if (cfgTheme === 'light' || cfgTheme === 'dark') {
+        setTheme(cfgTheme, false);
+      } else {
+        // "system" (or unspecified) → match the OS preference.
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        setTheme(prefersDark ? 'dark' : 'light', false);
+      }
     }
   } catch (e) {
     setPageMode('a4');

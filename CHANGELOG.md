@@ -17,6 +17,57 @@ summary.
 
 Nothing yet.
 
+## [0.1.13] — 2026-06-01
+
+### Added
+
+- **Macros dialog: Load file + Use as override + Custom save path.**
+  - *Load file…* opens a browser file picker; the contents land in
+    the textarea so you can review/edit before saving.
+  - *Use as override* registers a path as a live override layer — the
+    daemon watches the file for hot-reload and includes it in the
+    override cascade for the rest of the session. Type the filesystem
+    path in the *Custom path* field (`~/...` is expanded; relative
+    paths anchor at the document root) and click the button.
+  - *Custom* save scope writes to an arbitrary path of your choosing.
+- **`config` toolbar button + Edit-config dialog.** Same shape as the
+  macros dialog: typed-input fields for `viewer.font-size`,
+  `viewer.source-jump.trigger`, `viewer.default-page-mode`, and
+  `viewer.default-theme`; Project / Global / Custom save scopes. The
+  daemon parses the existing TOML via `toml_edit` (preserves
+  formatting and comments), updates the keys, writes back, and
+  re-renders so the new defaults flow into the next reload.
+- **`viewer.default-page-mode`** (`"a4"` | `"dynamic"`) and
+  **`viewer.default-theme`** (`"system"` | `"light"` | `"dark"`) new
+  config fields. Applied to fresh tabs whose localStorage hasn't set
+  the corresponding key yet — the user's in-browser toggle still
+  wins for tabs they've actively customized.
+- **`POST /macros/register`** and **`POST /config/set`** HTTP routes
+  backing the two new dialog actions.
+
+### Fixed
+
+- **Serve-mode macros override cascade.** v0.1.10's cascade quietly
+  bypassed `serve` mode because `render_cached` called the
+  no-overrides `extract_preamble` and cached on a key that didn't
+  include the override fingerprint. After `POST /macros/append`
+  (v0.1.12) the file was written but the rendered HTML still showed
+  the old preamble. `render_cached` now uses
+  `extract_preamble_with_overrides` and the cache key includes a
+  hash of the override files' contents, so any edit invalidates the
+  cache cleanly.
+- **Override + config files that don't exist yet are still part of
+  the cascade discovery.** Previously `discover_macro_overrides` and
+  `discover_config_files` returned only existing files, so a
+  `.mathpreview-macros.tex` created mid-session via the dialog
+  wasn't picked up until the daemon restarted. Both now include the
+  "would-be" project path so the watcher tracks it from the start.
+
+### Changed
+
+- **WS protocol bumped to v55** so v0.1.12 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.12] — 2026-06-01
 
 ### Added
@@ -424,7 +475,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/sonv/TexViewer/releases/tag/v0.1.13
 [0.1.12]: https://github.com/sonv/TexViewer/releases/tag/v0.1.12
 [0.1.11]: https://github.com/sonv/TexViewer/releases/tag/v0.1.11
 [0.1.10]: https://github.com/sonv/TexViewer/releases/tag/v0.1.10
