@@ -1732,25 +1732,23 @@
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
   }
 
-  function updatePageScale(contentHeight) {
+  function updatePageScale(_contentHeight) {
     var page = pageEl();
     var shell = pageShellEl();
     if (!page || !shell) return;
     var available = Math.max(320, document.documentElement.clientWidth - 32);
-    // `offsetHeight` is the page's visible CSS height (content + padding
-    // + border). We deliberately avoid `scrollHeight` because the
-    // absolutely-positioned `.page-guide` markers inside `main#page`
-    // extend the scroll box well past the visible bottom of the page,
-    // which would inflate the shell and leave a tall dead strip after
-    // the document. `offsetHeight` ignores that overflow.
+    // `main#page` uses CSS `zoom` (in default.css), so the layout box
+    // scales with the visual rendering — no manual shell height is
+    // required, CSS auto-sizes the shell to the zoomed content. We
+    // still set the shell's *width* so margin: auto centers the page
+    // around the scaled content rather than the unscaled column.
     if (currentPageMode === 'a4') {
       var fit = Math.min(1, available / A4_CSS_WIDTH);
       currentPageScale = fit;
       var combined = fit * currentUserZoom;
       document.documentElement.style.setProperty('--page-scale', combined.toFixed(4));
       shell.style.width = Math.round(A4_CSS_WIDTH * combined) + 'px';
-      if (typeof contentHeight !== 'number') contentHeight = page.offsetHeight;
-      shell.style.height = Math.ceil(contentHeight * combined) + 'px';
+      shell.style.height = '';
     } else {
       currentPageScale = 1;
       // Dynamic mode: the page's natural width is the smaller of
@@ -1766,8 +1764,7 @@
       );
       document.documentElement.style.setProperty('--page-scale', currentUserZoom.toFixed(4));
       shell.style.width = Math.round(naturalWidth * currentUserZoom) + 'px';
-      if (typeof contentHeight !== 'number') contentHeight = page.offsetHeight;
-      shell.style.height = Math.ceil(contentHeight * currentUserZoom) + 'px';
+      shell.style.height = '';
     }
   }
 

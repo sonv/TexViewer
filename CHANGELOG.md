@@ -17,6 +17,28 @@ summary.
 
 Nothing yet.
 
+## [0.1.14] — 2026-06-01
+
+### Fixed
+
+- **Content zoom (`+` / `-` keys) left a tall dead strip below the
+  document.** `main#page` was scaled with `transform: scale`, which is
+  visual-only — the layout box stayed at full size and overflowed the
+  shell, inflating `html.scrollHeight` so the user could scroll past
+  the visible content. At `userZoom = 0.5` on a long paper, that was
+  ~18 000 px of trailing whitespace. Replaced with the CSS `zoom`
+  property, which scales the *layout* box too: `html.scrollHeight`
+  now tracks `body.scrollHeight` at every zoom level, with the
+  trailing space reduced to the warnings panel's natural margin
+  (~24 px). The JS no longer has to compute an explicit
+  `shell.style.height` either — CSS auto-sizes the shell to the
+  zoomed content.
+
+### Changed
+
+- **WS protocol bumped to v56** so v0.1.13 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.13] — 2026-06-01
 
 ### Added
@@ -475,7 +497,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/sonv/TexViewer/releases/tag/v0.1.14
 [0.1.13]: https://github.com/sonv/TexViewer/releases/tag/v0.1.13
 [0.1.12]: https://github.com/sonv/TexViewer/releases/tag/v0.1.12
 [0.1.11]: https://github.com/sonv/TexViewer/releases/tag/v0.1.11

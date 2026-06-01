@@ -476,13 +476,16 @@ main#page {
 }
 body.page-mode-a4 main#page {
   width: var(--a4-width);
-  transform: scale(var(--page-scale));
-  transform-origin: top left;
+  /* `zoom` (not `transform: scale`) so the layout box scales with the
+     visual rendering. `transform: scale` leaves an un-transformed box
+     of the original size, which then overflows the shell and pushes
+     `html.scrollHeight` way past `body.scrollHeight` — visible as a
+     tall dead strip below the document at userZoom < 1. */
+  zoom: var(--page-scale);
 }
 body.page-mode-dynamic main#page {
   width: var(--page-natural-width, 100%);
-  transform: scale(var(--page-scale));
-  transform-origin: top left;
+  zoom: var(--page-scale);
 }
 .page-guide-layer {
   position: absolute;
