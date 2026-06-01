@@ -238,6 +238,23 @@
       setLineNumbers(!lineNumbersVisible, true);
       return;
     }
+    var macrosToggle = e.target.closest('#macros-toggle');
+    if (macrosToggle) {
+      openMacrosDialog();
+      return;
+    }
+    var macrosCancel = e.target.closest('#macros-dialog-cancel');
+    if (macrosCancel) {
+      e.preventDefault();
+      closeMacrosDialog();
+      return;
+    }
+    var macrosSave = e.target.closest('#macros-dialog-save');
+    if (macrosSave) {
+      e.preventDefault();
+      submitMacrosDialog();
+      return;
+    }
     var marginToggle = e.target.closest('#margin-toggle');
     if (marginToggle) {
       setMarginMode(!marginMode, true);

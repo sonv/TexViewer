@@ -27,7 +27,8 @@ pub use config::{
 };
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{
-    discover_macro_overrides, ExtractedMacro, ExtractedPreamble, MacroOverride,
+    discover_macro_overrides, resolve_override_path, validate_override_line, ExtractedMacro,
+    ExtractedPreamble, MacroOverride, MacrosScope,
 };
 pub use packages::PackageMap;
 pub use renderer::{HtmlOptions, RenderOutput, RenderedBlock};

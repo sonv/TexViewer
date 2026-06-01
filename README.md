@@ -570,6 +570,15 @@ A typical file:
 \newcommand{\given}{\mid}
 ```
 
+You can also add overrides without leaving the viewer: click the
+`macros` button in the toolbar to open a dialog, paste a single
+`\newcommand` line, pick **Project** or **Global**, and Save. The
+daemon validates the line, appends it to the chosen file (creating
+the file or its parent directory if needed), and the page
+re-renders so the override takes effect immediately. Edits to the
+file made directly in your editor live-reload the same way — the
+file watcher tracks all override paths.
+
 The override's signature has to match how the macro is called in the
 body. `\DeclarePairedDelimiter[..size..]{..body..}` calls become plain
 `\set{..body..}` calls if you express the override as

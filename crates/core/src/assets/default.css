@@ -131,6 +131,7 @@ html, body {
 body.topbar-hidden .topbar { display: none; }
 .refkey-toggle,
 .lineno-toggle,
+.macros-toggle,
 .margin-toggle,
 .theme-toggle,
 .server-restart,
@@ -149,6 +150,7 @@ body.topbar-hidden .topbar { display: none; }
 }
 .refkey-toggle:hover,
 .lineno-toggle:hover,
+.macros-toggle:hover,
 .margin-toggle:hover,
 .theme-toggle:hover,
 .server-restart:hover:not(:disabled),
@@ -1056,6 +1058,119 @@ body.margin-mode aside#margin > * {
   pointer-events: auto;
 }
 body.topbar-hidden.margin-mode aside#margin { top: 0; }
+
+/* Macros override dialog — toolbar `macros` button opens this <dialog>
+   to append a new \newcommand to either the global or project file.
+   Plain centered modal; no need for the size/position acrobatics the
+   floating margin column does. */
+.macros-dialog {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--fg);
+  padding: 0;
+  max-width: 520px;
+  width: min(520px, calc(100vw - 32px));
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 13px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+}
+.macros-dialog::backdrop {
+  background: rgba(20, 20, 20, 0.36);
+}
+.macros-dialog-form { padding: 16px 18px; }
+.macros-dialog-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.macros-dialog-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.macros-dialog-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.macros-dialog-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  resize: vertical;
+}
+.macros-dialog-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.macros-dialog-scope {
+  margin: 12px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.macros-dialog-scope legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.macros-dialog-scope label {
+  display: block;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.macros-dialog-scope label code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.macros-dialog-feedback {
+  min-height: 1.2em;
+  margin: 6px 0;
+  color: var(--omitted);
+  font-size: 11px;
+}
+.macros-dialog-feedback.ok { color: var(--supporting); }
+.macros-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.macros-dialog-cancel,
+.macros-dialog-save {
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  padding: 5px 14px;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 5px;
+  color: var(--fg);
+}
+.macros-dialog-cancel:hover,
+.macros-dialog-save:hover {
+  background: var(--button-bg-hover);
+  border-color: var(--border-strong);
+}
+.macros-dialog-save {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.macros-dialog-save:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
 
 /* Vim-style command line. Hidden by default; press `:` (when not in an
    editable target) to open with a ":" prefix. Supported commands:

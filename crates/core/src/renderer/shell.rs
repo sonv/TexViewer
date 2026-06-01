@@ -131,6 +131,7 @@ pub(super) fn wrap_in_shell(
     </span>
     <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
     <button class="lineno-toggle" id="lineno-toggle" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
+    <button class="macros-toggle" id="macros-toggle" type="button" title="add a \\newcommand override for the viewer">macros</button>
     <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
@@ -173,6 +174,31 @@ pub(super) fn wrap_in_shell(
 <aside id="margin">
   <div class="margin-cards" id="margin-cards"></div>
 </aside>
+<dialog class="macros-dialog" id="macros-dialog">
+  <form method="dialog" class="macros-dialog-form" id="macros-dialog-form">
+    <h2 class="macros-dialog-title">Add macro override</h2>
+    <p class="macros-dialog-hint">
+      A plain <code>\newcommand</code> line, appended to your chosen
+      file. The viewer re-renders so the override takes effect
+      immediately.
+    </p>
+    <textarea class="macros-dialog-input" id="macros-dialog-input" rows="3"
+              spellcheck="false" autocomplete="off"
+              placeholder="\newcommand{{\st}}{{\mid}}"></textarea>
+    <fieldset class="macros-dialog-scope">
+      <legend>Save to</legend>
+      <label><input type="radio" name="scope" value="project" checked>
+        Project <code>.mathpreview-macros.tex</code></label>
+      <label><input type="radio" name="scope" value="global">
+        Global <code>~/.config/mathpreview/macros.tex</code></label>
+    </fieldset>
+    <div class="macros-dialog-feedback" id="macros-dialog-feedback" aria-live="polite"></div>
+    <div class="macros-dialog-actions">
+      <button type="button" class="macros-dialog-cancel" id="macros-dialog-cancel">Cancel</button>
+      <button type="submit" class="macros-dialog-save" id="macros-dialog-save">Save</button>
+    </div>
+  </form>
+</dialog>
 <div class="cmdline" id="cmdline" hidden>
   <div class="cmdline-suggestions" id="cmdline-suggestions" hidden></div>
   <div class="cmdline-row">

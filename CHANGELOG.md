@@ -17,6 +17,33 @@ summary.
 
 Nothing yet.
 
+## [0.1.12] — 2026-06-01
+
+### Added
+
+- **`macros` toolbar button + Add-override dialog.** Click the new
+  toolbar button between `lines` and `margin` to open a dialog. Paste
+  a `\newcommand` line, pick "Project" (writes to
+  `.mathpreview-macros.tex` in the document root, creating the file
+  if missing) or "Global" (writes to
+  `~/.config/mathpreview/macros.tex`, creating the dir + file if
+  missing), and click Save. The daemon validates the input through
+  the macro extractor before writing; invalid lines surface an error
+  inline. After a successful write the page re-renders so the
+  override takes effect immediately.
+- **`POST /macros/append` HTTP route** powering the dialog.
+- **Macro override files are now part of the file watcher**, so
+  manual edits in your editor live-reload the same way edits to the
+  paper itself do.
+- **New core helpers:** `MacrosScope`, `resolve_override_path`,
+  `validate_override_line` — usable from any front-end (the Tauri
+  shell, plugin, custom UI) that wants its own dialog.
+
+### Changed
+
+- **WS protocol bumped to v54** so v0.1.11 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.11] — 2026-06-01
 
 ### Added
@@ -397,7 +424,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/sonv/TexViewer/releases/tag/v0.1.12
 [0.1.11]: https://github.com/sonv/TexViewer/releases/tag/v0.1.11
 [0.1.10]: https://github.com/sonv/TexViewer/releases/tag/v0.1.10
 [0.1.9]: https://github.com/sonv/TexViewer/releases/tag/v0.1.9

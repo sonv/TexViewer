@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "53";
+const WS_PROTOCOL_VERSION: &str = "54";
 
 #[derive(Clone)]
 struct AppState {
@@ -218,6 +218,7 @@ pub async fn run(
         .route("/cursor", post(serve_cursor))
         .route("/jump", get(serve_jump_poll).post(serve_jump))
         .route("/reveal-source", post(serve_reveal_source))
+        .route("/macros/append", post(serve_macros_append))
         .route("/print", post(serve_print))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
@@ -640,6 +641,128 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
+/// Request body for `POST /macros/append`: which scope to target
+/// (`"global"` or `"project"`) and the literal `\newcommand`-shaped
+/// line to append.
+#[derive(Debug, Deserialize)]
+struct MacrosAppendRequest {
+    scope: String,
+    line: String,
+}
+
+/// `POST /macros/append` — append a `\newcommand` definition to the
+/// global or project macros override file. Validates the line through
+/// the extractor before writing so typos surface immediately; creates
+/// parent directories + the file itself if either is missing.
+///
+/// After a successful write the daemon re-renders the current document
+/// and broadcasts the result — same path the file watcher uses on save,
+/// so the page picks up the new macro without a manual reload.
+async fn serve_macros_append(
+    State(state): State<AppState>,
+    Json(req): Json<MacrosAppendRequest>,
+) -> Response {
+    let scope = match mathpreview_core::MacrosScope::from_str(&req.scope) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("unknown scope: {}; expected \"global\" or \"project\"", req.scope),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let line = req.line.trim_end_matches(['\n', '\r']);
+    if line.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "empty macro line" })),
+        )
+            .into_response();
+    }
+    let macro_name = match mathpreview_core::validate_override_line(line) {
+        Ok(n) => n,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+
+    let root_file = state.current.read().await.root_file.clone();
+    let root_dir = root_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let target = match mathpreview_core::resolve_override_path(&root_dir, scope) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "cannot resolve global macros path (HOME / XDG_CONFIG_HOME unset)",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) = append_macro_line(&target, line) {
+        eprintln!("mathpreview: macros append failed: {e:#}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+
+    // Trigger a re-render so the new macro is picked up live.
+    if let Err(e) = trigger_rerender(&state, &root_file).await {
+        eprintln!("mathpreview: macros append re-render failed: {e:#}");
+    }
+
+    eprintln!(
+        "mathpreview: appended \\{macro_name} to {} (scope={})",
+        target.display(),
+        req.scope,
+    );
+    Json(serde_json::json!({
+        "name": macro_name,
+        "file": target,
+    }))
+    .into_response()
+}
+
+/// Append a macro line to `target`, creating parent dirs + the file
+/// itself if missing. Adds a trailing newline so the next append lands
+/// on a fresh line even if the user's text editor didn't add one.
+fn append_macro_line(target: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(target)?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+/// Re-render `root_file` and broadcast the result. Mirrors the
+/// file-change handler but driven by an HTTP action (the dialog's Save
+/// button) instead of a filesystem event.
+async fn trigger_rerender(state: &AppState, root_file: &Path) -> anyhow::Result<()> {
+    let (out, _timing) = render_cached(state, root_file).await?;
+    update_watched(state, &out).await;
+    let _ = broadcast_render(state, out).await;
+    Ok(())
+}
+
 /// `POST /print` — runs `latexmk -pdf` on the project's root file and
 /// streams the produced PDF back. We trust `.latexmkrc` for build
 /// settings (engine choice, `$out_dir`, `$aux_dir`, etc.) and parse the
@@ -1009,17 +1132,25 @@ async fn serve_buffer_push(
     }
 }
 
-fn watched_set(out: &RenderOutput) -> HashSet<PathBuf> {
+fn watched_set(out: &RenderOutput, extras: &[PathBuf]) -> HashSet<PathBuf> {
     let mut watched = HashSet::new();
     watched.insert(out.root_file.clone());
     for f in &out.included_files {
+        watched.insert(f.clone());
+    }
+    // Macro override files (global + project + --macros) participate in
+    // live-reload too: editing them in your editor — or appending via
+    // the macros dialog — should re-render the paper. We watch even
+    // paths that don't exist yet, so the very first `Save` from the
+    // dialog (which creates the file) is still seen by the watcher.
+    for f in extras {
         watched.insert(f.clone());
     }
     watched
 }
 
 async fn update_watched(state: &AppState, out: &RenderOutput) {
-    let watched = watched_set(out);
+    let watched = watched_set(out, &state.opts.macro_overrides);
     {
         let mut guard = state.watched.write().await;
         *guard = watched.clone();

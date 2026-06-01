@@ -87,6 +87,65 @@ const BUILTIN_MACROS_TEX: &str = include_str!("assets/builtin-macros.tex");
 /// the document root, the same way Git looks for `.git`.
 pub const PROJECT_MACROS_FILENAME: &str = ".mathpreview-macros.tex";
 
+/// Which override file the macros-dialog "Save" button should target.
+/// `Global` writes to `~/.config/mathpreview/macros.tex`; `Project`
+/// writes to the nearest `.mathpreview-macros.tex` walking up from the
+/// document root, falling back to creating one in that root if none
+/// exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacrosScope {
+    Global,
+    Project,
+}
+
+impl MacrosScope {
+    /// Parse the wire string sent by the dialog (`"global"` / `"project"`).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "global" => Some(MacrosScope::Global),
+            "project" => Some(MacrosScope::Project),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve the on-disk path that a `Save` action should write to for the
+/// given scope and project root. Returns `None` for `Global` if neither
+/// `XDG_CONFIG_HOME` nor `HOME` is set (vanishingly rare).
+///
+/// For `Project`, returns the existing `.mathpreview-macros.tex` walked
+/// up from `root_dir` if one is found; otherwise the path where it
+/// would be created (`root_dir/.mathpreview-macros.tex`).
+pub fn resolve_override_path(root_dir: &Path, scope: MacrosScope) -> Option<PathBuf> {
+    match scope {
+        MacrosScope::Global => global_macros_path(),
+        MacrosScope::Project => Some(
+            find_project_macros(root_dir)
+                .unwrap_or_else(|| root_dir.join(PROJECT_MACROS_FILENAME)),
+        ),
+    }
+}
+
+/// Validate a single override line as a parseable `\newcommand`-shaped
+/// definition. Returns the extracted macro's name on success, or an
+/// error describing why the line was rejected. Used by the macros
+/// dialog to surface "this looks malformed" before writing to disk.
+pub fn validate_override_line(line: &str) -> Result<String> {
+    let mut e = Extractor::new();
+    e.scan(line, Path::new("<dialog>"));
+    let preamble = e.finish();
+    if let Some(m) = preamble.macros.into_iter().next() {
+        Ok(m.name)
+    } else {
+        let detail = preamble
+            .warnings
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "expected a \\newcommand-shaped definition".to_string());
+        Err(anyhow::anyhow!("rejected macro line: {detail}"))
+    }
+}
+
 /// Discover override file paths in cascade order (lowest → highest
 /// priority). Caller passes any additional explicit paths (e.g. from a
 /// `--macros` CLI flag) as `extra`; those land at the end of the
@@ -1231,6 +1290,66 @@ mod tests {
         // here: passing zero overrides leaves built-ins + preamble alone.
         let ms = cascade(r"\newcommand{\bar}{B}", &[]);
         assert_eq!(find_by_name(&ms, "bar").map(|m| m.body.as_str()), Some("B"));
+    }
+
+    #[test]
+    fn validate_override_accepts_well_formed_newcommand() {
+        let name = validate_override_line(r"\newcommand{\foo}{bar}").unwrap();
+        assert_eq!(name, "foo");
+    }
+
+    #[test]
+    fn validate_override_rejects_random_string() {
+        let err = validate_override_line("not a macro at all").unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("rejected"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_global_returns_xdg_or_home_path() {
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/mp-test-xdg");
+        std::env::remove_var("HOME");
+        let p = resolve_override_path(Path::new("/tmp"), MacrosScope::Global).unwrap();
+        if let Some(v) = prev_xdg { std::env::set_var("XDG_CONFIG_HOME", v); } else { std::env::remove_var("XDG_CONFIG_HOME"); }
+        if let Some(v) = prev_home { std::env::set_var("HOME", v); }
+        assert!(
+            p.ends_with("mathpreview/macros.tex"),
+            "expected ends with mathpreview/macros.tex; got {}",
+            p.display()
+        );
+    }
+
+    #[test]
+    fn resolve_path_project_creates_path_when_missing() {
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-resolve-{}-{}",
+            std::process::id(),
+            line!(),
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = resolve_override_path(&tmp, MacrosScope::Project).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(p, tmp.join(PROJECT_MACROS_FILENAME));
+    }
+
+    #[test]
+    fn resolve_path_project_finds_existing_in_ancestor() {
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-resolve-existing-{}-{}",
+            std::process::id(),
+            line!(),
+        ));
+        let nested = tmp.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let existing = tmp.join(PROJECT_MACROS_FILENAME);
+        std::fs::write(&existing, "% placeholder\n").unwrap();
+        let p = resolve_override_path(&nested, MacrosScope::Project).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(p, existing);
     }
 
     #[test]

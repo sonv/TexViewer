@@ -1229,6 +1229,69 @@
       }, 1800);
     }
   }
+  function macrosDialogEl() { return document.getElementById('macros-dialog'); }
+  function macrosDialogInputEl() { return document.getElementById('macros-dialog-input'); }
+  function macrosDialogFeedbackEl() { return document.getElementById('macros-dialog-feedback'); }
+
+  function setMacrosDialogFeedback(msg, ok) {
+    var fb = macrosDialogFeedbackEl();
+    if (!fb) return;
+    fb.textContent = msg || '';
+    fb.classList.toggle('ok', !!ok);
+  }
+
+  function openMacrosDialog() {
+    var dlg = macrosDialogEl();
+    if (!dlg || typeof dlg.showModal !== 'function') return;
+    setMacrosDialogFeedback('', false);
+    // Don't clobber unsubmitted text if the user reopens after a cancel.
+    dlg.showModal();
+    setTimeout(function() {
+      var input = macrosDialogInputEl();
+      if (input) input.focus();
+    }, 0);
+  }
+
+  function closeMacrosDialog() {
+    var dlg = macrosDialogEl();
+    if (!dlg) return;
+    if (dlg.open) dlg.close();
+  }
+
+  async function submitMacrosDialog() {
+    var input = macrosDialogInputEl();
+    if (!input) return;
+    var line = (input.value || '').trim();
+    if (!line) {
+      setMacrosDialogFeedback('Enter a \\newcommand line first.', false);
+      return;
+    }
+    var scopeInput = document.querySelector('input[name="scope"]:checked');
+    var scope = scopeInput ? scopeInput.value : 'project';
+    setMacrosDialogFeedback('Saving…', true);
+    try {
+      var res = await fetch('/macros/append', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope: scope, line: line }),
+      });
+      var body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        setMacrosDialogFeedback((body && body.error) || 'save failed', false);
+        return;
+      }
+      var name = body && body.name ? '\\' + body.name : 'macro';
+      var file = body && body.file ? ' → ' + body.file : '';
+      setStatus('live', '● saved ' + name + file);
+      input.value = '';
+      closeMacrosDialog();
+    } catch (e) {
+      setMacrosDialogFeedback(String(e && e.message || e), false);
+    }
+  }
+
   function openCmdline(initial) {
     var line = cmdlineEl();
     var input = cmdlineInputEl();
