@@ -17,6 +17,25 @@ summary.
 
 Nothing yet.
 
+## [0.1.18] — 2026-06-02
+
+### Fixed
+
+- **Config edits / `POST /config/set` now refresh the open tab.**
+  The daemon was re-reading `.mathpreview.toml` correctly on every
+  render, but the rendered HTML's `<head>` (where the
+  `--body-font-size` CSS variable and `__mpConfig` JS object live)
+  is only sent on the initial `GET /`. Body-updated / patch
+  WebSocket messages don't include it, so `viewer.font-size`
+  changes took effect only after a manual reload. Each WS render
+  message now carries the resolved `viewer_config`, and the client
+  re-applies `--body-font-size` + `__mpConfig` live.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v60** so v0.1.17 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.17] — 2026-06-02
 
 ### Added
@@ -567,7 +586,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/sonv/TexViewer/releases/tag/v0.1.18
 [0.1.17]: https://github.com/sonv/TexViewer/releases/tag/v0.1.17
 [0.1.16]: https://github.com/sonv/TexViewer/releases/tag/v0.1.16
 [0.1.15]: https://github.com/sonv/TexViewer/releases/tag/v0.1.15

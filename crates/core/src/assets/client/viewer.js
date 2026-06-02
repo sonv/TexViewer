@@ -1504,6 +1504,26 @@
     }
   }
 
+  // Apply a freshly-pushed viewer config snapshot from the daemon
+  // without reloading the tab. `font_size` updates the CSS variable
+  // that the body font reads from; `source_jump_trigger` updates the
+  // `__mpConfig` object the click handlers consult; default page mode
+  // / theme are init-only on the client (the user's localStorage
+  // toggles already win for the current tab) so we just stash them
+  // for new windows / private mode that read this tab's state.
+  function applyViewerConfig(cfg) {
+    if (!cfg) return;
+    if (typeof cfg.font_size === 'number') {
+      document.documentElement.style.setProperty(
+        '--body-font-size', cfg.font_size + 'px'
+      );
+    }
+    window.__mpConfig = window.__mpConfig || {};
+    if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
+    if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
+    if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
+  }
+
   function logDialogEl() { return document.getElementById('log-dialog'); }
 
   function escapeHtml(s) {

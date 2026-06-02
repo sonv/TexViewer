@@ -8,7 +8,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '59';
+  var WS_PROTOCOL_VERSION = '60';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -35,6 +35,7 @@
       try {
         var msg = JSON.parse(ev.data);
         if (typeof msg.rss_mib === 'number') window._lastRss = msg.rss_mib;
+        if (msg.viewer_config) applyViewerConfig(msg.viewer_config);
         if (msg.event === 'patch') {
           await applyPatch(msg.ops, msg.blocks);
           applyMode(currentProofMode);

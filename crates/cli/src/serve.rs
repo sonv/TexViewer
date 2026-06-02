@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "59";
+const WS_PROTOCOL_VERSION: &str = "60";
 
 #[derive(Clone)]
 struct AppState {
@@ -1914,11 +1914,24 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
     // point the page actually displays the update.
     let rss = resident_mib();
 
+    // The current viewer config rides along with every render so the
+    // client can re-apply `--body-font-size` and `__mpConfig` values
+    // live — `.mathpreview.toml` edits or `POST /config/set` no
+    // longer require a tab reload to take effect.
+    let viewer_config = state.viewer_config.read().await.clone();
+    let viewer_config_json = serde_json::json!({
+        "font_size": viewer_config.font_size,
+        "default_page_mode": viewer_config.default_page_mode.as_str(),
+        "default_theme": viewer_config.default_theme.as_str(),
+        "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
+    });
+
     let (payload, op_count, kind) = if fallback_full {
         let payload = serde_json::json!({
             "event": "body-updated",
             "html": out.body_html,
             "rss_mib": rss,
+            "viewer_config": viewer_config_json,
         })
         .to_string();
         (payload, block_count, "blocks (full)")
@@ -1941,6 +1954,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
             "ops": ops_json,
             "blocks": blocks_json,
             "rss_mib": rss,
+            "viewer_config": viewer_config_json,
         })
         .to_string();
         (payload, patch_cost, "ops")
