@@ -203,6 +203,11 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
     -- Absolute path to the binary if it isn't on $PATH.
     -- cmd = "/usr/local/bin/mathpreview-cli",
 
+    -- Where the auto-install / `build` hook puts the binary. nil = cargo
+    -- default (~/.cargo/bin). A prefix like "~/.local" installs to
+    -- "~/.local/bin/mathpreview-cli" (passed to `cargo install --root`).
+    -- install_root = nil,
+
     -- Set to false if you don't want :MathPreview to also open a browser tab.
     -- auto_open_browser = true,
 
@@ -298,6 +303,36 @@ To update later: `git pull` from inside that directory, then re-run the
 `cargo install --path crates/cli --force` step so the binary tracks the
 plugin (or just run `:MathPreview` — it reinstalls on detecting skew). To
 remove: `rm -rf` it.
+
+#### Updating the binary
+
+The plugin and binary version together (`PLUGIN_VERSION` is bumped in lockstep
+with the crate). There are two ways the binary tracks a plugin update:
+
+1. **With a `build` hook** (`cargo install …` in your spec) — your plugin
+   manager reinstalls the binary whenever it updates the plugin:
+
+   ```vim
+   :Lazy update TexViewer   " pulls new commits AND runs the build hook
+   :Lazy build TexViewer    " force the build hook now, without a new commit
+   ```
+
+   (packer: `:PackerSync`; vim-plug: `:PlugUpdate sonv/TexViewer`.)
+
+2. **Without a hook** — on the next `:MathPreview`, if the plugin is newer
+   than the binary, the plugin reinstalls it automatically (you'll see
+   `binary X older than plugin Y — reinstalling…`). It also auto-installs the
+   first time when no binary is found.
+
+Either way, confirm what's live with:
+
+```vim
+:MathPreviewStatus   " check plugin_version == binary_version, and install_dir
+```
+
+then `:MathPreviewRestart` so a running daemon picks up the new binary. If
+`install_dir_on_path` is `false`, the binary still works (run by absolute
+path) but won't be on your shell `$PATH` until you add that dir.
 
 ### 3. Use it
 
