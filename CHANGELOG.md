@@ -17,6 +17,23 @@ summary.
 
 Nothing yet.
 
+## [0.1.29] — 2026-06-02
+
+### Added
+
+- **The plugin builds and rebuilds the binary itself — no plugin-manager
+  build hook required.** On `:MathPreview`, if no `mathpreview-cli` is found
+  and the checkout has the Rust sources + `cargo`, the plugin compiles it
+  in-place (`<checkout>/target/release/`) and starts once done. If the
+  in-checkout binary is older than the plugin (e.g. after `:Lazy update`
+  pulls a newer plugin), it rebuilds it first. Both cases show a
+  "building mathpreview-cli… please wait" notification so you know to wait
+  out the one-time ~20s compile, then start automatically. A current binary
+  starts immediately with no recompile; an explicit `cmd` or a `$PATH`
+  binary you manage yourself is never rebuilt (it only gets the skew
+  warning). The `build`/`run`/`do` hooks in the README are now optional —
+  their only edge is moving the compile to update time.
+
 ## [0.1.28] — 2026-06-02
 
 ### Added

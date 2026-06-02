@@ -28,7 +28,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- binary's `--version` and warn once on mismatch — that's the only signal
 -- you get that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.28"
+local PLUGIN_VERSION = "0.1.29"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -85,18 +85,28 @@ local last_status = {
 -- binary nags you once rather than on every :MathPreviewRestart.
 local version_warned = false
 
--- Path to a binary compiled inside this plugin checkout by the
--- plugin-manager `build` hook (`cargo build --release -p mathpreview-cli`).
--- init.lua lives at <root>/lua/mathpreview/init.lua, so three `:h` heads
--- climb back to the repo root; the cargo target is under it. This is what
--- makes "rebuild on plugin update" work without a separate $PATH install —
--- and because it's the same checkout as PLUGIN_VERSION, the two can't drift.
-local function bundled_binary_path()
+-- Root of this plugin's checkout. init.lua lives at
+-- <root>/lua/mathpreview/init.lua, so three `:h` heads climb back to <root>.
+local function plugin_root()
   local src = debug.getinfo(1, "S").source
   if src:sub(1, 1) == "@" then src = src:sub(2) end
-  local root = vim.fn.fnamemodify(src, ":h:h:h")
+  return vim.fn.fnamemodify(src, ":h:h:h")
+end
+
+-- Path to a binary compiled inside this plugin checkout (by the
+-- plugin-manager `build` hook, or by the runtime auto-build in M.start).
+-- The cargo target lives under the checkout root. This is what makes
+-- "rebuild on plugin update" work without a separate $PATH install — and
+-- because it's the same checkout as PLUGIN_VERSION, the two can't drift.
+local function bundled_binary_path()
   local exe = (vim.fn.has("win32") == 1) and "mathpreview-cli.exe" or "mathpreview-cli"
-  return root .. "/target/release/" .. exe
+  return plugin_root() .. "/target/release/" .. exe
+end
+
+-- True if this checkout has the Rust sources we'd need to compile the binary
+-- (i.e. it's a git/source install, not a binary-only drop).
+local function is_source_checkout()
+  return vim.fn.isdirectory(plugin_root() .. "/crates/cli") == 1
 end
 
 local function resolve_cmd()
@@ -138,6 +148,7 @@ local function run_system(args, opts, on_done)
   end
   local stdout, stderr = {}, {}
   local job = vim.fn.jobstart(args, {
+    cwd = opts.cwd,  -- nil → inherit nvim's cwd
     on_stdout = function(_, data) if data then vim.list_extend(stdout, data) end end,
     on_stderr = function(_, data) if data then vim.list_extend(stderr, data) end end,
     on_exit = function(_, code)
@@ -204,6 +215,40 @@ local function check_binary_version(cmd)
         ver, rel, PLUGIN_VERSION),
       vim.log.levels.WARN)
   end)
+end
+
+-- Guards against overlapping cargo builds (e.g. a second :MathPreview while
+-- the first is still compiling).
+local building = false
+
+-- Compile mathpreview-cli inside this checkout, async. Notifies on start
+-- (so the user knows to wait out the one-time ~20s release build) and on
+-- finish, then calls on_done(ok) on the main thread. Assumes the caller has
+-- already confirmed this is a source checkout with cargo available.
+local function auto_build(on_done)
+  if building then return end  -- a build is already in flight; its callback will start us
+  building = true
+  vim.notify(
+    "mathpreview: building mathpreview-cli (first run, ~20s) — please wait, "
+      .. ":MathPreview will start automatically when it finishes…",
+    vim.log.levels.INFO)
+  run_system(
+    { "cargo", "build", "--release", "-p", "mathpreview-cli" },
+    { cwd = plugin_root() },
+    function(res)
+      building = false
+      local ok = res and res.code == 0
+      if ok then
+        vim.notify("mathpreview: build complete — starting daemon.", vim.log.levels.INFO)
+      else
+        vim.notify(
+          ("mathpreview: build failed (cargo exit %s). See :messages; you can also "
+            .. "install the binary manually (README) or set `cmd` in setup().\n%s"):format(
+            res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
+          vim.log.levels.ERROR)
+      end
+      if on_done then on_done(ok) end
+    end)
 end
 
 -- True if `port` is free for binding on 127.0.0.1. Closes the probe
@@ -415,24 +460,10 @@ local function detach_autocmds()
   stop_jump_poll()
 end
 
-function M.start(opts)
-  opts = opts or {}
-  if daemon_job then
-    if config.auto_open_browser then
-      open_browser("http://127.0.0.1:" .. tostring(daemon_port) .. "/")
-    end
-    return
-  end
-  local cmd = resolve_cmd()
-  if not cmd then
-    vim.notify(
-      "mathpreview: `mathpreview-cli` not found on $PATH. " ..
-      "Install the binary first (see README), or set `cmd = '/path/to/mathpreview-cli'` in setup().",
-      vim.log.levels.ERROR)
-    return
-  end
-  -- Fire-and-forget skew check; warns (once) if the binary != PLUGIN_VERSION.
-  check_binary_version(cmd)
+-- Spawn the daemon for the current buffer using an already-resolved binary
+-- path `cmd`. Callers reach this through ensure_binary(), which guarantees
+-- the binary exists and is current first.
+local function start_with(cmd, opts)
   local root, err = current_root()
   if not root then
     vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
@@ -512,6 +543,79 @@ function M.start(opts)
   vim.notify(
     ("mathpreview: serving %s on http://127.0.0.1:%d"):format(vim.fn.fnamemodify(root, ":~"), port),
     vim.log.levels.INFO)
+end
+
+-- Resolve a usable binary — (re)building the in-checkout one as needed — then
+-- call on_ready(cmd). This is what gives "auto-build on first use" and
+-- "auto-rebuild on plugin update" with no plugin-manager build hook:
+--   * no binary + source checkout + cargo → build, then proceed
+--   * in-checkout binary older than this plugin → rebuild, then proceed
+--   * current in-checkout binary → proceed as-is
+--   * a $PATH/global binary (not ours to rebuild) → proceed, warn on skew
+-- Every (re)build emits auto_build's "building… please wait" notification.
+local function ensure_binary(on_ready)
+  local cmd = resolve_cmd()
+  local can_build = is_source_checkout() and vim.fn.executable("cargo") == 1
+
+  if not cmd then
+    if can_build then
+      auto_build(function(ok)
+        local built = resolve_cmd()
+        if ok and built then
+          on_ready(built)
+        elseif ok then
+          vim.notify(
+            "mathpreview: build reported success but no binary found at "
+              .. bundled_binary_path() .. " — see :messages.",
+            vim.log.levels.ERROR)
+        end
+        -- on failure auto_build already notified with the cargo error.
+      end)
+    else
+      vim.notify(
+        "mathpreview: `mathpreview-cli` not found on $PATH" ..
+        (is_source_checkout() and " and `cargo` is unavailable to build it. " or ". ") ..
+        "Install the binary first (see README), or set `cmd = '/path/to/mathpreview-cli'` in setup().",
+        vim.log.levels.ERROR)
+    end
+    return
+  end
+
+  -- A binary exists. If it's our in-checkout build and we can compile,
+  -- rebuild it when it's older than this plugin checkout (the
+  -- rebuild-on-update path). A $PATH/global binary isn't ours to rebuild, so
+  -- just run the async skew check (which warns) and use it as-is.
+  if can_build and cmd == bundled_binary_path() then
+    run_system({ cmd, "--version" }, {}, function(res)
+      local ver = (res and res.code == 0 and res.stdout)
+        and res.stdout:gsub("%s+$", ""):match("(%S+)%s*$") or nil
+      if ver then last_status.binary_version = ver end
+      if ver and semver_cmp(ver, PLUGIN_VERSION) < 0 then
+        vim.notify(
+          ("mathpreview: in-checkout binary %s is older than plugin %s — rebuilding…")
+            :format(ver, PLUGIN_VERSION),
+          vim.log.levels.INFO)
+        auto_build(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
+      else
+        on_ready(cmd)
+      end
+    end)
+    return
+  end
+
+  check_binary_version(cmd)  -- async; warns once if a $PATH binary is stale
+  on_ready(cmd)
+end
+
+function M.start(opts)
+  opts = opts or {}
+  if daemon_job then
+    if config.auto_open_browser then
+      open_browser("http://127.0.0.1:" .. tostring(daemon_port) .. "/")
+    end
+    return
+  end
+  ensure_binary(function(cmd) start_with(cmd, opts) end)
 end
 
 function M.stop()

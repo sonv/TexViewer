@@ -99,11 +99,16 @@ daemon thereafter.
 
 ### 1. The binary
 
-> **Shortcut:** if you use a plugin manager and have a Rust toolchain, add
-> the `build`/`run`/`do` hook shown in §2 and skip this section — the plugin
-> compiles `mathpreview-cli` inside its own checkout on install/update and
-> finds it automatically. This section is for installing the binary yourself
-> (no Rust toolchain, or you prefer a global install).
+> **Shortcut:** if you have a Rust toolchain, you can skip this section
+> entirely. The plugin **auto-builds `mathpreview-cli` inside its own
+> checkout on first `:MathPreview`** if no binary is found (you'll get a
+> "building… please wait" notice; it takes ~20s once), and finds that
+> in-checkout binary automatically thereafter. Add the `build`/`run`/`do`
+> hook shown in §2 to also recompile on every plugin *update* (otherwise the
+> first-run build is kept until you rebuild, and a version-skew warning
+> nudges you when the plugin moves ahead of the binary). This section is for
+> installing the binary yourself — no Rust toolchain, or you prefer a global
+> install.
 
 Pick whichever fits your toolchain:
 
@@ -151,17 +156,18 @@ The minimal version — drop into your `lazy` spec:
 {
   "sonv/TexViewer",
   ft = { "tex", "plaintex", "latex" },
-  -- Compiles mathpreview-cli inside the checkout on install/update.
-  -- Requires a Rust toolchain; lets you skip the separate binary install
-  -- in §1 and keeps the binary in lockstep with the plugin (no version
-  -- skew). Drop this line if you install the binary yourself.
+  -- Recompile on every plugin update (Rust toolchain required). Optional:
+  -- without it the plugin still auto-builds on first :MathPreview, but the
+  -- binary then stays put until you rebuild (a version-skew warning nudges
+  -- you). With it, `:Lazy update` keeps the binary in lockstep — no skew.
   build = "cargo build --release -p mathpreview-cli",
 }
 ```
 
-With the `build` hook, `:Lazy update` recompiles the binary every time the
-plugin updates, and the plugin finds that in-checkout binary automatically —
-no `$PATH` install and no chance of the plugin and binary drifting apart.
+The plugin finds the in-checkout binary automatically (no `$PATH` install).
+The `build` hook just moves the compile to update time so it can't drift and
+your first `:MathPreview` is instant; leaving it off only means the binary is
+built lazily on first use and refreshed manually.
 
 The fuller version with lazy-load triggers and an explicit `opts` table:
 
@@ -252,9 +258,10 @@ next launch:
 ```sh
 mkdir -p ~/.config/nvim/pack/sonv/start
 git clone https://github.com/sonv/TexViewer ~/.config/nvim/pack/sonv/start/mathpreview
-# Build the binary in-place (Rust toolchain). The plugin finds it under
-# the checkout's target/release/ automatically — no $PATH install needed.
-# Skip this if you installed the binary separately in §1.
+# Optional: pre-build so the first :MathPreview is instant. If you skip
+# this, the plugin auto-builds in-place on first use (Rust toolchain
+# required). Either way the binary lands in the checkout's target/release/
+# and the plugin finds it automatically — no $PATH install needed.
 ( cd ~/.config/nvim/pack/sonv/start/mathpreview && cargo build --release -p mathpreview-cli )
 ```
 
