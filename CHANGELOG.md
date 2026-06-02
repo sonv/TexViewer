@@ -17,6 +17,26 @@ summary.
 
 Nothing yet.
 
+## [0.1.23] — 2026-06-02
+
+### Changed
+
+- **Live updates inside a proof are much faster.** Editing one
+  paragraph of a long proof or theorem used to re-send and re-parse
+  the *entire* environment on every keystroke, because a proof is a
+  single render block. The server now diffs the proof body at the
+  paragraph level and pushes only the changed paragraph(s), so the
+  per-keystroke cost scales with the edit, not the size of the proof.
+  Typeset math in untouched paragraphs is preserved, and — as a side
+  effect of patching the block in place — a proof's fold state now
+  survives edits instead of resetting.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v65** so v0.1.22 tabs auto-reload on the
+  next reconnect and pick up the client side of the proof sub-block
+  patch (a new `blocksub` patch op).
+
 ## [0.1.22] — 2026-06-02
 
 ### Changed
