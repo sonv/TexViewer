@@ -17,6 +17,30 @@ summary.
 
 Nothing yet.
 
+## [0.1.17] — 2026-06-02
+
+### Added
+
+- **`log` toolbar button + Daemon-state dialog.** Click it to see
+  exactly where the daemon is reading config / macro overrides from,
+  which files are applied vs. missing, the currently-resolved
+  `viewer.font-size` / `source-jump.trigger` / page mode / theme,
+  the active `--editor` template, the WS protocol version, and a
+  scrolling tail of recent server events (config writes, macro
+  appends + registrations, config reloads, parse errors). Refresh
+  button re-fetches.
+- **`GET /debug`** HTTP endpoint backing the dialog — JSON
+  snapshot, safe to poll, identical info you'd see in the dialog.
+- **Server log ring buffer** capped at 400 entries that mirrors the
+  most useful `eprintln!` lines so you can read them in the
+  browser without having to find the terminal that started the
+  daemon.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v59** so v0.1.16 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.16] — 2026-06-02
 
 ### Changed
@@ -543,7 +567,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/sonv/TexViewer/releases/tag/v0.1.17
 [0.1.16]: https://github.com/sonv/TexViewer/releases/tag/v0.1.16
 [0.1.15]: https://github.com/sonv/TexViewer/releases/tag/v0.1.15
 [0.1.14]: https://github.com/sonv/TexViewer/releases/tag/v0.1.14

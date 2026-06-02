@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "58";
+const WS_PROTOCOL_VERSION: &str = "59";
 
 #[derive(Clone)]
 struct AppState {
@@ -96,6 +96,22 @@ struct AppState {
     /// when nothing changed. Invalidated by mtime on the next render
     /// the file is touched.
     file_content_cache: Arc<RwLock<HashMap<PathBuf, CachedFile>>>,
+    /// Ring buffer of recent server log entries surfaced in the
+    /// viewer's "log" dialog. Capped at `LOG_BUFFER_CAP` newest
+    /// entries. Mirrors what's also eprintln!'d to the terminal.
+    log_buffer: Arc<RwLock<std::collections::VecDeque<LogEntry>>>,
+}
+
+const LOG_BUFFER_CAP: usize = 400;
+
+/// One server-side log entry. `level` is one of `"info"`, `"warn"`,
+/// `"error"`. `ts_ms` is the Unix-millisecond timestamp at capture
+/// time so the client can render relative ages.
+#[derive(Debug, Clone, Serialize)]
+struct LogEntry {
+    level: &'static str,
+    ts_ms: u128,
+    message: String,
 }
 
 struct PreambleCache {
@@ -152,6 +168,89 @@ async fn load_override_layers(
         }
     }
     out
+}
+
+/// Push one log entry into the ring buffer + emit to stderr. Trims
+/// the oldest entries when the buffer exceeds `LOG_BUFFER_CAP`.
+/// Mirrors plain `eprintln!` so behaviour from the terminal is
+/// unchanged; the buffer just makes the same lines reachable from
+/// the viewer's "log" dialog.
+async fn log_event(state: &AppState, level: &'static str, message: String) {
+    eprintln!("mathpreview: {message}");
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut buf = state.log_buffer.write().await;
+    if buf.len() >= LOG_BUFFER_CAP {
+        let drop = buf.len() + 1 - LOG_BUFFER_CAP;
+        for _ in 0..drop {
+            buf.pop_front();
+        }
+    }
+    buf.push_back(LogEntry {
+        level,
+        ts_ms,
+        message,
+    });
+}
+
+/// `GET /debug` — JSON snapshot of the daemon's current state for the
+/// viewer's log dialog. Includes the config / macro cascade
+/// (resolved paths + whether each file exists on disk), the
+/// currently-applied viewer config, the editor template, the WS
+/// protocol version, and the tail of the in-memory log ring buffer.
+/// Read-only; safe to call at any time.
+async fn serve_debug(State(state): State<AppState>) -> Response {
+    let viewer_config = state.viewer_config.read().await.clone();
+    let session_macros = state.session_macros.read().await.clone();
+    let log: Vec<LogEntry> = state.log_buffer.read().await.iter().cloned().collect();
+
+    let config_paths: Vec<_> = state
+        .config_paths
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "path": p,
+                "exists": p.is_file(),
+            })
+        })
+        .collect();
+
+    let macro_paths: Vec<_> = state
+        .opts
+        .macro_overrides
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "path": p,
+                "exists": p.is_file(),
+                "source": "startup",
+            })
+        })
+        .chain(session_macros.iter().map(|p| {
+            serde_json::json!({
+                "path": p,
+                "exists": p.is_file(),
+                "source": "session",
+            })
+        }))
+        .collect();
+
+    Json(serde_json::json!({
+        "ws_protocol": WS_PROTOCOL_VERSION,
+        "editor_cmd": state.editor_cmd.as_ref(),
+        "viewer_config": {
+            "font_size": viewer_config.font_size,
+            "default_page_mode": viewer_config.default_page_mode.as_str(),
+            "default_theme": viewer_config.default_theme.as_str(),
+            "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
+        },
+        "config_paths": config_paths,
+        "macro_paths": macro_paths,
+        "log": log,
+    }))
+    .into_response()
 }
 
 /// Mtime-cached equivalent of `mathpreview_core::load_and_merge_config`.
@@ -351,6 +450,7 @@ pub async fn run(
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+        log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
     };
 
     spawn_watcher(state.clone(), watch_rx);
@@ -368,6 +468,7 @@ pub async fn run(
         .route("/macros/append", post(serve_macros_append))
         .route("/macros/register", post(serve_macros_register))
         .route("/config/set", post(serve_config_set))
+        .route("/debug", get(serve_debug))
         .route("/print", post(serve_print))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
@@ -861,11 +962,16 @@ async fn serve_macros_append(
         eprintln!("mathpreview: macros append re-render failed: {e:#}");
     }
 
-    eprintln!(
-        "mathpreview: appended \\{macro_name} to {} (scope={})",
-        target.display(),
-        req.scope,
-    );
+    log_event(
+        &state,
+        "info",
+        format!(
+            "macros: appended \\{macro_name} to {} (scope={})",
+            target.display(),
+            req.scope,
+        ),
+    )
+    .await;
     Json(serde_json::json!({
         "name": macro_name,
         "file": target,
@@ -988,11 +1094,16 @@ async fn serve_config_set(
         eprintln!("mathpreview: config-set re-render failed: {e:#}");
     }
 
-    eprintln!(
-        "mathpreview: wrote {} field(s) to {}",
-        req.values.len(),
-        target.display()
-    );
+    log_event(
+        &state,
+        "info",
+        format!(
+            "config: wrote {} field(s) to {}",
+            req.values.len(),
+            target.display(),
+        ),
+    )
+    .await;
     Json(serde_json::json!({ "file": target, "fields": req.values.len() })).into_response()
 }
 
@@ -1136,7 +1247,12 @@ async fn serve_macros_register(
         eprintln!("mathpreview: macros register re-render failed: {e:#}");
     }
 
-    eprintln!("mathpreview: registered override {}", target.display());
+    log_event(
+        &state,
+        "info",
+        format!("macros: registered override {}", target.display()),
+    )
+    .await;
     Json(serde_json::json!({ "file": target })).into_response()
 }
 
@@ -1703,8 +1819,29 @@ async fn render_cached(
     // from the dialog) takes effect without restarting the daemon.
     // Routed through the per-daemon mtime cache so unchanged files
     // skip disk I/O on the hot path.
-    if let Ok(resolved) = load_and_merge_config_cached(state).await {
-        *state.viewer_config.write().await = resolved.viewer;
+    match load_and_merge_config_cached(state).await {
+        Ok(resolved) => {
+            let mut guard = state.viewer_config.write().await;
+            if *guard != resolved.viewer {
+                *guard = resolved.viewer.clone();
+                drop(guard);
+                log_event(
+                    state,
+                    "info",
+                    format!(
+                        "config reloaded: font-size={}, source-jump-trigger={}, default-page-mode={}, default-theme={}",
+                        resolved.viewer.font_size,
+                        resolved.viewer.source_jump_trigger.as_str(),
+                        resolved.viewer.default_page_mode.as_str(),
+                        resolved.viewer.default_theme.as_str(),
+                    ),
+                )
+                .await;
+            }
+        }
+        Err(e) => {
+            log_event(state, "error", format!("config parse failed: {e:#}")).await;
+        }
     }
     let live_viewer_config = state.viewer_config.read().await.clone();
     let mut render_opts = state.opts.clone();
@@ -2585,6 +2722,7 @@ Second paragraph here.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
         };
 
         let older = begin_render_attempt(&state);
@@ -2974,6 +3112,7 @@ Second paragraph here.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -3065,6 +3204,7 @@ Second paragraph here.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
         };
 
         let mut headers = axum::http::HeaderMap::new();

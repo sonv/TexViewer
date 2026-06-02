@@ -133,6 +133,7 @@ body.topbar-hidden .topbar { display: none; }
 .lineno-toggle,
 .macros-toggle,
 .config-toggle,
+.log-toggle,
 .margin-toggle,
 .theme-toggle,
 .server-restart,
@@ -153,6 +154,7 @@ body.topbar-hidden .topbar { display: none; }
 .lineno-toggle:hover,
 .macros-toggle:hover,
 .config-toggle:hover,
+.log-toggle:hover,
 .margin-toggle:hover,
 .theme-toggle:hover,
 .server-restart:hover:not(:disabled),
@@ -1174,6 +1176,42 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   font-size: 12px;
   background: var(--bg);
   color: var(--fg);
+}
+
+/* Log dialog reuses macros-dialog frame; needs its own viewers for
+   the structured state block and the freeform log-entry tail. */
+.log-dialog { max-width: 720px; width: min(720px, calc(100vw - 32px)); }
+.log-dialog-state {
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: var(--fg);
+}
+.log-dialog-state .log-section { font-weight: 700; margin-top: 6px; }
+.log-dialog-state .log-key { color: var(--muted); }
+.log-dialog-state .log-bad { color: var(--omitted); }
+.log-dialog-state .log-ok  { color: var(--supporting); }
+.log-dialog-entries {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow: auto;
+  color: var(--fg);
+  white-space: pre-wrap;
 }
 .macros-dialog-input:focus {
   outline: 2px solid var(--accent);

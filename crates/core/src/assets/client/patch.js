@@ -299,6 +299,23 @@
       submitConfigDialog();
       return;
     }
+    var logToggle = e.target.closest('#log-toggle');
+    if (logToggle) {
+      openLogDialog();
+      return;
+    }
+    var logRefresh = e.target.closest('#log-dialog-refresh');
+    if (logRefresh) {
+      e.preventDefault();
+      refreshLogDialog();
+      return;
+    }
+    var logClose = e.target.closest('#log-dialog-close');
+    if (logClose) {
+      e.preventDefault();
+      closeLogDialog();
+      return;
+    }
     var marginToggle = e.target.closest('#margin-toggle');
     if (marginToggle) {
       setMarginMode(!marginMode, true);

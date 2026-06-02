@@ -1504,6 +1504,91 @@
     }
   }
 
+  function logDialogEl() { return document.getElementById('log-dialog'); }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function renderLogState(snapshot) {
+    var lines = [];
+    function row(key, value, cls) {
+      var v = escapeHtml(value);
+      if (cls) v = '<span class="' + cls + '">' + v + '</span>';
+      lines.push('<span class="log-key">' + escapeHtml(key) + ':</span> ' + v);
+    }
+    function section(title) {
+      lines.push('<span class="log-section">' + escapeHtml(title) + '</span>');
+    }
+    section('viewer config (live)');
+    var vc = snapshot.viewer_config || {};
+    row('font-size', vc.font_size + ' px');
+    row('source-jump trigger', vc.source_jump_trigger);
+    row('default page mode', vc.default_page_mode);
+    row('default theme', vc.default_theme);
+    row('WS protocol', snapshot.ws_protocol);
+    section('editor template');
+    lines.push(escapeHtml(snapshot.editor_cmd || '(none)'));
+    section('config files (cascade order, last wins)');
+    (snapshot.config_paths || []).forEach(function(c) {
+      var marker = c.exists ? '<span class="log-ok">[applied]</span>'
+                            : '<span class="log-bad">[missing]</span>';
+      lines.push(marker + ' ' + escapeHtml(c.path));
+    });
+    section('macro override files');
+    (snapshot.macro_paths || []).forEach(function(m) {
+      var marker = m.exists ? '<span class="log-ok">[applied]</span>'
+                            : '<span class="log-bad">[missing]</span>';
+      var src = ' <span class="log-key">(' + escapeHtml(m.source) + ')</span>';
+      lines.push(marker + src + ' ' + escapeHtml(m.path));
+    });
+    return lines.join('\n');
+  }
+
+  function renderLogEntries(snapshot) {
+    var entries = snapshot.log || [];
+    if (!entries.length) return '(no events yet)';
+    return entries.map(function(e) {
+      var d = new Date(e.ts_ms);
+      var hh = String(d.getHours()).padStart(2, '0');
+      var mm = String(d.getMinutes()).padStart(2, '0');
+      var ss = String(d.getSeconds()).padStart(2, '0');
+      var prefix = '[' + hh + ':' + mm + ':' + ss + ' ' + e.level + '] ';
+      return escapeHtml(prefix + e.message);
+    }).join('\n');
+  }
+
+  async function refreshLogDialog() {
+    var stateEl = document.getElementById('log-dialog-state');
+    var entriesEl = document.getElementById('log-dialog-entries');
+    if (!stateEl || !entriesEl) return;
+    stateEl.innerHTML = 'Loading…';
+    entriesEl.textContent = '';
+    try {
+      var res = await fetch('/debug', { cache: 'no-store' });
+      var snapshot = await res.json();
+      stateEl.innerHTML = renderLogState(snapshot);
+      entriesEl.textContent = renderLogEntries(snapshot);
+      entriesEl.scrollTop = entriesEl.scrollHeight;
+    } catch (e) {
+      stateEl.textContent = 'fetch /debug failed: ' + (e && e.message || e);
+    }
+  }
+
+  function openLogDialog() {
+    var dlg = logDialogEl();
+    if (!dlg || typeof dlg.showModal !== 'function') return;
+    dlg.showModal();
+    refreshLogDialog();
+  }
+
+  function closeLogDialog() {
+    var dlg = logDialogEl();
+    if (dlg && dlg.open) dlg.close();
+  }
+
   function openCmdline(initial) {
     var line = cmdlineEl();
     var input = cmdlineInputEl();

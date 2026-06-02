@@ -135,6 +135,7 @@ pub(super) fn wrap_in_shell(
     <button class="lineno-toggle" id="lineno-toggle" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
     <button class="macros-toggle" id="macros-toggle" type="button" title="add a \\newcommand override for the viewer">macros</button>
     <button class="config-toggle" id="config-toggle" type="button" title="edit viewer config (font size, source-jump trigger, default mode/theme)">config</button>
+    <button class="log-toggle" id="log-toggle" type="button" title="show daemon state + recent log entries">log</button>
     <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
@@ -261,6 +262,21 @@ pub(super) fn wrap_in_shell(
     <div class="macros-dialog-actions">
       <button type="button" class="macros-dialog-cancel" id="config-dialog-cancel">Cancel</button>
       <button type="submit" class="macros-dialog-save" id="config-dialog-save">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="macros-dialog log-dialog" id="log-dialog">
+  <form method="dialog" class="macros-dialog-form" id="log-dialog-form">
+    <h2 class="macros-dialog-title">Daemon state + log</h2>
+    <p class="macros-dialog-hint">
+      Live snapshot of what the daemon is loading and the tail of its
+      log buffer. Useful for "where is my setting going?" debugging.
+    </p>
+    <div class="log-dialog-state" id="log-dialog-state">Loading…</div>
+    <pre class="log-dialog-entries" id="log-dialog-entries"></pre>
+    <div class="macros-dialog-actions">
+      <button type="button" class="macros-dialog-cancel" id="log-dialog-refresh">Refresh</button>
+      <button type="button" class="macros-dialog-save" id="log-dialog-close">Close</button>
     </div>
   </form>
 </dialog>
