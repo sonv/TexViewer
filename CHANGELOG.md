@@ -17,6 +17,30 @@ summary.
 
 Nothing yet.
 
+## [0.1.15] — 2026-06-02
+
+### Changed
+
+- **Mtime-cached override + config file reads.** v0.1.13 routed every
+  render through `std::fs::read_to_string` for each override file and
+  TOML config file in the cascade, on the buffer-push hot path. The
+  reads themselves are fast on macOS, but the work adds up under
+  per-keystroke typing. Replaced with a `(path → mtime, content)`
+  cache: on each render we `stat()` once per file, and only re-read
+  if the mtime changed. Identity hits stay zero-syscall.
+- **Release builds use `lto = "thin"` and `codegen-units = 1`.** Frees
+  up cross-crate inlining for the parser + renderer hot path; modest
+  speedup at the cost of slightly slower release builds locally.
+- **One small allocation removed from the body parser inner loop.**
+  Previously `parse_block_into` called `format!("\\end{{{env}}}")`
+  on every byte iteration when a stop-env was set; now formatted once
+  outside the loop.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v57** so v0.1.14 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.14] — 2026-06-01
 
 ### Fixed
@@ -497,7 +521,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/sonv/TexViewer/releases/tag/v0.1.15
 [0.1.14]: https://github.com/sonv/TexViewer/releases/tag/v0.1.14
 [0.1.13]: https://github.com/sonv/TexViewer/releases/tag/v0.1.13
 [0.1.12]: https://github.com/sonv/TexViewer/releases/tag/v0.1.12

@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "56";
+const WS_PROTOCOL_VERSION: &str = "57";
 
 #[derive(Clone)]
 struct AppState {
@@ -91,6 +91,11 @@ struct AppState {
     /// the *live* value lives here.
     config_paths: Arc<Vec<PathBuf>>,
     viewer_config: Arc<RwLock<mathpreview_core::ResolvedViewerConfig>>,
+    /// Per-render hot path: cache of `(path → content + mtime)` so
+    /// override / config file reads on every render skip disk I/O
+    /// when nothing changed. Invalidated by mtime on the next render
+    /// the file is touched.
+    file_content_cache: Arc<RwLock<HashMap<PathBuf, CachedFile>>>,
 }
 
 struct PreambleCache {
@@ -128,18 +133,78 @@ async fn effective_override_paths(state: &AppState) -> Vec<PathBuf> {
 /// `finish_render` in core does), so the daemon can list "would-be"
 /// paths like a `.mathpreview-macros.tex` that hasn't been created
 /// yet without failing the render.
-fn load_override_layers(paths: &[PathBuf]) -> Vec<mathpreview_core::MacroOverride> {
-    paths
-        .iter()
-        .filter_map(|p| {
-            std::fs::read_to_string(p)
-                .ok()
-                .map(|source| mathpreview_core::MacroOverride {
-                    label: p.clone(),
-                    source,
-                })
-        })
-        .collect()
+///
+/// Hot path: called on every render. We avoid re-reading from disk
+/// when the file's mtime hasn't changed by consulting a small per-
+/// daemon cache (`AppState.file_content_cache`). Misses fall back to
+/// a normal read + insert.
+async fn load_override_layers(
+    state: &AppState,
+    paths: &[PathBuf],
+) -> Vec<mathpreview_core::MacroOverride> {
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        if let Some(source) = read_cached(state, p).await {
+            out.push(mathpreview_core::MacroOverride {
+                label: p.clone(),
+                source,
+            });
+        }
+    }
+    out
+}
+
+/// Mtime-cached equivalent of `mathpreview_core::load_and_merge_config`.
+/// Reads each path through `read_cached` so unchanged TOML files skip
+/// the disk on the render hot path.
+async fn load_and_merge_config_cached(
+    state: &AppState,
+) -> anyhow::Result<mathpreview_core::ResolvedConfig> {
+    let mut merged = mathpreview_core::Config::default();
+    for p in state.config_paths.iter() {
+        if let Some(src) = read_cached(state, p).await {
+            let layer = mathpreview_core::Config::parse(&src, p)?;
+            merged.merge(layer);
+        }
+    }
+    Ok(merged.resolve())
+}
+
+/// Mtime-keyed file-content cache entry. `mtime = None` means we cached
+/// a "file does not exist" lookup; on subsequent calls we still
+/// re-stat (cheap) and only re-read if the existence/mtime changed.
+#[derive(Debug, Clone)]
+struct CachedFile {
+    mtime: Option<std::time::SystemTime>,
+    content: Option<String>,
+}
+
+/// Read `path`'s contents, going through the daemon's file-content
+/// cache. Returns `None` if the file does not exist (matches the
+/// previous `fs::read_to_string(p).ok()` behaviour).
+async fn read_cached(state: &AppState, path: &Path) -> Option<String> {
+    let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    {
+        let cache = state.file_content_cache.read().await;
+        if let Some(entry) = cache.get(path) {
+            if entry.mtime == mtime {
+                return entry.content.clone();
+            }
+        }
+    }
+    let content = match mtime {
+        Some(_) => std::fs::read_to_string(path).ok(),
+        None => None,
+    };
+    let mut cache = state.file_content_cache.write().await;
+    cache.insert(
+        path.to_path_buf(),
+        CachedFile {
+            mtime,
+            content: content.clone(),
+        },
+    );
+    content
 }
 
 /// Hash the override-file paths AND the contents of the files that
@@ -285,6 +350,7 @@ pub async fn run(
         session_macros: Arc::new(RwLock::new(Vec::new())),
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
+        file_content_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     spawn_watcher(state.clone(), watch_rx);
@@ -1593,7 +1659,7 @@ async fn render_cached(
     // hashes identical, which is the common-case hit we want.
     let pre_hash = fnv_hash(&project.preamble.source);
     let effective_paths = effective_override_paths(state).await;
-    let overrides = load_override_layers(&effective_paths);
+    let overrides = load_override_layers(state, &effective_paths).await;
     let overrides_hash = fingerprint_overrides(&effective_paths, &overrides);
     let t1 = std::time::Instant::now();
     let (preamble, bib, bib_style) = {
@@ -1635,11 +1701,9 @@ async fn render_cached(
     // Reload the config cascade from disk on every render so an edit
     // to `.mathpreview.toml` in your editor (or a `POST /config/set`
     // from the dialog) takes effect without restarting the daemon.
-    // The files are tiny TOML so the parse cost is negligible compared
-    // to the rest of the render.
-    if let Ok((resolved, _)) =
-        mathpreview_core::load_and_merge_config(state.config_paths.as_ref())
-    {
+    // Routed through the per-daemon mtime cache so unchanged files
+    // skip disk I/O on the hot path.
+    if let Ok(resolved) = load_and_merge_config_cached(state).await {
         *state.viewer_config.write().await = resolved.viewer;
     }
     let live_viewer_config = state.viewer_config.read().await.clone();
@@ -2520,6 +2584,7 @@ Second paragraph here.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let older = begin_render_attempt(&state);
@@ -2908,6 +2973,7 @@ Second paragraph here.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -2998,6 +3064,7 @@ Second paragraph here.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let mut headers = axum::http::HeaderMap::new();

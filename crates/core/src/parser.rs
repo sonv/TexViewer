@@ -128,6 +128,13 @@ impl<'a> Parser<'a> {
         let mut text_start: Option<Pos> = None;
         let mut text_buf = String::new();
 
+        // Format the stop-sentinel once before the loop, not on every
+        // byte. The previous `format!("\\end{{{env}}}")` inside the
+        // hot path allocated a fresh String per iteration — on a 100 KB
+        // body with nested environments that's tens of thousands of
+        // allocations and was the dominant cost of `parse_body`.
+        let stop_sentinel = stop_env.map(|env| format!("\\end{{{env}}}"));
+
         let flush_text = |text_buf: &mut String,
                           text_start: &mut Option<Pos>,
                           out: &mut Vec<Node>,
@@ -155,8 +162,8 @@ impl<'a> Parser<'a> {
 
         while !self.at_end() {
             // \end{stop_env}? — caller wants us to stop.
-            if let Some(env) = stop_env {
-                if self.starts_with(&format!("\\end{{{env}}}")) {
+            if let Some(sentinel) = stop_sentinel.as_deref() {
+                if self.starts_with(sentinel) {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     return;
                 }
