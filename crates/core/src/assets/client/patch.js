@@ -832,6 +832,60 @@
             insertedBlocks += inserted;
           }
           replacedBlocks += Math.min(removeCount, inserted);
+        } else if (op.type === 'blocksub') {
+          // In-block sub-diff: the server kept the proof/theorem scaffolding
+          // and only re-sent a contiguous run of changed body-child elements.
+          // We splice them into the existing block element, so the typeset
+          // MathJax in every unchanged proof paragraph stays put.
+          var bsBlocks = pageBlocks(page);
+          var bsBlock = bsBlocks[op.index || 0];
+          var bsBody = bsBlock && bsBlock.querySelector
+            ? bsBlock.querySelector('.proof-body, .thm-body')
+            : null;
+          if (bsBody) {
+            var bsKids = bsBody.children;
+            var bsStart = Math.max(0, Math.min(op.child_index || 0, bsKids.length));
+            var bsRemove = Math.max(0, Math.min(op.remove || 0, bsKids.length - bsStart));
+            var bsBefore = bsStart > 0 ? bsKids[bsStart - 1] : null;
+            var bsAfter = bsKids[bsStart + bsRemove] || null;
+
+            // Pool math from the elements about to be removed so unchanged
+            // math inside the edited paragraph transplants (keeps its SVG).
+            var bsPool = new Map();
+            for (var bsd = 0; bsd < bsRemove; bsd++) {
+              var bsRmEl = bsKids[bsStart + bsd];
+              if (bsRmEl) indexMathByHash(bsRmEl, bsPool);
+            }
+
+            tpl.innerHTML = op.html || '';
+            var bsFrag = tpl.content;
+            bsFrag.querySelectorAll('.math[data-hash]').forEach(function(newEl) {
+              totalMath++;
+              var pool = bsPool.get(newEl.dataset.hash);
+              if (pool && pool.length > 0) {
+                var oldEl = pool.shift();
+                syncReusedMathNode(oldEl, newEl);
+                newEl.replaceWith(oldEl);
+                reusedMath++;
+              } else {
+                needTypeset.push(newEl);
+              }
+            });
+
+            // Remove old nodes in [bsBefore, bsAfter), carrying whitespace
+            // text nodes between elements along with them.
+            var bsCur = bsBefore ? bsBefore.nextSibling : bsBody.firstChild;
+            while (bsCur && bsCur !== bsAfter) {
+              var bsNext = bsCur.nextSibling;
+              bsBody.removeChild(bsCur);
+              bsCur = bsNext;
+            }
+            if (bsAfter) bsBody.insertBefore(bsFrag, bsAfter);
+            else bsBody.appendChild(bsFrag);
+
+            clearRemovedMath(leftoverMath(bsPool));
+            replacedBlocks++;
+          }
         } else if (op.type === 'rebuild') {
           var rbBlocks = pageBlocks(page);
           var rbStart = Math.max(0, Math.min(op.start || 0, rbBlocks.length));

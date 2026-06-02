@@ -2066,6 +2066,19 @@ enum PatchOp {
         old_count: usize,
         plan: Vec<PlanSlot>,
     },
+    /// In-block sub-diff for a theorem/proof block whose scaffolding is
+    /// unchanged: replace `remove` body-child elements starting at
+    /// `child_index` (within the block at top-level position `index`) with
+    /// `html`. Keeps the block element — and the typeset MathJax in every
+    /// unchanged proof paragraph — in place, so a one-paragraph edit inside a
+    /// long proof no longer re-sends or re-parses the whole proof.
+    BlockSub {
+        index: usize,
+        child_index: usize,
+        remove: usize,
+        insert: usize,
+        html: String,
+    },
 }
 
 #[derive(Debug)]
@@ -2086,6 +2099,20 @@ impl PatchOp {
                 html,
             } => serde_json::json!({
                 "type": "range", "index": index, "remove": remove, "insert": insert, "html": html,
+            }),
+            PatchOp::BlockSub {
+                index,
+                child_index,
+                remove,
+                insert,
+                html,
+            } => serde_json::json!({
+                "type": "blocksub",
+                "index": index,
+                "child_index": child_index,
+                "remove": remove,
+                "insert": insert,
+                "html": html,
             }),
             PatchOp::Rebuild {
                 start,
@@ -2112,6 +2139,7 @@ impl PatchOp {
     fn cost(&self) -> usize {
         match self {
             PatchOp::ReplaceRange { remove, insert, .. } => *remove + *insert,
+            PatchOp::BlockSub { remove, insert, .. } => *remove + *insert,
             // Rebuild cost = number of fresh inserts (reused blocks are essentially free).
             PatchOp::Rebuild { plan, .. } => plan
                 .iter()
@@ -2256,6 +2284,11 @@ fn single_range(
     new_mid: &[RenderedBlock],
     prefix: usize,
 ) -> Vec<PatchOp> {
+    if old_mid.len() == 1 && new_mid.len() == 1 {
+        if let Some(op) = try_sub_diff(&old_mid[0], &new_mid[0], prefix) {
+            return vec![op];
+        }
+    }
     let html = new_mid
         .iter()
         .map(|block| block.html.as_str())
@@ -2266,6 +2299,51 @@ fn single_range(
         insert: new_mid.len(),
         html,
     }]
+}
+
+/// Try to express a single changed theorem/proof block as an in-block
+/// sub-diff. Returns `None` (caller falls back to a full block replace) when
+/// either side lacks captured sub-structure, the scaffolding (head / number)
+/// changed, or the entire body changed (no prefix/suffix to reuse, so a
+/// `BlockSub` would save nothing).
+fn try_sub_diff(old: &RenderedBlock, new: &RenderedBlock, index: usize) -> Option<PatchOp> {
+    let (o, n) = (old.sub_blocks.as_ref()?, new.sub_blocks.as_ref()?);
+    if o.prefix_diff != n.prefix_diff || o.suffix_diff != n.suffix_diff {
+        return None;
+    }
+
+    let mut p = 0;
+    while p < o.children.len()
+        && p < n.children.len()
+        && o.children[p].diff_hash == n.children[p].diff_hash
+    {
+        p += 1;
+    }
+    let mut o_end = o.children.len();
+    let mut n_end = n.children.len();
+    while o_end > p && n_end > p && o.children[o_end - 1].diff_hash == n.children[n_end - 1].diff_hash
+    {
+        o_end -= 1;
+        n_end -= 1;
+    }
+
+    let remove = o_end - p;
+    let insert = n_end - p;
+    // Nothing reused on either side → a full replace is simpler and no larger.
+    if remove == o.children.len() && insert == n.children.len() {
+        return None;
+    }
+    let html: String = n.children[p..n_end]
+        .iter()
+        .map(|c| c.html.as_str())
+        .collect();
+    Some(PatchOp::BlockSub {
+        index,
+        child_index: p,
+        remove,
+        insert,
+        html,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2279,11 +2357,18 @@ fn emit_range_op(
     new_end: usize,
     prefix: usize,
 ) {
+    if old_end - old_start == 1 && new_end - new_start == 1 {
+        if let Some(op) =
+            try_sub_diff(&old_mid[old_start], &new_mid[new_start], prefix + old_start)
+        {
+            ops.push(op);
+            return;
+        }
+    }
     let html = new_mid[new_start..new_end]
         .iter()
         .map(|block| block.html.as_str())
         .collect::<String>();
-    let _ = old_mid;
     ops.push(PatchOp::ReplaceRange {
         index: prefix + old_start,
         remove: old_end - old_start,
@@ -2786,6 +2871,102 @@ Second paragraph here.
         );
     }
 
+    const MULTI_PARA_PROOF: &str = "\
+\\documentclass{article}
+\\begin{document}
+\\begin{proof}
+First paragraph with math $a+b$.
+
+Second paragraph here.
+
+Third paragraph with $x^2$.
+\\end{proof}
+\\end{document}
+";
+
+    fn render_src(src: &str) -> RenderOutput {
+        mathpreview_core::render_project_from_source(
+            &PathBuf::from("main.tex"),
+            src.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap()
+    }
+
+    /// Editing one paragraph inside a multi-paragraph proof must produce a
+    /// single in-block `BlockSub` op whose payload carries only the changed
+    /// paragraph — not the whole proof. This is the proof-edit latency fix.
+    #[test]
+    fn proof_paragraph_edit_emits_blocksub_with_only_changed_para() {
+        let old = render_src(MULTI_PARA_PROOF);
+        let new = render_src(&MULTI_PARA_PROOF.replace(
+            "Second paragraph here.",
+            "Second paragraph edited.",
+        ));
+
+        // Sanity: the proof is one top-level block with captured sub-structure.
+        assert_eq!(old.blocks.len(), 1, "proof should be a single block");
+        assert!(
+            old.blocks[0].sub_blocks.is_some(),
+            "proof block should capture sub-block structure"
+        );
+
+        let ops = diff_blocks(&old.blocks, &new.blocks);
+        assert_eq!(ops.len(), 1, "expected one op, got {ops:?}");
+        let PatchOp::BlockSub {
+            index,
+            child_index,
+            remove,
+            insert,
+            html,
+        } = &ops[0]
+        else {
+            panic!("expected BlockSub, got {:?}", ops[0]);
+        };
+        assert_eq!(*index, 0);
+        assert!(*child_index > 0, "leading paragraphs should be reused");
+        assert!(*remove >= 1 && *insert >= 1);
+        assert!(html.contains("edited"), "payload must carry the new text");
+        assert!(
+            !html.contains("First paragraph"),
+            "unchanged leading paragraph must not be re-sent: {html}"
+        );
+        assert!(
+            !html.contains("Third paragraph"),
+            "unchanged trailing paragraph must not be re-sent: {html}"
+        );
+    }
+
+    /// Changing the proof's head (`\\begin{proof}[of ...]`) alters the
+    /// scaffolding, so the sub-diff must bail and fall back to a full block
+    /// replace rather than silently leaving a stale head on the page.
+    #[test]
+    fn proof_head_change_falls_back_to_full_replace() {
+        let old = render_src(
+            "\\documentclass{article}\n\\begin{document}\n\\begin{proof}[of Lemma 1]\nBody text here.\n\\end{proof}\n\\end{document}\n",
+        );
+        let new = render_src(
+            "\\documentclass{article}\n\\begin{document}\n\\begin{proof}[of Lemma 2]\nBody text here.\n\\end{proof}\n\\end{document}\n",
+        );
+        let ops = diff_blocks(&old.blocks, &new.blocks);
+        assert_eq!(ops.len(), 1);
+        assert!(
+            matches!(ops[0], PatchOp::ReplaceRange { .. }),
+            "head change should fall back to ReplaceRange, got {:?}",
+            ops[0]
+        );
+    }
+
+    /// Ordinary paragraph blocks carry no sub-structure and keep using the
+    /// compact whole-block ReplaceRange path.
+    #[test]
+    fn plain_paragraph_has_no_sub_blocks() {
+        let out = render_src(
+            "\\documentclass{article}\n\\begin{document}\nJust a plain paragraph.\n\\end{document}\n",
+        );
+        assert!(out.blocks.iter().all(|b| b.sub_blocks.is_none()));
+    }
+
     #[test]
     fn rendered_line_insertion_before_math_paragraph_is_compact_patch() {
         let old = mathpreview_core::render_project_from_source(
@@ -2898,6 +3079,7 @@ Second paragraph here.
             source_anchors: Vec::new(),
             diff_hash: diff_hash.to_string(),
             html: html.to_string(),
+            sub_blocks: None,
         }
     }
 
@@ -3169,6 +3351,7 @@ Second paragraph here.
             .map(|op| match op {
                 PatchOp::ReplaceRange { index, .. } => *index,
                 PatchOp::Rebuild { .. } => panic!("unexpected Rebuild in pure-edit case"),
+                PatchOp::BlockSub { .. } => panic!("unexpected BlockSub in pure-edit case"),
             })
             .collect();
         assert_eq!(indices, vec![7, 4, 1]);

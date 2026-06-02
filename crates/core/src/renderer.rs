@@ -117,12 +117,48 @@ pub struct RenderedBlock {
     #[serde(skip)]
     pub diff_hash: String,
     pub html: String,
+    /// For theorem/proof blocks whose body is rendered as a sequence of
+    /// independently-hashed `proof-para` chunks (plus single-element block
+    /// children like display math and lists), this captures that structure
+    /// so the diff can replace only the changed sub-range instead of
+    /// re-sending the whole block's HTML on every keystroke. `None` for
+    /// ordinary blocks and for any chunked block that contains a child
+    /// expanding to multiple sibling elements (e.g. `subequations`), which
+    /// would break the client's element-index addressing.
+    #[serde(skip)]
+    pub sub_blocks: Option<SubBody>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceAnchor {
     pub id: String,
     pub src: String,
+}
+
+/// One body child of a sub-diffable block. Each chunk renders to exactly
+/// one top-level DOM element, so `children` indices line up 1:1 with the
+/// body container's element children on the client.
+#[derive(Debug, Clone)]
+pub struct SubChunk {
+    /// Position-stable content hash (generated ids / `data-src` stripped),
+    /// used to find the unchanged common prefix/suffix between renders.
+    pub diff_hash: String,
+    /// The chunk's full HTML — one element.
+    pub html: String,
+}
+
+/// Sub-block structure of a theorem/proof block, captured at render time.
+#[derive(Debug, Clone)]
+pub struct SubBody {
+    /// Stable hash of the block HTML before the body interior (container
+    /// open + head + body-open tag). If this differs between renders the
+    /// scaffolding changed and the diff falls back to a full block replace.
+    pub prefix_diff: String,
+    /// Stable hash of the block HTML after the body interior (e.g. the
+    /// proof `∎` + closing tags, or a theorem's omitted-ref note).
+    pub suffix_diff: String,
+    /// Body children in document order; each maps to one DOM element.
+    pub children: Vec<SubChunk>,
 }
 
 pub fn render(
@@ -146,6 +182,8 @@ pub fn render(
         case_counter: 0,
         sidenote_counter: 0,
         source_anchors: Vec::new(),
+        chunk_depth: 0,
+        pending_sub: None,
     };
 
     // Top-level inline runs become paragraph blocks. Structural nodes
@@ -275,6 +313,7 @@ pub fn render(
         // would still match across renders but waste id space.
         if inner.trim().is_empty() {
             ctx.source_anchors.clear();
+            ctx.pending_sub = None;
             continue;
         }
         push_block(&mut blocks, i, inner, Some(&node.span), &mut ctx);
@@ -388,6 +427,18 @@ fn push_block(
     if let Some(span) = span {
         record_sync(ctx, &id, span, None, SyncKind::Container);
     }
+    // Consume any sub-block structure captured while rendering this block's
+    // body. Offsets are into `inner`; slice out the scaffolding around the
+    // body interior and hash it so the diff can detect head/number changes.
+    let sub_blocks = ctx.pending_sub.take().and_then(|ps| {
+        let prefix = inner.get(..ps.body_start)?;
+        let suffix = inner.get(ps.body_end..)?;
+        Some(SubBody {
+            prefix_diff: fnv_hash(&stable_block_diff_source(prefix)),
+            suffix_diff: fnv_hash(&stable_block_diff_source(suffix)),
+            children: ps.children,
+        })
+    });
     let html = format!(
         r#"<article class="blk" id="{id}" data-blockhash="{hash}"{src}>{inner}</article>"#,
         id = id,
@@ -402,6 +453,7 @@ fn push_block(
         source_anchors,
         diff_hash,
         html,
+        sub_blocks,
     });
 }
 
@@ -898,6 +950,21 @@ struct RenderCtx<'a> {
     case_counter: usize,
     sidenote_counter: usize,
     source_anchors: Vec<SourceAnchor>,
+    /// Nesting depth of `write_chunked_children`; only the outermost call
+    /// (depth 1) captures sub-block structure, so a theorem nested inside a
+    /// proof body doesn't clobber the outer block's chunks.
+    chunk_depth: u32,
+    /// Sub-block structure captured by the most recent outermost
+    /// `write_chunked_children`, consumed by the next `push_block`.
+    pending_sub: Option<PendingSub>,
+}
+
+/// Sub-block capture in progress, with body-interior byte offsets into the
+/// block buffer so `push_block` can hash the surrounding scaffolding.
+struct PendingSub {
+    body_start: usize,
+    body_end: usize,
+    children: Vec<SubChunk>,
 }
 
 fn record(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
@@ -1607,27 +1674,39 @@ fn is_chunked_block_child(node: &Node) -> bool {
     )
 }
 
-/// Flush a paragraph-chunk buffer wrapped in a hashed `proof-para` span
-/// so the client can sub-block-diff proof/theorem bodies — replacing
-/// only the paragraphs whose hash changed instead of the entire block.
-/// Empty / whitespace-only chunks are dropped to avoid polluting the
-/// output with no-op spans.
+/// Take a paragraph-chunk buffer and wrap it in a hashed `proof-para` span
+/// so the client can sub-block-diff proof/theorem bodies — replacing only
+/// the paragraphs whose hash changed instead of the entire block. Returns
+/// `None` for empty / whitespace-only chunks so we don't pollute the output
+/// with no-op spans.
 ///
-/// The hash is computed over the chunk's STABLE diff source (the same
-/// IDs / data-src normalization the top-level block diff uses) so a
+/// The `data-subhash` is computed over the chunk's STABLE diff source (the
+/// same IDs / data-src normalization the top-level block diff uses) so a
 /// single-paragraph edit doesn't ripple chunk hashes downstream just
 /// because the `srcw-N` id counter shifted.
-fn flush_chunk(buf: &mut String, out: &mut String) {
+fn build_chunk(buf: &mut String) -> Option<String> {
     let chunk = std::mem::take(buf);
     if chunk.trim().is_empty() {
-        return;
+        return None;
     }
     let hash = fnv_hash(&stable_block_diff_source(&chunk));
-    write!(
-        out,
+    Some(format!(
         r#"<span class="proof-para" data-subhash="{hash}">{chunk}</span>"#
-    )
-    .unwrap();
+    ))
+}
+
+/// Append one body-child segment to `out`, and — when capturing for the
+/// outermost block — record it as a `SubChunk` keyed by its stable hash.
+/// Each `seg` is exactly one top-level element, so the recorded chunk
+/// indices line up 1:1 with the body container's element children.
+fn record_seg(out: &mut String, chunks: &mut Vec<SubChunk>, record: bool, seg: String) {
+    out.push_str(&seg);
+    if record {
+        chunks.push(SubChunk {
+            diff_hash: fnv_hash(&stable_block_diff_source(&seg)),
+            html: seg,
+        });
+    }
 }
 
 /// Like `write_children`, but groups runs of inline content into
@@ -1639,6 +1718,18 @@ fn flush_chunk(buf: &mut String, out: &mut String) {
 /// inline-bound writes go into a `chunk_buf` that is flushed on every
 /// paragraph break / block-level child / end of children.
 fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
+    // Only the outermost chunked body captures sub-block structure; a nested
+    // theorem-like inside a proof body renders normally without clobbering
+    // the outer block's chunks.
+    let capture = ctx.chunk_depth == 0;
+    ctx.chunk_depth += 1;
+    let body_start = out.len();
+    let mut chunks: Vec<SubChunk> = Vec::new();
+    // A child that expands to multiple sibling elements (only `subequations`
+    // today) breaks the client's element-index addressing, so we abandon
+    // capture for the whole block if we hit one.
+    let mut sub_diffable = true;
+
     let mut chunk_buf = String::new();
     let mut trim_next_text = true;
     let mut previous_was_display = false;
@@ -1711,12 +1802,21 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
                         seen_content = true;
                     }
                     ParagraphTextPart::Break { start, end } => {
-                        flush_chunk(&mut chunk_buf, out);
+                        if let Some(seg) = build_chunk(&mut chunk_buf) {
+                            record_seg(out, &mut chunks, capture, seg);
+                        }
                         let break_span = paragraph_break_span(&child.span, s, start, end);
                         if seen_content || previous_was_display {
-                            out.push_str(r#"<span class="para-break" aria-hidden="true"></span>"#);
+                            record_seg(
+                                out,
+                                &mut chunks,
+                                capture,
+                                r#"<span class="para-break" aria-hidden="true"></span>"#.to_string(),
+                            );
                         }
-                        write_source_space_anchor(out, &break_span, ctx);
+                        let mut anchor = String::new();
+                        write_source_space_anchor(&mut anchor, &break_span, ctx);
+                        record_seg(out, &mut chunks, capture, anchor);
                         if seen_content || previous_was_display {
                             pending_paragraph_indent = true;
                         }
@@ -1728,8 +1828,18 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
         }
 
         if is_chunked_block_child(child) {
-            flush_chunk(&mut chunk_buf, out);
-            write_node(out, child, ctx);
+            if let Some(seg) = build_chunk(&mut chunk_buf) {
+                record_seg(out, &mut chunks, capture, seg);
+            }
+            // `subequations` emits a label anchor plus N display rows as
+            // siblings; that breaks 1-chunk-per-element addressing, so give
+            // up on sub-diffing this block (it still renders normally).
+            if matches!(&child.kind, NodeKind::Subequations { .. }) {
+                sub_diffable = false;
+            }
+            let mut seg = String::new();
+            write_node(&mut seg, child, ctx);
+            record_seg(out, &mut chunks, capture, seg);
             previous_was_display = matches!(&child.kind, NodeKind::DisplayMath { .. });
             trim_next_text = previous_was_display;
             pending_paragraph_indent = false;
@@ -1746,7 +1856,19 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
         pending_paragraph_indent = false;
         seen_content = true;
     }
-    flush_chunk(&mut chunk_buf, out);
+    if let Some(seg) = build_chunk(&mut chunk_buf) {
+        record_seg(out, &mut chunks, capture, seg);
+    }
+
+    let body_end = out.len();
+    ctx.chunk_depth -= 1;
+    if capture && sub_diffable {
+        ctx.pending_sub = Some(PendingSub {
+            body_start,
+            body_end,
+            children: chunks,
+        });
+    }
 }
 
 fn proof_head_html(title: &str, labels: &LabelTable) -> String {
