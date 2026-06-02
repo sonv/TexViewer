@@ -17,6 +17,26 @@ summary.
 
 Nothing yet.
 
+## [0.1.28] — 2026-06-02
+
+### Added
+
+- **Auto-rebuild the binary on plugin update.** The README plugin-manager
+  specs now carry a build hook (`build` for lazy.nvim, `run` for packer,
+  `do` for vim-plug) that runs `cargo build --release -p mathpreview-cli`
+  on install/update. The plugin resolves a binary compiled inside its own
+  checkout (`<checkout>/target/release/mathpreview-cli`) automatically, so
+  no separate `$PATH` install is needed — and since plugin and binary come
+  from the same checkout, they can't drift. Precedence is explicit
+  `cmd` → in-checkout build → `$PATH`. Requires a Rust toolchain; users who
+  install the binary themselves can omit the hook.
+- **Binary/plugin version-skew warning.** On `:MathPreview` the plugin runs
+  `mathpreview-cli --version` and warns once per session if it doesn't match
+  the version this plugin checkout expects. The plugin never updates the
+  binary on its own, so this is the signal that a "released" fix isn't the
+  binary actually running. `:MathPreviewStatus` now reports both
+  `plugin_version` and `binary_version`.
+
 ## [0.1.27] — 2026-06-02
 
 ### Fixed

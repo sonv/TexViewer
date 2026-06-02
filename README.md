@@ -99,6 +99,12 @@ daemon thereafter.
 
 ### 1. The binary
 
+> **Shortcut:** if you use a plugin manager and have a Rust toolchain, add
+> the `build`/`run`/`do` hook shown in §2 and skip this section — the plugin
+> compiles `mathpreview-cli` inside its own checkout on install/update and
+> finds it automatically. This section is for installing the binary yourself
+> (no Rust toolchain, or you prefer a global install).
+
 Pick whichever fits your toolchain:
 
 **Pre-built tarball** (no Rust toolchain needed). Download the matching
@@ -142,8 +148,20 @@ install** path at the bottom of this section works too.
 The minimal version — drop into your `lazy` spec:
 
 ```lua
-{ "sonv/TexViewer", ft = { "tex", "plaintex", "latex" } }
+{
+  "sonv/TexViewer",
+  ft = { "tex", "plaintex", "latex" },
+  -- Compiles mathpreview-cli inside the checkout on install/update.
+  -- Requires a Rust toolchain; lets you skip the separate binary install
+  -- in §1 and keeps the binary in lockstep with the plugin (no version
+  -- skew). Drop this line if you install the binary yourself.
+  build = "cargo build --release -p mathpreview-cli",
+}
 ```
+
+With the `build` hook, `:Lazy update` recompiles the binary every time the
+plugin updates, and the plugin finds that in-checkout binary automatically —
+no `$PATH` install and no chance of the plugin and binary drifting apart.
 
 The fuller version with lazy-load triggers and an explicit `opts` table:
 
@@ -152,6 +170,10 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
   "sonv/TexViewer",
   ft  = { "tex", "plaintex", "latex" },
   cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus", "MathPreviewDebug" },
+  -- Rebuild the binary on install/update (Rust toolchain required). With
+  -- this, you can skip the manual binary install in §1 entirely. Omit it if
+  -- you install mathpreview-cli yourself (tarball / cargo install).
+  build = "cargo build --release -p mathpreview-cli",
   -- All `opts` keys are optional; the defaults work for the standard case.
   opts = {
     -- Absolute path to the binary if it isn't on $PATH.
@@ -186,6 +208,9 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
 use {
   "sonv/TexViewer",
   ft = { "tex", "plaintex", "latex" },
+  -- Rebuild the binary on install/update (Rust toolchain required). Omit if
+  -- you install mathpreview-cli yourself (see §1).
+  run = "cargo build --release -p mathpreview-cli",
   config = function()
     require("mathpreview").setup({
       -- See the lazy.nvim block above for the full options list.
@@ -200,7 +225,9 @@ use {
 In your `init.vim` (or wherever your plug block lives):
 
 ```vim
-Plug 'sonv/TexViewer'
+" The `do` hook rebuilds the binary on install/update (Rust toolchain
+" required); drop it if you install mathpreview-cli yourself (see §1).
+Plug 'sonv/TexViewer', { 'do': 'cargo build --release -p mathpreview-cli' }
 ```
 
 Then in `init.lua` (or a `lua << EOF` block in `init.vim`), if you want
@@ -225,6 +252,10 @@ next launch:
 ```sh
 mkdir -p ~/.config/nvim/pack/sonv/start
 git clone https://github.com/sonv/TexViewer ~/.config/nvim/pack/sonv/start/mathpreview
+# Build the binary in-place (Rust toolchain). The plugin finds it under
+# the checkout's target/release/ automatically — no $PATH install needed.
+# Skip this if you installed the binary separately in §1.
+( cd ~/.config/nvim/pack/sonv/start/mathpreview && cargo build --release -p mathpreview-cli )
 ```
 
 The four `:MathPreview*` commands become available without any
@@ -239,8 +270,9 @@ To override defaults, add a `require("mathpreview").setup({ … })` call
 to your `init.lua` (any time after nvim startup is fine; the plugin
 defers daemon work until you actually run `:MathPreview`).
 
-To update later: `git pull` from inside that directory. To remove:
-`rm -rf` it.
+To update later: `git pull` from inside that directory, then re-run the
+`cargo build --release -p mathpreview-cli` step so the binary tracks the
+plugin. To remove: `rm -rf` it.
 
 ### 3. Use it
 

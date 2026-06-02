@@ -21,6 +21,15 @@ local M = {}
 local DEFAULT_PORT = 23636
 local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 
+-- Version this plugin checkout expects the `mathpreview-cli` binary to be.
+-- The plugin and binary ship from the same repo but install separately
+-- (the plugin never builds the binary), so they drift whenever you update
+-- one without the other. On :MathPreview we compare this against the
+-- binary's `--version` and warn once on mismatch — that's the only signal
+-- you get that a fix you "released" isn't actually the binary you're running.
+-- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
+local PLUGIN_VERSION = "0.1.28"
+
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
   filetypes = { "tex", "plaintex", "latex" },
@@ -69,10 +78,34 @@ local last_status = {
   last_error = nil,
   cursor_posts = 0,
   jumps = 0,
+  binary_version = nil,  -- filled by check_binary_version() on first start
 }
 
+-- Warn at most once per nvim session, even across restarts, so a stale
+-- binary nags you once rather than on every :MathPreviewRestart.
+local version_warned = false
+
+-- Path to a binary compiled inside this plugin checkout by the
+-- plugin-manager `build` hook (`cargo build --release -p mathpreview-cli`).
+-- init.lua lives at <root>/lua/mathpreview/init.lua, so three `:h` heads
+-- climb back to the repo root; the cargo target is under it. This is what
+-- makes "rebuild on plugin update" work without a separate $PATH install —
+-- and because it's the same checkout as PLUGIN_VERSION, the two can't drift.
+local function bundled_binary_path()
+  local src = debug.getinfo(1, "S").source
+  if src:sub(1, 1) == "@" then src = src:sub(2) end
+  local root = vim.fn.fnamemodify(src, ":h:h:h")
+  local exe = (vim.fn.has("win32") == 1) and "mathpreview-cli.exe" or "mathpreview-cli"
+  return root .. "/target/release/" .. exe
+end
+
 local function resolve_cmd()
+  -- Precedence: explicit override > in-checkout build > $PATH. The bundled
+  -- binary outranks $PATH because if you set up the `build` hook you want the
+  -- freshly compiled, version-matched binary — not a stale global install.
   if config.cmd and config.cmd ~= "" then return config.cmd end
+  local bundled = bundled_binary_path()
+  if vim.fn.executable(bundled) == 1 then return bundled end
   if vim.fn.executable("mathpreview-cli") == 1 then return "mathpreview-cli" end
   return nil
 end
@@ -125,6 +158,52 @@ local function run_system(args, opts, on_done)
     vim.fn.chansend(job, opts.stdin)
     vim.fn.chanclose(job, "stdin")
   end
+end
+
+-- Parse "0.1.27" → { 0, 1, 27 }; returns nil on anything unexpected so the
+-- caller falls back to a plain string compare.
+local function parse_semver(s)
+  local maj, min, pat = tostring(s):match("^(%d+)%.(%d+)%.(%d+)")
+  if not maj then return nil end
+  return { tonumber(maj), tonumber(min), tonumber(pat) }
+end
+
+-- -1 / 0 / 1 for a<b / a==b / a>b. Falls back to string compare when either
+-- side doesn't parse as semver (e.g. a "-dev" suffix).
+local function semver_cmp(a, b)
+  local pa, pb = parse_semver(a), parse_semver(b)
+  if not pa or not pb then
+    if a == b then return 0 end
+    return (a < b) and -1 or 1
+  end
+  for i = 1, 3 do
+    if pa[i] ~= pb[i] then return (pa[i] < pb[i]) and -1 or 1 end
+  end
+  return 0
+end
+
+-- Run `cmd --version` async, record the version for :MathPreviewStatus, and
+-- vim.notify once if it doesn't match PLUGIN_VERSION. Non-blocking: start
+-- never waits on this. The binary and plugin install separately, so a
+-- mismatch means the running binary predates (or postdates) this checkout —
+-- the usual reason a "released" fix isn't the code actually executing.
+local function check_binary_version(cmd)
+  run_system({ cmd, "--version" }, {}, function(res)
+    if not res or res.code ~= 0 or not res.stdout then return end
+    -- clap prints "mathpreview-cli 0.1.27"; take the last whitespace token.
+    local ver = res.stdout:gsub("%s+$", ""):match("(%S+)%s*$")
+    if not ver then return end
+    last_status.binary_version = ver
+    if version_warned or semver_cmp(ver, PLUGIN_VERSION) == 0 then return end
+    version_warned = true
+    local rel = semver_cmp(ver, PLUGIN_VERSION) < 0 and "older than" or "newer than"
+    vim.notify(
+      ("mathpreview: binary is %s (%s the plugin's expected %s). Rebuild/reinstall "
+        .. "the binary (e.g. `cargo install --git https://github.com/sonv/TexViewer "
+        .. "mathpreview-cli`) and :MathPreviewRestart so fixes match."):format(
+        ver, rel, PLUGIN_VERSION),
+      vim.log.levels.WARN)
+  end)
 end
 
 -- True if `port` is free for binding on 127.0.0.1. Closes the probe
@@ -352,6 +431,8 @@ function M.start(opts)
       vim.log.levels.ERROR)
     return
   end
+  -- Fire-and-forget skew check; warns (once) if the binary != PLUGIN_VERSION.
+  check_binary_version(cmd)
   local root, err = current_root()
   if not root then
     vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
@@ -466,6 +547,8 @@ function M.status()
     last_push_ago_ms = (last_status.last_push_ms > 0) and math.floor(age) or nil,
     last_error = last_status.last_error,
     cmd = resolve_cmd(),
+    plugin_version = PLUGIN_VERSION,
+    binary_version = last_status.binary_version,  -- nil until first :MathPreview
     nvim_version = vim.version() and (vim.version().major .. "." .. vim.version().minor) or "?",
   }
 end
