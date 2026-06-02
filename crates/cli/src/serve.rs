@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc as std_mpsc, Arc,
 };
 use std::time::{Duration, UNIX_EPOCH};
@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "61";
+const WS_PROTOCOL_VERSION: &str = "62";
 
 #[derive(Clone)]
 struct AppState {
@@ -98,8 +98,16 @@ struct AppState {
     file_content_cache: Arc<RwLock<HashMap<PathBuf, CachedFile>>>,
     /// Ring buffer of recent server log entries surfaced in the
     /// viewer's "log" dialog. Capped at `LOG_BUFFER_CAP` newest
-    /// entries. Mirrors what's also eprintln!'d to the terminal.
-    log_buffer: Arc<RwLock<std::collections::VecDeque<LogEntry>>>,
+    /// entries. Std `Mutex` rather than tokio's so the file-watcher
+    /// thread (which is sync) can call `log_event` directly.
+    /// Mirrors what's also eprintln!'d to the terminal.
+    log_buffer: Arc<std::sync::Mutex<std::collections::VecDeque<LogEntry>>>,
+    /// Whether high-frequency events (per-keystroke buffer-push
+    /// timings, every watched-file save, watcher status, etc.) are
+    /// added to the log buffer. Toggled by the viewer's log panel.
+    /// Default off so the buffer stays focused on the events users
+    /// usually care about (config writes, macros, errors).
+    debug_logging: Arc<AtomicBool>,
 }
 
 const LOG_BUFFER_CAP: usize = 400;
@@ -170,18 +178,29 @@ async fn load_override_layers(
     out
 }
 
+/// Same as `log_event` but a no-op unless debug logging is enabled
+/// (toggled by `POST /debug/mode` from the viewer's log panel).
+/// Use for high-frequency events that would drown out the always-on
+/// channel — per-keystroke render timings, every watcher event, etc.
+fn log_event_verbose(state: &AppState, level: &'static str, message: String) {
+    if state.debug_logging.load(Ordering::Acquire) {
+        log_event(state, level, message);
+    }
+}
+
 /// Push one log entry into the ring buffer + emit to stderr. Trims
 /// the oldest entries when the buffer exceeds `LOG_BUFFER_CAP`.
 /// Mirrors plain `eprintln!` so behaviour from the terminal is
 /// unchanged; the buffer just makes the same lines reachable from
-/// the viewer's "log" dialog.
-async fn log_event(state: &AppState, level: &'static str, message: String) {
+/// the viewer's "log" panel. Sync (std `Mutex`) so the file-watcher
+/// thread can call it too.
+fn log_event(state: &AppState, level: &'static str, message: String) {
     eprintln!("mathpreview: {message}");
     let ts_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let mut buf = state.log_buffer.write().await;
+    let Ok(mut buf) = state.log_buffer.lock() else { return };
     if buf.len() >= LOG_BUFFER_CAP {
         let drop = buf.len() + 1 - LOG_BUFFER_CAP;
         for _ in 0..drop {
@@ -204,7 +223,11 @@ async fn log_event(state: &AppState, level: &'static str, message: String) {
 async fn serve_debug(State(state): State<AppState>) -> Response {
     let viewer_config = state.viewer_config.read().await.clone();
     let session_macros = state.session_macros.read().await.clone();
-    let log: Vec<LogEntry> = state.log_buffer.read().await.iter().cloned().collect();
+    let log: Vec<LogEntry> = state
+        .log_buffer
+        .lock()
+        .map(|buf| buf.iter().cloned().collect())
+        .unwrap_or_default();
 
     let config_paths: Vec<_> = state
         .config_paths
@@ -239,6 +262,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
 
     Json(serde_json::json!({
         "ws_protocol": WS_PROTOCOL_VERSION,
+        "debug_logging": state.debug_logging.load(Ordering::Acquire),
         "editor_cmd": state.editor_cmd.as_ref(),
         "viewer_config": {
             "font_size": viewer_config.font_size,
@@ -251,6 +275,29 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
         "log": log,
     }))
     .into_response()
+}
+
+/// `POST /debug/mode` — flip verbose logging on/off. Body:
+/// `{"enabled": true|false}`. Returns the new state.
+#[derive(Debug, Deserialize)]
+struct DebugModeRequest {
+    enabled: bool,
+}
+
+async fn serve_debug_mode(
+    State(state): State<AppState>,
+    Json(req): Json<DebugModeRequest>,
+) -> Response {
+    state.debug_logging.store(req.enabled, Ordering::Release);
+    log_event(
+        &state,
+        "info",
+        format!(
+            "debug logging {}",
+            if req.enabled { "ENABLED" } else { "disabled" }
+        ),
+    );
+    Json(serde_json::json!({ "debug_logging": req.enabled })).into_response()
 }
 
 /// Mtime-cached equivalent of `mathpreview_core::load_and_merge_config`.
@@ -450,7 +497,8 @@ pub async fn run(
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
-        log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+        log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        debug_logging: Arc::new(AtomicBool::new(false)),
     };
 
     spawn_watcher(state.clone(), watch_rx);
@@ -469,6 +517,7 @@ pub async fn run(
         .route("/macros/register", post(serve_macros_register))
         .route("/config/set", post(serve_config_set))
         .route("/debug", get(serve_debug))
+        .route("/debug/mode", post(serve_debug_mode))
         .route("/print", post(serve_print))
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
@@ -970,8 +1019,7 @@ async fn serve_macros_append(
             target.display(),
             req.scope,
         ),
-    )
-    .await;
+    );
     Json(serde_json::json!({
         "name": macro_name,
         "file": target,
@@ -1102,8 +1150,7 @@ async fn serve_config_set(
             req.values.len(),
             target.display(),
         ),
-    )
-    .await;
+    );
     Json(serde_json::json!({ "file": target, "fields": req.values.len() })).into_response()
 }
 
@@ -1251,8 +1298,7 @@ async fn serve_macros_register(
         &state,
         "info",
         format!("macros: registered override {}", target.display()),
-    )
-    .await;
+    );
     Json(serde_json::json!({ "file": target })).into_response()
 }
 
@@ -1686,24 +1732,29 @@ async fn serve_buffer_push(
                 let blocks = state.last_blocks.read().await;
                 fmt_mem_log(&state, &blocks)
             };
-            eprintln!(
-                "mathpreview: buffer-push #{seq} {body_len}b → total {tot} ms ({op_count} {kind}; parse {p}, preamble {pr}, body-parse {bp}, number {n}, render {r}; cache {cache}; {mem})",
-                tot = t0.elapsed().as_millis(),
-                p = timing.parse_ms,
-                pr = timing.preamble_ms,
-                bp = timing.body_parse_ms,
-                n = timing.number_ms,
-                r = timing.render_ms,
-                cache = if timing.cache_hit { "hit" } else { "miss" },
+            log_event_verbose(
+                &state,
+                "info",
+                format!(
+                    "buffer-push #{seq} {body_len}b → {tot}ms ({op_count} {kind}; body-parse {bp}, render {r}; cache {cache})",
+                    tot = t0.elapsed().as_millis(),
+                    bp = timing.body_parse_ms,
+                    r = timing.render_ms,
+                    cache = if timing.cache_hit { "hit" } else { "miss" },
+                ),
             );
             axum::http::StatusCode::NO_CONTENT
         }
         Err(e) => {
             if !is_latest_render_attempt(&state, seq) {
-                eprintln!("mathpreview: buffer-push #{seq} stale render error discarded: {e:#}");
+                log_event_verbose(
+                    &state,
+                    "warn",
+                    format!("buffer-push #{seq} stale render error discarded: {e}"),
+                );
                 return axum::http::StatusCode::NO_CONTENT;
             }
-            eprintln!("mathpreview: buffer-push render error: {e:#}");
+            log_event(&state, "error", format!("buffer-push render: {e:#}"));
             let payload = serde_json::json!({
                 "event": "error",
                 "message": format!("{e}"),
@@ -1835,12 +1886,11 @@ async fn render_cached(
                         resolved.viewer.default_page_mode.as_str(),
                         resolved.viewer.default_theme.as_str(),
                     ),
-                )
-                .await;
+                );
             }
         }
         Err(e) => {
-            log_event(state, "error", format!("config parse failed: {e:#}")).await;
+            log_event(state, "error", format!("config parse failed: {e:#}"));
         }
     }
     let live_viewer_config = state.viewer_config.read().await.clone();
@@ -2322,6 +2372,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
     // task via an unbounded channel.
     let (file_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<HashSet<PathBuf>>();
     let watched_for_thread = state.watched.clone();
+    let watcher_state = state.clone();
 
     std::thread::spawn(move || {
         let (raw_tx, raw_rx) = std::sync::mpsc::channel();
@@ -2374,10 +2425,24 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
                         if changed.is_empty() {
                             continue;
                         }
-                        eprintln!(
-                            "mathpreview: change detected ({} events, {} project files)",
-                            evs.len(),
-                            changed.len()
+                        let paths_summary = changed
+                            .iter()
+                            .take(3)
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let more = if changed.len() > 3 {
+                            format!(" +{} more", changed.len() - 3)
+                        } else {
+                            String::new()
+                        };
+                        log_event_verbose(
+                            &watcher_state,
+                            "info",
+                            format!(
+                                "watcher: change detected ({} events) — {paths_summary}{more}",
+                                evs.len(),
+                            ),
                         );
                         if file_tx.send(changed).is_err() {
                             break;
@@ -2385,7 +2450,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
                     }
                     Err(errs) => {
                         for e in errs {
-                            eprintln!("mathpreview: watcher: {e}");
+                            log_event(&watcher_state, "warn", format!("watcher: {e}"));
                         }
                     }
                 },
@@ -2416,25 +2481,31 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             match render_cached(&state, &root).await.map(|(out, _)| out) {
                 Ok(new_output) => {
                     if !is_latest_render_attempt(&state, seq) {
-                        eprintln!("mathpreview: file-change #{seq} stale render discarded");
+                        log_event_verbose(
+                            &state,
+                            "warn",
+                            format!("file-change #{seq} stale render discarded"),
+                        );
                         continue;
                     }
                     update_watched(&state, &new_output).await;
                     let (op_count, kind) = broadcast_render(&state, new_output).await;
-                    let mem = {
-                        let blocks = state.last_blocks.read().await;
-                        fmt_mem_log(&state, &blocks)
-                    };
-                    eprintln!("mathpreview: file-change → {op_count} {kind}; {mem}");
+                    log_event_verbose(
+                        &state,
+                        "info",
+                        format!("file-change → {op_count} {kind}"),
+                    );
                 }
                 Err(e) => {
                     if !is_latest_render_attempt(&state, seq) {
-                        eprintln!(
-                            "mathpreview: file-change #{seq} stale render error discarded: {e:#}"
+                        log_event_verbose(
+                            &state,
+                            "warn",
+                            format!("file-change #{seq} stale render error discarded: {e}"),
                         );
                         continue;
                     }
-                    eprintln!("mathpreview: render error: {e:#}");
+                    log_event(&state, "error", format!("render error: {e:#}"));
                     let payload = serde_json::json!({
                         "event": "error",
                         "message": format!("{e}"),
@@ -2477,7 +2548,10 @@ mod tests {
     };
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
-    use std::sync::{atomic::AtomicU64, mpsc as std_mpsc, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU64},
+        mpsc as std_mpsc, Arc,
+    };
     use tokio::sync::{broadcast, RwLock};
 
     #[test]
@@ -2736,7 +2810,8 @@ Second paragraph here.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
-            log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            debug_logging: Arc::new(AtomicBool::new(false)),
         };
 
         let older = begin_render_attempt(&state);
@@ -3126,7 +3201,8 @@ Second paragraph here.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
-            log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            debug_logging: Arc::new(AtomicBool::new(false)),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -3218,7 +3294,8 @@ Second paragraph here.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
-            log_buffer: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            debug_logging: Arc::new(AtomicBool::new(false)),
         };
 
         let mut headers = axum::http::HeaderMap::new();

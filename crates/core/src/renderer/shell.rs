@@ -269,6 +269,10 @@ pub(super) fn wrap_in_shell(
   <header class="log-panel-head">
     <h2 class="log-panel-title">Daemon state + log</h2>
     <div class="log-panel-actions">
+      <label class="log-panel-verbose" title="stream high-frequency events (buffer-pushes, file changes, watcher)">
+        <input type="checkbox" id="log-panel-verbose" />
+        <span>verbose</span>
+      </label>
       <button type="button" class="log-panel-refresh" id="log-panel-refresh" title="re-fetch /debug">↻</button>
       <button type="button" class="log-panel-close" id="log-panel-close" title="close (or click `log` again)">×</button>
     </div>

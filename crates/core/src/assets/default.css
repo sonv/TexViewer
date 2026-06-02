@@ -1207,7 +1207,17 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   border-bottom: 1px solid var(--border);
 }
 .log-panel-title { margin: 0; font-size: 13px; font-weight: 700; }
-.log-panel-actions { display: flex; gap: 4px; }
+.log-panel-actions { display: flex; gap: 6px; align-items: center; }
+.log-panel-verbose {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.log-panel-verbose input { margin: 0; }
 .log-panel-refresh,
 .log-panel-close {
   border: 1px solid var(--border);

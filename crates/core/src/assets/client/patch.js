@@ -163,6 +163,10 @@
       syncConfigCustomPathEnabled();
       return;
     }
+    if (e.target && e.target.id === 'log-panel-verbose') {
+      toggleLogVerbose(e.target.checked);
+      return;
+    }
   });
   document.addEventListener('dblclick', function(e) {
     // Double-click drives reveal-source (editor spawn) when the user

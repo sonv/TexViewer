@@ -17,6 +17,31 @@ summary.
 
 Nothing yet.
 
+## [0.1.20] — 2026-06-02
+
+### Added
+
+- **Verbose-mode toggle in the log panel** — check the `verbose`
+  box at the top right of the panel to stream high-frequency
+  events that were previously only logged to the terminal:
+  per-keystroke buffer-push timings, file-watcher change
+  detections, file-change re-render outcomes, stale-render
+  discards. Always-on entries (config writes, macros append +
+  register, render errors) are unchanged, so the default mode
+  stays focused.
+- **`POST /debug/mode`** HTTP endpoint backing the toggle. `GET
+  /debug` now also reports the current `debug_logging` state so
+  the checkbox can sync across tabs.
+- **More backend events now flow through the log buffer.** Render
+  errors, watcher errors, and the file-watcher change notification
+  are visible in the panel — same lines you'd see in the terminal
+  but reachable from the browser.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v62** so v0.1.19 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.19] — 2026-06-02
 
 ### Changed
@@ -602,7 +627,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.20...HEAD
+[0.1.20]: https://github.com/sonv/TexViewer/releases/tag/v0.1.20
 [0.1.19]: https://github.com/sonv/TexViewer/releases/tag/v0.1.19
 [0.1.18]: https://github.com/sonv/TexViewer/releases/tag/v0.1.18
 [0.1.17]: https://github.com/sonv/TexViewer/releases/tag/v0.1.17

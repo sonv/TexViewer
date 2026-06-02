@@ -1584,16 +1584,32 @@
     var stateEl = document.getElementById('log-panel-state');
     var entriesEl = document.getElementById('log-panel-entries');
     if (!stateEl || !entriesEl) return;
-    stateEl.innerHTML = 'Loading…';
-    entriesEl.textContent = '';
     try {
       var res = await fetch('/debug', { cache: 'no-store' });
       var snapshot = await res.json();
       stateEl.innerHTML = renderLogState(snapshot);
       entriesEl.textContent = renderLogEntries(snapshot);
       entriesEl.scrollTop = entriesEl.scrollHeight;
+      // Sync the verbose checkbox with whatever the daemon reports —
+      // covers the case where the user toggled it in another tab.
+      var cb = document.getElementById('log-panel-verbose');
+      if (cb) cb.checked = !!snapshot.debug_logging;
     } catch (e) {
       stateEl.textContent = 'fetch /debug failed: ' + (e && e.message || e);
+    }
+  }
+
+  async function toggleLogVerbose(enabled) {
+    try {
+      await fetch('/debug/mode', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: !!enabled }),
+      });
+      refreshLogPanel();
+    } catch (e) {
+      console.warn('debug/mode:', e && e.message || e);
     }
   }
 
