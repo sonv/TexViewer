@@ -108,9 +108,27 @@ struct AppState {
     /// Default off so the buffer stays focused on the events users
     /// usually care about (config writes, macros, errors).
     debug_logging: Arc<AtomicBool>,
+    /// Unix-ms timestamp of the last `GET /jump` poll. The nvim plugin
+    /// polls this endpoint continuously while attached and applies jumps
+    /// in place, so a recent value means an editor is already handling
+    /// navigation and `/reveal-source` should NOT also spawn an editor
+    /// (which would reopen the file in a second buffer). 0 = never polled.
+    last_jump_poll_ms: Arc<AtomicU64>,
 }
 
 const LOG_BUFFER_CAP: usize = 400;
+
+/// How recently a `/jump` poll must have happened for us to treat an nvim
+/// plugin as "actively attached" and skip the redundant reveal-source
+/// spawn. Comfortably larger than the plugin's 120 ms poll interval.
+const JUMP_POLLER_ACTIVE_MS: u64 = 2000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// One server-side log entry. `level` is one of `"info"`, `"warn"`,
 /// `"error"`. `ts_ms` is the Unix-millisecond timestamp at capture
@@ -499,6 +517,7 @@ pub async fn run(
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         debug_logging: Arc::new(AtomicBool::new(false)),
+        last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
     };
 
     // Seed the log buffer with startup info so the panel always has
@@ -869,6 +888,9 @@ async fn serve_jump_poll(
     State(state): State<AppState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
+    // Mark that an editor is actively polling for jumps; reveal-source
+    // uses this to avoid double-handling the same click.
+    state.last_jump_poll_ms.store(now_ms(), Ordering::Release);
     let after = query
         .get("after")
         .and_then(|value| value.parse::<u64>().ok())
@@ -898,6 +920,19 @@ async fn serve_reveal_source(
             Json(serde_json::json!({ "error": "reveal-source disabled (empty --editor)" })),
         )
             .into_response();
+    }
+    // If an nvim plugin is actively polling `/jump`, it already moves the
+    // editor to the click target IN PLACE. Spawning the `--editor` command
+    // too would reopen the file in a second buffer, so skip it. The browser
+    // fires `/jump` and `/reveal-source` together; the poller path wins.
+    let since_poll = now_ms().saturating_sub(state.last_jump_poll_ms.load(Ordering::Acquire));
+    if since_poll < JUMP_POLLER_ACTIVE_MS {
+        log_event_verbose(
+            &state,
+            "info",
+            "reveal-source skipped — nvim /jump poller active".to_string(),
+        );
+        return StatusCode::NO_CONTENT.into_response();
     }
     let file = normalize_source_path(req.file);
     let file_str = file.to_string_lossy();
@@ -3042,6 +3077,7 @@ Third paragraph with $x^2$.
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
+            last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let older = begin_render_attempt(&state);
@@ -3435,6 +3471,7 @@ Third paragraph with $x^2$.
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
+            last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -3528,6 +3565,7 @@ Third paragraph with $x^2$.
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
+            last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let mut headers = axum::http::HeaderMap::new();

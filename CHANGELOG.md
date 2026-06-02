@@ -17,7 +17,19 @@ summary.
 
 Nothing yet.
 
-## [0.1.26] — 2026-06-02
+## [0.1.27] — 2026-06-02
+
+### Fixed
+
+- **Reveal-source no longer opens a second buffer when an nvim plugin is
+  attached — now fixed in the daemon itself.** The v0.1.26 fix only
+  helped if the plugin passed `--editor ""`; a daemon spawned by nvim
+  inherits `$NVIM`, so the default editor template still resolved and
+  reopened the file via `:e` on top of the in-place `/jump`. The daemon
+  now tracks `/jump` polling and skips the `/reveal-source` editor spawn
+  whenever a poller has been seen in the last 2s (returns 204), so the
+  plugin's in-place navigation is the only thing that runs. Browser-only
+  users (no poller) still get the editor spawn as before.
 
 ### Fixed
 
