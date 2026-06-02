@@ -301,19 +301,19 @@
     }
     var logToggle = e.target.closest('#log-toggle');
     if (logToggle) {
-      openLogDialog();
+      toggleLogPanel();
       return;
     }
-    var logRefresh = e.target.closest('#log-dialog-refresh');
+    var logRefresh = e.target.closest('#log-panel-refresh');
     if (logRefresh) {
       e.preventDefault();
-      refreshLogDialog();
+      refreshLogPanel();
       return;
     }
-    var logClose = e.target.closest('#log-dialog-close');
+    var logClose = e.target.closest('#log-panel-close');
     if (logClose) {
       e.preventDefault();
-      closeLogDialog();
+      closeLogPanel();
       return;
     }
     var marginToggle = e.target.closest('#margin-toggle');

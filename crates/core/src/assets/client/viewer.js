@@ -1524,7 +1524,7 @@
     if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
   }
 
-  function logDialogEl() { return document.getElementById('log-dialog'); }
+  function logPanelEl() { return document.getElementById('log-panel'); }
 
   function escapeHtml(s) {
     return String(s)
@@ -1580,9 +1580,9 @@
     }).join('\n');
   }
 
-  async function refreshLogDialog() {
-    var stateEl = document.getElementById('log-dialog-state');
-    var entriesEl = document.getElementById('log-dialog-entries');
+  async function refreshLogPanel() {
+    var stateEl = document.getElementById('log-panel-state');
+    var entriesEl = document.getElementById('log-panel-entries');
     if (!stateEl || !entriesEl) return;
     stateEl.innerHTML = 'Loading…';
     entriesEl.textContent = '';
@@ -1597,16 +1597,27 @@
     }
   }
 
-  function openLogDialog() {
-    var dlg = logDialogEl();
-    if (!dlg || typeof dlg.showModal !== 'function') return;
-    dlg.showModal();
-    refreshLogDialog();
+  function toggleLogPanel() {
+    var panel = logPanelEl();
+    if (!panel) return;
+    var nowOpen = panel.hasAttribute('hidden');
+    panel.toggleAttribute('hidden', !nowOpen);
+    var btn = document.getElementById('log-toggle');
+    if (btn) btn.classList.toggle('active', nowOpen);
+    if (nowOpen) refreshLogPanel();
   }
 
-  function closeLogDialog() {
-    var dlg = logDialogEl();
-    if (dlg && dlg.open) dlg.close();
+  function closeLogPanel() {
+    var panel = logPanelEl();
+    if (!panel) return;
+    panel.setAttribute('hidden', '');
+    var btn = document.getElementById('log-toggle');
+    if (btn) btn.classList.remove('active');
+  }
+
+  function refreshLogPanelIfOpen() {
+    var panel = logPanelEl();
+    if (panel && !panel.hasAttribute('hidden')) refreshLogPanel();
   }
 
   function openCmdline(initial) {

@@ -17,6 +17,22 @@ summary.
 
 Nothing yet.
 
+## [0.1.19] — 2026-06-02
+
+### Changed
+
+- **Log panel moved from modal dialog to a non-modal side panel.**
+  The viewer stays interactive while the panel is open — read /
+  click / type without dismissing it. Slides to the right of the
+  TOC when the side panel is also visible so the two don't stack.
+  Auto-refreshes whenever the daemon pushes a WS render update, so
+  config changes and other events stream in live.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v61** so v0.1.18 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.18] — 2026-06-02
 
 ### Fixed
@@ -586,7 +602,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/sonv/TexViewer/releases/tag/v0.1.19
 [0.1.18]: https://github.com/sonv/TexViewer/releases/tag/v0.1.18
 [0.1.17]: https://github.com/sonv/TexViewer/releases/tag/v0.1.17
 [0.1.16]: https://github.com/sonv/TexViewer/releases/tag/v0.1.16

@@ -8,7 +8,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '60';
+  var WS_PROTOCOL_VERSION = '61';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -36,6 +36,9 @@
         var msg = JSON.parse(ev.data);
         if (typeof msg.rss_mib === 'number') window._lastRss = msg.rss_mib;
         if (msg.viewer_config) applyViewerConfig(msg.viewer_config);
+        // Keep the log panel current as long as it's open. Cheap — one
+        // /debug fetch per WS render. No-op when the panel is closed.
+        if (typeof refreshLogPanelIfOpen === 'function') refreshLogPanelIfOpen();
         if (msg.event === 'patch') {
           await applyPatch(msg.ops, msg.blocks);
           applyMode(currentProofMode);

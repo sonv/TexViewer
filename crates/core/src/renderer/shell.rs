@@ -265,21 +265,17 @@ pub(super) fn wrap_in_shell(
     </div>
   </form>
 </dialog>
-<dialog class="macros-dialog log-dialog" id="log-dialog">
-  <form method="dialog" class="macros-dialog-form" id="log-dialog-form">
-    <h2 class="macros-dialog-title">Daemon state + log</h2>
-    <p class="macros-dialog-hint">
-      Live snapshot of what the daemon is loading and the tail of its
-      log buffer. Useful for "where is my setting going?" debugging.
-    </p>
-    <div class="log-dialog-state" id="log-dialog-state">Loading…</div>
-    <pre class="log-dialog-entries" id="log-dialog-entries"></pre>
-    <div class="macros-dialog-actions">
-      <button type="button" class="macros-dialog-cancel" id="log-dialog-refresh">Refresh</button>
-      <button type="button" class="macros-dialog-save" id="log-dialog-close">Close</button>
+<aside class="log-panel" id="log-panel" hidden aria-label="daemon state and log">
+  <header class="log-panel-head">
+    <h2 class="log-panel-title">Daemon state + log</h2>
+    <div class="log-panel-actions">
+      <button type="button" class="log-panel-refresh" id="log-panel-refresh" title="re-fetch /debug">↻</button>
+      <button type="button" class="log-panel-close" id="log-panel-close" title="close (or click `log` again)">×</button>
     </div>
-  </form>
-</dialog>
+  </header>
+  <div class="log-panel-state" id="log-panel-state">Loading…</div>
+  <pre class="log-panel-entries" id="log-panel-entries"></pre>
+</aside>
 <div class="cmdline" id="cmdline" hidden>
   <div class="cmdline-suggestions" id="cmdline-suggestions" hidden></div>
   <div class="cmdline-row">
