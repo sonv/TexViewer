@@ -1613,23 +1613,27 @@
     }
   }
 
+  // Toggling the panel also toggles the body class so the page can
+  // shift right and keep the reading column visible alongside it
+  // rather than buried underneath.
+  function setLogPanelOpen(open) {
+    var panel = logPanelEl();
+    if (!panel) return;
+    panel.toggleAttribute('hidden', !open);
+    document.body.classList.toggle('log-panel-open', !!open);
+    var btn = document.getElementById('log-toggle');
+    if (btn) btn.classList.toggle('active', !!open);
+    if (typeof updatePageScale === 'function') updatePageScale();
+    if (open) refreshLogPanel();
+  }
+
   function toggleLogPanel() {
     var panel = logPanelEl();
     if (!panel) return;
-    var nowOpen = panel.hasAttribute('hidden');
-    panel.toggleAttribute('hidden', !nowOpen);
-    var btn = document.getElementById('log-toggle');
-    if (btn) btn.classList.toggle('active', nowOpen);
-    if (nowOpen) refreshLogPanel();
+    setLogPanelOpen(panel.hasAttribute('hidden'));
   }
 
-  function closeLogPanel() {
-    var panel = logPanelEl();
-    if (!panel) return;
-    panel.setAttribute('hidden', '');
-    var btn = document.getElementById('log-toggle');
-    if (btn) btn.classList.remove('active');
-  }
+  function closeLogPanel() { setLogPanelOpen(false); }
 
   function refreshLogPanelIfOpen() {
     var panel = logPanelEl();

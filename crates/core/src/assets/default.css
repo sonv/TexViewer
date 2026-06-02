@@ -1273,6 +1273,12 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
    panel just to the right of it so they don't stack on top of each
    other. */
 body.side-panel-open .log-panel { left: 268px; }
+/* Reserve room for the log panel so the reading column shifts right
+   and never disappears behind it. The amount matches the panel's
+   left offset (16 px) + width (380 px) + a 16 px gutter; same plus
+   the TOC width when the TOC is also open. */
+body.log-panel-open #page-shell { margin-left: 412px; margin-right: auto; }
+body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 .macros-dialog-input:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;

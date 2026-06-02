@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.22] — 2026-06-02
+
+### Changed
+
+- **Log panel pushes the page over instead of floating on top.**
+  When you open the panel the page-shell shifts right to keep the
+  reading column visible; closing it puts the page back. Slides
+  further right when the TOC is also open so neither overlaps the
+  paper.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v64** so v0.1.21 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.21] — 2026-06-02
 
 ### Fixed
@@ -656,7 +671,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.22...HEAD
+[0.1.22]: https://github.com/sonv/TexViewer/releases/tag/v0.1.22
 [0.1.21]: https://github.com/sonv/TexViewer/releases/tag/v0.1.21
 [0.1.20]: https://github.com/sonv/TexViewer/releases/tag/v0.1.20
 [0.1.19]: https://github.com/sonv/TexViewer/releases/tag/v0.1.19
