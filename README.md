@@ -100,15 +100,15 @@ daemon thereafter.
 ### 1. The binary
 
 > **Shortcut:** if you have a Rust toolchain, you can skip this section
-> entirely. The plugin **auto-builds `mathpreview-cli` inside its own
-> checkout on first `:MathPreview`** if no binary is found (you'll get a
-> "building… please wait" notice; it takes ~20s once), and finds that
-> in-checkout binary automatically thereafter. Add the `build`/`run`/`do`
-> hook shown in §2 to also recompile on every plugin *update* (otherwise the
-> first-run build is kept until you rebuild, and a version-skew warning
-> nudges you when the plugin moves ahead of the binary). This section is for
-> installing the binary yourself — no Rust toolchain, or you prefer a global
-> install.
+> entirely. On first `:MathPreview` with no binary found, the plugin runs
+> **`cargo install --path crates/cli`** from its own checkout (you'll get an
+> "installing… please wait" notice; ~30s once), dropping `mathpreview-cli` in
+> your cargo bin dir (`~/.cargo/bin`, which rustup puts on `$PATH`). It
+> reinstalls automatically when the plugin updates ahead of the binary. If
+> the install dir isn't on your `$PATH`, the plugin still runs the binary by
+> absolute path and warns you once with the line to add (or set `install_root`
+> to choose where it goes). This section is for installing the binary yourself
+> — no Rust toolchain, or you prefer the tarball.
 
 Pick whichever fits your toolchain:
 
@@ -133,12 +133,28 @@ embedded MathJax + NCM font assets the same way the release binary does.
 cargo install --git https://github.com/sonv/TexViewer mathpreview-cli
 ```
 
-**Build from this checkout** (contributors):
+**Build + install from this checkout** (contributors / the plugin's own path):
 
 ```sh
-cargo build --release -p mathpreview-cli
-# binary at target/release/mathpreview-cli
+cargo install --path crates/cli --force   # → ~/.cargo/bin/mathpreview-cli (on $PATH)
 ```
+
+> **Why `cargo install`, not `cargo build`.** `cargo build` only writes to
+> `target/release/` — it does **not** put `mathpreview-cli` on your `$PATH`,
+> so `mathpreview-cli` won't work in a terminal and other tools can't find
+> it. `cargo install --path crates/cli --force` builds *and* drops the binary
+> in your cargo bin dir (`$CARGO_HOME/bin`, default `~/.cargo/bin`), which
+> rustup keeps on `$PATH`. `--force` lets it overwrite an older install on
+> update. To install elsewhere, add `--root <prefix>` (binary lands in
+> `<prefix>/bin`), matching the plugin's `install_root` option.
+>
+> **Binary resolution order** (how the plugin decides which binary to run):
+> explicit `cmd` in `setup()` → the cargo-installed binary (by absolute path,
+> so it works even if its dir isn't on `$PATH`) → `mathpreview-cli` on
+> `$PATH` → a leftover `target/release/` build. `:MathPreviewStatus` shows the
+> resolved path, version, and whether the install dir is on `$PATH`; a failed
+> daemon spawn prints the binary path plus the daemon's stderr — check those
+> first if you ever see the "old version."
 
 ### 2. The nvim plugin
 
@@ -156,18 +172,20 @@ The minimal version — drop into your `lazy` spec:
 {
   "sonv/TexViewer",
   ft = { "tex", "plaintex", "latex" },
-  -- Recompile on every plugin update (Rust toolchain required). Optional:
-  -- without it the plugin still auto-builds on first :MathPreview, but the
-  -- binary then stays put until you rebuild (a version-skew warning nudges
-  -- you). With it, `:Lazy update` keeps the binary in lockstep — no skew.
-  build = "cargo build --release -p mathpreview-cli",
+  -- Install/update the binary on every plugin update (Rust toolchain
+  -- required). Optional: without it the plugin still auto-installs on first
+  -- :MathPreview, but the binary then stays put until the next plugin update
+  -- (a version-skew warning nudges you). With it, `:Lazy update` keeps the
+  -- binary in lockstep — no skew.
+  build = "cargo install --path crates/cli --force",
 }
 ```
 
-The plugin finds the in-checkout binary automatically (no `$PATH` install).
-The `build` hook just moves the compile to update time so it can't drift and
-your first `:MathPreview` is instant; leaving it off only means the binary is
-built lazily on first use and refreshed manually.
+The hook (and the auto-install fallback) run `cargo install`, which drops
+`mathpreview-cli` in your cargo bin dir (`~/.cargo/bin`, on `$PATH` via
+rustup). The `build` hook just moves the install to update time so your first
+`:MathPreview` is instant; leaving it off only means the binary is installed
+lazily on first use.
 
 The fuller version with lazy-load triggers and an explicit `opts` table:
 
@@ -176,10 +194,10 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
   "sonv/TexViewer",
   ft  = { "tex", "plaintex", "latex" },
   cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus", "MathPreviewDebug" },
-  -- Rebuild the binary on install/update (Rust toolchain required). With
-  -- this, you can skip the manual binary install in §1 entirely. Omit it if
-  -- you install mathpreview-cli yourself (tarball / cargo install).
-  build = "cargo build --release -p mathpreview-cli",
+  -- Install/update the binary on install/update (Rust toolchain required).
+  -- With this, you can skip the manual binary install in §1 entirely. Omit it
+  -- if you install mathpreview-cli yourself (tarball / cargo install).
+  build = "cargo install --path crates/cli --force",
   -- All `opts` keys are optional; the defaults work for the standard case.
   opts = {
     -- Absolute path to the binary if it isn't on $PATH.
@@ -214,9 +232,9 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
 use {
   "sonv/TexViewer",
   ft = { "tex", "plaintex", "latex" },
-  -- Rebuild the binary on install/update (Rust toolchain required). Omit if
-  -- you install mathpreview-cli yourself (see §1).
-  run = "cargo build --release -p mathpreview-cli",
+  -- Install/update the binary on install/update (Rust toolchain required).
+  -- Omit if you install mathpreview-cli yourself (see §1).
+  run = "cargo install --path crates/cli --force",
   config = function()
     require("mathpreview").setup({
       -- See the lazy.nvim block above for the full options list.
@@ -231,9 +249,9 @@ use {
 In your `init.vim` (or wherever your plug block lives):
 
 ```vim
-" The `do` hook rebuilds the binary on install/update (Rust toolchain
+" The `do` hook installs/updates the binary on install/update (Rust toolchain
 " required); drop it if you install mathpreview-cli yourself (see §1).
-Plug 'sonv/TexViewer', { 'do': 'cargo build --release -p mathpreview-cli' }
+Plug 'sonv/TexViewer', { 'do': 'cargo install --path crates/cli --force' }
 ```
 
 Then in `init.lua` (or a `lua << EOF` block in `init.vim`), if you want
@@ -258,11 +276,10 @@ next launch:
 ```sh
 mkdir -p ~/.config/nvim/pack/sonv/start
 git clone https://github.com/sonv/TexViewer ~/.config/nvim/pack/sonv/start/mathpreview
-# Optional: pre-build so the first :MathPreview is instant. If you skip
-# this, the plugin auto-builds in-place on first use (Rust toolchain
-# required). Either way the binary lands in the checkout's target/release/
-# and the plugin finds it automatically — no $PATH install needed.
-( cd ~/.config/nvim/pack/sonv/start/mathpreview && cargo build --release -p mathpreview-cli )
+# Optional: pre-install so the first :MathPreview is instant. If you skip
+# this, the plugin auto-installs on first use (Rust toolchain required).
+# Either way the binary lands in ~/.cargo/bin (on $PATH via rustup).
+( cd ~/.config/nvim/pack/sonv/start/mathpreview && cargo install --path crates/cli --force )
 ```
 
 The four `:MathPreview*` commands become available without any
@@ -278,8 +295,9 @@ to your `init.lua` (any time after nvim startup is fine; the plugin
 defers daemon work until you actually run `:MathPreview`).
 
 To update later: `git pull` from inside that directory, then re-run the
-`cargo build --release -p mathpreview-cli` step so the binary tracks the
-plugin. To remove: `rm -rf` it.
+`cargo install --path crates/cli --force` step so the binary tracks the
+plugin (or just run `:MathPreview` — it reinstalls on detecting skew). To
+remove: `rm -rf` it.
 
 ### 3. Use it
 

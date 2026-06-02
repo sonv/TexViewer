@@ -22,13 +22,12 @@ local DEFAULT_PORT = 23636
 local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 
 -- Version this plugin checkout expects the `mathpreview-cli` binary to be.
--- The plugin and binary ship from the same repo but install separately
--- (the plugin never builds the binary), so they drift whenever you update
--- one without the other. On :MathPreview we compare this against the
--- binary's `--version` and warn once on mismatch — that's the only signal
--- you get that a fix you "released" isn't actually the binary you're running.
+-- On :MathPreview we compare it against the binary's `--version`; if this is
+-- a source checkout with cargo, a stale/missing binary is (re)installed to
+-- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
+-- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.30"
+local PLUGIN_VERSION = "0.1.31"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -38,6 +37,13 @@ local config = {
   jump_poll_ms = 120,
   sync = true,
   auto_open_browser = true,
+  -- Where `cargo install` drops the auto-built binary. nil → cargo's default
+  -- (`$CARGO_HOME/bin`, usually `~/.cargo/bin`, which rustup puts on $PATH).
+  -- Set to a prefix like "~/.local" to install to "~/.local/bin/mathpreview-cli"
+  -- instead (passed to `cargo install --root`). If the resulting bin dir isn't
+  -- on your $PATH, the plugin still runs the binary by absolute path and warns
+  -- you once with the line to add.
+  install_root = nil,
   -- Override the MathJax bundle URL the daemon serves to the browser.
   -- nil → use the vendored, embedded `/vendor/mathjax/tex-svg.js` (works
   -- offline, default). Set to a CDN like
@@ -93,14 +99,43 @@ local function plugin_root()
   return vim.fn.fnamemodify(src, ":h:h:h")
 end
 
--- Path to a binary compiled inside this plugin checkout (by the
--- plugin-manager `build` hook, or by the runtime auto-build in M.start).
--- The cargo target lives under the checkout root. This is what makes
--- "rebuild on plugin update" work without a separate $PATH install — and
--- because it's the same checkout as PLUGIN_VERSION, the two can't drift.
+local function exe_name()
+  return (vim.fn.has("win32") == 1) and "mathpreview-cli.exe" or "mathpreview-cli"
+end
+
+-- Directory `cargo install` drops the binary in. Honors `install_root`
+-- (→ "<root>/bin"), then $CARGO_HOME/bin, then the ~/.cargo/bin default.
+local function cargo_bin_dir()
+  if config.install_root and config.install_root ~= "" then
+    return vim.fn.expand(config.install_root) .. "/bin"
+  end
+  local cargo_home = vim.env.CARGO_HOME
+  if cargo_home and cargo_home ~= "" then
+    return cargo_home .. "/bin"
+  end
+  return vim.fn.expand("~/.cargo/bin")
+end
+
+-- Absolute path of the `cargo install`-ed binary (whether or not its dir is
+-- on $PATH). This is the primary location the plugin runs from.
+local function installed_binary_path()
+  return cargo_bin_dir() .. "/" .. exe_name()
+end
+
+-- `cargo build --release` artifact inside this checkout. Kept only as a
+-- last-resort fallback for contributors who `cargo build` without installing.
 local function bundled_binary_path()
-  local exe = (vim.fn.has("win32") == 1) and "mathpreview-cli.exe" or "mathpreview-cli"
-  return plugin_root() .. "/target/release/" .. exe
+  return plugin_root() .. "/target/release/" .. exe_name()
+end
+
+-- The `cargo install` command used to (re)install the binary.
+local function cargo_install_args()
+  local args = { "cargo", "install", "--path", "crates/cli", "--force" }
+  if config.install_root and config.install_root ~= "" then
+    table.insert(args, "--root")
+    table.insert(args, vim.fn.expand(config.install_root))
+  end
+  return args
 end
 
 -- True if this checkout has the Rust sources we'd need to compile the binary
@@ -110,14 +145,24 @@ local function is_source_checkout()
 end
 
 local function resolve_cmd()
-  -- Precedence: explicit override > in-checkout build > $PATH. The bundled
-  -- binary outranks $PATH because if you set up the `build` hook you want the
-  -- freshly compiled, version-matched binary — not a stale global install.
+  -- Precedence: explicit override > cargo-installed binary (by absolute path,
+  -- so it works even when its dir isn't on $PATH) > whatever `mathpreview-cli`
+  -- is on $PATH > in-checkout build. The installed binary outranks $PATH/
+  -- in-checkout so a fresh install can't be shadowed by a stale leftover.
   if config.cmd and config.cmd ~= "" then return config.cmd end
+  local installed = installed_binary_path()
+  if vim.fn.executable(installed) == 1 then return installed end
+  if vim.fn.executable("mathpreview-cli") == 1 then return "mathpreview-cli" end
   local bundled = bundled_binary_path()
   if vim.fn.executable(bundled) == 1 then return bundled end
-  if vim.fn.executable("mathpreview-cli") == 1 then return "mathpreview-cli" end
   return nil
+end
+
+-- True if `cmd` is a binary the plugin installs/builds itself (so it's safe
+-- to reinstall on skew). A user-supplied `cmd` or an unrelated $PATH binary
+-- is left alone.
+local function is_managed(cmd)
+  return cmd == installed_binary_path() or cmd == bundled_binary_path()
 end
 
 local function json_encode(value)
@@ -209,46 +254,63 @@ local function check_binary_version(cmd)
     version_warned = true
     local rel = semver_cmp(ver, PLUGIN_VERSION) < 0 and "older than" or "newer than"
     vim.notify(
-      ("mathpreview: binary is %s (%s the plugin's expected %s). Rebuild/reinstall "
-        .. "the binary (e.g. `cargo install --git https://github.com/sonv/TexViewer "
-        .. "mathpreview-cli`) and :MathPreviewRestart so fixes match."):format(
-        ver, rel, PLUGIN_VERSION),
+      ("mathpreview: binary is %s (%s the plugin's expected %s). Reinstall it "
+        .. "(from this checkout: `cargo install --path crates/cli --force`) and "
+        .. ":MathPreviewRestart so fixes match."):format(ver, rel, PLUGIN_VERSION),
       vim.log.levels.WARN)
   end)
 end
 
--- Guards against overlapping cargo builds (e.g. a second :MathPreview while
--- the first is still compiling).
-local building = false
+-- Guards against overlapping installs (e.g. a second :MathPreview while the
+-- first is still compiling).
+local installing = false
+-- Warn at most once per session about the install dir not being on $PATH.
+local path_hinted = false
 
--- Compile mathpreview-cli inside this checkout, async. Notifies on start
--- (so the user knows to wait out the one-time ~20s release build) and on
--- finish, then calls on_done(ok) on the main thread. Assumes the caller has
--- already confirmed this is a source checkout with cargo available.
-local function auto_build(on_done)
-  if building then return end  -- a build is already in flight; its callback will start us
-  building = true
+-- If the cargo bin dir isn't on $PATH, tell the user how to add it (the
+-- binary still runs via its absolute path; this is for terminal use). Standard
+-- fix is to put the dir on PATH in the shell profile.
+local function hint_path_if_needed()
+  if path_hinted or vim.fn.executable("mathpreview-cli") == 1 then
+    return
+  end
+  path_hinted = true
+  local dir = cargo_bin_dir()
   vim.notify(
-    "mathpreview: building mathpreview-cli (first run, ~20s) — please wait, "
-      .. ":MathPreview will start automatically when it finishes…",
+    ("mathpreview: installed to %s, which isn't on your $PATH.\n"
+      .. "The plugin runs it by absolute path, but for terminal use add it to "
+      .. "your shell profile:\n  export PATH=\"%s:$PATH\"\n"
+      .. "(or set `install_root` / `cmd` in setup()).") :format(dir, dir),
+    vim.log.levels.WARN)
+end
+
+-- `cargo install` mathpreview-cli (builds + drops it in the cargo bin dir),
+-- async. Notifies on start (so the user waits out the one-time ~30s build) and
+-- on finish, then calls on_done(ok) on the main thread. Assumes the caller has
+-- confirmed this is a source checkout with cargo available.
+local function auto_install(on_done)
+  if installing then return end  -- one already in flight; its callback will start us
+  installing = true
+  vim.notify(
+    ("mathpreview: installing mathpreview-cli to %s (first run, ~30s) — please "
+      .. "wait, :MathPreview will start automatically when it finishes…")
+      :format(cargo_bin_dir()),
     vim.log.levels.INFO)
-  run_system(
-    { "cargo", "build", "--release", "-p", "mathpreview-cli" },
-    { cwd = plugin_root() },
-    function(res)
-      building = false
-      local ok = res and res.code == 0
-      if ok then
-        vim.notify("mathpreview: build complete — starting daemon.", vim.log.levels.INFO)
-      else
-        vim.notify(
-          ("mathpreview: build failed (cargo exit %s). See :messages; you can also "
-            .. "install the binary manually (README) or set `cmd` in setup().\n%s"):format(
-            res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
-          vim.log.levels.ERROR)
-      end
-      if on_done then on_done(ok) end
-    end)
+  run_system(cargo_install_args(), { cwd = plugin_root() }, function(res)
+    installing = false
+    local ok = res and res.code == 0
+    if ok then
+      vim.notify("mathpreview: install complete — starting daemon.", vim.log.levels.INFO)
+      hint_path_if_needed()
+    else
+      vim.notify(
+        ("mathpreview: install failed (cargo exit %s). See :messages; you can also "
+          .. "install the binary manually (README) or set `cmd` in setup().\n%s"):format(
+          res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
+        vim.log.levels.ERROR)
+    end
+    if on_done then on_done(ok) end
+  end)
 end
 
 -- True if `port` is free for binding on 127.0.0.1. Closes the probe
@@ -506,9 +568,16 @@ local function start_with(cmd, opts)
   -- its $NVIM_LISTEN_ADDRESS default template.
   table.insert(spawn_args, "--editor")
   table.insert(spawn_args, editor_cmd)
+  -- Capture the daemon's stderr so a failed spawn explains *why* instead of
+  -- just printing an exit code. We also report which binary was launched —
+  -- the resolved path can be a stale in-checkout build shadowing $PATH.
+  local stderr_lines = {}
   local job = vim.fn.jobstart(
     spawn_args,
     {
+      on_stderr = function(_, data)
+        if data then vim.list_extend(stderr_lines, data) end
+      end,
       on_exit = function(_, code)
         local exited_root = daemon_root or "<unknown>"
         daemon_job = nil
@@ -516,10 +585,14 @@ local function start_with(cmd, opts)
         daemon_root = nil
         detach_autocmds()
         if code ~= 0 then
+          local tail = vim.trim(table.concat(stderr_lines, "\n"))
           vim.schedule(function()
-            vim.notify(
-              ("mathpreview: daemon for %s exited with code %d"):format(exited_root, code),
-              vim.log.levels.WARN)
+            local msg = ("mathpreview: daemon for %s exited with code %d (binary: %s)")
+              :format(exited_root, code, cmd)
+            if tail ~= "" then
+              msg = msg .. "\n" .. tail
+            end
+            vim.notify(msg, vim.log.levels.WARN)
           end)
         end
       end,
@@ -545,57 +618,57 @@ local function start_with(cmd, opts)
     vim.log.levels.INFO)
 end
 
--- Resolve a usable binary — (re)building the in-checkout one as needed — then
--- call on_ready(cmd). This is what gives "auto-build on first use" and
--- "auto-rebuild on plugin update" with no plugin-manager build hook:
---   * no binary + source checkout + cargo → build, then proceed
---   * in-checkout binary older than this plugin → rebuild, then proceed
---   * current in-checkout binary → proceed as-is
---   * a $PATH/global binary (not ours to rebuild) → proceed, warn on skew
--- Every (re)build emits auto_build's "building… please wait" notification.
+-- Resolve a usable binary — `cargo install`-ing it as needed — then call
+-- on_ready(cmd). This gives "auto-install on first use" and "auto-reinstall on
+-- plugin update" with no plugin-manager build hook:
+--   * no binary + source checkout + cargo → install, then proceed
+--   * our installed/in-checkout binary older than this plugin → reinstall
+--   * current binary → proceed as-is
+--   * a user `cmd` / unrelated $PATH binary → proceed, warn on skew
+-- Every (re)install emits auto_install's "installing… please wait" notice.
 local function ensure_binary(on_ready)
   local cmd = resolve_cmd()
   local can_build = is_source_checkout() and vim.fn.executable("cargo") == 1
 
   if not cmd then
     if can_build then
-      auto_build(function(ok)
-        local built = resolve_cmd()
-        if ok and built then
-          on_ready(built)
+      auto_install(function(ok)
+        local got = resolve_cmd()
+        if ok and got then
+          on_ready(got)
         elseif ok then
           vim.notify(
-            "mathpreview: build reported success but no binary found at "
-              .. bundled_binary_path() .. " — see :messages.",
+            "mathpreview: install reported success but no binary found at "
+              .. installed_binary_path() .. " — see :messages.",
             vim.log.levels.ERROR)
         end
-        -- on failure auto_build already notified with the cargo error.
+        -- on failure auto_install already notified with the cargo error.
       end)
     else
       vim.notify(
         "mathpreview: `mathpreview-cli` not found on $PATH" ..
-        (is_source_checkout() and " and `cargo` is unavailable to build it. " or ". ") ..
+        (is_source_checkout() and " and `cargo` is unavailable to install it. " or ". ") ..
         "Install the binary first (see README), or set `cmd = '/path/to/mathpreview-cli'` in setup().",
         vim.log.levels.ERROR)
     end
     return
   end
 
-  -- A binary exists. If it's our in-checkout build and we can compile,
-  -- rebuild it when it's older than this plugin checkout (the
-  -- rebuild-on-update path). A $PATH/global binary isn't ours to rebuild, so
-  -- just run the async skew check (which warns) and use it as-is.
-  if can_build and cmd == bundled_binary_path() then
+  -- A binary exists. If it's one we manage and we can compile, reinstall it
+  -- when it's older than this plugin checkout (the reinstall-on-update path).
+  -- A user `cmd` / unrelated $PATH binary isn't ours to touch — just run the
+  -- async skew check (which warns) and use it as-is.
+  if can_build and is_managed(cmd) then
     run_system({ cmd, "--version" }, {}, function(res)
       local ver = (res and res.code == 0 and res.stdout)
         and res.stdout:gsub("%s+$", ""):match("(%S+)%s*$") or nil
       if ver then last_status.binary_version = ver end
       if ver and semver_cmp(ver, PLUGIN_VERSION) < 0 then
         vim.notify(
-          ("mathpreview: in-checkout binary %s is older than plugin %s — rebuilding…")
+          ("mathpreview: binary %s is older than plugin %s — reinstalling…")
             :format(ver, PLUGIN_VERSION),
           vim.log.levels.INFO)
-        auto_build(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
+        auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
       else
         on_ready(cmd)
       end
@@ -603,7 +676,7 @@ local function ensure_binary(on_ready)
     return
   end
 
-  check_binary_version(cmd)  -- async; warns once if a $PATH binary is stale
+  check_binary_version(cmd)  -- async; warns once if a user/$PATH binary is stale
   on_ready(cmd)
 end
 
@@ -651,6 +724,8 @@ function M.status()
     last_push_ago_ms = (last_status.last_push_ms > 0) and math.floor(age) or nil,
     last_error = last_status.last_error,
     cmd = resolve_cmd(),
+    install_dir = cargo_bin_dir(),
+    install_dir_on_path = vim.fn.executable("mathpreview-cli") == 1,
     plugin_version = PLUGIN_VERSION,
     binary_version = last_status.binary_version,  -- nil until first :MathPreview
     nvim_version = vim.version() and (vim.version().major .. "." .. vim.version().minor) or "?",

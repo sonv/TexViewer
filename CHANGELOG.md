@@ -17,6 +17,34 @@ summary.
 
 Nothing yet.
 
+## [0.1.31] — 2026-06-03
+
+### Changed
+
+- **The plugin's auto-build now uses `cargo install` instead of
+  `cargo build`, so the binary lands on your `$PATH`.** On first
+  `:MathPreview` (or after a plugin update moves ahead of the binary) the
+  plugin runs `cargo install --path crates/cli --force`, dropping
+  `mathpreview-cli` in your cargo bin dir (`$CARGO_HOME/bin`, default
+  `~/.cargo/bin`) so it's usable in a terminal and by other tools — not just
+  buried in `target/release/`. The documented `build`/`run`/`do` plugin-manager
+  hooks switch to `cargo install --path crates/cli --force` to match.
+- **Install location is detected, and a not-on-`$PATH` install is called
+  out.** A new `install_root` option chooses where to install (passed to
+  `cargo install --root`, binary lands in `<root>/bin`). The plugin runs the
+  binary by its absolute installed path regardless, and if the install dir
+  isn't on `$PATH` it warns once with the exact `export PATH=…` line to add.
+  Resolution order is now: explicit `cmd` → cargo-installed binary (absolute
+  path) → `mathpreview-cli` on `$PATH` → leftover `target/release/` build, so
+  a fresh install can't be shadowed by a stale one.
+
+### Added
+
+- **Failed daemon spawns now report why.** Instead of a bare "exited with
+  code N", the notification includes the binary path that was launched and the
+  daemon's captured stderr. `:MathPreviewStatus` also reports `install_dir`
+  and whether it's on `$PATH`.
+
 ## [0.1.30] — 2026-06-03
 
 ### Changed
