@@ -22,3 +22,7 @@ end, { desc = "Restart the mathpreview daemon" })
 vim.api.nvim_create_user_command("MathPreviewStatus", function()
   print(vim.inspect(require("mathpreview").status()))
 end, { desc = "Show mathpreview daemon and plugin status" })
+
+vim.api.nvim_create_user_command("MathPreviewDebug", function()
+  require("mathpreview").debug()
+end, { desc = "Show mathpreview resolved settings and config/macro paths" })

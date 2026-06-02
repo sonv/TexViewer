@@ -151,7 +151,7 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
 {
   "sonv/TexViewer",
   ft  = { "tex", "plaintex", "latex" },
-  cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus" },
+  cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus", "MathPreviewDebug" },
   -- All `opts` keys are optional; the defaults work for the standard case.
   opts = {
     -- Absolute path to the binary if it isn't on $PATH.
@@ -265,6 +265,12 @@ Other commands:
   changes the daemon's macro cache misses.
 - `:MathPreviewStatus` — echoes daemon PID/port, last push time, push
   counters, and the resolved binary path.
+- `:MathPreviewDebug` — echoes the resolved viewer settings, the
+  reveal-source `editor_cmd` in effect, and the config / macro paths the
+  daemon consulted (with a `*` next to the files that actually exist), so
+  you can see what's loaded and where from. Reads the daemon's `/debug`
+  endpoint, which you can also open in the browser
+  (`http://127.0.0.1:<port>/debug`) for the full JSON including the log.
 
 ### CLI directly (no plugin)
 
@@ -603,6 +609,7 @@ The four commands `plugin/mathpreview.lua` registers on startup:
 | `:MathPreviewStop` | Kill the daemon, detach autocmds, stop the poll. Also fires from `VimLeavePre`. |
 | `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after preamble changes the daemon's macro cache misses. |
 | `:MathPreviewStatus` | `print(vim.inspect(...))` of the runtime state: PID/port, root file, push and cursor counts, last error, resolved binary path, nvim version. |
+| `:MathPreviewDebug` | Fetch the daemon's `/debug` and print the resolved viewer settings, the reveal-source `editor_cmd`, and the config / macro paths consulted (`*` marks files that exist). Shows what's loaded and from where. |
 
 The daemon takes the root file's path on its command line and walks the
 project from there. The plugin then POSTs the *current buffer's* path on

@@ -9,6 +9,7 @@
 --     :MathPreviewStop     kill the daemon
 --     :MathPreviewRestart  stop + start
 --     :MathPreviewStatus   echo PID, port, push counters, version handshake
+--     :MathPreviewDebug    echo resolved settings + config/macro paths
 --
 -- The plugin spawns the daemon as a background job, finds the first free
 -- port starting at 23636, opens the browser, then debounces buffer pushes
@@ -47,6 +48,7 @@ local config = {
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
   jump_url = nil,   -- http://127.0.0.1:<port>/jump
+  debug_url = nil,  -- http://127.0.0.1:<port>/debug
 }
 
 local uv = vim.uv or vim.loop
@@ -77,6 +79,11 @@ end
 local function json_encode(value)
   if vim.json and vim.json.encode then return vim.json.encode(value) end
   return vim.fn.json_encode(value)
+end
+
+local function json_decode(s)
+  if vim.json and vim.json.decode then return vim.json.decode(s) end
+  return vim.fn.json_decode(s)
 end
 
 local function json_decode(value)
@@ -143,6 +150,7 @@ local function set_urls(port)
   config.url = base .. "/buffer"
   config.cursor_url = base .. "/cursor"
   config.jump_url = base .. "/jump"
+  config.debug_url = base .. "/debug"
 end
 
 local function open_browser(url)
@@ -448,6 +456,64 @@ function M.status()
     cmd = resolve_cmd(),
     nvim_version = vim.version() and (vim.version().major .. "." .. vim.version().minor) or "?",
   }
+end
+
+-- Fetch the daemon's `/debug` view and print the resolved settings plus
+-- the config / macro paths it consulted (with a `*` marker for the files
+-- that actually exist). Answers "what settings are in effect and where
+-- did they come from?" without leaving the editor.
+function M.debug()
+  if not daemon_job or not config.debug_url then
+    vim.notify("mathpreview: no daemon running (start with :MathPreview)", vim.log.levels.WARN)
+    return
+  end
+  run_system(
+    { "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "5", config.debug_url },
+    {},
+    function(res)
+      if res.code ~= 0 then
+        vim.notify(
+          ("mathpreview: /debug failed (curl %d): %s"):format(res.code, (res.stderr or ""):gsub("%s+$", "")),
+          vim.log.levels.ERROR)
+        return
+      end
+      local ok, data = pcall(json_decode, res.stdout or "")
+      if not ok or type(data) ~= "table" then
+        print(res.stdout)  -- fall back to raw JSON if decode failed
+        return
+      end
+      local lines = {}
+      local function add(s) table.insert(lines, s) end
+      local function mark(exists) return exists and "*" or " " end
+      add("mathpreview /debug  (" .. tostring(config.debug_url) .. ")")
+      add(("daemon: port %s, root %s"):format(tostring(daemon_port), tostring(daemon_root)))
+      add("editor_cmd: " .. tostring(data.editor_cmd))
+      add(("ws_protocol: %s   verbose_logging: %s")
+        :format(tostring(data.ws_protocol), tostring(data.debug_logging)))
+      local vc = data.viewer_config or {}
+      add("viewer config:")
+      add("  font_size:           " .. tostring(vc.font_size))
+      add("  default_page_mode:   " .. tostring(vc.default_page_mode))
+      add("  default_theme:       " .. tostring(vc.default_theme))
+      add("  source_jump_trigger: " .. tostring(vc.source_jump_trigger))
+      add("config paths (cascade, low→high priority; * = exists):")
+      if data.config_paths and #data.config_paths > 0 then
+        for _, p in ipairs(data.config_paths) do
+          add(("  [%s] %s"):format(mark(p.exists), tostring(p.path)))
+        end
+      else
+        add("  (none)")
+      end
+      add("macro paths (* = exists):")
+      if data.macro_paths and #data.macro_paths > 0 then
+        for _, p in ipairs(data.macro_paths) do
+          add(("  [%s] %s  (%s)"):format(mark(p.exists), tostring(p.path), tostring(p.source)))
+        end
+      else
+        add("  (none)")
+      end
+      print(table.concat(lines, "\n"))
+    end)
 end
 
 -- Lightweight setup hook. Most users won't need to call this — the

@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.25] — 2026-06-02
+
+### Added
+
+- **`:MathPreviewDebug`** — prints the daemon's resolved viewer settings,
+  the reveal-source `editor_cmd` in effect, and the config / macro paths
+  it consulted (with a `*` next to files that exist), so you can see what
+  settings are loaded and where from without leaving the editor. Reads
+  the existing `/debug` HTTP endpoint, which is also viewable in the
+  browser at `http://127.0.0.1:<port>/debug`.
+
 ## [0.1.24] — 2026-06-02
 
 ### Fixed
