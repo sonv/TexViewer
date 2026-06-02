@@ -417,11 +417,14 @@ a Rust roundtrip unless they are controlling the daemon itself.
   `localStorage["mathpreview.userZoom"]`.
 - **Cmd/Ctrl-click → editor.** Modifier-click on any rendered token
   spawns the editor configured via `--editor` at the source line —
-  the IDE-style "reveal in source" gesture. Default template lands
-  inside the running nvim instance whose listen socket is in
-  `$NVIM_LISTEN_ADDRESS`; override with e.g. `--editor='code -g
-  {file}:{line}'`. Alt-click still posts to `/jump` for users running
-  the polling-based nvim plugin.
+  the IDE-style "reveal in source" gesture. The bundled nvim plugin
+  auto-passes an `--editor` command targeting the running nvim via
+  `v:servername`, so this works out of the box; override it with the
+  plugin's `editor = '…'` option (or `--editor` when running `serve`
+  by hand), e.g. `code -g {file}:{line}`. Run by hand without a
+  command, the default targets nvim through `$NVIM_LISTEN_ADDRESS` or
+  `$NVIM`. Alt-click still posts to `/jump` for the polling-based
+  plugin path.
 - **Math-only search.** Prefix the `/` query with `m:` (`m:n`,
   `m:\alpha`, `m:α`) or wrap it LaTeX-style (`$n$`, `$\alpha$`) to
   skip body text and only match SVG math glyphs. A single Latin or

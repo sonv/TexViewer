@@ -68,10 +68,12 @@ enum Cmd {
         /// Shell command run for Cmd/Ctrl-click "reveal source" requests.
         /// `{file}` (shell-quoted), `{line}`, and `{col}` are substituted
         /// before the command is handed to `sh -c`. The default jumps to
-        /// the source line inside a running nvim instance that listens on
-        /// the socket in `$NVIM_LISTEN_ADDRESS` (set automatically when
-        /// you launch nvim with `--listen` or inside a Neovim terminal).
-        #[arg(long, default_value = r#"nvim --server "$NVIM_LISTEN_ADDRESS" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
+        /// the source line inside a running nvim instance: it uses
+        /// `$NVIM_LISTEN_ADDRESS` if set, else `$NVIM` (which Neovim exports
+        /// to `:terminal` children). The bundled nvim plugin passes an
+        /// explicit `--editor` built from `v:servername`, so this default
+        /// only matters when you run `serve` by hand.
+        #[arg(long, default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
         editor: String,
         /// Extra macro override file(s), appended to the cascade after
         /// the global `~/.config/mathpreview/macros.tex` and the

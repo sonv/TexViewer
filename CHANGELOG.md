@@ -17,6 +17,27 @@ summary.
 
 Nothing yet.
 
+## [0.1.24] — 2026-06-02
+
+### Fixed
+
+- **Reveal-source (Cmd/Ctrl-click → editor) no longer errors under the
+  nvim plugin.** The daemon's default editor command targets
+  `$NVIM_LISTEN_ADDRESS`, which modern Neovim no longer exports, so the
+  spawned `nvim --server "" …` failed with `E247: No server specified`
+  and logged a recurring warning on every click. (Source-jump still
+  worked because that's the plugin's separate polling path.) The bundled
+  plugin now passes an explicit `--editor` built from `v:servername`, so
+  reveal-source targets the running nvim and logs `reveal-source →
+  file:line` instead. New `editor = '…'` plugin option to override it.
+
+### Changed
+
+- **Hand-run `serve` falls back to `$NVIM` for reveal-source.** The
+  default `--editor` template now uses `${NVIM_LISTEN_ADDRESS:-$NVIM}`,
+  so launching the daemon yourself from inside a Neovim `:terminal`
+  (which exports `$NVIM`) also reaches the right instance.
+
 ## [0.1.23] — 2026-06-02
 
 ### Changed

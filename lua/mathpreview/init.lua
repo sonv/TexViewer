@@ -36,6 +36,13 @@ local config = {
   -- want to pull a newer MathJax release without rebuilding the binary,
   -- or if you're behind a corporate proxy that caches CDN assets.
   mathjax_url = nil,
+  -- Shell command the daemon runs for browser "reveal source" clicks
+  -- (`POST /reveal-source`). `{file}`, `{line}`, `{col}` are substituted.
+  -- nil → auto: the plugin passes a command targeting THIS nvim via
+  -- `v:servername`, so reveal-source works without relying on the
+  -- (no-longer-exported) `$NVIM_LISTEN_ADDRESS`. Set a string to override
+  -- (e.g. `code -g {file}:{line}:{col}`).
+  editor = nil,
   -- Per-session URLs, written when start_daemon() picks a port.
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
@@ -352,6 +359,20 @@ function M.start(opts)
   if config.mathjax_url and config.mathjax_url ~= "" then
     table.insert(spawn_args, "--mathjax-url")
     table.insert(spawn_args, config.mathjax_url)
+  end
+  -- Point reveal-source at THIS nvim. The daemon's default editor
+  -- template uses `$NVIM_LISTEN_ADDRESS`, which modern Neovim no longer
+  -- exports, so without this the spawned `nvim --server "" …` fails with
+  -- E247. `v:servername` is the running instance's RPC address.
+  local editor_cmd = config.editor
+  if (not editor_cmd or editor_cmd == "") and vim.v.servername and vim.v.servername ~= "" then
+    editor_cmd = string.format(
+      [[nvim --server %s --remote-send "<C-\><C-N>:e +{line} {file}<CR>"]],
+      vim.fn.shellescape(vim.v.servername))
+  end
+  if editor_cmd and editor_cmd ~= "" then
+    table.insert(spawn_args, "--editor")
+    table.insert(spawn_args, editor_cmd)
   end
   local job = vim.fn.jobstart(
     spawn_args,
