@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.26] — 2026-06-02
+
+### Fixed
+
+- **Modifier-click no longer yanks you into a second buffer.** A
+  reveal-source click fires both `/jump` (which the plugin polls and
+  applies *in place*) and `/reveal-source` (which spawns `--editor`).
+  Once v0.1.24 made the spawn actually work under the plugin, both paths
+  ran, so `nvim --remote-send :e …` opened the file again on top of the
+  in-place jump. The plugin now disables the editor spawn whenever cursor
+  `sync` is on (the polled `/jump` already handles navigation), and only
+  passes a `v:servername` editor command when `sync` is off. Set the
+  plugin's `editor = '…'` to force a specific command, or `""` to always
+  disable it.
+
 ## [0.1.25] — 2026-06-02
 
 ### Added
