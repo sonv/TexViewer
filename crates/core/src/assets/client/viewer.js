@@ -674,13 +674,22 @@
       });
       if (res.status === 204) {
         setStatus('live', '● editor → ' + info.line + ':' + info.col);
-      } else {
-        var msg = '';
-        try { msg = (await res.json()).error || ''; } catch (e) {}
-        setStatus('dead', '○ editor jump failed' + (msg ? ': ' + msg : ''));
+      }
+      // Failures are swallowed silently because `requestRevealSource`
+      // also fires `/jump` in parallel: if the editor-spawn path
+      // (`--editor` template) isn't wired up — typically a missing
+      // $NVIM_LISTEN_ADDRESS — the nvim plugin still picks up the
+      // polled jump and the user gets the navigation regardless.
+      // Logging the spawn failure to console keeps it diagnosable
+      // without spamming the status pill.
+      else {
+        try {
+          var body = await res.json();
+          if (body && body.error) console.warn('reveal-source:', body.error);
+        } catch (e) {}
       }
     } catch (e) {
-      setStatus('dead', '○ editor jump failed');
+      console.warn('reveal-source:', e && e.message || e);
     }
   }
 
@@ -691,6 +700,14 @@
     e.preventDefault();
     e.stopPropagation();
     revealSourceElement(el.id, false);
+    // Fire both endpoints: `/jump` lands the request on whichever nvim
+    // plugin is polling for it (the path that already works without
+    // any editor-spawn config); `/reveal-source` is the best-effort
+    // active-spawn path that runs the `--editor` template if the
+    // shell has $NVIM_LISTEN_ADDRESS (or whatever the template needs).
+    // Either succeeding is enough — failures of `/reveal-source` are
+    // surfaced on the status pill but don't suppress the `/jump`.
+    postSourceJump(info);
     postRevealSource(info);
     return true;
   }

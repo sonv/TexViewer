@@ -17,6 +17,28 @@ summary.
 
 Nothing yet.
 
+## [0.1.16] — 2026-06-02
+
+### Changed
+
+- **Configured source-jump trigger now also fires the polling `/jump`
+  path** in parallel with `/reveal-source`. Previously a Cmd-click
+  only hit `/reveal-source`, which fails silently if your editor
+  template needs `$NVIM_LISTEN_ADDRESS` and that's not set. Now the
+  same gesture fires both endpoints: the nvim plugin polling `/jump`
+  picks the request up regardless of whether the spawn template
+  works, matching what double-click was already doing.
+- **`/reveal-source` failures are silenced on the status pill** when
+  fired from a click trigger and downgraded to a `console.warn`,
+  since the `/jump` path running in parallel is enough to land the
+  navigation. The pill keeps showing the successful "● source jump"
+  message.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v58** so v0.1.15 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.15] — 2026-06-02
 
 ### Changed
@@ -521,7 +543,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/sonv/TexViewer/releases/tag/v0.1.16
 [0.1.15]: https://github.com/sonv/TexViewer/releases/tag/v0.1.15
 [0.1.14]: https://github.com/sonv/TexViewer/releases/tag/v0.1.14
 [0.1.13]: https://github.com/sonv/TexViewer/releases/tag/v0.1.13

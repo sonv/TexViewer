@@ -8,7 +8,7 @@
   }
 
   // Live-reload WebSocket. Reconnects with backoff if the server restarts.
-  var WS_PROTOCOL_VERSION = '57';
+  var WS_PROTOCOL_VERSION = '58';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
