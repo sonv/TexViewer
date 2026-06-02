@@ -17,6 +17,29 @@ summary.
 
 Nothing yet.
 
+## [0.1.30] — 2026-06-03
+
+### Changed
+
+- **Theorem/lemma numbering now follows the document's `\newtheorem`
+  declarations instead of assuming one fixed AMS convention.** The preamble
+  is parsed for `\newtheorem`, `\newtheorem*`, and `\numberwithin`, and that
+  drives: which environment names are treated as theorem-like (so custom
+  environments like `assumption` or `DL` are recognized and numbered), the
+  heading word shown (`Theorem`, `Lemma`, `Satz`, a custom title…), whether
+  an environment is numbered (`\newtheorem*` → unnumbered), and how its
+  number is computed — shared vs independent counters, the sectioning level
+  it resets under (or continuous numbering with no `[section]`). This makes
+  the preview's numbers and `\ref`/`\cref` text match a real `latexmk`
+  build. When the preamble declares nothing, the previous AMS default
+  (all environments share one `theorem` counter, reset per `\section`) is
+  used unchanged.
+
+  Scope: declarations are read from the root file's preamble (and
+  `\input`'d preamble). `\newtheorem` inside a `\usepackage`'d `.sty`
+  package is not scanned (it can sit behind `\if/\else/\fi` the renderer
+  can't evaluate), so such documents fall back to the AMS default.
+
 ## [0.1.29] — 2026-06-02
 
 ### Added

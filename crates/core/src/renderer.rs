@@ -1045,6 +1045,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         }
         NodeKind::Theorem {
             env,
+            kind_word,
             role,
             name,
             label,
@@ -1058,7 +1059,13 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .unwrap_or_else(|| ctx.idgen.next("thm"));
             record_container(ctx, &id, &n.span, label.as_deref());
             let role_class = role.as_css_class();
-            let kind_label = capitalize(env);
+            // Heading word resolved from the preamble's `\newtheorem` title;
+            // fall back to capitalizing the env name for legacy/empty nodes.
+            let kind_label = if kind_word.is_empty() {
+                capitalize(env)
+            } else {
+                escape_html(kind_word)
+            };
             let num_html = number
                 .as_deref()
                 .map(|n| format!(r#" <span class="thm-num">{}</span>"#, escape_html(n)))

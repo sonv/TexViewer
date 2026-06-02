@@ -15,6 +15,7 @@ pub mod project;
 pub mod renderer;
 pub mod root;
 pub mod sync;
+pub mod theorems;
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,7 @@ pub use macros::{
 pub use packages::PackageMap;
 pub use renderer::{HtmlOptions, RenderOutput, RenderedBlock};
 pub use sync::SyncIndex;
+pub use theorems::TheoremRegistry;
 
 /// End-to-end Step-1 pipeline: given any `.tex` path, resolve the project
 /// root, parse the project, extract preamble macros, and render to HTML.
@@ -81,8 +83,11 @@ fn finish_render(
     let preamble = macros::extract_preamble_with_overrides(&project, &overrides)?;
     let bib = bibtex::load_project_bib(&project)?;
     let bib_style = bibtex::detect_project_bib_style(&project);
-    let mut body = parser::parse_body(&project)?;
-    let labels = numbering::assign_numbers(&mut body, &bib, bib_style);
+    // Theorem environments + their counters/titles are driven by the
+    // preamble's `\newtheorem` declarations so numbering matches a real build.
+    let thms = theorems::TheoremRegistry::from_preamble(&project.preamble.source);
+    let mut body = parser::parse_body(&project, &thms)?;
+    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms);
     let mut sync = SyncIndex::new();
     // Inject the resolved root path so the topbar can show "title — path".
     // Done as a clone to avoid asking callers to mutate the &HtmlOptions

@@ -85,6 +85,11 @@ pub enum NodeKind {
     /// `\begin{theorem}[role=...]{name}` ... `\end{theorem}` (and friends).
     Theorem {
         env: String, // "theorem" / "lemma" / "proposition" / ...
+        /// Heading word resolved from the preamble's `\newtheorem` title (or a
+        /// default), e.g. "Theorem", "Lemma", "Satz". Set by the parser so the
+        /// renderer doesn't need the theorem registry.
+        #[serde(default)]
+        kind_word: String,
         role: Role,
         name: Option<String>,
         label: Option<String>,

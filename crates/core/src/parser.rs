@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span, THEOREM_LIKES};
+use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span};
+use crate::theorems::TheoremRegistry;
 use crate::project::Project;
 
 const MATH_ENVS: &[&str] = &[
@@ -35,10 +36,10 @@ const TRANSPARENT_ENVS: &[&str] = &["center"];
 
 /// Parse every project file's body into a flat node list, preserving include
 /// order.
-pub fn parse_body(project: &Project) -> Result<Vec<Node>> {
+pub fn parse_body(project: &Project, thms: &TheoremRegistry) -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     for f in &project.files {
-        let mut p = Parser::new_at(&f.source, f.path.clone(), f.start);
+        let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms);
         p.parse_block_into(&mut nodes, None);
     }
     Ok(nodes)
@@ -54,10 +55,11 @@ struct Parser<'a> {
     start_col: u32,
     line: u32,
     col: u32,
+    thms: &'a TheoremRegistry,
 }
 
 impl<'a> Parser<'a> {
-    fn new_at(src: &'a str, file: PathBuf, start: Pos) -> Self {
+    fn new_at(src: &'a str, file: PathBuf, start: Pos, thms: &'a TheoremRegistry) -> Self {
         Self {
             src,
             bytes: src.as_bytes(),
@@ -68,6 +70,7 @@ impl<'a> Parser<'a> {
             start_col: start.col,
             line: start.line,
             col: start.col,
+            thms,
         }
     }
 
@@ -578,8 +581,9 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Theorem-like with optional [role=...]{name}.
-        if THEOREM_LIKES.contains(&strip_star(&env)) {
+        // Theorem-like with optional [role=...]{name}. Recognition comes from
+        // the registry (built-ins + the preamble's `\newtheorem` names).
+        if self.thms.is_theorem(strip_star(&env)) {
             self.parse_theorem(out, start, env);
             return;
         }
@@ -642,7 +646,7 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos(), self.thms);
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -663,7 +667,7 @@ impl<'a> Parser<'a> {
         };
 
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos(), self.thms);
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -681,7 +685,7 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos(), self.thms);
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -702,7 +706,7 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos(), self.thms);
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -774,15 +778,18 @@ impl<'a> Parser<'a> {
         };
         let mut children = Vec::new();
         // Parse inner content with a sub-parser so nested commands work.
-        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos(), self.thms);
         sub.parse_block_into(&mut children, None);
 
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
 
+        let bare = strip_star(&env).to_string();
+        let kind_word = self.thms.title(&bare);
         out.push(Node {
             kind: NodeKind::Theorem {
-                env: strip_star(&env).to_string(),
+                env: bare,
+                kind_word,
                 role,
                 name,
                 label,
@@ -809,6 +816,7 @@ impl<'a> Parser<'a> {
                 item_slice,
                 self.file.clone(),
                 self.pos_at_byte(self.byte + slice_start),
+                self.thms,
             );
             sub.parse_block_into(&mut item_children, None);
             list_children.push(Node {
@@ -835,7 +843,7 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end("proof");
         let inner = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner, self.file.clone(), self.pos());
+        let mut sub = Parser::new_at(inner, self.file.clone(), self.pos(), self.thms);
         sub.parse_block_into(&mut children, None);
 
         self.advance_to(body_end);
@@ -1400,7 +1408,8 @@ mod tests {
             }],
             warnings: vec![],
         };
-        parse_body(&project).unwrap()
+        let thms = TheoremRegistry::from_preamble(&project.preamble.source);
+        parse_body(&project, &thms).unwrap()
     }
 
     #[test]

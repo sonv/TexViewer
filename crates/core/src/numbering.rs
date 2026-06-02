@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use crate::ast::{Node, NodeKind, RefKind};
 use crate::bibtex::{alphabetic_label, alphabetic_sort_key, authoryear_label, BibEntry, BibStyle};
+use crate::theorems::TheoremRegistry;
 
 #[derive(Debug, Default, Clone)]
 pub struct LabelTable {
@@ -80,8 +81,9 @@ pub fn assign_numbers(
     nodes: &mut [Node],
     bib: &HashMap<String, BibEntry>,
     style: BibStyle,
+    thms: &TheoremRegistry,
 ) -> LabelTable {
-    let mut state = State::default();
+    let mut state = State::new(thms);
     walk(nodes, &mut state);
 
     // Finalize citation order + display per style.
@@ -184,18 +186,53 @@ pub fn assign_numbers(
     state.labels
 }
 
-#[derive(Default)]
-struct State {
+struct State<'r> {
     section_prefix: Option<String>,
     section_counters: [u32; 7],
     appendix: bool,
-    thm_in_section: u32,
+    /// counter name → current value. Theorem-like environments may share a
+    /// counter (`\newtheorem{lemma}[theorem]{Lemma}`) or have their own.
+    thm_counters: HashMap<String, u32>,
     eq_in_section: u32,
     subequations: Vec<SubequationState>,
     figure: u32,
     table: u32,
     labels: LabelTable,
     pending_labels: Vec<String>,
+    registry: &'r TheoremRegistry,
+}
+
+impl<'r> State<'r> {
+    fn new(registry: &'r TheoremRegistry) -> Self {
+        Self {
+            section_prefix: None,
+            section_counters: [0; 7],
+            appendix: false,
+            thm_counters: HashMap::new(),
+            eq_in_section: 0,
+            subequations: Vec::new(),
+            figure: 0,
+            table: 0,
+            labels: LabelTable::default(),
+            pending_labels: Vec::new(),
+            registry,
+        }
+    }
+}
+
+/// Reset every theorem counter that resets under `level` (or a shallower
+/// sectioning level). Counters with no reset level (continuous numbering) are
+/// left untouched.
+fn reset_theorem_counters(state: &mut State<'_>, level: u8) {
+    let reg = state.registry;
+    for (counter, value) in state.thm_counters.iter_mut() {
+        if reg
+            .counter_reset_level(counter)
+            .is_some_and(|reset| level <= reset)
+        {
+            *value = 0;
+        }
+    }
 }
 
 struct SubequationState {
@@ -203,14 +240,14 @@ struct SubequationState {
     child_index: u32,
 }
 
-fn walk(nodes: &mut [Node], state: &mut State) {
+fn walk(nodes: &mut [Node], state: &mut State<'_>) {
     for node in nodes.iter_mut() {
         match &mut node.kind {
             NodeKind::Appendix => {
                 state.appendix = true;
                 state.section_prefix = None;
                 state.section_counters = [0; 7];
-                state.thm_in_section = 0;
+                state.thm_counters.clear();
                 state.eq_in_section = 0;
             }
             NodeKind::Section {
@@ -224,18 +261,19 @@ fn walk(nodes: &mut [Node], state: &mut State) {
                 for c in state.section_counters.iter_mut().skip(idx + 1) {
                     *c = 0;
                 }
-                // Only top-level `\section` (level 2) drives the prefix in
-                // this default. Sub-sections don't reset the theorem counter
-                // — that matches AMS practice.
+                // `\section`/`\chapter` (level ≤ 2) drives the equation
+                // prefix and resets the section-scoped equation counter.
                 if *level <= 2 {
                     state.section_prefix = Some(section_number(
                         &state.section_counters,
                         *level,
                         state.appendix,
                     ));
-                    state.thm_in_section = 0;
                     state.eq_in_section = 0;
                 }
+                // Theorem counters reset per their own declared level (which may
+                // be section, chapter, subsection, …) rather than a fixed one.
+                reset_theorem_counters(state, *level);
                 let n = section_number(&state.section_counters, *level, state.appendix);
                 *number = Some(n.clone());
                 if let Some(l) = label {
@@ -249,16 +287,39 @@ fn walk(nodes: &mut [Node], state: &mut State) {
             NodeKind::Theorem {
                 env, label, number, ..
             } => {
-                state.thm_in_section += 1;
-                let n = format_with_section(state.section_prefix.as_deref(), state.thm_in_section);
-                *number = Some(n.clone());
-                let display_kind = display_kind_for(env);
-                if let Some(l) = label {
-                    record_label(&mut state.labels, l.clone(), &n, display_kind);
-                }
-                let pending = std::mem::take(&mut state.pending_labels);
-                for l in pending {
-                    record_label(&mut state.labels, l, &n, display_kind);
+                let reg = state.registry;
+                if reg.numbered(env) {
+                    let counter = reg.counter(env);
+                    let value = state.thm_counters.entry(counter).or_insert(0);
+                    *value += 1;
+                    let val = *value;
+                    let n = match reg.reset_level(env) {
+                        Some(level) => {
+                            let prefix =
+                                section_number(&state.section_counters, level, state.appendix);
+                            // Before any section of the reset level, `\the…` is
+                            // "0"; LaTeX/AMS shows a flat number there.
+                            if prefix.is_empty() || prefix == "0" {
+                                val.to_string()
+                            } else {
+                                format!("{prefix}.{val}")
+                            }
+                        }
+                        None => val.to_string(),
+                    };
+                    *number = Some(n.clone());
+                    let display_kind = reg.title(env);
+                    if let Some(l) = label {
+                        record_label(&mut state.labels, l.clone(), &n, &display_kind);
+                    }
+                    let pending = std::mem::take(&mut state.pending_labels);
+                    for l in pending {
+                        record_label(&mut state.labels, l, &n, &display_kind);
+                    }
+                } else {
+                    // `\newtheorem*` — unnumbered; carries no number or ref.
+                    *number = None;
+                    state.pending_labels.clear();
                 }
                 // Recurse into theorem body so equations inside still count.
                 walk(&mut node.children, state);
@@ -388,7 +449,7 @@ fn record_label(labels: &mut LabelTable, label: String, number: &str, kind: &str
     labels.kind.insert(label, kind.to_string());
 }
 
-fn next_equation_number(state: &mut State) -> String {
+fn next_equation_number(state: &mut State<'_>) -> String {
     if let Some(subequations) = state.subequations.last_mut() {
         subequations.child_index += 1;
         return format!(
@@ -655,25 +716,6 @@ fn is_float_env(env: &str) -> bool {
     matches!(env.trim_end_matches('*'), "figure" | "table")
 }
 
-/// Map raw environment name to its display word.
-/// Trims trailing `*` and applies title-case + a small alias table.
-fn display_kind_for(env: &str) -> &'static str {
-    let bare = env.trim_end_matches('*');
-    match bare {
-        "theorem" | "thm" => "Theorem",
-        "lemma" | "lem" => "Lemma",
-        "proposition" | "prop" => "Proposition",
-        "corollary" | "cor" => "Corollary",
-        "definition" | "defn" | "defi" => "Definition",
-        "remark" | "rem" => "Remark",
-        "example" | "ex" => "Example",
-        "claim" => "Claim",
-        "fact" => "Fact",
-        "conjecture" => "Conjecture",
-        _ => "Statement",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,11 +723,11 @@ mod tests {
     use crate::project::{Preamble, Project, ProjectFile};
     use std::path::PathBuf;
 
-    fn nodes(src: &str) -> Vec<Node> {
-        let project = Project {
+    fn project_with(preamble: &str, src: &str) -> Project {
+        Project {
             root: PathBuf::from("t.tex"),
             preamble: Preamble {
-                source: String::new(),
+                source: preamble.to_string(),
                 file: PathBuf::from("t.tex"),
             },
             files: vec![ProjectFile {
@@ -695,8 +737,32 @@ mod tests {
                 is_root_body: true,
             }],
             warnings: vec![],
-        };
-        parse_body(&project).unwrap()
+        }
+    }
+
+    fn nodes(src: &str) -> Vec<Node> {
+        let project = project_with("", src);
+        parse_body(&project, &TheoremRegistry::with_builtin_defaults()).unwrap()
+    }
+
+    /// Parse + number a body whose theorem environments are declared by
+    /// `preamble`, returning the resolved labels. Used to exercise
+    /// `\newtheorem`-driven counters/titles.
+    fn number_with(preamble: &str, src: &str) -> LabelTable {
+        let project = project_with(preamble, src);
+        let thms = TheoremRegistry::from_preamble(preamble);
+        let mut ns = parse_body(&project, &thms).unwrap();
+        assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric, &thms)
+    }
+
+    /// Number an already-parsed body with built-in AMS defaults.
+    fn assign(ns: &mut [Node]) -> LabelTable {
+        assign_numbers(
+            ns,
+            &HashMap::new(),
+            BibStyle::Numeric,
+            &TheoremRegistry::with_builtin_defaults(),
+        )
     }
 
     #[test]
@@ -709,7 +775,7 @@ mod tests {
              \\section{B}\\label{sec:b}\n\
              \\begin{theorem}\\label{thm:t2}\nz\n\\end{theorem}\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("sec:a").unwrap(), "1");
         assert_eq!(labels.number.get("sec:a1").unwrap(), "1.1");
         assert_eq!(labels.number.get("thm:t1").unwrap(), "1.1");
@@ -728,7 +794,7 @@ mod tests {
              \\begin{equation*}y\\end{equation*}\n\
              \\begin{align}\\label{eq:b}z\\end{align}\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("eq:a").unwrap(), "1.1");
         // equation* is unnumbered
         assert!(labels.display.get("eq:a").unwrap().contains("Equation 1.1"));
@@ -747,7 +813,7 @@ mod tests {
              \\end{align}\n\
              See \\eqref{eq:a}, \\eqref{eq:b}, \\eqref{eq:c}.\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("eq:a").unwrap(), "1.1");
         assert_eq!(labels.number.get("eq:b").unwrap(), "1.2");
         assert_eq!(labels.number.get("eq:c").unwrap(), "1.3");
@@ -788,7 +854,7 @@ mod tests {
              \\end{subequations}\n\
              \\begin{equation}\\label{eq:after}z=w\\end{equation}\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("eq:group").unwrap(), "1.1");
         assert_eq!(labels.number.get("eq:a").unwrap(), "1.1a");
         assert_eq!(labels.number.get("eq:b").unwrap(), "1.1b");
@@ -812,7 +878,7 @@ mod tests {
              \\begin{equation}\\label{eq:app-b}b\\end{equation}\n\
              \\end{subequations}\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("sec:main").unwrap(), "1");
         assert_eq!(labels.number.get("eq:main").unwrap(), "1.1");
         assert_eq!(labels.number.get("app:derivation").unwrap(), "A");
@@ -833,7 +899,7 @@ mod tests {
              \\section{Detail}\\label{sec:aux-detail}\n\
              \\begin{equation}\\label{eq:aux}z\\end{equation}\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("chap:main").unwrap(), "1");
         assert_eq!(labels.number.get("chap:aux").unwrap(), "A");
         assert_eq!(labels.number.get("sec:aux-detail").unwrap(), "A.1");
@@ -846,8 +912,96 @@ mod tests {
             "\\begin{theorem}\\label{t1}\nx\n\\end{theorem}\n\
              \\begin{lemma}\\label{l1}\ny\n\\end{lemma}\n",
         );
-        let labels = assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric);
+        let labels = assign(&mut ns);
         assert_eq!(labels.number.get("t1").unwrap(), "1");
         assert_eq!(labels.number.get("l1").unwrap(), "2");
+    }
+
+    // --- \newtheorem-driven numbering (matches a real latexmk build) ---
+
+    const BODY_THM_LEM: &str = "\\section{A}\\label{sec:a}\n\
+         \\begin{theorem}\\label{t1}x\\end{theorem}\n\
+         \\begin{lemma}\\label{l1}y\\end{lemma}\n\
+         \\begin{theorem}\\label{t2}z\\end{theorem}\n";
+
+    #[test]
+    fn shared_counter_matches_ams_default() {
+        // theorem + lemma share the `theorem` counter, reset per section.
+        let labels = number_with(
+            "\\newtheorem{theorem}{Theorem}[section]\n\
+             \\newtheorem{lemma}[theorem]{Lemma}\n",
+            BODY_THM_LEM,
+        );
+        assert_eq!(labels.number.get("t1").unwrap(), "1.1");
+        assert_eq!(labels.number.get("l1").unwrap(), "1.2");
+        assert_eq!(labels.number.get("t2").unwrap(), "1.3");
+    }
+
+    #[test]
+    fn independent_counters_number_separately() {
+        // lemma has its OWN section-reset counter, so it restarts at 1.
+        let labels = number_with(
+            "\\newtheorem{theorem}{Theorem}[section]\n\
+             \\newtheorem{lemma}{Lemma}[section]\n",
+            BODY_THM_LEM,
+        );
+        assert_eq!(labels.number.get("t1").unwrap(), "1.1");
+        assert_eq!(labels.number.get("l1").unwrap(), "1.1");
+        assert_eq!(labels.number.get("t2").unwrap(), "1.2");
+    }
+
+    #[test]
+    fn no_reset_clause_numbers_continuously() {
+        // `\newtheorem{theorem}{Theorem}` → no section prefix, never resets.
+        let labels = number_with(
+            "\\newtheorem{theorem}{Theorem}\n\\newtheorem{lemma}[theorem]{Lemma}\n",
+            "\\section{A}\n\
+             \\begin{theorem}\\label{t1}x\\end{theorem}\n\
+             \\section{B}\n\
+             \\begin{lemma}\\label{l1}y\\end{lemma}\n",
+        );
+        assert_eq!(labels.number.get("t1").unwrap(), "1");
+        assert_eq!(labels.number.get("l1").unwrap(), "2");
+    }
+
+    #[test]
+    fn custom_environment_is_numbered_and_titled() {
+        let labels = number_with(
+            "\\newtheorem{assumption}{Assumption}[section]\n",
+            "\\section{A}\n\\begin{assumption}\\label{as1}x\\end{assumption}\n",
+        );
+        assert_eq!(labels.number.get("as1").unwrap(), "1.1");
+        assert_eq!(labels.display.get("as1").unwrap(), "Assumption 1.1");
+    }
+
+    #[test]
+    fn starred_theorem_is_unnumbered() {
+        let labels = number_with(
+            "\\newtheorem*{remark}{Remark}\n",
+            "\\section{A}\n\\begin{remark}\\label{r1}x\\end{remark}\n",
+        );
+        assert!(!labels.number.contains_key("r1"));
+    }
+
+    #[test]
+    fn numberwithin_resets_per_subsection() {
+        let labels = number_with(
+            "\\newtheorem{theorem}{Theorem}\n\\numberwithin{theorem}{subsection}\n",
+            "\\section{A}\n\\subsection{A1}\n\
+             \\begin{theorem}\\label{t1}x\\end{theorem}\n\
+             \\subsection{A2}\n\
+             \\begin{theorem}\\label{t2}y\\end{theorem}\n",
+        );
+        assert_eq!(labels.number.get("t1").unwrap(), "1.1.1");
+        assert_eq!(labels.number.get("t2").unwrap(), "1.2.1");
+    }
+
+    #[test]
+    fn custom_title_is_honored() {
+        let labels = number_with(
+            "\\newtheorem{thm}{Satz}[section]\n",
+            "\\section{A}\n\\begin{thm}\\label{s1}x\\end{thm}\n",
+        );
+        assert_eq!(labels.display.get("s1").unwrap(), "Satz 1.1");
     }
 }

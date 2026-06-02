@@ -47,6 +47,7 @@ use mathpreview_core::{
     macros::{self, ExtractedPreamble},
     numbering, parser, project, render_project, renderer,
     sync::SyncIndex,
+    theorems::TheoremRegistry,
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
@@ -1914,12 +1915,14 @@ async fn render_cached(
     };
     t.preamble_ms = t1.elapsed().as_millis();
 
+    let thms = TheoremRegistry::from_preamble(&project.preamble.source);
+
     let t2 = std::time::Instant::now();
-    let mut body = parser::parse_body(&project)?;
+    let mut body = parser::parse_body(&project, &thms)?;
     t.body_parse_ms = t2.elapsed().as_millis();
 
     let t3 = std::time::Instant::now();
-    let labels = numbering::assign_numbers(&mut body, &bib, bib_style);
+    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms);
     t.number_ms = t3.elapsed().as_millis();
 
     let t4 = std::time::Instant::now();
