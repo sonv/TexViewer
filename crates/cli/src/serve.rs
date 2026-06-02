@@ -50,7 +50,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "62";
+const WS_PROTOCOL_VERSION: &str = "63";
 
 #[derive(Clone)]
 struct AppState {
@@ -467,8 +467,8 @@ pub async fn run(
     let mem_at_start = resident_mib()
         .map(|m| format!("{m:.1} MiB rss"))
         .unwrap_or_else(|| "rss ?".into());
-    eprintln!(
-        "mathpreview: rendered {} ({} macros, {} packages, {} files watched; {})",
+    let initial_summary = format!(
+        "initial render of {} ({} macros, {} packages, {} files watched; {})",
         initial.root_file.display(),
         initial.preamble.macros.len(),
         initial.preamble.packages_long.len(),
@@ -501,6 +501,10 @@ pub async fn run(
         debug_logging: Arc::new(AtomicBool::new(false)),
     };
 
+    // Seed the log buffer with startup info so the panel always has
+    // something to show even before the first user action.
+    log_event(&state, "info", initial_summary);
+
     spawn_watcher(state.clone(), watch_rx);
 
     let app = Router::new()
@@ -522,7 +526,11 @@ pub async fn run(
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Log the bind once we know the address — separate from the
+    // `eprintln!` below so the panel can show it too.
+    log_event(&state, "info", format!("serving on http://{host}:{port}"));
 
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -841,6 +849,11 @@ async fn serve_jump(
         col: req.col.unwrap_or(1).max(1),
     };
     *state.pending_jump.write().await = Some(jump.clone());
+    log_event(
+        &state,
+        "info",
+        format!("source-jump → {}:{}", jump.file.display(), jump.line),
+    );
     let payload = serde_json::json!({
         "event": "source-jump",
         "file": jump.file,
@@ -897,12 +910,23 @@ async fn serve_reveal_source(
         .output()
         .await;
     match result {
-        Ok(out) if out.status.success() => StatusCode::NO_CONTENT.into_response(),
+        Ok(out) if out.status.success() => {
+            log_event(
+                &state,
+                "info",
+                format!("reveal-source → {}:{}", file_str, req.line),
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            eprintln!(
-                "mathpreview: reveal-source command exited {} ({}:{}): {stderr}",
-                out.status, file_str, req.line
+            log_event(
+                &state,
+                "warn",
+                format!(
+                    "reveal-source command exited {} ({}:{}): {stderr}",
+                    out.status, file_str, req.line
+                ),
             );
             (
                 StatusCode::BAD_GATEWAY,
@@ -913,7 +937,7 @@ async fn serve_reveal_source(
                 .into_response()
         }
         Err(e) => {
-            eprintln!("mathpreview: reveal-source spawn failed: {e}");
+            log_event(&state, "warn", format!("reveal-source spawn failed: {e}"));
             (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({ "error": format!("spawn failed: {e}") })),
@@ -998,7 +1022,7 @@ async fn serve_macros_append(
     };
 
     if let Err(e) = append_macro_line(&target, line) {
-        eprintln!("mathpreview: macros append failed: {e:#}");
+        log_event(&state, "error", format!("macros append failed: {e:#}"));
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -1008,7 +1032,7 @@ async fn serve_macros_append(
 
     // Trigger a re-render so the new macro is picked up live.
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        eprintln!("mathpreview: macros append re-render failed: {e:#}");
+        log_event(&state, "warn", format!("macros append re-render failed: {e:#}"));
     }
 
     log_event(
@@ -1134,12 +1158,12 @@ async fn serve_config_set(
             *state.viewer_config.write().await = resolved.viewer;
         }
         Err(e) => {
-            eprintln!("mathpreview: config reload failed: {e:#}");
+            log_event(&state, "error", format!("config reload failed: {e:#}"));
         }
     }
 
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        eprintln!("mathpreview: config-set re-render failed: {e:#}");
+        log_event(&state, "warn", format!("config-set re-render failed: {e:#}"));
     }
 
     log_event(
@@ -1291,7 +1315,7 @@ async fn serve_macros_register(
     }
 
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        eprintln!("mathpreview: macros register re-render failed: {e:#}");
+        log_event(&state, "warn", format!("macros register re-render failed: {e:#}"));
     }
 
     log_event(
@@ -1603,11 +1627,11 @@ fn normalize_watch_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-async fn serve_restart() -> axum::http::StatusCode {
+async fn serve_restart(State(state): State<AppState>) -> axum::http::StatusCode {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(e) => {
-            eprintln!("mathpreview: restart failed: cannot resolve current exe: {e}");
+            log_event(&state, "error", format!("restart failed: cannot resolve current exe: {e}"));
             return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
         }
     };
@@ -1619,7 +1643,7 @@ async fn serve_restart() -> axum::http::StatusCode {
         .spawn()
     {
         Ok(_) => {
-            eprintln!("mathpreview: restarting server");
+            log_event(&state, "info", "restarting server".to_string());
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_millis(100));
                 std::process::exit(0);
@@ -1627,14 +1651,14 @@ async fn serve_restart() -> axum::http::StatusCode {
             axum::http::StatusCode::ACCEPTED
         }
         Err(e) => {
-            eprintln!("mathpreview: restart failed: {e}");
+            log_event(&state, "error", format!("restart failed: {e}"));
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         }
     }
 }
 
-async fn serve_stop() -> axum::http::StatusCode {
-    eprintln!("mathpreview: stopping server");
+async fn serve_stop(State(state): State<AppState>) -> axum::http::StatusCode {
+    log_event(&state, "info", "stopping server".to_string());
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_millis(100));
         std::process::exit(0);
@@ -2379,7 +2403,11 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
         let mut debouncer = match new_debouncer(Duration::from_millis(120), None, raw_tx) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("mathpreview: cannot start file watcher: {e}");
+                log_event(
+                    &watcher_state,
+                    "error",
+                    format!("cannot start file watcher: {e}"),
+                );
                 return;
             }
         };
@@ -2397,11 +2425,26 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             let dir = f.parent().unwrap_or(Path::new(".")).to_path_buf();
             if watched_dirs.insert(dir.clone()) {
                 match debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
-                    Ok(()) => eprintln!("mathpreview: watching {}", dir.display()),
-                    Err(e) => eprintln!("mathpreview: failed to watch {}: {e}", dir.display()),
+                    Ok(()) => log_event_verbose(
+                        &watcher_state,
+                        "info",
+                        format!("watching {}", dir.display()),
+                    ),
+                    Err(e) => log_event(
+                        &watcher_state,
+                        "warn",
+                        format!("failed to watch {}: {e}", dir.display()),
+                    ),
                 }
             }
         }
+        // Top-level "we're watching N dirs" log so the panel sees one
+        // line summarising the watcher even with verbose mode off.
+        log_event(
+            &watcher_state,
+            "info",
+            format!("watcher initialised — {} dir(s) on watch", watched_dirs.len()),
+        );
 
         loop {
             while let Ok(files) = watch_rx.try_recv() {
@@ -2410,10 +2453,16 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
                     let dir = f.parent().unwrap_or(Path::new(".")).to_path_buf();
                     if watched_dirs.insert(dir.clone()) {
                         match debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive) {
-                            Ok(()) => eprintln!("mathpreview: watching {}", dir.display()),
-                            Err(e) => {
-                                eprintln!("mathpreview: failed to watch {}: {e}", dir.display())
-                            }
+                            Ok(()) => log_event_verbose(
+                                &watcher_state,
+                                "info",
+                                format!("watching {}", dir.display()),
+                            ),
+                            Err(e) => log_event(
+                                &watcher_state,
+                                "warn",
+                                format!("failed to watch {}: {e}", dir.display()),
+                            ),
                         }
                     }
                 }

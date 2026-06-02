@@ -17,6 +17,35 @@ summary.
 
 Nothing yet.
 
+## [0.1.21] — 2026-06-02
+
+### Fixed
+
+- **Configured source-jump trigger is now exclusive.** Previously
+  picking `cmd-click` left double-click also firing the polling
+  `/jump` path (and Alt-click did the same when the trigger wasn't
+  alt-click), so the trigger setting felt non-exclusive. Removed
+  the fallbacks — only the gesture you configured fires the
+  source jump. The configured-trigger path itself still hits both
+  `/jump` and `/reveal-source` from v0.1.16 so the nvim-plugin
+  route is covered.
+
+### Added
+
+- **Source-jump and reveal-source events now log.** Clicking your
+  trigger logs a `source-jump → file:line` line and (when the
+  editor template runs) a `reveal-source → file:line` line.
+  Editor failures still log a `warn` with the command's stderr.
+  Useful for "did my click even register?".
+- **Startup, restart, stop, watcher state logged through the
+  buffer.** The panel now seeds with the initial render summary +
+  watcher init line, so it's not empty before any user action.
+
+### Changed (protocol)
+
+- **WS protocol bumped to v63** so v0.1.20 tabs auto-reload on the
+  next reconnect.
+
 ## [0.1.20] — 2026-06-02
 
 ### Added
@@ -627,7 +656,8 @@ nvim plugin manager at the repo, run `:MathPreview` in a `.tex` buffer.
   cross-file typos.
 - 93 cargo tests; `cargo clippy --tests --workspace` clean.
 
-[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/sonv/TexViewer/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/sonv/TexViewer/releases/tag/v0.1.21
 [0.1.20]: https://github.com/sonv/TexViewer/releases/tag/v0.1.20
 [0.1.19]: https://github.com/sonv/TexViewer/releases/tag/v0.1.19
 [0.1.18]: https://github.com/sonv/TexViewer/releases/tag/v0.1.18

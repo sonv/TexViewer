@@ -169,14 +169,16 @@
     }
   });
   document.addEventListener('dblclick', function(e) {
-    // Double-click drives reveal-source (editor spawn) when the user
-    // chose "double-click" in config; otherwise it stays on the
-    // polling-based `/jump` path so nvim-plugin users keep working.
+    // Source-jump fires only when the configured trigger matches.
+    // The old unconditional `requestSourceJump(e)` fallback was a
+    // hold-over from when reveal-source needed a working polling
+    // backup; now that the configured-trigger path fires both
+    // `/jump` and `/reveal-source` together (v0.1.16), the
+    // double-click fallback just duplicated the action and
+    // confused the trigger choice.
     if (matchesRevealTrigger(e, 'dblclick')) {
       requestRevealSource(e);
-      return;
     }
-    requestSourceJump(e);
   });
   document.addEventListener('mouseover', function(e) {
     var link = isPinnableLink(e.target);
@@ -341,17 +343,15 @@
       }
       return;
     }
-    // Reveal-source (editor spawn) fires on whichever click gesture
-    // the user picked in `[viewer.source-jump] trigger = "..."`. The
-    // default is "cmd-click" (which also matches Ctrl-click on Linux).
+    // Reveal-source (editor spawn) fires only on the configured
+    // gesture in `[viewer.source-jump] trigger = "..."`. No
+    // fallbacks — the previous "alt-click also fires polling /jump"
+    // shortcut duplicated the action when alt-click wasn't your
+    // chosen trigger, and made the trigger setting feel non-
+    // exclusive. The configured-trigger path itself fires both
+    // /jump and /reveal-source so the nvim-plugin route is still
+    // covered (v0.1.16).
     if (matchesRevealTrigger(e, 'click') && requestRevealSource(e)) {
-      return;
-    }
-    // Alt-click keeps driving the polling-based `/jump` path for users
-    // running the nvim plugin instead of letting the daemon spawn their
-    // editor — unless alt-click is itself the configured reveal trigger,
-    // in which case the branch above already handled it.
-    if (e.altKey && sourceJumpTrigger() !== 'alt-click' && requestSourceJump(e)) {
       return;
     }
     // In margin mode, plain click on a \ref or \cite pins it to the
