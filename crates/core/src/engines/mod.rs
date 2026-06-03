@@ -26,7 +26,8 @@ pub trait MathEngine: std::fmt::Debug {
     /// HTML fragment injected into `<head>` after the page CSS. MathJax: the
     /// inline `window.MathJax = {...}` config plus the `<script src=…>` tag.
     /// Future PDF.js / Texpresso engines emit their own loader scripts here.
-    fn head_html(&self, preamble: &ExtractedPreamble) -> String;
+    /// `wrap_equations` reflects the `[viewer] wrap-equations` setting.
+    fn head_html(&self, preamble: &ExtractedPreamble, wrap_equations: bool) -> String;
 
     /// JS appended after the shared `CLIENT_JS` bundle. Must define
     /// `window.__mpEngine` with the shape:

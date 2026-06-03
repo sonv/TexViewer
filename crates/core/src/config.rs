@@ -125,6 +125,10 @@ pub struct ViewerConfig {
     /// as `default-page-mode`. `"system"` follows the OS
     /// `prefers-color-scheme`.
     pub default_theme: Option<Theme>,
+    /// Wrap long display equations in the preview (MathJax automatic line
+    /// breaking). Default `true`. Set `false` to let long math overflow and
+    /// scroll horizontally instead, matching a non-`breqn` PDF more closely.
+    pub wrap_equations: Option<bool>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
 }
@@ -210,6 +214,7 @@ pub struct ResolvedViewerConfig {
     pub default_page_mode: PageMode,
     pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
+    pub wrap_equations: bool,
 }
 
 impl Default for ResolvedConfig {
@@ -220,6 +225,7 @@ impl Default for ResolvedConfig {
                 default_page_mode: PageMode::A4,
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
+                wrap_equations: true,
             },
             text_macros: HashMap::new(),
         }
@@ -260,6 +266,10 @@ impl Config {
                     .source_jump
                     .trigger
                     .unwrap_or(defaults.viewer.source_jump_trigger),
+                wrap_equations: self
+                    .viewer
+                    .wrap_equations
+                    .unwrap_or(defaults.viewer.wrap_equations),
             },
             text_macros: self.text_macros,
         }
@@ -295,6 +305,9 @@ impl ViewerConfig {
         }
         if other.default_theme.is_some() {
             self.default_theme = other.default_theme;
+        }
+        if other.wrap_equations.is_some() {
+            self.wrap_equations = other.wrap_equations;
         }
         self.source_jump.merge(other.source_jump);
     }

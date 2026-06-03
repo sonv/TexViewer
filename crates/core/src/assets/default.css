@@ -1167,6 +1167,12 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   gap: 8px;
   font-size: 12px;
 }
+.config-fields label.config-checkbox {
+  display: flex;
+  gap: 6px;
+  cursor: pointer;
+}
+.config-fields label.config-checkbox input { width: auto; }
 .config-fields input[type="number"],
 .config-fields select {
   border: 1px solid var(--border);

@@ -288,6 +288,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "default_page_mode": viewer_config.default_page_mode.as_str(),
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
+            "wrap_equations": viewer_config.wrap_equations,
         },
         "config_paths": config_paths,
         "macro_paths": macro_paths,
@@ -2231,6 +2232,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
         "default_page_mode": viewer_config.default_page_mode.as_str(),
         "default_theme": viewer_config.default_theme.as_str(),
         "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
+        "wrap_equations": viewer_config.wrap_equations,
     });
 
     let (payload, op_count, kind) = if fallback_full {

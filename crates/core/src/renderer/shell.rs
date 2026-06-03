@@ -45,7 +45,7 @@ pub(super) fn wrap_in_shell(
     opts: &HtmlOptions,
 ) -> String {
     let engine = opts.engine.as_dyn();
-    let engine_head = engine.head_html(preamble);
+    let engine_head = engine.head_html(preamble, opts.viewer_config.wrap_equations);
     let engine_adapter_js = engine.client_adapter_js();
     let engine_css = engine.extra_css();
     let warnings_html = warnings_panel(preamble);
@@ -62,10 +62,11 @@ pub(super) fn wrap_in_shell(
     // plain quote-wrap is sufficient and avoids dragging in an escape
     // helper from another module.
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}" }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
+        wrap = opts.viewer_config.wrap_equations,
     );
 
     let mut out = String::new();
@@ -282,6 +283,8 @@ pub(super) fn wrap_in_shell(
           <option value="dark">Dark</option>
         </select>
       </label>
+      <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
+        Wrap long equations (off = scroll horizontally)</label>
     </fieldset>
     <fieldset class="macros-dialog-scope">
       <legend>Save to</legend>

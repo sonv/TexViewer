@@ -1658,6 +1658,9 @@
     if (mode) mode.value = cfg.defaultPageMode || 'a4';
     var theme = document.getElementById('config-default-theme');
     if (theme) theme.value = cfg.defaultTheme || 'system';
+    var wrap = document.getElementById('config-wrap-equations');
+    // Default on when unset (matches the server default).
+    if (wrap) wrap.checked = cfg.wrapEquations !== false;
   }
 
   function syncConfigCustomPathEnabled() {
@@ -1710,6 +1713,15 @@
     if (mode) payload.values['viewer.default-page-mode'] = mode;
     var theme = document.getElementById('config-default-theme').value;
     if (theme) payload.values['viewer.default-theme'] = theme;
+    var wrapEl = document.getElementById('config-wrap-equations');
+    var wrapChanged = false;
+    if (wrapEl) {
+      payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
+      // The wrap setting lives in the MathJax <head> config, which live body
+      // pushes don't refresh — so a reload is needed when it changes.
+      var wrapWas = !(window.__mpConfig && window.__mpConfig.wrapEquations === false);
+      wrapChanged = !!wrapEl.checked !== wrapWas;
+    }
     setConfigFeedback('Saving…', true);
     try {
       var res = await fetch('/config/set', {
@@ -1727,6 +1739,9 @@
       var file = body && body.file ? body.file : '(file)';
       setStatus('live', '● wrote config → ' + file);
       closeConfigDialog();
+      // Equation wrapping is baked into the MathJax head config; reload so it
+      // takes effect (other fields apply live).
+      if (wrapChanged) location.reload();
     } catch (e) {
       setConfigFeedback(String(e && e.message || e), false);
     }

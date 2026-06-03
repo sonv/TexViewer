@@ -621,12 +621,23 @@ overrides, applied per field with last-wins semantics:
 # ~/.config/mathpreview/config.toml — applies to every paper
 [viewer]
 font-size = 18                  # body text size in CSS pixels
+wrap-equations = true           # wrap long display math (MathJax line-breaking);
+                                # set false to let it overflow + scroll instead
 
 [viewer.source-jump]
 # Which click gesture sends `POST /reveal-source` to spawn `--editor`
 # at the source line. "cmd-click" also matches Ctrl-click on Linux.
 trigger = "cmd-click"           # | "ctrl-click" | "alt-click" | "double-click"
 ```
+
+`wrap-equations` toggles MathJax's automatic line-breaking of long display
+equations in the preview. Default `true` (the preview wraps overlong math at
+low-priority operators so it fits the column). Set `false` if you'd rather the
+math overflow and scroll horizontally — closer to how a non-`breqn` PDF
+typesets it on one line. It's also a checkbox in the **config** toolbar dialog;
+changing it reloads the page (the setting lives in the MathJax `<head>` config).
+This affects the **preview only** — it can't change how `latexmk` breaks lines
+in the PDF.
 
 Drop a `.mathpreview.toml` in the project root to override per-paper:
 

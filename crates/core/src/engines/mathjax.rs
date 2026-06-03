@@ -46,8 +46,12 @@ impl MathEngine for MathJaxEngine {
         "mathjax"
     }
 
-    fn head_html(&self, preamble: &ExtractedPreamble) -> String {
-        let config = mathjax_config(preamble, mathjax_local_font_path(&self.script_url));
+    fn head_html(&self, preamble: &ExtractedPreamble, wrap_equations: bool) -> String {
+        let config = mathjax_config(
+            preamble,
+            mathjax_local_font_path(&self.script_url),
+            wrap_equations,
+        );
         let url = escape_attr(&self.script_url);
         format!("<script>\n{config}\n</script>\n<script src=\"{url}\" async></script>")
     }
@@ -61,7 +65,11 @@ impl MathEngine for MathJaxEngine {
     }
 }
 
-fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>) -> String {
+fn mathjax_config(
+    preamble: &ExtractedPreamble,
+    local_font_path: Option<String>,
+    wrap_equations: bool,
+) -> String {
     let mut macros = String::new();
     let mut first = true;
     let mut write_entry =
@@ -105,6 +113,11 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
         .as_deref()
         .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))
         .unwrap_or_default();
+    let overflow = if wrap_equations {
+        "displayOverflow: 'linebreak',\n    linebreaks: { inline: true }"
+    } else {
+        "displayOverflow: 'overflow'"
+    };
 
     format!(
         r#"window.MathJax = {{
@@ -137,13 +150,13 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
     // `local` inlines each math's paths into its own <defs>, making the
     // returned SVG self-contained.
     fontCache: 'local',
-    // Auto-break long display equations at low-priority operators when the
-    // container is narrower than the rendered math. With MathJax 4's
-    // improved linebreak heuristics this also handles inline math that
-    // overflows its paragraph width — useful for narrow margin previews
-    // and the sidenote chips.
-    displayOverflow: 'linebreak',
-    linebreaks: {{ inline: true }}
+    // `wrap-equations` (config). When on (default): auto-break long display
+    // equations at low-priority operators when the container is narrower than
+    // the rendered math — with MathJax 4's improved heuristics this also wraps
+    // inline math that overflows its paragraph (narrow margins / sidenote
+    // chips). When off: let long math overflow and scroll horizontally
+    // (mjx-container has `overflow-x: auto`), matching a non-breqn PDF.
+    {overflow}
   }},
   // `tex-svg.js` in MathJax 4 bakes in the contextual menu + a11y
   // pipeline (Speech Rule Engine), which fires off `sre/speech-worker.js`
@@ -163,6 +176,7 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
         packages_long = package_long.join(", "),
         loader_paths = loader_paths,
         macros = macros,
+        overflow = overflow,
     )
 }
 

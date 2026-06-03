@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.41] — 2026-06-03
+
+### Added
+
+- **`wrap-equations` config option** (issue #1). Long display equations'
+  line-wrapping in the preview — previously hardcoded on — is now a
+  `[viewer] wrap-equations` setting (default `true`). `true` keeps MathJax's
+  automatic line-breaking (`displayOverflow: 'linebreak'`); `false` lets long
+  math overflow and scroll horizontally (`displayOverflow: 'overflow'`),
+  closer to a non-`breqn` PDF. Also a checkbox in the config toolbar dialog
+  (changing it reloads, since the setting lives in the MathJax `<head>`
+  config). Preview-only — it can't change how the PDF breaks lines.
+
 ## [0.1.40] — 2026-06-03
 
 ### Added
