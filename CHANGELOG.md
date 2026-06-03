@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.45] — 2026-06-03
+
+### Fixed
+
+- **Previewing files from a second nvim no longer collides on the port.** The
+  free-port probe only `bind`-ed the socket, but libuv sets `SO_REUSEADDR`, so
+  the bind succeeded even when another daemon was actively listening on that
+  port (notably on macOS) — the second nvim thought 23636 was free, spawned a
+  daemon there, and the daemon's own bind failed with "address already in use".
+  The probe now `bind`s **and** `listen`s, so it correctly detects the live
+  daemon and `find_free_port` advances to 23637, 23638, … (scanning up to 16
+  ports from 23636).
+
 ## [0.1.44] — 2026-06-03
 
 ### Added

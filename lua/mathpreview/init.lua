@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.44"
+local PLUGIN_VERSION = "0.1.45"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -313,12 +313,19 @@ local function auto_install(on_done)
   end)
 end
 
--- True if `port` is free for binding on 127.0.0.1. Closes the probe
--- socket either way so we don't leak a half-open handle.
+-- True if `port` is free on 127.0.0.1. We `bind` AND `listen`: libuv sets
+-- SO_REUSEADDR on the probe socket, so a bare `bind` succeeds even when
+-- another process is actively listening on the port (especially on macOS) —
+-- the conflict only surfaces at `listen()`. Without the listen, a second nvim
+-- would think 23636 is free, spawn a daemon there, and the daemon's own bind
+-- would then fail with "address already in use". Closes the socket either way.
 local function port_is_free(port)
   local sock = uv.new_tcp()
   if not sock then return false end
-  local ok = pcall(function() sock:bind("127.0.0.1", port) end)
+  local ok = pcall(function()
+    assert(sock:bind("127.0.0.1", port))
+    assert(sock:listen(128, function() end))
+  end)
   sock:close()
   return ok
 end
