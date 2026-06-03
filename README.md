@@ -656,8 +656,9 @@ window.MathJax.tex.packages['[+]'].push('color'); // load an extra package
 
 Both `wrap-equations` and `mathjax-config` live in the MathJax `<head>`, so a
 change reloads the preview tab automatically (the daemon signals it) — however
-you edit them (config dialog, the `.mathpreview.toml` file, or the macros
-dialog's Text→HTML editor).
+you edit them: the **config** toolbar dialog (a checkbox for wrapping and a
+"MathJax config (advanced)" text box for the raw JS), the `.mathpreview.toml`
+file, or the macros dialog's Text→HTML editor.
 
 Drop a `.mathpreview.toml` in the project root to override per-paper:
 

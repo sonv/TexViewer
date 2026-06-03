@@ -61,12 +61,17 @@ pub(super) fn wrap_in_shell(
     // / alt-click / double-click) with no JSON-special characters, so a
     // plain quote-wrap is sufficient and avoids dragging in an escape
     // helper from another module.
+    // `mathjax-config` is arbitrary JS, so JSON-encode it into a valid JS
+    // string literal (handles quotes / newlines / braces) for __mpConfig.
+    let mathjax_config_js = serde_json::to_string(&opts.viewer_config.mathjax_config)
+        .unwrap_or_else(|_| "\"\"".to_string());
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, mathjaxConfig: {mjx} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
         wrap = opts.viewer_config.wrap_equations,
+        mjx = mathjax_config_js,
     );
 
     let mut out = String::new();
@@ -285,6 +290,17 @@ pub(super) fn wrap_in_shell(
       </label>
       <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
         Wrap long equations (off = scroll horizontally)</label>
+    </fieldset>
+    <fieldset class="macros-dialog-scope config-fields">
+      <legend>MathJax config (advanced)</legend>
+      <label class="config-textarea-label">
+        Raw JS — runs after the generated <code>window.MathJax = {{…}}</code>,
+        before it loads. <em>Mutate</em> <code>window.MathJax</code> (don't
+        reassign it).
+        <textarea id="config-mathjax-config" class="macros-dialog-input" rows="5"
+                  spellcheck="false" autocomplete="off"
+                  placeholder="window.MathJax.svg.displayOverflow = 'scroll';"></textarea>
+      </label>
     </fieldset>
     <fieldset class="macros-dialog-scope">
       <legend>Save to</legend>

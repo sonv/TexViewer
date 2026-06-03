@@ -1661,6 +1661,11 @@
     var wrap = document.getElementById('config-wrap-equations');
     // Default on when unset (matches the server default).
     if (wrap) wrap.checked = cfg.wrapEquations !== false;
+    var mjx = document.getElementById('config-mathjax-config');
+    if (mjx) {
+      mjx.value = cfg.mathjaxConfig || '';
+      mjx.dataset.initial = mjx.value;   // so submit only writes it if changed
+    }
   }
 
   function syncConfigCustomPathEnabled() {
@@ -1715,6 +1720,12 @@
     if (theme) payload.values['viewer.default-theme'] = theme;
     var wrapEl = document.getElementById('config-wrap-equations');
     if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
+    var mjxEl = document.getElementById('config-mathjax-config');
+    // Only write it when changed, so an unrelated config save doesn't add an
+    // empty `mathjax-config` key (but clearing it is still honored).
+    if (mjxEl && mjxEl.value !== (mjxEl.dataset.initial || '')) {
+      payload.values['viewer.mathjax-config'] = mjxEl.value;
+    }
     setConfigFeedback('Saving…', true);
     try {
       var res = await fetch('/config/set', {

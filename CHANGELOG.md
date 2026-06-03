@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.44] — 2026-06-03
+
+### Added
+
+- **Edit `mathjax-config` from the config dialog.** The toolbar **config**
+  dialog now has a "MathJax config (advanced)" text box that loads the current
+  raw-JS value and writes it back to `[viewer] mathjax-config` on Save (only
+  when changed), instead of having to hand-edit the TOML. The value is exposed
+  to the client via `window.__mpConfig.mathjaxConfig` (JSON-encoded so the JS
+  round-trips safely).
+
 ## [0.1.43] — 2026-06-03
 
 ### Fixed

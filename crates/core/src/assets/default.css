@@ -1173,6 +1173,16 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   cursor: pointer;
 }
 .config-fields label.config-checkbox input { width: auto; }
+.config-fields label.config-textarea-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.config-fields label.config-textarea-label textarea {
+  margin-top: 5px;
+  color: var(--fg);
+}
 .config-fields input[type="number"],
 .config-fields select {
   border: 1px solid var(--border);
