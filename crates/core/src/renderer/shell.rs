@@ -293,10 +293,14 @@ pub(super) fn wrap_in_shell(
     </fieldset>
     <fieldset class="macros-dialog-scope config-fields">
       <legend>MathJax config (advanced)</legend>
+      <details class="config-mjx-current">
+        <summary>Current generated config (read-only)</summary>
+        <textarea id="config-mathjax-current" class="macros-dialog-input" rows="12"
+                  spellcheck="false" readonly></textarea>
+      </details>
       <label class="config-textarea-label">
-        Raw JS — runs after the generated <code>window.MathJax = {{…}}</code>,
-        before it loads. <em>Mutate</em> <code>window.MathJax</code> (don't
-        reassign it).
+        Your override JS — runs <em>after</em> the config above, before MathJax
+        loads. <em>Mutate</em> <code>window.MathJax</code> (don't reassign it).
         <textarea id="config-mathjax-config" class="macros-dialog-input" rows="5"
                   spellcheck="false" autocomplete="off"
                   placeholder="window.MathJax.svg.displayOverflow = 'scroll';"></textarea>

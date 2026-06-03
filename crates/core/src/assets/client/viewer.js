@@ -1666,6 +1666,12 @@
       mjx.value = cfg.mathjaxConfig || '';
       mjx.dataset.initial = mjx.value;   // so submit only writes it if changed
     }
+    // Read-only view of the full generated `window.MathJax = {…}` config (the
+    // text of the engine's config <script>), so you can see everything that's
+    // in effect — macros, packages, output settings — and copy/tweak it.
+    var cur = document.getElementById('config-mathjax-current');
+    var src = document.getElementById('mp-mathjax-config');
+    if (cur) cur.value = src ? (src.textContent || '').replace(/^\s+|\s+$/g, '') : '(not available)';
   }
 
   function syncConfigCustomPathEnabled() {

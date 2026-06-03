@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.46] — 2026-06-03
+
+### Added
+
+- **The config dialog shows the full generated MathJax config (read-only).**
+  Under "MathJax config (advanced)" there's now a collapsible read-only view of
+  the entire `window.MathJax = {…}` the daemon generates — macros, packages,
+  output settings, everything in effect — so you can see what's there before
+  writing an override (the editable override box is unchanged). The engine's
+  config `<script>` got an id so the dialog can read it directly (no
+  duplication).
+
 ## [0.1.45] — 2026-06-03
 
 ### Fixed

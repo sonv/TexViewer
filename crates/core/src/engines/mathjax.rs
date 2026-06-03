@@ -64,7 +64,8 @@ impl MathEngine for MathJaxEngine {
         } else {
             format!("\n<script>\n{}\n</script>", viewer.mathjax_config)
         };
-        format!("<script>\n{config}\n</script>{extra}\n<script src=\"{url}\" async></script>")
+        // The id lets the config dialog show the generated config read-only.
+        format!("<script id=\"mp-mathjax-config\">\n{config}\n</script>{extra}\n<script src=\"{url}\" async></script>")
     }
 
     fn client_adapter_js(&self) -> String {

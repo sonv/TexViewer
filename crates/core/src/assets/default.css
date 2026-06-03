@@ -1183,6 +1183,20 @@ body.topbar-hidden.margin-mode aside#margin { top: 0; }
   margin-top: 5px;
   color: var(--fg);
 }
+.config-mjx-current {
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.config-mjx-current summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+.config-mjx-current textarea[readonly] {
+  margin-top: 5px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--border) 12%, transparent);
+}
 .config-fields input[type="number"],
 .config-fields select {
   border: 1px solid var(--border);
