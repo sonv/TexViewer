@@ -1286,23 +1286,47 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 }
 .macros-dialog-scope {
   margin: 12px 0 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
 }
-.macros-dialog-scope legend {
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.macros-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
 }
-.macros-dialog-scope label {
-  display: block;
-  padding: 2px 0;
+.macros-tab {
+  padding: 5px 14px;
   cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+  margin-bottom: -1px;
 }
-.macros-dialog-scope label code {
+.macros-tab input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.macros-tab:hover { color: inherit; }
+.macros-tab:has(input:checked) {
+  color: inherit;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  border-color: var(--border);
+  border-bottom-color: transparent;
+}
+/* Keyboard focus ring on the active tab (the radio is visually hidden). */
+.macros-tab:has(input:focus-visible) {
+  outline: 2px solid var(--supporting);
+  outline-offset: -2px;
+}
+.macros-scope-detail {
+  min-height: 1.6em;
+  padding: 6px 2px 0;
+}
+.macros-scope-file {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   color: var(--muted);

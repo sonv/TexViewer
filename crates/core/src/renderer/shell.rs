@@ -220,17 +220,18 @@ pub(super) fn wrap_in_shell(
                   spellcheck="false" autocomplete="off"
                   placeholder="&lt;span style=&quot;color:red&quot;&gt;#1&lt;/span&gt;"></textarea></label>
     </div>
-    <fieldset class="macros-dialog-scope">
-      <legend>Save to</legend>
-      <label><input type="radio" name="scope" value="project" checked>
-        Project <code id="macros-scope-project-file">.mathpreview-macros.tex</code></label>
-      <label><input type="radio" name="scope" value="global">
-        Global <code id="macros-scope-global-file">~/.config/mathpreview/macros.tex</code></label>
-      <label><input type="radio" name="scope" value="custom">
-        Custom path
+    <div class="macros-dialog-scope">
+      <div class="macros-tabs" role="tablist" aria-label="Which file to edit">
+        <label class="macros-tab"><input type="radio" name="scope" value="project" checked> Project</label>
+        <label class="macros-tab"><input type="radio" name="scope" value="global"> Global</label>
+        <label class="macros-tab"><input type="radio" name="scope" value="custom"> Custom</label>
+      </div>
+      <div class="macros-scope-detail">
+        <code class="macros-scope-file" id="macros-scope-file">.mathpreview-macros.tex</code>
         <input type="text" id="macros-dialog-custom-path" class="macros-dialog-custom-input"
-               placeholder="~/my-macros.tex or extras/macros.tex" disabled></label>
-    </fieldset>
+               placeholder="~/my-macros.tex or extras/macros.tex" disabled hidden>
+      </div>
+    </div>
     <div class="macros-dialog-feedback" id="macros-dialog-feedback" aria-live="polite"></div>
     <div class="macros-dialog-actions">
       <button type="button" class="macros-dialog-cancel" id="macros-dialog-cancel">Cancel</button>

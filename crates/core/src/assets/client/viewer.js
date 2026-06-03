@@ -1329,30 +1329,49 @@
     var htmlEl = document.getElementById('macros-mode-html');
     if (texEl) texEl.hidden = html;
     if (htmlEl) htmlEl.hidden = !html;
-    var proj = document.getElementById('macros-scope-project-file');
-    var glob = document.getElementById('macros-scope-global-file');
-    if (proj) proj.textContent = html ? '.mathpreview.toml' : '.mathpreview-macros.tex';
-    if (glob) glob.textContent = html ? '~/.config/mathpreview/config.toml'
-                                      : '~/.config/mathpreview/macros.tex';
     var pathInput = document.getElementById('macros-dialog-custom-path');
     if (pathInput) {
       pathInput.placeholder = html ? '~/my.toml or extras/config.toml'
                                    : '~/my-macros.tex or extras/macros.tex';
     }
+    updateMacrosScopeFile();
     setMacrosDialogFeedback('', false);
     // Entering TeX mode: prefill from the file if the box is empty.
     if (!html) loadMacrosForScope();
   }
 
-  // Custom-path input is only sensible when the "custom" scope radio is
-  // selected; otherwise grey it out so the user knows their typed path
-  // won't be used.
+  // Show the resolved file name for the active tab (or reveal the path input
+  // for the Custom tab), matching the current TeX/HTML mode.
+  function updateMacrosScopeFile() {
+    var html = currentMacroMode() === 'html';
+    var sc = currentScopeSelection();
+    var isCustom = sc.scope === 'custom';
+    var code = document.getElementById('macros-scope-file');
+    var path = document.getElementById('macros-dialog-custom-path');
+    if (code) {
+      code.hidden = isCustom;
+      if (!isCustom) {
+        var f;
+        if (sc.scope === 'global') {
+          f = html ? '~/.config/mathpreview/config.toml' : '~/.config/mathpreview/macros.tex';
+        } else {
+          f = html ? '.mathpreview.toml' : '.mathpreview-macros.tex';
+        }
+        code.textContent = '→ ' + f;
+      }
+    }
+    if (path) path.hidden = !isCustom;
+  }
+
+  // The Custom tab reveals + enables its path input; other tabs hide it.
   function syncMacrosCustomPathEnabled() {
     var pathInput = document.getElementById('macros-dialog-custom-path');
     if (!pathInput) return;
     var radio = document.querySelector('input[name="scope"]:checked');
     var isCustom = radio && radio.value === 'custom';
     pathInput.disabled = !isCustom;
+    pathInput.hidden = !isCustom;
+    updateMacrosScopeFile();
     if (isCustom) {
       setTimeout(function() { pathInput.focus(); }, 0);
     }

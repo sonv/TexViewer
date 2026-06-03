@@ -17,6 +17,16 @@ summary.
 
 Nothing yet.
 
+## [0.1.37] — 2026-06-03
+
+### Changed
+
+- **The macros dialog's scope picker is now a tab bar** (Project / Global /
+  Custom) instead of a radio list. Each tab is an editor of that file: picking
+  a tab loads its contents and shows the resolved filename, the Custom tab
+  reveals its path input, and Save writes the active tab. Same behavior as the
+  radios, clearer that each is a distinct, editable file.
+
 ## [0.1.36] — 2026-06-03
 
 ### Added
