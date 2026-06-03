@@ -1261,6 +1261,7 @@
     var dlg = macrosDialogEl();
     if (!dlg || typeof dlg.showModal !== 'function') return;
     setMacrosDialogFeedback('', false);
+    syncMacrosMode();
     syncMacrosCustomPathEnabled();
     // Don't clobber unsubmitted text if the user reopens after a cancel.
     dlg.showModal();
@@ -1268,6 +1269,34 @@
       var input = macrosDialogInputEl();
       if (input) input.focus();
     }, 0);
+  }
+
+  function currentMacroMode() {
+    var r = document.querySelector('input[name="macro-mode"]:checked');
+    return r ? r.value : 'tex';
+  }
+
+  // Toggle the dialog between "TeX macro" (\newcommand → .tex) and
+  // "Text → HTML" (a [text-macros] template → .toml), and swap the scope
+  // filenames / custom-path placeholder to match.
+  function syncMacrosMode() {
+    var mode = currentMacroMode();
+    var html = mode === 'html';
+    var texEl = document.getElementById('macros-mode-tex');
+    var htmlEl = document.getElementById('macros-mode-html');
+    if (texEl) texEl.hidden = html;
+    if (htmlEl) htmlEl.hidden = !html;
+    var proj = document.getElementById('macros-scope-project-file');
+    var glob = document.getElementById('macros-scope-global-file');
+    if (proj) proj.textContent = html ? '.mathpreview.toml' : '.mathpreview-macros.tex';
+    if (glob) glob.textContent = html ? '~/.config/mathpreview/config.toml'
+                                      : '~/.config/mathpreview/macros.tex';
+    var pathInput = document.getElementById('macros-dialog-custom-path');
+    if (pathInput) {
+      pathInput.placeholder = html ? '~/my.toml or extras/config.toml'
+                                   : '~/my-macros.tex or extras/macros.tex';
+    }
+    setMacrosDialogFeedback('', false);
   }
 
   // Custom-path input is only sensible when the "custom" scope radio is
@@ -1357,7 +1386,27 @@
     if (dlg.open) dlg.close();
   }
 
+  // Resolve the chosen scope + custom path, or null if a required custom
+  // path is missing (after showing feedback).
+  function macrosDialogScope() {
+    var scopeInput = document.querySelector('input[name="scope"]:checked');
+    var scope = scopeInput ? scopeInput.value : 'project';
+    var path = null;
+    if (scope === 'custom') {
+      var pathInput = document.getElementById('macros-dialog-custom-path');
+      path = pathInput && (pathInput.value || '').trim();
+      if (!path) {
+        setMacrosDialogFeedback('Custom path is required for scope=custom.', false);
+        return null;
+      }
+    }
+    return { scope: scope, path: path };
+  }
+
   async function submitMacrosDialog() {
+    if (currentMacroMode() === 'html') {
+      return submitMacrosHtmlMapping();
+    }
     var input = macrosDialogInputEl();
     if (!input) return;
     var line = (input.value || '').trim();
@@ -1365,18 +1414,10 @@
       setMacrosDialogFeedback('Enter a \\newcommand line first.', false);
       return;
     }
-    var scopeInput = document.querySelector('input[name="scope"]:checked');
-    var scope = scopeInput ? scopeInput.value : 'project';
-    var payload = { scope: scope, line: line };
-    if (scope === 'custom') {
-      var pathInput = document.getElementById('macros-dialog-custom-path');
-      var customPath = pathInput && (pathInput.value || '').trim();
-      if (!customPath) {
-        setMacrosDialogFeedback('Custom path is required for scope=custom.', false);
-        return;
-      }
-      payload.path = customPath;
-    }
+    var sc = macrosDialogScope();
+    if (!sc) return;
+    var payload = { scope: sc.scope, line: line };
+    if (sc.path) payload.path = sc.path;
     setMacrosDialogFeedback('Saving…', true);
     try {
       var res = await fetch('/macros/append', {
@@ -1395,6 +1436,55 @@
       var file = body && body.file ? ' → ' + body.file : '';
       setStatus('live', '● saved ' + name + file);
       input.value = '';
+      closeMacrosDialog();
+    } catch (e) {
+      setMacrosDialogFeedback(String(e && e.message || e), false);
+    }
+  }
+
+  // "Text → HTML" mode: write a [text-macros] entry to the chosen TOML file
+  // via /config/set (reusing the dotted-key writer).
+  async function submitMacrosHtmlMapping() {
+    var nameEl = document.getElementById('macros-html-name');
+    var tplEl = document.getElementById('macros-html-template');
+    var name = (nameEl && nameEl.value || '').trim().replace(/^\\+/, '');
+    var tpl = (tplEl && tplEl.value || '').trim();
+    if (!name) {
+      setMacrosDialogFeedback('Enter a command name.', false);
+      return;
+    }
+    if (!/^[A-Za-z@]+$/.test(name)) {
+      setMacrosDialogFeedback('Name must be letters only — no backslash, digits, or spaces.', false);
+      return;
+    }
+    if (!tpl) {
+      setMacrosDialogFeedback('Enter an HTML template (use #1, #2 for arguments).', false);
+      return;
+    }
+    var sc = macrosDialogScope();
+    if (!sc) return;
+    var values = {};
+    values['text-macros.' + name] = tpl;
+    var payload = { scope: sc.scope, values: values };
+    if (sc.path) payload.path = sc.path;
+    setMacrosDialogFeedback('Saving…', true);
+    try {
+      var res = await fetch('/config/set', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      var body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        setMacrosDialogFeedback((body && body.error) || 'save failed', false);
+        return;
+      }
+      var file = body && body.file ? ' → ' + body.file : '';
+      setStatus('live', '● saved \\' + name + file);
+      if (nameEl) nameEl.value = '';
+      if (tplEl) tplEl.value = '';
       closeMacrosDialog();
     } catch (e) {
       setMacrosDialogFeedback(String(e && e.message || e), false);

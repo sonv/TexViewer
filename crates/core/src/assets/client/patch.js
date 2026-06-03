@@ -155,6 +155,10 @@
       onMacrosFilePicked(e);
       return;
     }
+    if (e.target && e.target.name === 'macro-mode') {
+      syncMacrosMode();
+      return;
+    }
     if (e.target && e.target.name === 'scope') {
       syncMacrosCustomPathEnabled();
       return;

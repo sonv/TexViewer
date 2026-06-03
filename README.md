@@ -675,7 +675,10 @@ A typical file:
 
 You can also add overrides without leaving the viewer: click the
 `macros` button in the toolbar to open a dialog, paste a single
-`\newcommand` line, pick **Project** or **Global**, and Save. The
+`\newcommand` line, pick **Project** or **Global**, and Save. (A *Type*
+toggle in the same dialog switches to **Text → HTML** for writing a
+`[text-macros]` template instead — see [Macros in regular
+text](#macros-in-regular-text).) The
 daemon validates the line, appends it to the chosen file (creating
 the file or its parent directory if needed), and the page
 re-renders so the override takes effect immediately. Edits to the
@@ -779,20 +782,24 @@ shipped by a package, or that you simply want to look different in the preview:
    here overrides a `\newcommand` of the same name, so it's also the way to make
    the preview *differ* from the PDF on purpose.
 
-The `[text-macros]` table is edited **manually** in the file — there's no
-button for it. Use single-quoted TOML strings so backslashes/quotes in the
-HTML are literal. The template HTML is emitted as-is (it's your own local file,
-same trust level as a vimrc); only the `#n` arguments are escaped. If a command
-takes an optional `[…]` argument, that variant isn't parsed by the template
-substitution — define the inline form with braced args.
+You can either edit `.mathpreview.toml` directly, or **use the toolbar**: click
+the **macros** button, switch the *Type* toggle to **Text → HTML**, enter the
+command name and template, pick a scope, and Save — the daemon writes the
+`[text-macros]` entry and re-renders. (The default *TeX macro* toggle writes a
+`\newcommand` instead.)
+
+When editing the file by hand, use single-quoted TOML strings so backslashes/
+quotes in the HTML are literal. The template HTML is emitted as-is (it's your
+own local file, same trust level as a vimrc); only the `#n` arguments are
+escaped. If a command takes an optional `[…]` argument, that variant isn't
+parsed by the template substitution — define the inline form with braced args.
 
 > **Don't need raw HTML?** If your mapping is expressible as LaTeX — e.g.
-> `\SV{x}` → red text — you don't need the TOML table at all. Click the
-> **macros** button in the toolbar (or edit `.mathpreview-macros.tex`) and add
+> `\SV{x}` → red text — you don't need the TOML table at all. In the **macros**
+> button keep the *TeX macro* toggle (or edit `.mathpreview-macros.tex`) and add
 > `\newcommand{\SV}[1]{\textcolor{red}{#1}}`. Those `\newcommand` overrides now
-> apply to body text too, so it renders inline without touching the config
-> file. Use `[text-macros]` when you want literal HTML or the command isn't a
-> `\newcommand`.
+> apply to body text too, so it renders inline. Use **Text → HTML** when you
+> want literal HTML or the command isn't a `\newcommand`.
 
 ## nvim setup
 

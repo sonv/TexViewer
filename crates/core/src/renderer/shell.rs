@@ -180,27 +180,51 @@ pub(super) fn wrap_in_shell(
 </aside>
 <dialog class="macros-dialog" id="macros-dialog">
   <form method="dialog" class="macros-dialog-form" id="macros-dialog-form">
-    <h2 class="macros-dialog-title">Add macro overrides</h2>
-    <p class="macros-dialog-hint">
-      Paste or load one or more <code>\newcommand</code> lines, then
-      pick where to save them. The viewer re-renders so the overrides
-      take effect immediately. Or use <em>Use as override</em> to add
-      a file as a live, watched layer without copying its text.
-    </p>
-    <div class="macros-dialog-load">
-      <button type="button" class="macros-dialog-loadbtn" id="macros-dialog-loadbtn">Load file…</button>
-      <button type="button" class="macros-dialog-usebtn" id="macros-dialog-usebtn">Use as override</button>
-      <input type="file" id="macros-dialog-file" accept=".tex,.sty,text/plain" hidden>
+    <h2 class="macros-dialog-title">Add a macro</h2>
+    <fieldset class="macros-dialog-mode">
+      <legend>Type</legend>
+      <label><input type="radio" name="macro-mode" value="tex" checked>
+        TeX macro (<code>\newcommand</code>)</label>
+      <label><input type="radio" name="macro-mode" value="html">
+        Text → HTML</label>
+    </fieldset>
+    <div id="macros-mode-tex">
+      <p class="macros-dialog-hint">
+        Paste or load one or more <code>\newcommand</code> lines, then
+        pick where to save them. The viewer re-renders so the overrides
+        take effect immediately. Or use <em>Use as override</em> to add
+        a file as a live, watched layer without copying its text.
+      </p>
+      <div class="macros-dialog-load">
+        <button type="button" class="macros-dialog-loadbtn" id="macros-dialog-loadbtn">Load file…</button>
+        <button type="button" class="macros-dialog-usebtn" id="macros-dialog-usebtn">Use as override</button>
+        <input type="file" id="macros-dialog-file" accept=".tex,.sty,text/plain" hidden>
+      </div>
+      <textarea class="macros-dialog-input" id="macros-dialog-input" rows="6"
+                spellcheck="false" autocomplete="off"
+                placeholder="\newcommand{{\st}}{{\mid}}"></textarea>
     </div>
-    <textarea class="macros-dialog-input" id="macros-dialog-input" rows="6"
-              spellcheck="false" autocomplete="off"
-              placeholder="\newcommand{{\st}}{{\mid}}"></textarea>
+    <div id="macros-mode-html" hidden>
+      <p class="macros-dialog-hint">
+        Map a command to an HTML template for the preview. Use
+        <code>#1</code>, <code>#2</code>… for its arguments. Handy for
+        commands defined with <code>\def</code> / a package, or a
+        preview-only look. Saved to the TOML <code>[text-macros]</code> table.
+      </p>
+      <label class="macros-html-label">Command name
+        <input type="text" id="macros-html-name" class="macros-dialog-custom-input"
+               spellcheck="false" autocomplete="off" placeholder="SV (no backslash)"></label>
+      <label class="macros-html-label">HTML template
+        <textarea id="macros-html-template" class="macros-dialog-input" rows="3"
+                  spellcheck="false" autocomplete="off"
+                  placeholder="&lt;span style=&quot;color:red&quot;&gt;#1&lt;/span&gt;"></textarea></label>
+    </div>
     <fieldset class="macros-dialog-scope">
       <legend>Save to</legend>
       <label><input type="radio" name="scope" value="project" checked>
-        Project <code>.mathpreview-macros.tex</code></label>
+        Project <code id="macros-scope-project-file">.mathpreview-macros.tex</code></label>
       <label><input type="radio" name="scope" value="global">
-        Global <code>~/.config/mathpreview/macros.tex</code></label>
+        Global <code id="macros-scope-global-file">~/.config/mathpreview/macros.tex</code></label>
       <label><input type="radio" name="scope" value="custom">
         Custom path
         <input type="text" id="macros-dialog-custom-path" class="macros-dialog-custom-input"

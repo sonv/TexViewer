@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.34] — 2026-06-03
+
+### Added
+
+- **The toolbar `macros` dialog can now write text→HTML mappings, not just
+  `\newcommand`s.** A *Type* toggle switches between **TeX macro** (appends a
+  `\newcommand` to a `.tex` override file, as before) and **Text → HTML**
+  (writes a `[text-macros]` entry — command name + HTML template with
+  `#1`..`#9` — to the chosen `.mathpreview.toml`). The scope labels update to
+  show the right target file per mode, and the page re-renders on save. The
+  HTML path reuses the existing `/config/set` writer, so no document or config
+  formatting is clobbered.
+
 ## [0.1.33] — 2026-06-03
 
 ### Changed
