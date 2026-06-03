@@ -17,6 +17,30 @@ summary.
 
 Nothing yet.
 
+## [0.1.32] — 2026-06-03
+
+### Added
+
+- **User macros now expand in regular text, not just math.** Previously a
+  `\newcommand` was only honored by MathJax inside `$…$`; in body text an
+  unknown macro like `\hello` was silently dropped. The text renderer now
+  expands the document's `\newcommand` definitions (and any override-file
+  macros) with their arguments, re-rendering the result — so
+  `\newcommand{\hello}{world}` makes `\hello` render as "world", and
+  `\newcommand{\GI}[1]{\textcolor{red}{#1}}` makes `\GI{x}` a red span.
+  Expansion is depth-limited to guard against recursive definitions.
+- **Built-in `\textcolor`.** `\textcolor{name}{text}` renders a colored
+  span; `\textcolor[HTML]{RRGGBB}{text}` takes a hex color. Color values are
+  sanitized before going into the `style` attribute. (The `\color{…}` switch
+  form is not supported yet — use `\textcolor`.)
+- **`[text-macros]` config table for macros the previewer can't see.** Map a
+  command name to an HTML template (`#1`..`#9` filled by the rendered
+  arguments) in `.mathpreview.toml` (or the global config) — useful for
+  commands defined inside a `\usepackage`'d `.sty` (which isn't scanned) or
+  for preview-only looks. Accepts the table name `[text-macros]` or
+  `[text_macros]`; an entry overrides a `\newcommand` of the same name, and
+  the cascade reloads live like the rest of the config.
+
 ## [0.1.31] — 2026-06-03
 
 ### Changed

@@ -65,6 +65,10 @@ pub struct HtmlOptions {
     /// …). Loaded from the TOML config cascade by the daemon; static
     /// `render` callers get the built-in defaults.
     pub viewer_config: crate::config::ResolvedViewerConfig,
+    /// Inline text-mode macro → HTML template map from the TOML config's
+    /// `[text-macros]` table. Applied to body text by `render_inline_latex`.
+    /// Empty for static `render` callers.
+    pub text_macros: std::collections::HashMap<String, String>,
 }
 
 impl Default for HtmlOptions {
@@ -76,6 +80,7 @@ impl Default for HtmlOptions {
             inline_css: true,
             macro_overrides: Vec::new(),
             viewer_config: crate::config::ResolvedConfig::default().viewer,
+            text_macros: std::collections::HashMap::new(),
         }
     }
 }
@@ -170,6 +175,9 @@ pub fn render(
     sync: &mut SyncIndex,
     opts: &HtmlOptions,
 ) -> RenderedHtml {
+    // Make the document's \newcommand definitions + the TOML [text-macros]
+    // templates available to the inline text renderer for this render.
+    install_text_macros(preamble, opts);
     let mut idgen = IdGen::default();
     let mut ctx = RenderCtx {
         sync,
@@ -2135,6 +2143,22 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             continue;
         }
         let name = &s[cmd_start..cmd_end];
+
+        // Built-in `\textcolor[model]{color}{text}` → colored span.
+        if name == "textcolor" {
+            if let Some(next) = render_textcolor(&mut out, s, cmd_end, labels) {
+                i = next;
+                continue;
+            }
+        }
+        // User text macros: \newcommand bodies (re-rendered) and TOML
+        // [text-macros] HTML templates. Defined names win over the built-in
+        // fallbacks below, matching \renewcommand intent.
+        if let Some(next) = render_text_macro(&mut out, name, s, cmd_end, labels) {
+            i = next;
+            continue;
+        }
+
         // Read one balanced brace arg if present.
         let mut j = cmd_end;
         while j < bytes.len() && bytes[j] == b' ' {
@@ -2261,6 +2285,264 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// User text macros (\newcommand expansion + TOML [text-macros] templates) and
+// the \textcolor / \color built-ins, used by `render_inline_latex`.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct TextMacroDef {
+    n_args: usize,
+    body: String,
+    /// true  → TOML HTML template: emit `body` verbatim with `#k` replaced by
+    ///         the *rendered* argument (template is trusted local config).
+    /// false → `\newcommand` body: substitute raw args into `#k`, then
+    ///         re-render the result as LaTeX.
+    html: bool,
+    /// Default for an optional first argument (`\newcommand[1][def]`).
+    default: Option<String>,
+}
+
+thread_local! {
+    static TEXT_MACROS: std::cell::RefCell<std::collections::HashMap<String, TextMacroDef>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static EXPAND_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+const MAX_EXPAND_DEPTH: u32 = 32;
+
+/// Install the per-render text-macro table: the document's `\newcommand`s
+/// (LaTeX, re-rendered) plus the TOML `[text-macros]` templates (HTML), with
+/// TOML winning on name collision.
+fn install_text_macros(preamble: &ExtractedPreamble, opts: &HtmlOptions) {
+    let mut map: std::collections::HashMap<String, TextMacroDef> = std::collections::HashMap::new();
+    for m in &preamble.macros {
+        let name = m.name.trim_start_matches('\\').to_string();
+        if name.is_empty() {
+            continue;
+        }
+        map.insert(
+            name,
+            TextMacroDef {
+                n_args: m.n_args as usize,
+                body: m.body.clone(),
+                html: false,
+                default: m.default.clone(),
+            },
+        );
+    }
+    for (name, body) in &opts.text_macros {
+        let name = name.trim_start_matches('\\').trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        map.insert(
+            name,
+            TextMacroDef {
+                n_args: max_placeholder(body),
+                body: body.clone(),
+                html: true,
+                default: None,
+            },
+        );
+    }
+    TEXT_MACROS.with(|t| *t.borrow_mut() = map);
+}
+
+/// Highest `#1`..`#9` index referenced in a template (its arg count).
+fn max_placeholder(s: &str) -> usize {
+    let b = s.as_bytes();
+    let mut max = 0usize;
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'#' && b[i + 1].is_ascii_digit() && b[i + 1] != b'0' {
+            max = max.max((b[i + 1] - b'0') as usize);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    max
+}
+
+/// Expand `name` if it's a defined text macro. Reads its argument groups from
+/// `s` at `from`, substitutes, appends to `out`, and returns the index past
+/// the consumed input. `None` if `name` isn't a text macro.
+fn render_text_macro(
+    out: &mut String,
+    name: &str,
+    s: &str,
+    from: usize,
+    labels: &LabelTable,
+) -> Option<usize> {
+    let def = TEXT_MACROS.with(|t| t.borrow().get(name).cloned())?;
+    let (args, next) = read_braced_args(s, from, def.n_args, def.default.as_deref());
+    let depth = EXPAND_DEPTH.with(|d| d.get());
+    if depth >= MAX_EXPAND_DEPTH {
+        // Runaway / recursive expansion — stop expanding to break the loop.
+        return Some(next);
+    }
+    if def.html {
+        let rendered: Vec<String> = args.iter().map(|a| render_inline_latex(a, labels)).collect();
+        out.push_str(&fill_placeholders(&def.body, &rendered));
+    } else {
+        let expanded = fill_placeholders(&def.body, &args);
+        EXPAND_DEPTH.with(|d| d.set(depth + 1));
+        out.push_str(&render_inline_latex(&expanded, labels));
+        EXPAND_DEPTH.with(|d| d.set(depth));
+    }
+    Some(next)
+}
+
+/// Replace `#1`..`#9` in `template` with `args` (`#k` → `args[k-1]`, missing →
+/// empty). `##` is a literal `#`.
+fn fill_placeholders(template: &str, args: &[String]) -> String {
+    let b = template.as_bytes();
+    let mut out = String::with_capacity(template.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' && i + 1 < b.len() {
+            let c = b[i + 1];
+            if c == b'#' {
+                out.push('#');
+                i += 2;
+                continue;
+            }
+            if c.is_ascii_digit() && c != b'0' {
+                if let Some(a) = args.get((c - b'0') as usize - 1) {
+                    out.push_str(a);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        let ch = template[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Read up to `n` argument groups starting at `from`. If `default` is set the
+/// first arg is optional (`[..]` or the default); the rest are braced `{..}`.
+/// Returns the raw arg bodies and the index past the last consumed group.
+fn read_braced_args(
+    s: &str,
+    from: usize,
+    n: usize,
+    default: Option<&str>,
+) -> (Vec<String>, usize) {
+    let bytes = s.as_bytes();
+    let mut args: Vec<String> = Vec::with_capacity(n);
+    let mut i = from;
+    let mut remaining = n;
+    if let (Some(def), true) = (default, n > 0) {
+        let mut k = i;
+        while k < bytes.len() && bytes[k] == b' ' {
+            k += 1;
+        }
+        if bytes.get(k) == Some(&b'[') {
+            if let Some((val, next)) = read_delim(s, k, b'[', b']') {
+                args.push(val);
+                i = next;
+            } else {
+                args.push(def.to_string());
+            }
+        } else {
+            args.push(def.to_string());
+        }
+        remaining -= 1;
+    }
+    for _ in 0..remaining {
+        if let Some((val, next)) = read_delim(s, i, b'{', b'}') {
+            args.push(val);
+            i = next;
+        } else {
+            // Missing mandatory arg (e.g. `\foo` used bare) — empty, stop.
+            args.push(String::new());
+        }
+    }
+    (args, i)
+}
+
+/// `\textcolor[model]{color}{text}` → colored span. `None` if the shape
+/// doesn't parse (so the caller falls back to generic handling).
+fn render_textcolor(out: &mut String, s: &str, from: usize, labels: &LabelTable) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = from;
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+    let mut model = None;
+    if bytes.get(i) == Some(&b'[') {
+        let (m, next) = read_delim(s, i, b'[', b']')?;
+        model = Some(m);
+        i = next;
+    }
+    let (color, after_color) = read_delim(s, i, b'{', b'}')?;
+    let (text, after_text) = read_delim(s, after_color, b'{', b'}')?;
+    let css = color_to_css(model.as_deref(), &color);
+    let _ = write!(
+        out,
+        r#"<span style="color:{css}">{}</span>"#,
+        render_inline_latex(&text, labels)
+    );
+    Some(after_text)
+}
+
+/// Map a LaTeX color spec to a CSS color, then sanitize so it can't break out
+/// of the `style` attribute. `[HTML]{RRGGBB}` → `#RRGGBB`; `[rgb]`/`[RGB]` →
+/// `rgb(...)`; otherwise the name passes through (CSS knows xcolor's names).
+fn color_to_css(model: Option<&str>, c: &str) -> String {
+    let c = c.trim();
+    let raw = match model {
+        Some(m) if m.eq_ignore_ascii_case("HTML") => format!("#{c}"),
+        Some(m) if m.eq_ignore_ascii_case("rgb") || m.eq_ignore_ascii_case("RGB") => {
+            format!("rgb({c})")
+        }
+        _ => c.to_string(),
+    };
+    raw.chars()
+        .filter(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '#' | '(' | ')' | ',' | '.' | '%' | ' ')
+        })
+        .collect()
+}
+
+/// Read a `{..}` / `[..]` group at `start` (after optional spaces). Honors
+/// backslash escapes and nesting of the same delimiter. Returns the inner
+/// content and the index just past the closer.
+fn read_delim(s: &str, start: usize, open: u8, close: u8) -> Option<(String, usize)> {
+    let bytes = s.as_bytes();
+    let mut i = start;
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&open) {
+        return None;
+    }
+    let content_start = i + 1;
+    let mut depth = 1i32;
+    i = content_start;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+            continue;
+        }
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some((s[content_start..i].to_string(), i + 1));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -2317,6 +2599,70 @@ mod tests {
         assert!(text.contains("First paragraph."));
         assert!(text.contains("Second paragraph."));
         assert!(!out.body_html.contains("<br><br>Second paragraph."));
+    }
+
+    fn render_body(source: &str) -> String {
+        crate::render_project_from_source(Path::new("t.tex"), source.to_string(), &HtmlOptions::default())
+            .unwrap()
+            .body_html
+    }
+
+    #[test]
+    fn user_newcommand_expands_in_text() {
+        let body =
+            render_body("\\newcommand{\\hello}{world}\n\\begin{document}\nsay \\hello now\n\\end{document}\n");
+        assert!(text_content(&body).contains("say world now"), "{body}");
+    }
+
+    #[test]
+    fn user_newcommand_with_arg_expands_in_text() {
+        let body = render_body(
+            "\\newcommand{\\GI}[1]{\\textbf{#1}}\n\\begin{document}\na \\GI{note} b\n\\end{document}\n",
+        );
+        assert!(body.contains("<strong>note</strong>"), "{body}");
+    }
+
+    #[test]
+    fn textcolor_renders_colored_span() {
+        let body = render_body("\\begin{document}\n\\textcolor{red}{warn} ok\n\\end{document}\n");
+        assert!(body.contains(r#"<span style="color:red">warn</span>"#), "{body}");
+    }
+
+    #[test]
+    fn textcolor_html_model_is_hex() {
+        let body = render_body("\\begin{document}\n\\textcolor[HTML]{FF8800}{x}\n\\end{document}\n");
+        assert!(body.contains(r##"<span style="color:#FF8800">x</span>"##), "{body}");
+    }
+
+    #[test]
+    fn toml_text_macro_html_template_for_unseen_macro() {
+        let mut opts = HtmlOptions::default();
+        opts.text_macros
+            .insert("GI".to_string(), r#"<span class="gi">#1</span>"#.to_string());
+        let body = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nnote \\GI{check this} end\n\\end{document}\n".to_string(),
+            &opts,
+        )
+        .unwrap()
+        .body_html;
+        assert!(body.contains(r#"<span class="gi">check this</span>"#), "{body}");
+    }
+
+    #[test]
+    fn toml_text_macro_overrides_newcommand() {
+        let mut opts = HtmlOptions::default();
+        opts.text_macros
+            .insert("hi".to_string(), "<b>TOML</b>".to_string());
+        let body = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\newcommand{\\hi}{tex}\n\\begin{document}\n\\hi\n\\end{document}\n".to_string(),
+            &opts,
+        )
+        .unwrap()
+        .body_html;
+        assert!(body.contains("<b>TOML</b>"), "{body}");
+        assert!(!text_content(&body).contains("tex"), "{body}");
     }
 
     #[test]

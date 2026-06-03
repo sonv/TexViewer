@@ -688,6 +688,45 @@ body. `\DeclarePairedDelimiter[..size..]{..body..}` calls become plain
 `\newcommand{\set}[1]{...}` — the optional `[size]` argument is
 silently dropped (an "approximate output" tradeoff).
 
+### Macros in regular text
+
+Math macros are expanded by MathJax inside `$…$`. In **regular text**, the
+renderer also handles macros, in three ways:
+
+1. **Your `\newcommand`s expand in text.** A macro defined in the preamble
+   (or any override file above) is substituted with its body, arguments and
+   all, then re-rendered — so `\newcommand{\hello}{world}` makes `\hello`
+   render as *world*, and `\newcommand{\GI}[1]{\textcolor{red}{#1}}` makes
+   `\GI{note}` render as a red *note*. (Previously, unknown text macros were
+   dropped.)
+2. **Built-in `\textcolor`.** `\textcolor{red}{x}` → a colored span;
+   `\textcolor[HTML]{FF8800}{x}` uses a hex color. Color names pass through to
+   CSS. (The `\color{…}` *switch* form isn't supported yet — use `\textcolor`,
+   which wraps its argument.)
+3. **The `[text-macros]` config table — for macros the previewer can't see.**
+   If a command is defined in a `\usepackage`'d `.sty` (which isn't scanned)
+   or you just want a preview-only look, map it to an HTML template directly.
+   Keys are command names (with or without a leading `\`); `#1`..`#9` are
+   filled by the rendered arguments. Lives in the same `.mathpreview.toml`
+   cascade as `[viewer]`:
+
+   ```toml
+   # .mathpreview.toml
+   [text-macros]            # `[text_macros]` is accepted too
+   hello = "world"
+   GI    = '<span class="margin-note" style="color:red">#1</span>'
+   nb    = '<mark>#1</mark>'
+   ```
+
+   A `[text-macros]` entry overrides a `\newcommand` of the same name. The
+   template HTML is emitted as-is (it's your own local config), and the
+   arguments are rendered through the normal pipeline (so math/emphasis inside
+   them work and are escaped).
+
+This is a fast-preview approximation, not a TeX engine: a macro whose body is
+pure math used in *text* will render crudely. For honest output, keep such
+macros in math mode or give them a `[text-macros]` template.
+
 ## nvim setup
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`

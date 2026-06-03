@@ -1932,8 +1932,11 @@ async fn render_cached(
     // from the dialog) takes effect without restarting the daemon.
     // Routed through the per-daemon mtime cache so unchanged files
     // skip disk I/O on the hot path.
+    // Reloaded each render so an edit to `[text-macros]` takes effect live.
+    let mut live_text_macros = state.opts.text_macros.clone();
     match load_and_merge_config_cached(state).await {
         Ok(resolved) => {
+            live_text_macros = resolved.text_macros.clone();
             let mut guard = state.viewer_config.write().await;
             if *guard != resolved.viewer {
                 *guard = resolved.viewer.clone();
@@ -1958,6 +1961,7 @@ async fn render_cached(
     let live_viewer_config = state.viewer_config.read().await.clone();
     let mut render_opts = state.opts.clone();
     render_opts.viewer_config = live_viewer_config;
+    render_opts.text_macros = live_text_macros;
     let rendered = renderer::render(
         &body,
         &preamble,

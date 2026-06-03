@@ -11,6 +11,7 @@
 //! [`Config::with_defaults`] to fill missing fields with the documented
 //! defaults; the result has `non-Option` accessors that always answer.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -27,6 +28,14 @@ pub const PROJECT_CONFIG_FILENAME: &str = ".mathpreview.toml";
 pub struct Config {
     #[serde(default)]
     pub viewer: ViewerConfig,
+    /// Inline text-mode macro → HTML template map, for the preview only.
+    /// Keys are command names (with or without a leading `\`); values are an
+    /// HTML template with `#1`..`#9` placeholders filled by the rendered
+    /// arguments. Lets you give a rendering to macros the previewer can't see
+    /// (e.g. defined in a `\usepackage`'d `.sty`). Accepts the table name
+    /// `[text-macros]` or `[text_macros]`.
+    #[serde(default, alias = "text_macros")]
+    pub text_macros: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -117,6 +126,8 @@ impl SourceJumpTrigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConfig {
     pub viewer: ResolvedViewerConfig,
+    /// Inline text-mode macro → HTML template map (see [`Config::text_macros`]).
+    pub text_macros: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +147,7 @@ impl Default for ResolvedConfig {
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
             },
+            text_macros: HashMap::new(),
         }
     }
 }
@@ -148,6 +160,10 @@ impl Config {
     /// order is `lower.merge(higher)`, so later layers win per field.
     pub fn merge(&mut self, other: Config) {
         self.viewer.merge(other.viewer);
+        // Later layers win per macro name.
+        for (name, body) in other.text_macros {
+            self.text_macros.insert(name, body);
+        }
     }
 
     /// Collapse this partial config into the resolved shape used by the
@@ -171,6 +187,7 @@ impl Config {
                     .trigger
                     .unwrap_or(defaults.viewer.source_jump_trigger),
             },
+            text_macros: self.text_macros,
         }
     }
 
