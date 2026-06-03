@@ -17,6 +17,27 @@ summary.
 
 Nothing yet.
 
+## [0.1.42] — 2026-06-03
+
+### Fixed
+
+- **Toggling `wrap-equations` now reliably takes effect.** The setting lives in
+  the MathJax `<head>` config, which live body pushes can't refresh, so the
+  preview kept the old wrapping until a manual reload. The daemon now ships
+  `wrap_equations` in the per-render `viewer_config` it pushes, and the client
+  reloads the tab when it changes — covering every edit path (config dialog,
+  the `.mathpreview.toml` file, the macros dialog's TOML editor), not just the
+  dialog.
+
+### Added
+
+- **`mathjax-config` raw-JS option.** A `[viewer] mathjax-config` string of
+  JavaScript is spliced in right after the generated `window.MathJax = {…}` and
+  before the library loads, so you can override any MathJax option (output
+  settings, extra macros/packages, …) by mutating `window.MathJax`. Changes
+  reload the preview like `wrap-equations`. `head_html` now takes the resolved
+  viewer config.
+
 ## [0.1.41] — 2026-06-03
 
 ### Added

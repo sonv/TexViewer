@@ -45,7 +45,7 @@ pub(super) fn wrap_in_shell(
     opts: &HtmlOptions,
 ) -> String {
     let engine = opts.engine.as_dyn();
-    let engine_head = engine.head_html(preamble, opts.viewer_config.wrap_equations);
+    let engine_head = engine.head_html(preamble, &opts.viewer_config);
     let engine_adapter_js = engine.client_adapter_js();
     let engine_css = engine.extra_css();
     let warnings_html = warnings_panel(preamble);

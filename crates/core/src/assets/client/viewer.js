@@ -1714,14 +1714,7 @@
     var theme = document.getElementById('config-default-theme').value;
     if (theme) payload.values['viewer.default-theme'] = theme;
     var wrapEl = document.getElementById('config-wrap-equations');
-    var wrapChanged = false;
-    if (wrapEl) {
-      payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
-      // The wrap setting lives in the MathJax <head> config, which live body
-      // pushes don't refresh — so a reload is needed when it changes.
-      var wrapWas = !(window.__mpConfig && window.__mpConfig.wrapEquations === false);
-      wrapChanged = !!wrapEl.checked !== wrapWas;
-    }
+    if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
     setConfigFeedback('Saving…', true);
     try {
       var res = await fetch('/config/set', {
@@ -1739,9 +1732,9 @@
       var file = body && body.file ? body.file : '(file)';
       setStatus('live', '● wrote config → ' + file);
       closeConfigDialog();
-      // Equation wrapping is baked into the MathJax head config; reload so it
-      // takes effect (other fields apply live).
-      if (wrapChanged) location.reload();
+      // No explicit reload here: when wrap-equations (or raw MathJax config)
+      // changes, the re-render's WS viewer_config push triggers a reload in
+      // applyViewerConfig — uniformly across all edit paths.
     } catch (e) {
       setConfigFeedback(String(e && e.message || e), false);
     }
@@ -1765,6 +1758,27 @@
     if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
     if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
     if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
+    // Equation wrapping (and any raw MathJax config) is baked into the <head>
+    // at page load — live body pushes can't change it. So when the resolved
+    // value flips, reload the page so the new MathJax config takes effect.
+    // This covers every edit path: config dialog, the .mathpreview.toml file,
+    // and the macros dialog's TOML editor.
+    if (typeof cfg.wrap_equations === 'boolean') {
+      var was = window.__mpConfig.wrapEquations;
+      window.__mpConfig.wrapEquations = cfg.wrap_equations;
+      if (was !== undefined && was !== cfg.wrap_equations) {
+        location.reload();
+        return;
+      }
+    }
+    if (typeof cfg.mathjax_config === 'string') {
+      var wasMjx = window.__mpConfig.mathjaxConfig;
+      window.__mpConfig.mathjaxConfig = cfg.mathjax_config;
+      if (wasMjx !== undefined && wasMjx !== cfg.mathjax_config) {
+        location.reload();
+        return;
+      }
+    }
   }
 
   function logPanelEl() { return document.getElementById('log-panel'); }

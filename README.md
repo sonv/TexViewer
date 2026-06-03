@@ -634,10 +634,30 @@ trigger = "cmd-click"           # | "ctrl-click" | "alt-click" | "double-click"
 equations in the preview. Default `true` (the preview wraps overlong math at
 low-priority operators so it fits the column). Set `false` if you'd rather the
 math overflow and scroll horizontally — closer to how a non-`breqn` PDF
-typesets it on one line. It's also a checkbox in the **config** toolbar dialog;
-changing it reloads the page (the setting lives in the MathJax `<head>` config).
+typesets it on one line. It's also a checkbox in the **config** toolbar dialog.
 This affects the **preview only** — it can't change how `latexmk` breaks lines
 in the PDF.
+
+**Raw MathJax config.** For anything `wrap-equations` doesn't cover, drop a
+snippet of JavaScript in `mathjax-config`; it runs right after the generated
+`window.MathJax = {…}` and before the library loads, so you can override any
+MathJax option. **Mutate** `window.MathJax` — don't reassign it (the client
+relies on the generated config). A TOML multi-line literal string keeps the JS
+readable:
+
+```toml
+[viewer]
+mathjax-config = '''
+window.MathJax.svg.displayOverflow = 'scroll';   // e.g. scroll instead of wrap
+window.MathJax.tex.macros.RR = '\\mathbb{R}';     // add a macro
+window.MathJax.tex.packages['[+]'].push('color'); // load an extra package
+'''
+```
+
+Both `wrap-equations` and `mathjax-config` live in the MathJax `<head>`, so a
+change reloads the preview tab automatically (the daemon signals it) — however
+you edit them (config dialog, the `.mathpreview.toml` file, or the macros
+dialog's Text→HTML editor).
 
 Drop a `.mathpreview.toml` in the project root to override per-paper:
 

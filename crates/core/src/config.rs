@@ -129,6 +129,12 @@ pub struct ViewerConfig {
     /// breaking). Default `true`. Set `false` to let long math overflow and
     /// scroll horizontally instead, matching a non-`breqn` PDF more closely.
     pub wrap_equations: Option<bool>,
+    /// Raw JavaScript spliced into the page right after the generated
+    /// `window.MathJax = {…}` config and before the MathJax library loads.
+    /// Mutate `window.MathJax` here to override anything (output options,
+    /// extra macros, packages…). Don't reassign `window.MathJax` wholesale —
+    /// the client adapter relies on the generated config.
+    pub mathjax_config: Option<String>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
 }
@@ -215,6 +221,7 @@ pub struct ResolvedViewerConfig {
     pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
     pub wrap_equations: bool,
+    pub mathjax_config: String,
 }
 
 impl Default for ResolvedConfig {
@@ -226,6 +233,7 @@ impl Default for ResolvedConfig {
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
                 wrap_equations: true,
+                mathjax_config: String::new(),
             },
             text_macros: HashMap::new(),
         }
@@ -270,6 +278,7 @@ impl Config {
                     .viewer
                     .wrap_equations
                     .unwrap_or(defaults.viewer.wrap_equations),
+                mathjax_config: self.viewer.mathjax_config.unwrap_or_default(),
             },
             text_macros: self.text_macros,
         }
@@ -308,6 +317,9 @@ impl ViewerConfig {
         }
         if other.wrap_equations.is_some() {
             self.wrap_equations = other.wrap_equations;
+        }
+        if other.mathjax_config.is_some() {
+            self.mathjax_config = other.mathjax_config;
         }
         self.source_jump.merge(other.source_jump);
     }

@@ -46,14 +46,25 @@ impl MathEngine for MathJaxEngine {
         "mathjax"
     }
 
-    fn head_html(&self, preamble: &ExtractedPreamble, wrap_equations: bool) -> String {
+    fn head_html(
+        &self,
+        preamble: &ExtractedPreamble,
+        viewer: &crate::config::ResolvedViewerConfig,
+    ) -> String {
         let config = mathjax_config(
             preamble,
             mathjax_local_font_path(&self.script_url),
-            wrap_equations,
+            viewer.wrap_equations,
         );
         let url = escape_attr(&self.script_url);
-        format!("<script>\n{config}\n</script>\n<script src=\"{url}\" async></script>")
+        // User-supplied `mathjax-config` JS runs after the generated config and
+        // before the (async) library load, so it can mutate `window.MathJax`.
+        let extra = if viewer.mathjax_config.trim().is_empty() {
+            String::new()
+        } else {
+            format!("\n<script>\n{}\n</script>", viewer.mathjax_config)
+        };
+        format!("<script>\n{config}\n</script>{extra}\n<script src=\"{url}\" async></script>")
     }
 
     fn client_adapter_js(&self) -> String {
