@@ -33,13 +33,16 @@ Nothing yet.
   span; `\textcolor[HTML]{RRGGBB}{text}` takes a hex color. Color values are
   sanitized before going into the `style` attribute. (The `\color{…}` switch
   form is not supported yet — use `\textcolor`.)
-- **`[text-macros]` config table for macros the previewer can't see.** Map a
+- **`[text-macros]` config table for macros expansion can't reach.** Map a
   command name to an HTML template (`#1`..`#9` filled by the rendered
   arguments) in `.mathpreview.toml` (or the global config) — useful for
-  commands defined inside a `\usepackage`'d `.sty` (which isn't scanned) or
-  for preview-only looks. Accepts the table name `[text-macros]` or
-  `[text_macros]`; an entry overrides a `\newcommand` of the same name, and
-  the cascade reloads live like the rest of the config.
+  commands defined with `\def` / `\NewDocumentCommand` / `\DeclarePairedDelimiter`
+  (which aren't extracted), commands from a system package that isn't a local
+  file on disk, or just for preview-only looks. (Plain `\newcommand`s — in the
+  preamble *or* a local `\usepackage`'d `.sty` — already expand on their own.)
+  Accepts the table name `[text-macros]` or `[text_macros]`; an entry overrides
+  a `\newcommand` of the same name, and the cascade reloads live like the rest
+  of the config.
 
 ## [0.1.31] — 2026-06-03
 

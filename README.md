@@ -693,22 +693,27 @@ silently dropped (an "approximate output" tradeoff).
 Math macros are expanded by MathJax inside `$…$`. In **regular text**, the
 renderer also handles macros, in three ways:
 
-1. **Your `\newcommand`s expand in text.** A macro defined in the preamble
-   (or any override file above) is substituted with its body, arguments and
-   all, then re-rendered — so `\newcommand{\hello}{world}` makes `\hello`
-   render as *world*, and `\newcommand{\GI}[1]{\textcolor{red}{#1}}` makes
-   `\GI{note}` render as a red *note*. (Previously, unknown text macros were
-   dropped.)
+1. **Your `\newcommand`s expand in text.** A macro defined in the preamble,
+   in a **local `\usepackage`'d / `\input`'d `.sty` or `.tex`** (these are
+   scanned — see [Override macros](#override-macros-for-the-viewer)), or in
+   any override file is substituted with its body, arguments and all, then
+   re-rendered — so `\newcommand{\hello}{world}` makes `\hello` render as
+   *world*, and `\newcommand{\GI}[1]{\textcolor{red}{#1}}` makes `\GI{note}`
+   render as a red *note*. (Previously, unknown text macros were dropped.)
+   Only `\newcommand`-style definitions are picked up; `\def`,
+   `\DeclareRobustCommand`, `\NewDocumentCommand`, etc. are not — use the
+   `[text-macros]` table for those.
 2. **Built-in `\textcolor`.** `\textcolor{red}{x}` → a colored span;
    `\textcolor[HTML]{FF8800}{x}` uses a hex color. Color names pass through to
    CSS. (The `\color{…}` *switch* form isn't supported yet — use `\textcolor`,
    which wraps its argument.)
-3. **The `[text-macros]` config table — for macros the previewer can't see.**
-   If a command is defined in a `\usepackage`'d `.sty` (which isn't scanned)
-   or you just want a preview-only look, map it to an HTML template directly.
-   Keys are command names (with or without a leading `\`); `#1`..`#9` are
-   filled by the rendered arguments. Lives in the same `.mathpreview.toml`
-   cascade as `[viewer]`:
+3. **The `[text-macros]` config table — for macros expansion can't reach.**
+   For a command defined with `\def` / `\NewDocumentCommand` /
+   `\DeclarePairedDelimiter` (not extracted), one from a system package that
+   isn't a local file on disk, or just for a preview-only look, map it to an
+   HTML template directly. Keys are command names (with or without a leading
+   `\`); `#1`..`#9` are filled by the rendered arguments. Lives in the same
+   `.mathpreview.toml` cascade as `[viewer]`:
 
    ```toml
    # .mathpreview.toml
