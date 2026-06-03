@@ -68,7 +68,7 @@ pub struct HtmlOptions {
     /// Inline text-mode macro → HTML template map from the TOML config's
     /// `[text-macros]` table. Applied to body text by `render_inline_latex`.
     /// Empty for static `render` callers.
-    pub text_macros: std::collections::HashMap<String, String>,
+    pub text_macros: std::collections::HashMap<String, crate::config::TextMacro>,
 }
 
 impl Default for HtmlOptions {
@@ -2331,7 +2331,7 @@ fn install_text_macros(preamble: &ExtractedPreamble, opts: &HtmlOptions) {
             },
         );
     }
-    for (name, body) in &opts.text_macros {
+    for (name, spec) in &opts.text_macros {
         let name = name.trim_start_matches('\\').trim().to_string();
         if name.is_empty() {
             continue;
@@ -2339,10 +2339,15 @@ fn install_text_macros(preamble: &ExtractedPreamble, opts: &HtmlOptions) {
         map.insert(
             name,
             TextMacroDef {
-                n_args: max_placeholder(body),
-                body: body.clone(),
+                // Explicit n_args from the array form wins; otherwise infer
+                // from the highest `#n` in the template.
+                n_args: spec
+                    .n_args
+                    .map(|n| n as usize)
+                    .unwrap_or_else(|| max_placeholder(&spec.html)),
+                body: spec.html.clone(),
                 html: true,
-                default: None,
+                default: spec.default.clone(),
             },
         );
     }
@@ -2634,11 +2639,15 @@ mod tests {
         assert!(body.contains(r##"<span style="color:#FF8800">x</span>"##), "{body}");
     }
 
+    fn tm(html: &str) -> crate::config::TextMacro {
+        crate::config::TextMacro { html: html.to_string(), n_args: None, default: None }
+    }
+
     #[test]
     fn toml_text_macro_html_template_for_unseen_macro() {
         let mut opts = HtmlOptions::default();
         opts.text_macros
-            .insert("GI".to_string(), r#"<span class="gi">#1</span>"#.to_string());
+            .insert("GI".to_string(), tm(r#"<span class="gi">#1</span>"#));
         let body = crate::render_project_from_source(
             Path::new("t.tex"),
             "\\begin{document}\nnote \\GI{check this} end\n\\end{document}\n".to_string(),
@@ -2650,10 +2659,34 @@ mod tests {
     }
 
     #[test]
+    fn toml_text_macro_default_and_explicit_nargs() {
+        // MathJax-style [template, n_args, default]: \hl{x} uses the default
+        // first arg; \hl[pink]{x} overrides it.
+        let mut opts = HtmlOptions::default();
+        opts.text_macros.insert(
+            "hl".to_string(),
+            crate::config::TextMacro {
+                html: r#"<mark style="background:#1">#2</mark>"#.to_string(),
+                n_args: Some(2),
+                default: Some("yellow".to_string()),
+            },
+        );
+        let body = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\hl{a} \\hl[pink]{b}\n\\end{document}\n".to_string(),
+            &opts,
+        )
+        .unwrap()
+        .body_html;
+        assert!(body.contains(r#"<mark style="background:yellow">a</mark>"#), "{body}");
+        assert!(body.contains(r#"<mark style="background:pink">b</mark>"#), "{body}");
+    }
+
+    #[test]
     fn toml_text_macro_overrides_newcommand() {
         let mut opts = HtmlOptions::default();
         opts.text_macros
-            .insert("hi".to_string(), "<b>TOML</b>".to_string());
+            .insert("hi".to_string(), tm("<b>TOML</b>"));
         let body = crate::render_project_from_source(
             Path::new("t.tex"),
             "\\newcommand{\\hi}{tex}\n\\begin{document}\n\\hi\n\\end{document}\n".to_string(),

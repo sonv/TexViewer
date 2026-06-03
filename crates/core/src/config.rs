@@ -19,6 +19,80 @@ use serde::{Deserialize, Serialize};
 
 pub const PROJECT_CONFIG_FILENAME: &str = ".mathpreview.toml";
 
+/// A `[text-macros]` entry: an HTML template plus an optional argument count
+/// and an optional default for the first argument. Mirrors MathJax's macro
+/// form, so it deserializes from either:
+///
+/// * a bare string — `name = "<b>#1</b>"` (arg count inferred from the highest
+///   `#n`), or
+/// * an array — `name = ["#1\\lvert#2#1\\rvert", 2, ""]` =
+///   `[template, n_args, default]` (n_args and default optional).
+///
+/// The template is HTML (emitted as-is; `#1`..`#9` are filled with the
+/// rendered, escaped arguments). TeX-valued macros go in a `macros.tex`
+/// override via `\newcommand` instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextMacro {
+    pub html: String,
+    /// Explicit argument count; `None` → inferred from the highest `#n`.
+    pub n_args: Option<u32>,
+    /// Default value for an optional first argument (LaTeX `[def]`).
+    pub default: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for TextMacro {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Seq(Vec<toml::Value>),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Str(html) => Ok(TextMacro {
+                html,
+                n_args: None,
+                default: None,
+            }),
+            Raw::Seq(items) => {
+                let html = items
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "text-macros array: first element must be the HTML template string",
+                        )
+                    })?
+                    .to_string();
+                let n_args = items.get(1).and_then(|v| v.as_integer()).map(|n| n.clamp(0, 9) as u32);
+                let default = items.get(2).and_then(|v| v.as_str()).map(|s| s.to_string());
+                Ok(TextMacro {
+                    html,
+                    n_args,
+                    default,
+                })
+            }
+        }
+    }
+}
+
+impl Serialize for TextMacro {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // Round-trip to whichever accepted form is shortest.
+        if self.n_args.is_none() && self.default.is_none() {
+            return s.serialize_str(&self.html);
+        }
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(None)?;
+        seq.serialize_element(&self.html)?;
+        seq.serialize_element(&self.n_args.unwrap_or(0))?;
+        if let Some(d) = &self.default {
+            seq.serialize_element(d)?;
+        }
+        seq.end()
+    }
+}
+
 /// Top-level config object. Every field is optional at the TOML layer so
 /// the cascade can do "later wins" merging without conflating "unset" and
 /// "set to default". The `viewer` table is also optional so an empty
@@ -35,7 +109,7 @@ pub struct Config {
     /// (e.g. defined in a `\usepackage`'d `.sty`). Accepts the table name
     /// `[text-macros]` or `[text_macros]`.
     #[serde(default, alias = "text_macros")]
-    pub text_macros: HashMap<String, String>,
+    pub text_macros: HashMap<String, TextMacro>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -127,7 +201,7 @@ impl SourceJumpTrigger {
 pub struct ResolvedConfig {
     pub viewer: ResolvedViewerConfig,
     /// Inline text-mode macro → HTML template map (see [`Config::text_macros`]).
-    pub text_macros: HashMap<String, String>,
+    pub text_macros: HashMap<String, TextMacro>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,6 +381,38 @@ mod tests {
         assert_eq!(cfg, ResolvedConfig::default());
         assert_eq!(cfg.viewer.font_size, 18);
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
+    }
+
+    #[test]
+    fn parses_text_macros_string_and_array_forms() {
+        let cfg = Config::parse(
+            "[text-macros]\n\
+             hello = \"world\"\n\
+             abs = [\"#1\\\\lvert#2#1\\\\rvert\", 2, \"\"]\n\
+             hl = [\"<mark>#1</mark>\", 1]\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let hello = cfg.text_macros.get("hello").unwrap();
+        assert_eq!(hello.html, "world");
+        assert_eq!(hello.n_args, None);
+        assert_eq!(hello.default, None);
+        let abs = cfg.text_macros.get("abs").unwrap();
+        assert_eq!(abs.n_args, Some(2));
+        assert_eq!(abs.default.as_deref(), Some(""));
+        let hl = cfg.text_macros.get("hl").unwrap();
+        assert_eq!(hl.n_args, Some(1));
+        assert_eq!(hl.default, None);
+    }
+
+    #[test]
+    fn text_macros_underscore_table_alias() {
+        let cfg = Config::parse(
+            "[text_macros]\nfoo = \"bar\"\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        assert_eq!(cfg.text_macros.get("foo").unwrap().html, "bar");
     }
 
     #[test]

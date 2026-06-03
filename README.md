@@ -714,21 +714,31 @@ renderer also handles macros, in three ways:
    For a command defined with `\def` / `\NewDocumentCommand` /
    `\DeclarePairedDelimiter` (not extracted), one from a system package that
    isn't a local file on disk, or just for a preview-only look, map it to an
-   HTML template directly. Keys are command names (with or without a leading
-   `\`); `#1`..`#9` are filled by the rendered arguments. Lives in the same
-   `.mathpreview.toml` cascade as `[viewer]`:
+   **HTML** template (not TeX — TeX-valued macros go in `macros.tex`). Keys are
+   command names (with or without a leading `\`); `#1`..`#9` are filled by the
+   rendered arguments. Lives in the same `.mathpreview.toml` cascade as
+   `[viewer]`. Each value is either a **string** template or, MathJax-style, an
+   **array** `[template, n_args, default]` to set the argument count and an
+   optional first-argument default explicitly:
 
    ```toml
    # .mathpreview.toml
    [text-macros]            # `[text_macros]` is accepted too
-   hello = "world"
-   SV    = '<span class="margin-note" style="color:red">#1</span>'
+   hello = "world"                                              # 0 args
+   SV    = '<span class="margin-note" style="color:red">#1</span>'  # 1 arg (inferred)
    nb    = '<mark>#1</mark>'
+   # [template, n_args, default-of-#1] — like MathJax's tex.macros:
+   hl    = ['<mark style="background:#1">#2</mark>', 2, 'yellow']
+   #   \hl{x}        -> yellow background   (uses the default)
+   #   \hl[pink]{x}  -> pink background     (overrides the optional 1st arg)
    ```
 
-   A `[text-macros]` entry overrides a `\newcommand` of the same name. The
-   template HTML is emitted as-is (it's your own local config), and the
-   arguments are rendered through the normal pipeline (so math/emphasis inside
+   With a string value the argument count is **inferred** from the highest
+   `#n`; the array form sets `n_args` (and the `default`) explicitly, which is
+   how you get an optional first argument. A `[text-macros]` entry overrides a
+   `\newcommand` of the same name. The template HTML is emitted as-is (it's
+   your own local config), and the arguments are rendered through the normal
+   pipeline (so math/emphasis inside
    them work and are escaped).
 
 **What's handled in regular text:**

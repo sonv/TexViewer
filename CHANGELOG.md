@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.35] — 2026-06-03
+
+### Added
+
+- **`[text-macros]` entries take an explicit arg count and default, MathJax-
+  style.** A value can now be either a bare string (`name = "<b>#1</b>"`,
+  argument count inferred from the highest `#n`) or an array
+  `name = [template, n_args, default]` — e.g.
+  `hl = ['<mark style="background:#1">#2</mark>', 2, 'yellow']`, so `\hl{x}`
+  uses the default first argument and `\hl[pink]{x}` overrides it. Mirrors
+  MathJax's `tex.macros` shape. The template is HTML (TeX-valued macros still
+  belong in a `macros.tex` `\newcommand`).
+
 ## [0.1.34] — 2026-06-03
 
 ### Added
