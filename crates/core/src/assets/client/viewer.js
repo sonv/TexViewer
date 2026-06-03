@@ -1263,7 +1263,10 @@
     setMacrosDialogFeedback('', false);
     syncMacrosMode();
     syncMacrosCustomPathEnabled();
-    // Don't clobber unsubmitted text if the user reopens after a cancel.
+    // Pre-fill the editor with the existing macros file so you edit rather
+    // than blindly append. Only when empty, so reopening after a cancel
+    // doesn't clobber unsubmitted text.
+    loadMacrosForScope();
     dlg.showModal();
     setTimeout(function() {
       var input = macrosDialogInputEl();
@@ -1274,6 +1277,46 @@
   function currentMacroMode() {
     var r = document.querySelector('input[name="macro-mode"]:checked');
     return r ? r.value : 'tex';
+  }
+
+  // Scope + custom path without raising feedback (used for read/prefill).
+  function currentScopeSelection() {
+    var r = document.querySelector('input[name="scope"]:checked');
+    var scope = r ? r.value : 'project';
+    var path = null;
+    if (scope === 'custom') {
+      var pe = document.getElementById('macros-dialog-custom-path');
+      path = (pe && (pe.value || '').trim()) || null;
+    }
+    return { scope: scope, path: path };
+  }
+
+  // Load the current scope's macros file into the editor (TeX mode only).
+  // Skips when the textarea already has unsaved text (unless `force`), or for
+  // a custom scope with no path yet. Failures are silent.
+  async function loadMacrosForScope(force) {
+    if (currentMacroMode() !== 'tex') return;
+    var input = macrosDialogInputEl();
+    if (!input) return;
+    if (!force && (input.value || '').trim()) return;
+    var sc = currentScopeSelection();
+    if (sc.scope === 'custom' && !sc.path) return;
+    try {
+      var payload = { scope: sc.scope };
+      if (sc.path) payload.path = sc.path;
+      var res = await fetch('/macros/read', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) return;
+      var body = await res.json();
+      input.value = (body && body.content) || '';
+      if (body && body.exists) {
+        setMacrosDialogFeedback('Loaded existing macros — Save replaces the file.', true);
+      }
+    } catch (e) { /* non-fatal */ }
   }
 
   // Toggle the dialog between "TeX macro" (\newcommand → .tex) and
@@ -1297,6 +1340,8 @@
                                    : '~/my-macros.tex or extras/macros.tex';
     }
     setMacrosDialogFeedback('', false);
+    // Entering TeX mode: prefill from the file if the box is empty.
+    if (!html) loadMacrosForScope();
   }
 
   // Custom-path input is only sensible when the "custom" scope radio is
@@ -1416,7 +1461,9 @@
     }
     var sc = macrosDialogScope();
     if (!sc) return;
-    var payload = { scope: sc.scope, line: line };
+    // The editor holds the whole file (we pre-load it), so save replaces
+    // rather than appends — otherwise re-saving would duplicate every line.
+    var payload = { scope: sc.scope, line: line, replace: true };
     if (sc.path) payload.path = sc.path;
     setMacrosDialogFeedback('Saving…', true);
     try {
@@ -1432,10 +1479,9 @@
         setMacrosDialogFeedback((body && body.error) || 'save failed', false);
         return;
       }
-      var name = body && body.name ? '\\' + body.name : 'macro';
       var file = body && body.file ? ' → ' + body.file : '';
-      setStatus('live', '● saved ' + name + file);
-      input.value = '';
+      setStatus('live', '● saved macros' + file);
+      // Keep the editor content (it now matches the file on disk).
       closeMacrosDialog();
     } catch (e) {
       setMacrosDialogFeedback(String(e && e.message || e), false);

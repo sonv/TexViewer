@@ -190,10 +190,11 @@ pub(super) fn wrap_in_shell(
     </fieldset>
     <div id="macros-mode-tex">
       <p class="macros-dialog-hint">
-        Paste or load one or more <code>\newcommand</code> lines, then
-        pick where to save them. The viewer re-renders so the overrides
-        take effect immediately. Or use <em>Use as override</em> to add
-        a file as a live, watched layer without copying its text.
+        The chosen file's existing <code>\newcommand</code> lines load here for
+        editing — <em>Save</em> writes the whole box back (it replaces the
+        file, so re-saving won't duplicate). The viewer re-renders immediately.
+        Or use <em>Use as override</em> to add a file as a live, watched layer
+        without copying its text.
       </p>
       <div class="macros-dialog-load">
         <button type="button" class="macros-dialog-loadbtn" id="macros-dialog-loadbtn">Load file…</button>

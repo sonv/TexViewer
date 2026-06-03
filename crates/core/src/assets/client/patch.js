@@ -161,6 +161,8 @@
     }
     if (e.target && e.target.name === 'scope') {
       syncMacrosCustomPathEnabled();
+      // Switching scope shows that file's existing macros.
+      loadMacrosForScope(true);
       return;
     }
     if (e.target && e.target.name === 'config-scope') {

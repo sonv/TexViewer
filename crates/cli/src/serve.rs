@@ -538,6 +538,7 @@ pub async fn run(
         .route("/jump", get(serve_jump_poll).post(serve_jump))
         .route("/reveal-source", post(serve_reveal_source))
         .route("/macros/append", post(serve_macros_append))
+        .route("/macros/read", post(serve_macros_read))
         .route("/macros/register", post(serve_macros_register))
         .route("/config/set", post(serve_config_set))
         .route("/debug", get(serve_debug))
@@ -1012,6 +1013,80 @@ struct MacrosAppendRequest {
     /// absolute or relative to the document root.
     #[serde(default)]
     path: Option<String>,
+    /// When true, `line` is the *full* file contents and replaces the target
+    /// file rather than being appended. Used by the dialog when it has loaded
+    /// the existing macros for editing.
+    #[serde(default)]
+    replace: bool,
+}
+
+/// Request body for `POST /macros/read` — returns the current contents of the
+/// macros override file for a scope so the dialog can pre-fill its editor.
+#[derive(Debug, Deserialize)]
+struct MacrosReadRequest {
+    scope: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// `POST /macros/read` — return the current macros override file's text (empty
+/// if it doesn't exist yet) so the dialog can load existing definitions for
+/// editing instead of starting blank.
+async fn serve_macros_read(
+    State(state): State<AppState>,
+    Json(req): Json<MacrosReadRequest>,
+) -> Response {
+    let root_file = state.current.read().await.root_file.clone();
+    let root_dir = root_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let target = match resolve_save_target(&req.scope, req.path.as_deref(), &root_dir) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+        }
+    };
+    let (content, exists) = match std::fs::read_to_string(&target) {
+        Ok(s) => (s, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    Json(serde_json::json!({ "content": content, "file": target, "exists": exists }))
+        .into_response()
+}
+
+/// Validate every command-shaped line in `content` (lines starting with `\`);
+/// blank lines and `%` comments pass through. Returns the first rejection.
+fn validate_override_content(content: &str) -> Result<(), String> {
+    for (i, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('%') {
+            continue;
+        }
+        if line.starts_with('\\') {
+            if let Err(e) = mathpreview_core::validate_override_line(line) {
+                return Err(format!("line {}: {e}", i + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write `content` to `target`, creating parent dirs + the file as needed.
+fn write_macro_content(target: &Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Normalize to a single trailing newline.
+    let body = format!("{}\n", content.trim_end_matches(['\n', '\r']));
+    std::fs::write(target, body)
 }
 
 /// `POST /macros/append` — append a `\newcommand` definition to the
@@ -1026,22 +1101,36 @@ async fn serve_macros_append(
     State(state): State<AppState>,
     Json(req): Json<MacrosAppendRequest>,
 ) -> Response {
-    let line = req.line.trim_end_matches(['\n', '\r']);
-    if line.trim().is_empty() {
+    let content = req.line.trim_end_matches(['\n', '\r']);
+    if content.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "empty macro line" })),
         )
             .into_response();
     }
-    let macro_name = match mathpreview_core::validate_override_line(line) {
-        Ok(n) => n,
-        Err(e) => {
+
+    // Validate: a single line when appending, every command line when
+    // replacing the whole file.
+    let macro_name = if req.replace {
+        if let Err(msg) = validate_override_content(content) {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": e.to_string() })),
+                Json(serde_json::json!({ "error": msg })),
             )
                 .into_response();
+        }
+        None
+    } else {
+        match mathpreview_core::validate_override_line(content) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
         }
     };
 
@@ -1057,8 +1146,13 @@ async fn serve_macros_append(
         }
     };
 
-    if let Err(e) = append_macro_line(&target, line) {
-        log_event(&state, "error", format!("macros append failed: {e:#}"));
+    let write_result = if req.replace {
+        write_macro_content(&target, content)
+    } else {
+        append_macro_line(&target, content)
+    };
+    if let Err(e) = write_result {
+        log_event(&state, "error", format!("macros write failed: {e:#}"));
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -1066,23 +1160,21 @@ async fn serve_macros_append(
             .into_response();
     }
 
-    // Trigger a re-render so the new macro is picked up live.
+    // Trigger a re-render so the change is picked up live.
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        log_event(&state, "warn", format!("macros append re-render failed: {e:#}"));
+        log_event(&state, "warn", format!("macros write re-render failed: {e:#}"));
     }
 
+    let verb = if req.replace { "wrote" } else { "appended" };
     log_event(
         &state,
         "info",
-        format!(
-            "macros: appended \\{macro_name} to {} (scope={})",
-            target.display(),
-            req.scope,
-        ),
+        format!("macros: {verb} {} (scope={})", target.display(), req.scope),
     );
     Json(serde_json::json!({
         "name": macro_name,
         "file": target,
+        "replaced": req.replace,
     }))
     .into_response()
 }

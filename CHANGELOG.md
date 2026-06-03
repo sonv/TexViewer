@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.36] — 2026-06-03
+
+### Added
+
+- **The macros dialog loads the existing override file for editing.** Opening
+  the toolbar `macros` dialog (TeX mode) now pre-fills the editor with the
+  current scope's `\newcommand` file instead of a blank box, and switching
+  scope reloads to show that file. Saving writes the whole editor back
+  (replacing the file) so re-saving never duplicates lines; each command line
+  is validated first. Backed by a new `POST /macros/read` endpoint and a
+  `replace` flag on `POST /macros/append`.
+
 ## [0.1.35] — 2026-06-03
 
 ### Added

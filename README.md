@@ -674,16 +674,16 @@ A typical file:
 ```
 
 You can also add overrides without leaving the viewer: click the
-`macros` button in the toolbar to open a dialog, paste a single
-`\newcommand` line, pick **Project** or **Global**, and Save. (A *Type*
-toggle in the same dialog switches to **Text → HTML** for writing a
+`macros` button in the toolbar. The chosen scope's existing
+`\newcommand` file **loads into the editor** so you can see and edit
+what's already there; add or change lines, pick **Project** or
+**Global**, and Save — the daemon validates the lines and writes the
+file back (so re-saving never duplicates), then the page re-renders.
+(A *Type* toggle switches to **Text → HTML** for writing a
 `[text-macros]` template instead — see [Macros in regular
-text](#macros-in-regular-text).) The
-daemon validates the line, appends it to the chosen file (creating
-the file or its parent directory if needed), and the page
-re-renders so the override takes effect immediately. Edits to the
-file made directly in your editor live-reload the same way — the
-file watcher tracks all override paths.
+text](#macros-in-regular-text).) Edits to the file made directly in
+your editor live-reload the same way — the file watcher tracks all
+override paths.
 
 The override's signature has to match how the macro is called in the
 body. `\DeclarePairedDelimiter[..size..]{..body..}` calls become plain
