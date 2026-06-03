@@ -17,6 +17,15 @@ summary.
 
 Nothing yet.
 
+## [0.1.38] — 2026-06-03
+
+### Changed
+
+- **The macros dialog is now a two-column layout** — the Project / Global /
+  Custom tabs sit in a vertical rail on the left, giving the editor the full
+  width (and a taller text box) on the right. The dialog is a bit wider to
+  suit.
+
 ## [0.1.37] — 2026-06-03
 
 ### Changed

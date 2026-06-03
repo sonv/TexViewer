@@ -1284,23 +1284,41 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   outline-offset: -1px;
   border-color: var(--accent);
 }
-.macros-dialog-scope {
-  margin: 12px 0 8px;
+/* Wider than the config dialog so the two-column editor has room. */
+#macros-dialog {
+  max-width: 680px;
+  width: min(680px, calc(100vw - 32px));
+}
+/* Two columns: a vertical tab rail on the left, the editor on the right. */
+.macros-dialog-body {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  margin-top: 10px;
+}
+.macros-dialog-sidebar {
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+}
+.macros-dialog-main {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .macros-tabs {
   display: flex;
+  flex-direction: column;
   gap: 2px;
-  border-bottom: 1px solid var(--border);
 }
 .macros-tab {
-  padding: 5px 14px;
+  padding: 6px 12px;
   cursor: pointer;
   font-size: 12px;
   color: var(--muted);
   border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 5px 5px 0 0;
-  margin-bottom: -1px;
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+  white-space: nowrap;
 }
 .macros-tab input {
   position: absolute;
@@ -1314,8 +1332,7 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   color: inherit;
   font-weight: 600;
   background: color-mix(in srgb, var(--border) 30%, transparent);
-  border-color: var(--border);
-  border-bottom-color: transparent;
+  border-left-color: var(--supporting);
 }
 /* Keyboard focus ring on the active tab (the radio is visually hidden). */
 .macros-tab:has(input:focus-visible) {
@@ -1323,8 +1340,8 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   outline-offset: -2px;
 }
 .macros-scope-detail {
-  min-height: 1.6em;
-  padding: 6px 2px 0;
+  min-height: 1.4em;
+  margin-bottom: 8px;
 }
 .macros-scope-file {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
