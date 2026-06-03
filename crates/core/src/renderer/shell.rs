@@ -221,13 +221,22 @@ pub(super) fn wrap_in_shell(
         </div>
         <div id="macros-mode-html" hidden>
           <p class="macros-dialog-hint">
-            The config TOML loads here. Add <code>[text-macros]</code> entries —
-            <code>name = "&lt;b&gt;#1&lt;/b&gt;"</code>, or MathJax-style
-            <code>name = [template, n_args, default]</code>; <code>#1</code>,
-            <code>#2</code>… are the rendered arguments. <em>Save</em> writes the
-            whole file (validated as TOML) and re-renders.
+            Don't know the syntax? Fill in a command name and an HTML template
+            below and click <em>Add</em> — it inserts a correct
+            <code>[text-macros]</code> line into the editor. Or edit the TOML
+            directly. Use <code>#1</code>, <code>#2</code>… for the command's
+            arguments. <em>Save</em> writes the whole file (validated) and
+            re-renders.
           </p>
-          <textarea class="macros-dialog-input" id="macros-toml-input" rows="11"
+          <div class="macros-html-add">
+            <input type="text" id="macros-html-name" class="macros-dialog-custom-input"
+                   spellcheck="false" autocomplete="off" placeholder="name — e.g. SV">
+            <input type="text" id="macros-html-template" class="macros-dialog-custom-input"
+                   spellcheck="false" autocomplete="off"
+                   placeholder="&lt;span style=&quot;color:red&quot;&gt;#1&lt;/span&gt;">
+            <button type="button" class="macros-dialog-loadbtn" id="macros-html-add-btn">Add ↓</button>
+          </div>
+          <textarea class="macros-dialog-input" id="macros-toml-input" rows="9"
                     spellcheck="false" autocomplete="off"
                     placeholder="[text-macros]&#10;SV = '&lt;span style=&quot;color:red&quot;&gt;#1&lt;/span&gt;'"></textarea>
         </div>

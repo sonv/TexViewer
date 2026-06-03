@@ -1572,6 +1572,63 @@
     }
   }
 
+  // Quote a value for TOML: a single-quoted literal when it has no apostrophe
+  // or newline, otherwise a basic (double-quoted) string with escapes.
+  function tomlQuote(s) {
+    if (s.indexOf("'") === -1 && s.indexOf('\n') === -1) return "'" + s + "'";
+    return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"';
+  }
+
+  // Insert `line` at the end of the [text-macros] table in `text`, creating
+  // the table if it isn't there yet.
+  function insertUnderTextMacros(text, line) {
+    var lines = text.split('\n');
+    var hdr = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*\[\s*text[-_]macros\s*\]\s*$/.test(lines[i])) { hdr = i; break; }
+    }
+    if (hdr === -1) {
+      var prefix = text.replace(/\s+$/, '');
+      return (prefix ? prefix + '\n\n' : '') + '[text-macros]\n' + line + '\n';
+    }
+    var nextTable = lines.length;
+    for (var j = hdr + 1; j < lines.length; j++) {
+      if (/^\s*\[/.test(lines[j])) { nextTable = j; break; }
+    }
+    var at = nextTable;
+    while (at > hdr + 1 && lines[at - 1].trim() === '') at--;
+    lines.splice(at, 0, line);
+    return lines.join('\n');
+  }
+
+  // "Add" button in Text→HTML mode: build a [text-macros] line from the
+  // name/template inputs and insert it into the editor (the user then Saves).
+  function addTextMacroFromForm() {
+    var nameEl = document.getElementById('macros-html-name');
+    var tplEl = document.getElementById('macros-html-template');
+    var editor = document.getElementById('macros-toml-input');
+    if (!nameEl || !tplEl || !editor) return;
+    var name = (nameEl.value || '').trim().replace(/^\\+/, '');
+    var tpl = (tplEl.value || '').trim();
+    if (!name) {
+      setMacrosDialogFeedback('Enter a command name.', false);
+      return;
+    }
+    if (!/^[A-Za-z@]+$/.test(name)) {
+      setMacrosDialogFeedback('Name must be letters only — no backslash, digits, or spaces.', false);
+      return;
+    }
+    if (!tpl) {
+      setMacrosDialogFeedback('Enter an HTML template (use #1, #2 for arguments).', false);
+      return;
+    }
+    editor.value = insertUnderTextMacros(editor.value, name + ' = ' + tomlQuote(tpl));
+    nameEl.value = '';
+    tplEl.value = '';
+    setMacrosDialogFeedback('Added \\' + name + ' to the editor — click Save to write it.', true);
+    nameEl.focus();
+  }
+
   function configDialogEl() { return document.getElementById('config-dialog'); }
   function configFeedbackEl() { return document.getElementById('config-dialog-feedback'); }
 

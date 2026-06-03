@@ -792,18 +792,35 @@ shipped by a package, or that you simply want to look different in the preview:
    here overrides a `\newcommand` of the same name, so it's also the way to make
    the preview *differ* from the PDF on purpose.
 
-You can either edit `.mathpreview.toml` directly, or **use the toolbar**: click
-the **macros** button and switch the *Type* toggle to **Text → HTML**. The
-chosen scope's config TOML loads into the editor; add or change `[text-macros]`
-entries and Save — the daemon validates it as TOML, writes the file back, and
-re-renders. (The default *TeX macro* toggle edits the `\newcommand` override
-file instead.)
+##### From the toolbar (no TOML knowledge needed)
 
-When editing the file by hand, use single-quoted TOML strings so backslashes/
-quotes in the HTML are literal. The template HTML is emitted as-is (it's your
-own local file, same trust level as a vimrc); only the `#n` arguments are
-escaped. If a command takes an optional `[…]` argument, that variant isn't
-parsed by the template substitution — define the inline form with braced args.
+You don't have to hand-edit the file. Click the **macros** button in the
+toolbar and flip the *Type* toggle to **Text → HTML**. The chosen scope's
+config TOML loads into the editor on the right, and you have **two ways** to
+add a mapping:
+
+- **The quick-add form** (top) — type a **command name** and an **HTML
+  template**, then click **Add ↓**. It builds a correct `[text-macros]` line
+  (quoting the template for you) and inserts it into the editor under a
+  `[text-macros]` table, creating the table if needed. Good when you don't
+  know the TOML syntax.
+- **The editor** (below) — type or tweak `[text-macros]` lines directly. The
+  Add form just writes into this same box.
+
+Either way, click **Save**: the daemon validates the whole file parses as TOML,
+writes it back, and re-renders immediately (no restart). Pick the file with the
+**Project / Global / Custom** tabs on the left. (The default *TeX macro* toggle
+edits the `\newcommand` override file instead — see [Override
+macros](#override-macros-for-the-viewer).)
+
+##### By hand
+
+Editing `.mathpreview.toml` in your own editor works identically (the daemon
+live-reloads it). Use single-quoted TOML strings so backslashes/quotes in the
+HTML are literal. The template HTML is emitted as-is (it's your own local file,
+same trust level as a vimrc); only the `#n` arguments are escaped. If a command
+takes an optional `[…]` argument, set it via the array form's `default` (see
+above) rather than relying on bracket parsing.
 
 > **Don't need raw HTML?** If your mapping is expressible as LaTeX — e.g.
 > `\SV{x}` → red text — you don't need the TOML table at all. In the **macros**

@@ -1343,6 +1343,14 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   min-height: 1.4em;
   margin-bottom: 8px;
 }
+.macros-html-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.macros-html-add input { flex: 1 1 auto; min-width: 0; }
+.macros-html-add button { flex: 0 0 auto; white-space: nowrap; }
 .macros-scope-file {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;

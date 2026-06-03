@@ -288,6 +288,12 @@
       loadMacrosDialogFile();
       return;
     }
+    var htmlAdd = e.target.closest('#macros-html-add-btn');
+    if (htmlAdd) {
+      e.preventDefault();
+      addTextMacroFromForm();
+      return;
+    }
     var macrosUse = e.target.closest('#macros-dialog-usebtn');
     if (macrosUse) {
       e.preventDefault();

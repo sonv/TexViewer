@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.40] — 2026-06-03
+
+### Added
+
+- **The macros dialog's Text→HTML mode regains a quick-add form, alongside the
+  TOML editor.** Type a command name + HTML template and click **Add ↓** and it
+  builds a correctly-quoted `[text-macros]` line and inserts it into the editor
+  (creating the table if needed) — for users who don't know the TOML syntax —
+  while the loaded editor below stays available for direct edits. Save still
+  writes the whole file. README documents both paths and the
+  string/array entry syntax in detail.
+
 ## [0.1.39] — 2026-06-03
 
 ### Changed
