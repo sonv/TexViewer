@@ -221,18 +221,15 @@ pub(super) fn wrap_in_shell(
         </div>
         <div id="macros-mode-html" hidden>
           <p class="macros-dialog-hint">
-            Map a command to an HTML template for the preview. Use
-            <code>#1</code>, <code>#2</code>… for its arguments. Handy for
-            commands defined with <code>\def</code> / a package, or a
-            preview-only look. Saved to the TOML <code>[text-macros]</code> table.
+            The config TOML loads here. Add <code>[text-macros]</code> entries —
+            <code>name = "&lt;b&gt;#1&lt;/b&gt;"</code>, or MathJax-style
+            <code>name = [template, n_args, default]</code>; <code>#1</code>,
+            <code>#2</code>… are the rendered arguments. <em>Save</em> writes the
+            whole file (validated as TOML) and re-renders.
           </p>
-          <label class="macros-html-label">Command name
-            <input type="text" id="macros-html-name" class="macros-dialog-custom-input"
-                   spellcheck="false" autocomplete="off" placeholder="SV (no backslash)"></label>
-          <label class="macros-html-label">HTML template
-            <textarea id="macros-html-template" class="macros-dialog-input" rows="4"
-                      spellcheck="false" autocomplete="off"
-                      placeholder="&lt;span style=&quot;color:red&quot;&gt;#1&lt;/span&gt;"></textarea></label>
+          <textarea class="macros-dialog-input" id="macros-toml-input" rows="11"
+                    spellcheck="false" autocomplete="off"
+                    placeholder="[text-macros]&#10;SV = '&lt;span style=&quot;color:red&quot;&gt;#1&lt;/span&gt;'"></textarea>
         </div>
         <div class="macros-dialog-feedback" id="macros-dialog-feedback" aria-live="polite"></div>
         <div class="macros-dialog-actions">

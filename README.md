@@ -793,10 +793,11 @@ shipped by a package, or that you simply want to look different in the preview:
    the preview *differ* from the PDF on purpose.
 
 You can either edit `.mathpreview.toml` directly, or **use the toolbar**: click
-the **macros** button, switch the *Type* toggle to **Text → HTML**, enter the
-command name and template, pick a scope, and Save — the daemon writes the
-`[text-macros]` entry and re-renders. (The default *TeX macro* toggle writes a
-`\newcommand` instead.)
+the **macros** button and switch the *Type* toggle to **Text → HTML**. The
+chosen scope's config TOML loads into the editor; add or change `[text-macros]`
+entries and Save — the daemon validates it as TOML, writes the file back, and
+re-renders. (The default *TeX macro* toggle edits the `\newcommand` override
+file instead.)
 
 When editing the file by hand, use single-quoted TOML strings so backslashes/
 quotes in the HTML are literal. The template HTML is emitted as-is (it's your

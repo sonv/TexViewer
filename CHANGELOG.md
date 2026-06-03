@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.39] — 2026-06-03
+
+### Changed
+
+- **The macros dialog's Text→HTML mode now loads and edits the config TOML
+  file directly** (symmetric with TeX mode editing the `.tex` override). The
+  active scope's `.mathpreview.toml` loads into the editor; Save writes the
+  whole file back after validating it parses as TOML, then re-renders.
+  Replaces the previous single name+template form. New `POST /config/read`
+  and `POST /config/write` endpoints back it.
+
 ## [0.1.38] — 2026-06-03
 
 ### Changed

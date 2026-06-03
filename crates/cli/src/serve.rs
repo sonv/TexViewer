@@ -541,6 +541,8 @@ pub async fn run(
         .route("/macros/read", post(serve_macros_read))
         .route("/macros/register", post(serve_macros_register))
         .route("/config/set", post(serve_config_set))
+        .route("/config/read", post(serve_config_read))
+        .route("/config/write", post(serve_config_write))
         .route("/debug", get(serve_debug))
         .route("/debug/mode", post(serve_debug_mode))
         .route("/print", post(serve_print))
@@ -1304,6 +1306,103 @@ async fn serve_config_set(
         ),
     );
     Json(serde_json::json!({ "file": target, "fields": req.values.len() })).into_response()
+}
+
+/// Request body for `POST /config/read` / `POST /config/write`.
+#[derive(Debug, Deserialize)]
+struct ConfigFileRequest {
+    scope: String,
+    #[serde(default)]
+    path: Option<String>,
+    /// Whole-file contents, for `/config/write` only.
+    #[serde(default)]
+    content: String,
+}
+
+/// `POST /config/read` — return the config TOML file's text for a scope
+/// (empty if absent), so the macros dialog's Text→HTML mode can load it.
+async fn serve_config_read(
+    State(state): State<AppState>,
+    Json(req): Json<ConfigFileRequest>,
+) -> Response {
+    let root_file = state.current.read().await.root_file.clone();
+    let root_dir = root_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let target = match resolve_config_save_target(&req.scope, req.path.as_deref(), &root_dir) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+        }
+    };
+    let (content, exists) = match std::fs::read_to_string(&target) {
+        Ok(s) => (s, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    Json(serde_json::json!({ "content": content, "file": target, "exists": exists }))
+        .into_response()
+}
+
+/// `POST /config/write` — replace the whole config TOML file with `content`
+/// after checking it parses as TOML, then reload + re-render. Used by the
+/// macros dialog's Text→HTML mode editing the `.mathpreview.toml` directly.
+async fn serve_config_write(
+    State(state): State<AppState>,
+    Json(req): Json<ConfigFileRequest>,
+) -> Response {
+    // Reject syntax errors before touching disk.
+    if let Err(e) = req.content.parse::<toml_edit::DocumentMut>() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("invalid TOML: {e}") })),
+        )
+            .into_response();
+    }
+    let root_file = state.current.read().await.root_file.clone();
+    let root_dir = root_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let target = match resolve_config_save_target(&req.scope, req.path.as_deref(), &root_dir) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+        }
+    };
+    if let Some(parent) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("mkdir {} failed: {e}", parent.display()) })),
+            )
+                .into_response();
+        }
+    }
+    let body = format!("{}\n", req.content.trim_end_matches(['\n', '\r']));
+    if let Err(e) = std::fs::write(&target, body) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("write {} failed: {e}", target.display()) })),
+        )
+            .into_response();
+    }
+    // Refresh the live viewer config (text-macros reload per render anyway).
+    if let Ok((resolved, _)) = mathpreview_core::load_and_merge_config(state.config_paths.as_ref()) {
+        *state.viewer_config.write().await = resolved.viewer;
+    }
+    if let Err(e) = trigger_rerender(&state, &root_file).await {
+        log_event(&state, "warn", format!("config-write re-render failed: {e:#}"));
+    }
+    log_event(&state, "info", format!("config: wrote {}", target.display()));
+    Json(serde_json::json!({ "file": target })).into_response()
 }
 
 /// Resolve the target file for a config-save action. Same scope rules

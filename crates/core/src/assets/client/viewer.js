@@ -1263,10 +1263,10 @@
     setMacrosDialogFeedback('', false);
     syncMacrosMode();
     syncMacrosCustomPathEnabled();
-    // Pre-fill the editor with the existing macros file so you edit rather
-    // than blindly append. Only when empty, so reopening after a cancel
-    // doesn't clobber unsubmitted text.
-    loadMacrosForScope();
+    // Pre-fill the editor with the active mode's file so you edit rather than
+    // start blank. Only when empty, so reopening after a cancel doesn't
+    // clobber unsubmitted text.
+    reloadActiveScopeFile();
     dlg.showModal();
     setTimeout(function() {
       var input = macrosDialogInputEl();
@@ -1319,6 +1319,39 @@
     } catch (e) { /* non-fatal */ }
   }
 
+  // Text→HTML mode: load the config TOML file into its editor (same
+  // empty/force rules as the TeX loader).
+  async function loadTomlForScope(force) {
+    if (currentMacroMode() !== 'html') return;
+    var input = document.getElementById('macros-toml-input');
+    if (!input) return;
+    if (!force && (input.value || '').trim()) return;
+    var sc = currentScopeSelection();
+    if (sc.scope === 'custom' && !sc.path) return;
+    try {
+      var payload = { scope: sc.scope };
+      if (sc.path) payload.path = sc.path;
+      var res = await fetch('/config/read', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) return;
+      var body = await res.json();
+      input.value = (body && body.content) || '';
+      if (body && body.exists) {
+        setMacrosDialogFeedback('Loaded config — Save replaces the file.', true);
+      }
+    } catch (e) { /* non-fatal */ }
+  }
+
+  // Load whichever file the active mode edits (.tex for TeX, .toml for HTML).
+  function reloadActiveScopeFile(force) {
+    if (currentMacroMode() === 'html') loadTomlForScope(force);
+    else loadMacrosForScope(force);
+  }
+
   // Toggle the dialog between "TeX macro" (\newcommand → .tex) and
   // "Text → HTML" (a [text-macros] template → .toml), and swap the scope
   // filenames / custom-path placeholder to match.
@@ -1336,8 +1369,8 @@
     }
     updateMacrosScopeFile();
     setMacrosDialogFeedback('', false);
-    // Entering TeX mode: prefill from the file if the box is empty.
-    if (!html) loadMacrosForScope();
+    // Prefill the file for whichever mode we just switched into.
+    reloadActiveScopeFile();
   }
 
   // Show the resolved file name for the active tab (or reveal the path input
@@ -1469,7 +1502,7 @@
 
   async function submitMacrosDialog() {
     if (currentMacroMode() === 'html') {
-      return submitMacrosHtmlMapping();
+      return submitTomlEdit();
     }
     var input = macrosDialogInputEl();
     if (!input) return;
@@ -1507,34 +1540,18 @@
     }
   }
 
-  // "Text → HTML" mode: write a [text-macros] entry to the chosen TOML file
-  // via /config/set (reusing the dotted-key writer).
-  async function submitMacrosHtmlMapping() {
-    var nameEl = document.getElementById('macros-html-name');
-    var tplEl = document.getElementById('macros-html-template');
-    var name = (nameEl && nameEl.value || '').trim().replace(/^\\+/, '');
-    var tpl = (tplEl && tplEl.value || '').trim();
-    if (!name) {
-      setMacrosDialogFeedback('Enter a command name.', false);
-      return;
-    }
-    if (!/^[A-Za-z@]+$/.test(name)) {
-      setMacrosDialogFeedback('Name must be letters only — no backslash, digits, or spaces.', false);
-      return;
-    }
-    if (!tpl) {
-      setMacrosDialogFeedback('Enter an HTML template (use #1, #2 for arguments).', false);
-      return;
-    }
+  // "Text → HTML" mode: write the edited config TOML back via /config/write
+  // (whole-file replace, validated as TOML server-side).
+  async function submitTomlEdit() {
+    var input = document.getElementById('macros-toml-input');
+    if (!input) return;
     var sc = macrosDialogScope();
     if (!sc) return;
-    var values = {};
-    values['text-macros.' + name] = tpl;
-    var payload = { scope: sc.scope, values: values };
+    var payload = { scope: sc.scope, content: input.value || '' };
     if (sc.path) payload.path = sc.path;
     setMacrosDialogFeedback('Saving…', true);
     try {
-      var res = await fetch('/config/set', {
+      var res = await fetch('/config/write', {
         method: 'POST',
         cache: 'no-store',
         headers: { 'content-type': 'application/json' },
@@ -1547,9 +1564,8 @@
         return;
       }
       var file = body && body.file ? ' → ' + body.file : '';
-      setStatus('live', '● saved \\' + name + file);
-      if (nameEl) nameEl.value = '';
-      if (tplEl) tplEl.value = '';
+      setStatus('live', '● saved config' + file);
+      // Keep the editor content (it now matches the file on disk).
       closeMacrosDialog();
     } catch (e) {
       setMacrosDialogFeedback(String(e && e.message || e), false);
