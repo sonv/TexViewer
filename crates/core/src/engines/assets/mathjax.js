@@ -60,13 +60,36 @@
     try { window.MathJax.typesetClear(mathSourceNodes(nodes)); }
     catch (e) { console.warn('mathpreview engine clear:', e); }
   }
+  // Available width (CSS px) the math can use, for MathJax line-breaking.
+  // tex2svg renders each equation standalone, so we must tell it the column
+  // width or `displayOverflow: 'linebreak'` has nothing to break against.
+  // clientWidth is the padding-box width (excludes horizontal overflow), so
+  // it reports the column even when the old (unwrapped) SVG overflows. Walk a
+  // few ancestors in case the source span itself is inline (width 0).
+  function availWidth(el) {
+    var node = el;
+    for (var i = 0; node && i < 5; i++) {
+      var w = node.clientWidth;
+      if (w && w > 1) return w;
+      node = node.parentNode;
+    }
+    return 0;
+  }
   function typeset(nodes) {
     var sources = mathSourceNodes(nodes);
     if (window.MathJax.tex2svgPromise) {
+      // Skip the width hint entirely when wrapping is off, so nothing changes
+      // for the overflow/scroll path.
+      var wrap = !(window.__mpConfig && window.__mpConfig.wrapEquations === false);
       return sources.reduce(function(chain, source) {
         return chain.then(function() {
         if (source.querySelector('mjx-container')) return Promise.resolve();
-        return window.MathJax.tex2svgPromise(sourceTex(source), { display: sourceDisplay(source) })
+        var opts = { display: sourceDisplay(source) };
+        if (wrap) {
+          var cw = availWidth(source);
+          if (cw) opts.containerWidth = cw;
+        }
+        return window.MathJax.tex2svgPromise(sourceTex(source), opts)
           .then(function(svg) { source.replaceChildren(svg); })
           .catch(function(e) {
             console.warn('mathpreview engine item:', e);

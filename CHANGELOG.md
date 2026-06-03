@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.43] — 2026-06-03
+
+### Fixed
+
+- **Long display equations now actually wrap.** `displayOverflow: 'linebreak'`
+  was set, but the client renders each equation standalone via
+  `tex2svgPromise`, which defaults `containerWidth` to `null` — so MathJax had
+  no width to break against and never wrapped. The adapter now measures the
+  column width (`clientWidth` of the math's block, walking ancestors) and
+  passes it as `containerWidth` when wrapping is on, and the config sets
+  `linebreaks.width: '100%'`. (Skipped when `wrap-equations = false`, so the
+  overflow/scroll path is unchanged.)
+
 ## [0.1.42] — 2026-06-03
 
 ### Fixed
