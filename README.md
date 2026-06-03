@@ -698,7 +698,7 @@ renderer also handles macros, in three ways:
    scanned — see [Override macros](#override-macros-for-the-viewer)), or in
    any override file is substituted with its body, arguments and all, then
    re-rendered — so `\newcommand{\hello}{world}` makes `\hello` render as
-   *world*, and `\newcommand{\GI}[1]{\textcolor{red}{#1}}` makes `\GI{note}`
+   *world*, and `\newcommand{\SV}[1]{\textcolor{red}{#1}}` makes `\SV{note}`
    render as a red *note*. (Previously, unknown text macros were dropped.)
    Only `\newcommand`-style definitions are picked up; `\def`,
    `\DeclareRobustCommand`, `\NewDocumentCommand`, etc. are not — use the
@@ -719,7 +719,7 @@ renderer also handles macros, in three ways:
    # .mathpreview.toml
    [text-macros]            # `[text_macros]` is accepted too
    hello = "world"
-   GI    = '<span class="margin-note" style="color:red">#1</span>'
+   SV    = '<span class="margin-note" style="color:red">#1</span>'
    nb    = '<mark>#1</mark>'
    ```
 
@@ -728,9 +728,71 @@ renderer also handles macros, in three ways:
    arguments are rendered through the normal pipeline (so math/emphasis inside
    them work and are escaped).
 
-This is a fast-preview approximation, not a TeX engine: a macro whose body is
-pure math used in *text* will render crudely. For honest output, keep such
-macros in math mode or give them a `[text-macros]` template.
+**What's handled in regular text:**
+
+| LaTeX | Result |
+|---|---|
+| `\emph{x}`, `\textit{x}`, `{\em x}`, `{\it x}` | italic |
+| `\textbf{x}`, `{\bf x}` | bold |
+| `\texttt{x}`, `{\tt x}` | monospace |
+| `\textsc{x}`, `{\sc x}` | small caps |
+| `\textcolor{name}{x}`, `\textcolor[HTML]{RRGGBB}{x}` | colored span |
+| `\ref` / `\cref` / `\Cref` / `\autoref` / `\eqref` / `\pageref` | resolved cross-reference link |
+| `$ … $` | inline math (MathJax) |
+| `\'e \`a \"o \^o \~n \=a \.z` | accented letters |
+| `~` | non-breaking space; `\\` | line break; `\, \; \: \!` | (thin spaces, dropped) |
+| your `\newcommand` (preamble or local `.sty`) | expanded with its arguments |
+| a name in `[text-macros]` | your HTML template |
+| any other `\foo{bar}` | `bar` shown, `\foo` dropped |
+| any other `\foo` (no arg) | dropped |
+
+**Not handled:** the `\color{…}` switch form (use `\textcolor`); macros defined
+with `\def` / `\NewDocumentCommand` / `\DeclarePairedDelimiter` (use
+`[text-macros]`); and arbitrary layout. It's a fast-preview approximation, not
+a TeX engine — a macro whose body is pure math used in *text* renders crudely;
+keep those in math mode or give them a `[text-macros]` template.
+
+#### Map a macro to HTML
+
+To give any command a preview rendering — including one defined with `\def`,
+shipped by a package, or that you simply want to look different in the preview:
+
+1. Open (or create) `.mathpreview.toml` in your project root (or
+   `~/.config/mathpreview/config.toml` to apply everywhere).
+2. Add a `[text-macros]` table. Each key is the command name **without** the
+   leading backslash; the value is an HTML template. Use `#1`, `#2`, … for the
+   command's arguments (they're rendered and HTML-escaped before substitution):
+
+   ```toml
+   [text-macros]
+   # \hello              -> world
+   hello = "world"
+   # \SV{some text}      -> red inline note (a margin macro shown inline)
+   SV = '<span style="color:red">#1</span>'
+   # \todo{fix this}     -> highlighted
+   todo = '<mark>#1</mark>'
+   # \keyword{X}{Y}      -> two args
+   keyword = '<b>#1</b> (<i>#2</i>)'
+   ```
+
+3. Save. The preview reloads and applies it immediately (no restart). An entry
+   here overrides a `\newcommand` of the same name, so it's also the way to make
+   the preview *differ* from the PDF on purpose.
+
+The `[text-macros]` table is edited **manually** in the file — there's no
+button for it. Use single-quoted TOML strings so backslashes/quotes in the
+HTML are literal. The template HTML is emitted as-is (it's your own local file,
+same trust level as a vimrc); only the `#n` arguments are escaped. If a command
+takes an optional `[…]` argument, that variant isn't parsed by the template
+substitution — define the inline form with braced args.
+
+> **Don't need raw HTML?** If your mapping is expressible as LaTeX — e.g.
+> `\SV{x}` → red text — you don't need the TOML table at all. Click the
+> **macros** button in the toolbar (or edit `.mathpreview-macros.tex`) and add
+> `\newcommand{\SV}[1]{\textcolor{red}{#1}}`. Those `\newcommand` overrides now
+> apply to body text too, so it renders inline without touching the config
+> file. Use `[text-macros]` when you want literal HTML or the command isn't a
+> `\newcommand`.
 
 ## nvim setup
 

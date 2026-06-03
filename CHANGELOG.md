@@ -17,6 +17,26 @@ summary.
 
 Nothing yet.
 
+## [0.1.33] — 2026-06-03
+
+### Changed
+
+- **Theorem numbering now reads `\newtheorem` from local packages too.** The
+  registry scans the same local `\usepackage`'d / `\input`'d `.sty` / `.tex`
+  files the macro extractor does (e.g. a sibling `svmacro.sty`), not just the
+  root preamble — so theorem environments and counters defined in a package
+  are honored. An environment declared more than once (which only happens
+  across mutually-exclusive `\if…\else…\fi` branches, since LaTeX forbids
+  redeclaring otherwise) is left at the built-in AMS default rather than
+  letting an arbitrary branch win — so a conditional definition can't change
+  numbering the wrong way.
+
+### Documentation
+
+- README "Macros in regular text" now lists exactly what's handled in text
+  and gives step-by-step instructions for mapping a command to an HTML
+  template via `[text-macros]`.
+
 ## [0.1.32] — 2026-06-03
 
 ### Added

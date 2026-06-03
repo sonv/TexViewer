@@ -933,7 +933,7 @@ fn command_brace_arg(
 
 /// Find `\usepackage` and `\input` targets in `src` that look like they could
 /// resolve to a local file (i.e. a sibling `.sty` or `.tex`).
-fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
+pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let usepkg =
         Regex::new(r"\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{\s*([^}]+?)\s*\}")

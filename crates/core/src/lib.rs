@@ -84,8 +84,9 @@ fn finish_render(
     let bib = bibtex::load_project_bib(&project)?;
     let bib_style = bibtex::detect_project_bib_style(&project);
     // Theorem environments + their counters/titles are driven by the
-    // preamble's `\newtheorem` declarations so numbering matches a real build.
-    let thms = theorems::TheoremRegistry::from_preamble(&project.preamble.source);
+    // preamble's `\newtheorem` declarations (including local `.sty` packages)
+    // so numbering matches a real build.
+    let thms = theorems::TheoremRegistry::from_project(&project);
     let mut body = parser::parse_body(&project, &thms)?;
     let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms);
     let mut sync = SyncIndex::new();

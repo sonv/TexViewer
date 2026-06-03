@@ -95,12 +95,64 @@ impl TheoremRegistry {
         reg
     }
 
-    /// Build from preamble source: start from the built-in defaults, then apply
-    /// every `\newtheorem` / `\newtheorem*` / `\numberwithin` declaration in
-    /// source order (so shared counters resolve against earlier definitions).
+    /// Build from a single preamble source.
     pub fn from_preamble(src: &str) -> Self {
+        Self::from_sources(&[src.to_string()])
+    }
+
+    /// Build from a project: the root preamble plus every local `.sty` / `.tex`
+    /// it `\usepackage`s / `\input`s (the same files the macro extractor reads).
+    /// This is how `\newtheorem`s declared in a sibling package (e.g.
+    /// `svmacro.sty`) are honored.
+    pub fn from_project(project: &crate::project::Project) -> Self {
+        let mut sources: Vec<String> = vec![project.preamble.source.clone()];
+        let base = project
+            .preamble
+            .file
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let referenced = crate::macros::collect_referenced_files(&project.preamble.source, base);
+        let mut visited: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
+        visited.insert(project.preamble.file.clone());
+        for f in referenced {
+            if !visited.insert(f.clone()) {
+                continue;
+            }
+            if let Ok(src) = std::fs::read_to_string(&f) {
+                sources.push(src);
+            }
+        }
+        Self::from_sources(&sources)
+    }
+
+    /// Build from the built-in defaults, then apply every `\newtheorem` /
+    /// `\newtheorem*` / `\numberwithin` declaration found across `sources`, in
+    /// order (so shared counters resolve against earlier definitions).
+    ///
+    /// An environment declared more than once is skipped: that only happens
+    /// across mutually-exclusive conditional branches (`\if…\else…\fi`) — LaTeX
+    /// forbids redeclaring a theorem otherwise — and we can't evaluate the
+    /// conditional, so rather than let an arbitrary branch win we leave that
+    /// environment at its built-in default.
+    pub fn from_sources(sources: &[String]) -> Self {
         let mut reg = Self::with_builtin_defaults();
-        for decl in scan_declarations(src) {
+        let mut decls: Vec<Decl> = Vec::new();
+        for src in sources {
+            decls.extend(scan_declarations(src));
+        }
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for d in &decls {
+            if let Decl::NewTheorem { env, .. } = d {
+                *counts.entry(env.clone()).or_insert(0) += 1;
+            }
+        }
+        for decl in decls {
+            if let Decl::NewTheorem { ref env, .. } = decl {
+                if counts.get(env).copied().unwrap_or(0) > 1 {
+                    continue; // ambiguous (conditional) — keep the built-in default
+                }
+            }
             reg.apply(decl);
         }
         reg
@@ -395,6 +447,30 @@ mod tests {
             "\\newtheorem{theorem}{Theorem}\n\\numberwithin{theorem}{subsection}\n",
         );
         assert_eq!(r.reset_level("theorem"), Some(3));
+    }
+
+    #[test]
+    fn conditional_duplicate_env_falls_back_to_default() {
+        // svmacro.sty shape: theorem declared twice across \if/\else with
+        // different reset behavior. The duplicate is ambiguous, so `theorem`
+        // stays at the built-in default (section reset), and `lemma` (declared
+        // once, sharing it) inherits that — matching the common AMS result.
+        let r = TheoremRegistry::from_sources(&[
+            "\\ifSV@numwithin\n\
+             \\newtheorem{theorem}{Theorem}[section]\n\
+             \\else\n\
+             \\newtheorem{theorem}{Theorem}\n\
+             \\fi\n\
+             \\newtheorem{lemma}[theorem]{Lemma}\n\
+             \\newtheorem{problem}{Problem}[section]\n"
+                .to_string(),
+        ]);
+        assert_eq!(r.reset_level("theorem"), Some(2)); // default kept, not None
+        assert_eq!(r.counter("lemma"), "theorem");
+        assert_eq!(r.reset_level("lemma"), Some(2));
+        // A non-duplicated custom env from the same source is still honored.
+        assert!(r.is_theorem("problem"));
+        assert_eq!(r.counter("problem"), "problem");
     }
 
     #[test]

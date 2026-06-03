@@ -1915,7 +1915,7 @@ async fn render_cached(
     };
     t.preamble_ms = t1.elapsed().as_millis();
 
-    let thms = TheoremRegistry::from_preamble(&project.preamble.source);
+    let thms = TheoremRegistry::from_project(&project);
 
     let t2 = std::time::Instant::now();
     let mut body = parser::parse_body(&project, &thms)?;
