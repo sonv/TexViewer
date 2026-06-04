@@ -41,9 +41,11 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   resolved relative to the main `.tex` file, and `\includegraphics`
   renders project-local raster/SVG assets plus cached PNG previews for
   PDF figures while preserving common width/height/scale options.
-- **Numbering** for sections, theorem-likes (shared counter scoped to
-  section, AMS-modern style), equation envs, multi-row `align`/`gather`
-  displays, and `subequations` groups with alphabetic child suffixes.
+- **Numbering driven by your `\newtheorem` declarations** — counters
+  (shared vs independent), reset level, and titles, including custom and
+  `.sty`-declared environments — plus sections, equation envs, multi-row
+  `align`/`gather`, and `subequations` (alphabetic child suffixes). Falls
+  back to the AMS-modern default when nothing is declared.
 - **Cross-references** resolve to their friendly form: `\cref{thm:main}`
   becomes "Theorem 2.1", `\eqref{eq:foo}` becomes "(3.1)".
 - **`\title` / `\author` / `\date` / `\maketitle`** produce a centered
@@ -70,24 +72,22 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 - **Mid-edit guard**: while you're typing inside an open `$$…$$` or
   `\begin{…}` and the buffer is unbalanced, the daemon defers the push.
   Page keeps the last well-formed render instead of flashing a broken one.
-- **Incremental MathJax typesetting**: every math node carries a stable
-  content hash; the client transplants already-typeset DOM nodes from
-  the previous render and only asks MathJax to typeset the actually-new
-  expressions. A single-character text edit reuses 100% of math nodes
-  (typeset cost ≈ 0 ms) on a 300-equation paper.
-- **Preamble caching** + **regex caching** in the parser: a body-only
-  edit on a 40 KB paper renders in ~5 ms on the daemon side.
-- **Block-level diffing on the wire**: every top-level block is wrapped
-  in `<article class="blk" id="blk-N" data-blockhash="…">`. The server
-  keeps the last broadcast's block sequence and pushes compact range
-  patches as `{event: "patch", ops: [{type: "range", index, remove, html},
-  …]}`. A one-character edit inside a paragraph becomes a single-block
-  range patch; an inserted paragraph is applied at its child position
-  and the browser retags shifted block ids from server metadata. The
-  same patch metadata retags inner source anchors for word-level sync.
-  The client never touches surrounding blocks or their typeset math. This
-  brings end-to-end keystroke latency on a 300-equation paper from
-  ~250 ms to single-digit milliseconds for normal text edits.
+- **Macros in regular text**: your `\newcommand`s (from the preamble or a
+  local `.sty`) expand in body text, not just math — plus a built-in
+  `\textcolor` and a config-driven `[text-macros]` HTML-template table for
+  commands the previewer can't otherwise see. See [Macros in regular
+  text](#macros-in-regular-text).
+- **Equation wrapping** of long display math, on by default (MathJax
+  line-breaking) and toggleable, plus a raw `mathjax-config` escape hatch
+  to override any MathJax option. See [Configure the
+  viewer](#configure-the-viewer).
+- **Fast incremental updates**: each math node carries a content hash, so
+  already-typeset SVG is transplanted and only genuinely new expressions
+  are typeset; the parser caches the preamble; and the server diffs
+  top-level blocks and pushes compact range patches over the WebSocket.
+  Net: single-digit-millisecond keystroke latency on a 300-equation paper
+  (a naive full re-render is ~250 ms). See [How it stays
+  fast](#how-it-stays-fast).
 
 ## Install
 
@@ -450,42 +450,23 @@ a Rust roundtrip unless they are controlling the daemon itself.
   equations are not numbered (MathJax emits SVG with no text), matching
   `lineno`'s default; a paragraph with inline math still numbers
   normally. Persisted in `localStorage["mathpreview.lineNumbers"]`.
-- `margin` toggles a right-hand column of pinned reference cards. With
-  margin mode on, clicking a `\ref` or `\cite` link pins the referenced
-  theorem / equation / bibliography entry into the margin (typeset
-  MathJax preserved) instead of scrolling to the anchor; click again to
-  unpin, or use the `×` button on the card. Hovering any `\ref` /
-  `\cite` for ~250 ms shows a quick floating preview regardless of
-  margin mode — the preview omits proofs so you see the statement
-  alone. Cards can be reordered by dragging from the `⋮⋮` grip in
-  each card's header (drop indicator is an accent line above or below
-  the target card). Two more pin entry points:
-  - Click any **refkey chip in the left margin** (the `keys` toggle
-    must be on to make the chips visible) — including the per-row
-    chips on multi-row `align` / `gather` displays — to pin that
-    target without touching the body.
-  - Press `:` to open a vim-style command line at the bottom; `:pin
-    <key>` pins, `:unpin <key>` removes, `:clear` empties the margin.
-    `:p` / `:u` abbreviations work. Tab cycles fuzzy matches in a
-    wildmenu strip above the input (substring beats subsequence,
-    prefix beats mid-string; `:unpin` narrows to currently-pinned
-    keys); ArrowDown/ArrowUp also cycle; clicking a chip commits
-    immediately. Esc closes; empty-Backspace also closes.
+- `margin` toggles a right-hand column of pinned reference cards: with it
+  on, clicking a `\ref`/`\cite` pins the referenced theorem/equation/bib
+  entry (typeset math preserved) instead of scrolling to it — click again
+  or the `×` to unpin, drag the `⋮⋮` grip to reorder. Hovering a
+  `\ref`/`\cite` shows a quick, proof-less preview regardless of mode. You
+  can also pin from a left-margin refkey chip (needs `keys` on) or the `:`
+  command line (`:pin`/`:unpin`/`:clear`, with Tab fuzzy-completion).
 - `☾` / `☀` toggles dark mode. The choice is persisted in
   `localStorage["mathpreview.theme"]`; on first load the viewer follows
   your OS `prefers-color-scheme`. The toggle re-skins the topbar, side
   panel, paper surface, theorem boxes, refkey chips, margin cards,
   command line, sidenotes, and warnings; MathJax SVG glyphs use
   `currentColor` and follow the body text colour automatically.
-- `print` calls `POST /print`. The daemon runs `latexmk -pdf` (falling
-  back to `pdflatex` if latexmk isn't on `$PATH`) in the root file's
-  directory and streams the produced PDF back as `application/pdf`,
-  which the browser opens in a new tab. The output PDF path is read out
-  of the latexmk/pdflatex stdout (the "Output written on …" and "All
-  targets (…) are up-to-date" lines), so a project that sets `$out_dir`
-  in `.latexmkrc` (project-local or `~/.latexmkrc`) — `build/`, `out/`,
-  `_artifacts/2026-05/`, anything — is found without configuration. No
-  background polling: nothing runs until you click the button.
+- `print` runs `latexmk -pdf` (or `pdflatex`) in the project directory and
+  opens the produced PDF in a new tab. It reads the output path from the
+  build log, so a custom `$out_dir` in `.latexmkrc` is found
+  automatically. Nothing runs until you click it.
 - `restart` calls `POST /restart`, relaunches the daemon with the same
   command-line arguments, polls until the replacement server is ready,
   then reloads the page.
@@ -513,61 +494,19 @@ a Rust roundtrip unless they are controlling the daemon itself.
   `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
   only scale the paper. The zoom factor is persisted in
   `localStorage["mathpreview.userZoom"]`.
-- **Cmd/Ctrl-click → source.** Modifier-click on any rendered token
-  jumps the editor to that source line — the IDE-style "reveal in
-  source" gesture. The click fires both `/jump` (which the nvim plugin
-  polls and applies *in place*, opening the file in the current window)
-  and `/reveal-source` (which spawns `--editor`). With the plugin's
-  cursor `sync` on, the in-place `/jump` already handles navigation, so
-  the plugin disables the editor spawn to avoid pulling you into a
-  second buffer; with `sync` off it passes an `--editor` targeting the
-  running nvim via `v:servername`. Override with the plugin's
-  `editor = '…'` option (or `--editor` when running `serve` by hand),
-  e.g. `code -g {file}:{line}`; a hand-run `serve` defaults to nvim via
-  `$NVIM_LISTEN_ADDRESS` or `$NVIM`.
-- **Math-only search.** Prefix the `/` query with `m:` (`m:n`,
-  `m:\alpha`, `m:α`) or wrap it LaTeX-style (`$n$`, `$\alpha$`) to
-  skip body text and only match SVG math glyphs. A single Latin or
-  Greek character, or a known `\command`, auto-widens to every
-  stylistic variant MathJax may emit — italic, bold, bold-italic,
-  script, fraktur, double-struck, sans, sans-bold, sans-italic,
-  sans-bold-italic, monospace — so `m:n` reliably finds the italic-`n`
-  inside `$n^2$` even though its SVG codepoint is U+1D45B and not
-  U+006E. The same widening covers the BMP fallbacks (italic-h at
-  U+210E, ℝ at U+211D, ℕ at U+2115, etc.).
-- **Search panel layout.** The `/` panel is a two-row grid sitting
-  centered against the bottom of the viewport: the `/` label + input
-  take the full width on row 1, and the shortcut hint wraps onto
-  row 2 so it never squeezes the input. Panel maxes out at 720 px;
-  the input is 15 px with a purple focus ring.
+- **Cmd/Ctrl-click → source.** Modifier-click any rendered token to jump
+  the editor to that source line. Under the nvim plugin this navigates in
+  place; for other editors set the plugin's `editor = '…'` option (or
+  `--editor` on a hand-run `serve`), e.g. `code -g {file}:{line}`.
+- **Math-only search.** Prefix the `/` query with `m:` (or wrap it like
+  `$\alpha$`) to match only SVG math glyphs, skipping body text. A single
+  letter or `\command` auto-widens across MathJax's style variants
+  (italic, bold, script, …), so `m:n` finds the italic-`n` in `$n^2$`.
 
-**Patch path** (small change, the common case):
-
-```
-● 6ms · 1r / typeset 0 (0 math)
-```
-
-- **Nr** — count of `replace` ops applied
-- **+M** — count of `append` ops (if any)
-- **-K** — count of `remove` ops (if any)
-- **typeset** — `MathJax.typesetPromise` time on math inside replaced blocks
-- **(N math)** — count of math elements that needed fresh typesetting
-
-A single-paragraph text edit on the test paper is consistently `1r /
-typeset 0 (0 math)` and lands in 5–10 ms wall clock.
-
-**Full-body path** (more than half the blocks changed at once):
-
-```
-● 38ms · idx 3 / parse 22 / diff 9 / swap 2 / typeset 0 (reused 324/324)
-```
-
-The daemon falls back to this when a single edit invalidates more
-blocks than it's worth patching (e.g. inserting a new section near the
-top — every block below shifts position). The client builds the new
-body in a detached template, hash-matches math nodes from the live DOM,
-transplants the reused ones, swaps `#page` contents in one op, and
-re-typesets only the truly-new math.
+The status dot in the toolbar reports each update — e.g. `● 6ms · 1r /
+typeset 0` for a one-block patch, or a fuller `parse / diff / swap /
+typeset (reused N/N)` line on the rare full-body rebuild. Normal text
+edits stay on the single-digit-millisecond patch path.
 
 ### Lint the embedded JS
 
