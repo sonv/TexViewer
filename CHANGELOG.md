@@ -17,6 +17,30 @@ summary.
 
 Nothing yet.
 
+## [0.1.49] — 2026-06-04
+
+### Fixed
+
+- **`:MathPreviewRestart` no longer piles up browser tabs.** Restart now
+  rebinds the *same* port the previous daemon held, and the plugin skips the
+  browser-open when it does — the already-open tab's live-reload WebSocket
+  reconnects on its own (1s backoff). Previously every restart spawned a fresh
+  tab, so a handful of restarts left a handful of orphaned tabs. (If the old
+  port can't be reclaimed and the restart lands on a different port, the old
+  tab is stale, so it does open a new one.)
+- **Reconnecting after a restart now hard-reloads the page.** A WS reconnect
+  alone only resumes body patches; the `<head>` (MathJax config, baked-in
+  macros, client assets) stays as the *old* daemon rendered it. The client now
+  does a `location.reload()` on its second-and-later `onopen`, so a restart
+  actually pulls the freshly served page. (The protocol-version `full-reload`
+  only fired on upgrades, not same-version restarts.)
+- **Macro / config edits take effect on the first save, not just after a
+  restart.** Macro-override files (`~/.config/mathpreview/macros.tex`, project
+  `.mathpreview-macros.tex`) and TOML config files are now in the file-watch
+  set from the *initial* render. Before, they only joined the watch set after
+  the first buffer push, so editing `macros.tex` before typing in the document
+  was silently ignored until you restarted.
+
 ## [0.1.48] — 2026-06-04
 
 ### Changed

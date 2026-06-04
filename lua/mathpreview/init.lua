@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.48"
+local PLUGIN_VERSION = "0.1.49"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -538,7 +538,15 @@ local function start_with(cmd, opts)
     vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
     return
   end
-  local port = find_free_port(DEFAULT_PORT)
+  -- On restart we prefer the port the previous daemon held: rebinding it
+  -- lets the already-open browser tab's live-reload WebSocket reconnect in
+  -- place (1s backoff) instead of us spawning a duplicate tab.
+  local port
+  if opts.prev_port and port_is_free(opts.prev_port) then
+    port = opts.prev_port
+  else
+    port = find_free_port(DEFAULT_PORT)
+  end
   if not port then
     vim.notify(
       ("mathpreview: no free port in %d..%d"):format(DEFAULT_PORT, DEFAULT_PORT + PORT_SCAN_RANGE - 1),
@@ -615,7 +623,12 @@ local function start_with(cmd, opts)
   attach_autocmds()
   -- Daemon takes ~100-300 ms to bind the port and finish initial render.
   -- Defer the browser open so the first GET / hits a ready server.
-  if config.auto_open_browser then
+  -- Skip the open on a restart that rebound the same port: the existing
+  -- tab reconnects on its own, so opening another would just pile up
+  -- duplicates (the bug where 10 restarts left 10 tabs). If the restart
+  -- had to move to a new port, the old tab is stale, so we do open.
+  local reused_tab = opts.prev_port ~= nil and port == opts.prev_port
+  if config.auto_open_browser and not reused_tab then
     vim.defer_fn(function()
       open_browser("http://127.0.0.1:" .. tostring(port) .. "/")
     end, 350)
@@ -707,9 +720,12 @@ function M.stop()
 end
 
 function M.restart()
+  -- Remember the port so the restart can rebind it and let the open tab
+  -- reconnect, instead of opening a fresh one each time.
+  local prev_port = daemon_port
   M.stop()
   -- Give the OS a moment to release the port before re-binding.
-  vim.defer_fn(function() M.start() end, 200)
+  vim.defer_fn(function() M.start({ prev_port = prev_port }) end, 200)
 end
 
 function M.status()

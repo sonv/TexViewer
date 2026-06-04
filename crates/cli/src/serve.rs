@@ -485,6 +485,18 @@ pub async fn run(
     for f in &initial.included_files {
         watched.insert(f.clone());
     }
+    // Macro override + config files participate in live-reload from the
+    // very first render, not just after the first buffer push. Editing
+    // ~/.config/mathpreview/macros.tex (or the project .mathpreview*.tex /
+    // .toml) should re-render even if you haven't touched the document yet —
+    // otherwise a fresh `serve` ignores macro edits until the first keystroke,
+    // which reads as "macros don't take effect unless I restart".
+    for f in &opts.macro_overrides {
+        watched.insert(f.clone());
+    }
+    for f in &config_paths {
+        watched.insert(f.clone());
+    }
     let mem_at_start = resident_mib()
         .map(|m| format!("{m:.1} MiB rss"))
         .unwrap_or_else(|| "rss ?".into());

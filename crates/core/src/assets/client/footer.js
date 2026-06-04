@@ -15,13 +15,27 @@
     status.className = 'status ' + cls;
     status.textContent = text;
   }
+  // Set once we've had a live connection. A *second* onopen means the
+  // server went away and came back — almost always a `:MathPreviewRestart`.
+  var everConnected = false;
   function connect() {
     if (!window.WebSocket) return;
     var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
       location.host + '/ws?v=' + encodeURIComponent(WS_PROTOCOL_VERSION);
     var ws;
     try { ws = new WebSocket(url); } catch (e) { return; }
-    ws.onopen  = function() { setStatus('live', '● live'); };
+    ws.onopen  = function() {
+      if (everConnected) {
+        // The page in front of us was rendered by the *old* daemon, so its
+        // <head> — MathJax config, baked-in macros, client assets — is
+        // stale; a WS reconnect only resumes body patches. Hard-reload to
+        // pull the freshly served page from the restarted daemon.
+        location.reload();
+        return;
+      }
+      everConnected = true;
+      setStatus('live', '● live');
+    };
     ws.onclose = function() {
       if (manualStopRequested) {
         setStatus('dead', '○ stopped');
