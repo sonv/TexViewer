@@ -126,9 +126,12 @@ fn mathjax_config(
         .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))
         .unwrap_or_default();
     let overflow = if wrap_equations {
-        // `width: '100%'` = break at the container width (the per-equation
-        // `containerWidth` the client adapter passes to tex2svg).
-        "displayOverflow: 'linebreak',\n    linebreaks: { inline: true, width: '100%' }"
+        // Just `displayOverflow: 'linebreak'`. We don't set `linebreaks`
+        // (inline/width default to {inline:true, width:'100%'} already) — the
+        // break *width* isn't a config value here: each equation is rendered
+        // standalone via tex2svg, so the client adapter (assets/mathjax.js)
+        // measures the column and passes it as `containerWidth` per call.
+        "displayOverflow: 'linebreak'  // break width = column (adapter passes containerWidth)"
     } else {
         "displayOverflow: 'overflow'"
     };

@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.48] — 2026-06-04
+
+### Changed
+
+- **Decluttered the generated MathJax config's wrap settings.** With
+  `wrap-equations` on, the `svg:` block now emits just
+  `displayOverflow: 'linebreak'` (plus a short comment) instead of also
+  setting `linebreaks: { inline: true, width: '100%' }` — those values were
+  already MathJax's defaults, so the line was redundant noise in the read-only
+  config view. The break *width* was never a config value anyway: each
+  equation is rendered standalone via `tex2svg`, so the client adapter
+  measures the column and passes it as `containerWidth` per call. No behaviour
+  change — wrapping works exactly as before.
+
 ## [0.1.47] — 2026-06-04
 
 ### Fixed
