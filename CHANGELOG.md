@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.47] — 2026-06-04
+
+### Fixed
+
+- **`[text-macros]` now apply on the first render, not just after an edit.**
+  The CLI built the daemon's startup `HtmlOptions` from the resolved config's
+  `viewer` settings but dropped its `text-macros`, so the initial page (what
+  you see when the browser tab opens) rendered with no text macros; they only
+  kicked in after the first buffer push re-loaded the full config. The startup
+  options now carry `text_macros` too. (The `[template, n_args, default]`
+  MathJax-style array form already parsed — it just wasn't reaching the first
+  render.)
+
 ## [0.1.46] — 2026-06-03
 
 ### Added

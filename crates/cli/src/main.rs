@@ -117,15 +117,13 @@ fn main() -> Result<()> {
             // Same cascade for TOML config: global → project → --config.
             let config_files =
                 mathpreview_core::discover_config_files(input_dir, &extra_configs);
-            let (viewer_config, applied_configs) =
+            let (viewer_config, text_macros, applied_configs) =
                 match mathpreview_core::load_and_merge_config(&config_files) {
-                    Ok((resolved, applied)) => (resolved.viewer, applied),
+                    Ok((resolved, applied)) => (resolved.viewer, resolved.text_macros, applied),
                     Err(e) => {
                         eprintln!("mathpreview: config load failed, using defaults — {e:#}");
-                        (
-                            mathpreview_core::ResolvedConfig::default().viewer,
-                            Vec::new(),
-                        )
+                        let d = mathpreview_core::ResolvedConfig::default();
+                        (d.viewer, d.text_macros, Vec::new())
                     }
                 };
             for p in &applied_configs {
@@ -140,6 +138,7 @@ fn main() -> Result<()> {
                 engine: Engine::MathJax(MathJaxEngine::new(url)),
                 macro_overrides,
                 viewer_config,
+                text_macros,
                 ..HtmlOptions::default()
             };
             if let Ok(ms) = std::env::var("MATHPREVIEW_RESTART_DELAY_MS") {
