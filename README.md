@@ -859,16 +859,30 @@ require("mathpreview").setup({
   jump_wait_ms = 25000,                   -- how long the daemon holds an idle /jump
   jump_retry_ms = 1000,                   -- back-off before re-parking after empty/err
 
-  -- on_jump: run AFTER a preview Cmd/Ctrl-click has moved this nvim's cursor.
-  -- This is where you raise/focus the editor window — the thing PDF viewers do
-  -- that HTML previewers usually can't. jump = { file=, line=, col= }.
-  -- Example: KDE/Plasma + Wayland + nvim-qt, via kdotool:
+  -- raise_on_jump (default true): bring nvim's window to the front on a
+  -- source-jump — the focus a PDF viewer gives you via SyncTeX. Best-effort
+  -- and platform-aware: macOS `osascript … activate` on the detected
+  -- terminal/GUI app; X11 `xdotool windowactivate $WINDOWID`; Wayland is
+  -- compositor-specific (use on_jump). Set false to stop focus-stealing.
+  raise_on_jump = true,
+
+  -- on_jump: extra hook run AFTER a Cmd/Ctrl-click has moved nvim's cursor
+  -- (and after the built-in raise). Use it when raise_on_jump can't detect
+  -- your setup — e.g. Wayland/KDE, where it does nothing. jump = {file,line,col}.
+  -- Example (KDE/Plasma + Wayland, via kdotool):
   on_jump = function()
     vim.system({ "sh", "-c",
       "kdotool search --class nvim | head -1 | xargs -r kdotool windowactivate" })
   end,
 })
 ```
+
+> Source-jump focus (Cmd/Ctrl-click in the preview → jump to that spot in
+> nvim) raises the editor automatically via `raise_on_jump`. On macOS it
+> detects your terminal (`Terminal`, `iTerm`, `WezTerm`, `Ghostty`, kitty,
+> Alacritty) or GUI (`Neovide`, `nvim-qt`) — inside tmux it falls back to
+> `$LC_TERMINAL`. If your setup isn't detected (notably Wayland), wire it up
+> through `on_jump`.
 
 **Troubleshooting.** If `:MathPreviewStatus` shows `daemon_running =
 false` after `:MathPreview`, check `:messages` for the spawn error

@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.50"
+local PLUGIN_VERSION = "0.1.51"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -81,6 +81,14 @@ local config = {
   --   end
   -- Runs in a scheduled (main-loop) context; errors are caught and logged.
   on_jump = nil,
+  -- Bring nvim's host window to the front on a source-jump — the focus a
+  -- PDF viewer gives you via SyncTeX. On by default. Best-effort and
+  -- platform-aware: macOS uses `osascript … activate` on the detected
+  -- terminal/GUI app; X11 uses `xdotool windowactivate $WINDOWID`; Wayland
+  -- is compositor-specific (use `on_jump`, e.g. kdotool on KDE). Set false
+  -- to stop the plugin from stealing focus on every click. Runs before
+  -- `on_jump`, so the hook can override or extend it.
+  raise_on_jump = true,
   -- Per-session URLs, written when start_daemon() picks a port.
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
@@ -449,6 +457,46 @@ local function post_cursor()
   last_status.cursor_posts = last_status.cursor_posts + 1
 end
 
+-- Best-effort "bring the editor to the front" on a source-jump — the focus
+-- SyncTeX gives you with a PDF viewer. Hosts differ wildly, so this covers
+-- the common cases and stays silent when it can't; extend via `on_jump`.
+local function raise_editor()
+  local sysname = (uv.os_uname() or {}).sysname or ""
+  if sysname == "Darwin" then
+    local app
+    if vim.g.neovide then
+      app = "Neovide"
+    elseif vim.fn.exists("g:GuiLoaded") == 1 then
+      app = "nvim-qt"
+    else
+      -- LC_TERMINAL survives tmux/ssh where TERM_PROGRAM is rewritten to
+      -- "tmux"; check it as a fallback (iTerm sets LC_TERMINAL=iTerm2).
+      local map = {
+        ["Apple_Terminal"] = "Terminal",
+        ["iTerm.app"]      = "iTerm",
+        ["iTerm2"]         = "iTerm",
+        ["WezTerm"]        = "WezTerm",
+        ["ghostty"]        = "Ghostty",
+        ["vscode"]         = "Code",
+      }
+      app = map[vim.env.TERM_PROGRAM] or map[vim.env.LC_TERMINAL]
+      if not app and vim.env.TERM == "xterm-kitty" then app = "kitty" end
+      if not app and vim.env.ALACRITTY_WINDOW_ID then app = "Alacritty" end
+    end
+    if app then
+      run_system({ "osascript", "-e", 'tell application "' .. app .. '" to activate' }, {})
+    end
+    return
+  end
+  -- Linux/BSD (best-effort). On X11 the host terminal usually exports
+  -- $WINDOWID; raising that is the most portable route. Wayland is
+  -- compositor-specific (KDE: kdotool) — use the `on_jump` hook there.
+  local winid = vim.env.WINDOWID
+  if winid and winid ~= "" and vim.fn.executable("xdotool") == 1 then
+    run_system({ "xdotool", "windowactivate", winid }, {})
+  end
+end
+
 local function jump_to_source(jump)
   if type(jump) ~= "table" or not jump.file or not jump.line then return end
   local seq = tonumber(jump.seq) or 0
@@ -467,6 +515,11 @@ local function jump_to_source(jump)
   vim.api.nvim_win_set_cursor(0, { line, col })
   vim.cmd("normal! zz")
   last_status.jumps = last_status.jumps + 1
+  -- Built-in focus (SyncTeX-style): bring nvim's window forward. Runs first
+  -- so a user on_jump hook can still override or extend it.
+  if config.raise_on_jump then
+    pcall(raise_editor)
+  end
   -- User hook: raise/focus the editor window, etc. The cursor has already
   -- moved; we just hand the target to whatever the user configured.
   if type(config.on_jump) == "function" then

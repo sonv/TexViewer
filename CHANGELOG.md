@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.51] — 2026-06-05
+
+### Added
+
+- **Source-jump now raises the editor window (SyncTeX-style focus), on by
+  default.** Cmd/Ctrl-clicking in the preview already moved nvim's cursor;
+  now it also brings nvim's host window to the front — the focus a PDF viewer
+  gives you, which on macOS the cursor-move alone didn't do. New
+  `raise_on_jump` option (default `true`), best-effort and platform-aware:
+  macOS `osascript … activate` on the detected terminal (`Terminal`, `iTerm`,
+  `WezTerm`, `Ghostty`, kitty, Alacritty; `$LC_TERMINAL` fallback inside tmux)
+  or GUI (`Neovide`, `nvim-qt`); X11 `xdotool windowactivate $WINDOWID`.
+  Wayland is compositor-specific — use the `on_jump` hook (e.g. kdotool on
+  KDE). Set `raise_on_jump = false` to stop focus-stealing on every click.
+
 ## [0.1.50] — 2026-06-04
 
 ### Fixed
