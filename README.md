@@ -853,8 +853,20 @@ require("mathpreview").setup({
   filetypes = { "tex", "plaintex", "latex" },
   debounce_ms = 40,
   cursor_debounce_ms = 80,
-  jump_poll_ms = 120,
   sync = true,                            -- false to disable cursor/jump roundtrip
+  -- Browser → editor source-jumps use a long-poll (one parked request),
+  -- so an idle preview costs ~no CPU. These tune that loop; defaults are fine.
+  jump_wait_ms = 25000,                   -- how long the daemon holds an idle /jump
+  jump_retry_ms = 1000,                   -- back-off before re-parking after empty/err
+
+  -- on_jump: run AFTER a preview Cmd/Ctrl-click has moved this nvim's cursor.
+  -- This is where you raise/focus the editor window — the thing PDF viewers do
+  -- that HTML previewers usually can't. jump = { file=, line=, col= }.
+  -- Example: KDE/Plasma + Wayland + nvim-qt, via kdotool:
+  on_jump = function()
+    vim.system({ "sh", "-c",
+      "kdotool search --class nvim | head -1 | xargs -r kdotool windowactivate" })
+  end,
 })
 ```
 

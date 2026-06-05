@@ -27,14 +27,23 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.49"
+local PLUGIN_VERSION = "0.1.50"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
   filetypes = { "tex", "plaintex", "latex" },
   debounce_ms = 40,
   cursor_debounce_ms = 80,
-  jump_poll_ms = 120,
+  -- Source-jump (browser → editor) is a long-poll, not a fixed-interval
+  -- poll: the plugin keeps ONE request parked on the daemon's `/jump`
+  -- endpoint, which returns the instant a jump arrives or after
+  -- `jump_wait_ms` with nothing. This is why an idle preview costs ~no CPU
+  -- (one hanging request) instead of spawning curl several times a second.
+  -- `jump_retry_ms` is the back-off before re-parking after an empty
+  -- return or a transient error, so a daemon that doesn't support
+  -- long-poll (or a brief restart) can't spin.
+  jump_wait_ms = 25000,
+  jump_retry_ms = 1000,
   sync = true,
   auto_open_browser = true,
   -- Where `cargo install` drops the auto-built binary. nil → cargo's default
@@ -60,6 +69,18 @@ local config = {
   -- `v:servername`. Set a string to force a specific command regardless
   -- (e.g. `code -g {file}:{line}:{col}`), or `""` to always disable it.
   editor = nil,
+  -- Optional hook run AFTER a browser source-jump has moved this nvim's
+  -- cursor (Cmd/Ctrl-click in the preview → jump in place). Use it to do
+  -- whatever your window manager needs to raise/focus the editor — the
+  -- thing PDF viewers do but most HTML previewers can't. Signature:
+  --   on_jump = function(jump)  -- jump = { file=, line=, col= }
+  -- Example (KDE/Plasma + Wayland, nvim-qt, via kdotool):
+  --   on_jump = function()
+  --     vim.system({ "sh", "-c",
+  --       "kdotool search --class nvim | head -1 | xargs kdotool windowactivate" })
+  --   end
+  -- Runs in a scheduled (main-loop) context; errors are caught and logged.
+  on_jump = nil,
   -- Per-session URLs, written when start_daemon() picks a port.
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
@@ -76,7 +97,6 @@ local daemon_root = nil  -- root .tex file path the daemon serves, or nil
 -- Push state (carried across pushes for :MathPreviewStatus).
 local timer = nil
 local cursor_timer = nil
-local jump_timer = nil
 local last_jump_seq = 0
 local last_status = {
   pushes = 0,
@@ -447,32 +467,69 @@ local function jump_to_source(jump)
   vim.api.nvim_win_set_cursor(0, { line, col })
   vim.cmd("normal! zz")
   last_status.jumps = last_status.jumps + 1
+  -- User hook: raise/focus the editor window, etc. The cursor has already
+  -- moved; we just hand the target to whatever the user configured.
+  if type(config.on_jump) == "function" then
+    local ok, err = pcall(config.on_jump, { file = file, line = line, col = col + 1 })
+    if not ok then
+      last_status.last_error = "on_jump error: " .. tostring(err)
+    end
+  end
 end
 
-local function poll_jump()
-  if not daemon_job or not config.sync then return end
+-- Source-jump (browser → editor) over a single long-poll instead of a
+-- fixed-interval timer: we keep exactly one curl parked on `/jump?wait=…`,
+-- which the daemon holds open until a jump arrives or `jump_wait_ms` elapses.
+-- On idle that's one hanging request, not several curl spawns a second — the
+-- difference between ~0% and a few % CPU while the preview just sits there.
+-- `jump_poll_gen` is a cancellation token: stop/restart bumps it so any
+-- in-flight callback won't re-park a stale loop.
+local jump_poll_gen = 0
+
+local function long_poll_jump(gen)
+  if gen ~= jump_poll_gen or not daemon_job or not config.sync then return end
+  local wait_ms = config.jump_wait_ms or 25000
+  -- Let curl outlive the server's hold by a few seconds so a clean timeout
+  -- comes back as an empty 204, not a curl abort.
+  local max_time = math.floor(wait_ms / 1000) + 5
   local args = {
-    "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "2",
-    config.jump_url .. "?after=" .. tostring(last_jump_seq),
+    "curl", "--silent", "--show-error", "--fail-with-body",
+    "--max-time", tostring(max_time),
+    config.jump_url .. "?after=" .. tostring(last_jump_seq)
+      .. "&wait=" .. tostring(wait_ms),
   }
   run_system(args, {}, function(res)
-    if not res or res.code ~= 0 then return end
-    local body = (res.stdout or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if body == "" then return end
-    local ok, decoded = pcall(json_decode, body)
-    if ok then jump_to_source(decoded) end
+    if gen ~= jump_poll_gen or not daemon_job or not config.sync then return end
+    local got_jump = false
+    if res and res.code == 0 then
+      local body = (res.stdout or ""):gsub("^%s+", ""):gsub("%s+$", "")
+      if body ~= "" then
+        local ok, decoded = pcall(json_decode, body)
+        if ok then jump_to_source(decoded); got_jump = true end
+      end
+    end
+    -- Re-park immediately after a real jump (latency matters); otherwise
+    -- back off jump_retry_ms so an empty return, an error, or a daemon that
+    -- ignores `wait` can't spin. A jump that lands during the gap isn't
+    -- lost — the daemon keeps `pending_jump`, so the next park returns it at
+    -- once.
+    if got_jump then
+      long_poll_jump(gen)
+    else
+      vim.defer_fn(function() long_poll_jump(gen) end, config.jump_retry_ms or 1000)
+    end
   end)
 end
 
 local function start_jump_poll()
-  if jump_timer then jump_timer:stop(); jump_timer:close(); jump_timer = nil end
+  jump_poll_gen = jump_poll_gen + 1
   if not config.sync then return end
-  jump_timer = uv.new_timer()
-  jump_timer:start(config.jump_poll_ms, config.jump_poll_ms, vim.schedule_wrap(poll_jump))
+  long_poll_jump(jump_poll_gen)
 end
 
 local function stop_jump_poll()
-  if jump_timer then jump_timer:stop(); jump_timer:close(); jump_timer = nil end
+  -- Supersede any in-flight long-poll so its callback won't re-park.
+  jump_poll_gen = jump_poll_gen + 1
 end
 
 local function debounced_push()

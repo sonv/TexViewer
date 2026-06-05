@@ -17,6 +17,34 @@ summary.
 
 Nothing yet.
 
+## [0.1.50] — 2026-06-04
+
+### Fixed
+
+- **Idle CPU drop: source-jump polling is now a long-poll.** The nvim plugin
+  used to `curl GET /jump` every 120 ms forever — ~8 process spawns a second
+  even when nothing was happening, which showed up as a few % CPU on an idle
+  preview (gone the moment you `:MathPreviewStop`). The daemon's `/jump` now
+  accepts `?wait=<ms>` and parks the request until a jump actually arrives (or
+  ~25 s elapses); the plugin keeps exactly one request in flight and re-issues
+  on return. Idle cost drops from 8 spawns/s to ~one parked request per ~26 s,
+  with no change to jump latency (a click still wakes the parked poll
+  instantly). Backward compatible: `/jump` without `wait` behaves as before.
+
+### Added
+
+- **`on_jump` plugin hook.** Runs after a preview Cmd/Ctrl-click has moved
+  nvim's cursor, so you can raise/focus the editor window the way a PDF viewer
+  does — something most HTML previewers can't. Signature `function(jump)` with
+  `jump = { file, line, col }`. README shows a KDE/Plasma + Wayland + nvim-qt
+  example using `kdotool windowactivate`.
+
+### Internal
+
+- Reveal-source now detects an attached editor via a live in-flight poller
+  count (`active_jump_pollers`), not just the last-poll timestamp — correct
+  under long-polling, where the timestamp only refreshes every ~25 s.
+
 ## [0.1.49] — 2026-06-04
 
 ### Fixed

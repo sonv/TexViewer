@@ -40,7 +40,7 @@ use futures_util::{SinkExt, StreamExt};
 use notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::new_debouncer;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Notify, RwLock};
 
 use mathpreview_core::{
     bibtex::{self, BibEntry, BibStyle},
@@ -75,6 +75,15 @@ struct AppState {
     render_seq: Arc<AtomicU64>,
     jump_seq: Arc<AtomicU64>,
     pending_jump: Arc<RwLock<Option<SourceJump>>>,
+    /// Notified whenever a new `pending_jump` is set, so a long-polling
+    /// `GET /jump` can wake immediately instead of returning empty.
+    jump_notify: Arc<Notify>,
+    /// Count of `GET /jump` requests currently parked (long-polling). The
+    /// nvim plugin keeps exactly one in flight while attached, so a nonzero
+    /// count means an editor is handling navigation in place — reveal-source
+    /// uses this (not just the `last_jump_poll_ms` timestamp, which under
+    /// long-polling only updates every ~25 s) to skip the duplicate spawn.
+    active_jump_pollers: Arc<AtomicU64>,
     /// `sh -c` template for the Cmd/Ctrl-click reveal-source feature.
     /// `{file}` (shell-quoted), `{line}`, and `{col}` are substituted
     /// in before exec. Empty string disables the feature.
@@ -109,20 +118,42 @@ struct AppState {
     /// Default off so the buffer stays focused on the events users
     /// usually care about (config writes, macros, errors).
     debug_logging: Arc<AtomicBool>,
-    /// Unix-ms timestamp of the last `GET /jump` poll. The nvim plugin
-    /// polls this endpoint continuously while attached and applies jumps
-    /// in place, so a recent value means an editor is already handling
-    /// navigation and `/reveal-source` should NOT also spawn an editor
-    /// (which would reopen the file in a second buffer). 0 = never polled.
+    /// Unix-ms timestamp of the last `GET /jump` request. The nvim plugin
+    /// keeps one long-poll parked here while attached and applies jumps in
+    /// place, so a recent value (or a nonzero `active_jump_pollers`) means an
+    /// editor is already handling navigation and `/reveal-source` should NOT
+    /// also spawn an editor (which would reopen the file in a second buffer).
+    /// 0 = never polled.
     last_jump_poll_ms: Arc<AtomicU64>,
 }
 
 const LOG_BUFFER_CAP: usize = 400;
 
-/// How recently a `/jump` poll must have happened for us to treat an nvim
-/// plugin as "actively attached" and skip the redundant reveal-source
-/// spawn. Comfortably larger than the plugin's 120 ms poll interval.
+/// Grace window after a `/jump` long-poll returns: if the editor re-issued
+/// its poll within this window we still treat it as attached, covering the
+/// brief gap between one long-poll returning and the next being parked.
+/// (The primary signal is `active_jump_pollers`; this is the backstop.)
 const JUMP_POLLER_ACTIVE_MS: u64 = 2000;
+
+/// How long `GET /jump?wait=…` may park before returning empty when no jump
+/// arrives. Caps the request lifetime; the plugin re-issues immediately.
+const JUMP_LONGPOLL_MAX_MS: u64 = 30_000;
+
+/// RAII counter: increments `active_jump_pollers` on construction and
+/// decrements on drop — including when the client disconnects mid-park and
+/// axum cancels the handler future, so the count never leaks.
+struct PollerGuard(Arc<AtomicU64>);
+impl PollerGuard {
+    fn new(counter: &Arc<AtomicU64>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        PollerGuard(counter.clone())
+    }
+}
+impl Drop for PollerGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -525,6 +556,8 @@ pub async fn run(
         render_seq: Arc::new(AtomicU64::new(0)),
         jump_seq: Arc::new(AtomicU64::new(0)),
         pending_jump: Arc::new(RwLock::new(None)),
+        jump_notify: Arc::new(Notify::new()),
+        active_jump_pollers: Arc::new(AtomicU64::new(0)),
         editor_cmd: Arc::new(editor_cmd),
         session_macros: Arc::new(RwLock::new(Vec::new())),
         config_paths: Arc::new(config_paths),
@@ -886,6 +919,8 @@ async fn serve_jump(
         col: req.col.unwrap_or(1).max(1),
     };
     *state.pending_jump.write().await = Some(jump.clone());
+    // Wake any parked long-poll so the editor jumps without waiting.
+    state.jump_notify.notify_waiters();
     log_event(
         &state,
         "info",
@@ -906,17 +941,47 @@ async fn serve_jump_poll(
     State(state): State<AppState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    // Mark that an editor is actively polling for jumps; reveal-source
-    // uses this to avoid double-handling the same click.
+    // Mark that an editor is actively polling for jumps; reveal-source uses
+    // both this timestamp and `active_jump_pollers` to avoid double-handling.
     state.last_jump_poll_ms.store(now_ms(), Ordering::Release);
+    let _guard = PollerGuard::new(&state.active_jump_pollers);
     let after = query
         .get("after")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    let jump = state.pending_jump.read().await.clone();
-    match jump.filter(|jump| jump.seq > after) {
-        Some(jump) => Json(jump).into_response(),
-        None => axum::http::StatusCode::NO_CONTENT.into_response(),
+    // `wait` (ms) turns this into a long-poll: park until a newer jump
+    // arrives or the deadline passes, instead of returning empty right away.
+    // Old clients omit `wait` (=> 0) and keep the immediate check, so the
+    // endpoint stays backward compatible. Clamp to a sane ceiling.
+    let wait_ms = query
+        .get("wait")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+        .min(JUMP_LONGPOLL_MAX_MS);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    loop {
+        // Arm the notification *before* checking, so a jump set between the
+        // check and the await isn't lost (Notify holds one permit).
+        let notified = state.jump_notify.notified();
+        if let Some(jump) = state
+            .pending_jump
+            .read()
+            .await
+            .clone()
+            .filter(|jump| jump.seq > after)
+        {
+            return Json(jump).into_response();
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return axum::http::StatusCode::NO_CONTENT.into_response();
+        }
+        tokio::select! {
+            _ = notified => {}
+            _ = tokio::time::sleep(remaining) => {
+                return axum::http::StatusCode::NO_CONTENT.into_response();
+            }
+        }
     }
 }
 
@@ -943,8 +1008,9 @@ async fn serve_reveal_source(
     // editor to the click target IN PLACE. Spawning the `--editor` command
     // too would reopen the file in a second buffer, so skip it. The browser
     // fires `/jump` and `/reveal-source` together; the poller path wins.
+    let parked = state.active_jump_pollers.load(Ordering::Acquire) > 0;
     let since_poll = now_ms().saturating_sub(state.last_jump_poll_ms.load(Ordering::Acquire));
-    if since_poll < JUMP_POLLER_ACTIVE_MS {
+    if parked || since_poll < JUMP_POLLER_ACTIVE_MS {
         log_event_verbose(
             &state,
             "info",
@@ -2935,7 +3001,7 @@ mod tests {
         atomic::{AtomicBool, AtomicU64},
         mpsc as std_mpsc, Arc,
     };
-    use tokio::sync::{broadcast, RwLock};
+    use tokio::sync::{broadcast, Notify, RwLock};
 
     #[test]
     fn websocket_protocol_accepts_current_shell_version() {
@@ -3282,6 +3348,8 @@ Third paragraph with $x^2$.
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
+            jump_notify: Arc::new(Notify::new()),
+            active_jump_pollers: Arc::new(AtomicU64::new(0)),
             editor_cmd: Arc::new(String::new()),
             session_macros: Arc::new(RwLock::new(Vec::new())),
             config_paths: Arc::new(Vec::new()),
@@ -3676,6 +3744,8 @@ Third paragraph with $x^2$.
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
+            jump_notify: Arc::new(Notify::new()),
+            active_jump_pollers: Arc::new(AtomicU64::new(0)),
             editor_cmd: Arc::new(String::new()),
             session_macros: Arc::new(RwLock::new(Vec::new())),
             config_paths: Arc::new(Vec::new()),
@@ -3770,6 +3840,8 @@ Third paragraph with $x^2$.
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
             pending_jump: Arc::new(RwLock::new(None)),
+            jump_notify: Arc::new(Notify::new()),
+            active_jump_pollers: Arc::new(AtomicU64::new(0)),
             editor_cmd: Arc::new(String::new()),
             session_macros: Arc::new(RwLock::new(Vec::new())),
             config_paths: Arc::new(Vec::new()),
