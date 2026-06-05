@@ -862,27 +862,34 @@ require("mathpreview").setup({
   -- raise_on_jump (default true): bring nvim's window to the front on a
   -- source-jump — the focus a PDF viewer gives you via SyncTeX. Best-effort
   -- and platform-aware: macOS `osascript … activate` on the detected
-  -- terminal/GUI app; X11 `xdotool windowactivate $WINDOWID`; Wayland is
-  -- compositor-specific (use on_jump). Set false to stop focus-stealing.
+  -- terminal/GUI app; Wayland via Hyprland/Sway/KDE; X11 via xdotool.
+  -- Set false to stop focus-stealing.
   raise_on_jump = true,
 
+  -- Linux window class / app_id raise_on_jump should focus. Default "nvim"
+  -- matches nvim-qt / Neovide; for TERMINAL nvim set your terminal's class
+  -- (e.g. "kitty", "foot", "Alacritty"). Ignored on macOS.
+  jump_window = "nvim",
+
   -- on_jump: extra hook run AFTER a Cmd/Ctrl-click has moved nvim's cursor
-  -- (and after the built-in raise). Use it when raise_on_jump can't detect
-  -- your setup — e.g. Wayland/KDE, where it does nothing. jump = {file,line,col}.
-  -- Example (KDE/Plasma + Wayland, via kdotool):
-  on_jump = function()
-    vim.system({ "sh", "-c",
-      "kdotool search --class nvim | head -1 | xargs -r kdotool windowactivate" })
-  end,
+  -- (and after the built-in raise). Use it when raise_on_jump can't reach
+  -- your setup (e.g. GNOME/Mutter). jump = { file, line, col }.
+  -- on_jump = function(jump) ... end,
 })
 ```
 
-> Source-jump focus (Cmd/Ctrl-click in the preview → jump to that spot in
-> nvim) raises the editor automatically via `raise_on_jump`. On macOS it
-> detects your terminal (`Terminal`, `iTerm`, `WezTerm`, `Ghostty`, kitty,
-> Alacritty) or GUI (`Neovide`, `nvim-qt`) — inside tmux it falls back to
-> `$LC_TERMINAL`. If your setup isn't detected (notably Wayland), wire it up
-> through `on_jump`.
+> **Source-jump focus** (Cmd/Ctrl-click in the preview → jump to that spot in
+> nvim) raises the editor automatically via `raise_on_jump`:
+> - **macOS** — detects your terminal (`Terminal`, `iTerm`, `WezTerm`,
+>   `Ghostty`, kitty, Alacritty) or GUI (`Neovide`, `nvim-qt`); inside tmux it
+>   falls back to `$LC_TERMINAL`.
+> - **Wayland** — Hyprland (`hyprctl`), Sway (`swaymsg`), KDE (`kdotool`),
+>   focusing the `jump_window` class/app_id. Install the matching tool.
+> - **X11** — `xdotool windowactivate $WINDOWID`, else by `jump_window` class.
+>
+> For **terminal** nvim, set `jump_window` to your terminal's class (not
+> `nvim`). **GNOME/Mutter** has no general activation API — use `on_jump` with
+> a shell-extension bridge. The cursor jump itself always works regardless.
 
 **Troubleshooting.** If `:MathPreviewStatus` shows `daemon_running =
 false` after `:MathPreview`, check `:messages` for the spawn error

@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.51"
+local PLUGIN_VERSION = "0.1.52"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -83,12 +83,20 @@ local config = {
   on_jump = nil,
   -- Bring nvim's host window to the front on a source-jump — the focus a
   -- PDF viewer gives you via SyncTeX. On by default. Best-effort and
-  -- platform-aware: macOS uses `osascript … activate` on the detected
-  -- terminal/GUI app; X11 uses `xdotool windowactivate $WINDOWID`; Wayland
-  -- is compositor-specific (use `on_jump`, e.g. kdotool on KDE). Set false
-  -- to stop the plugin from stealing focus on every click. Runs before
-  -- `on_jump`, so the hook can override or extend it.
+  -- platform-aware: macOS `osascript … activate` on the detected terminal/GUI
+  -- app; Wayland per-compositor (Hyprland `hyprctl`, Sway `swaymsg`, KDE
+  -- `kdotool`); X11 `xdotool windowactivate $WINDOWID` (else by class). On
+  -- Wayland and X11-by-class it focuses the `jump_window` class/app_id below.
+  -- Set false to stop the plugin from stealing focus on every click. Runs
+  -- before `on_jump`, so the hook can override or extend it.
   raise_on_jump = true,
+  -- Linux window class / app_id that `raise_on_jump` should focus. Default
+  -- "nvim" matches nvim-qt / Neovide. For TERMINAL nvim, set it to your
+  -- terminal's class — e.g. "kitty", "foot", "Alacritty",
+  -- "org.wezfurlong.wezterm". Ignored on macOS. Find it with `kdotool
+  -- getactivewindow getwindowclassname` (KDE), `hyprctl activewindow`
+  -- (Hyprland), or `swaymsg -t get_tree` (Sway) with the terminal focused.
+  jump_window = "nvim",
   -- Per-session URLs, written when start_daemon() picks a port.
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
@@ -488,12 +496,35 @@ local function raise_editor()
     end
     return
   end
-  -- Linux/BSD (best-effort). On X11 the host terminal usually exports
-  -- $WINDOWID; raising that is the most portable route. Wayland is
-  -- compositor-specific (KDE: kdotool) — use the `on_jump` hook there.
+  -- Linux/BSD (best-effort). `jump_window` is the window class / app_id to
+  -- focus — default "nvim" matches nvim-qt/Neovide; for terminal nvim set it
+  -- to YOUR terminal's class (e.g. "kitty", "foot", "Alacritty").
+  local win = config.jump_window or "nvim"
+  if vim.env.WAYLAND_DISPLAY and vim.env.WAYLAND_DISPLAY ~= "" then
+    -- Wayland blocks the generic self-raise, so it's per-compositor. Detect
+    -- via each compositor's env marker, then its CLI.
+    if vim.env.HYPRLAND_INSTANCE_SIGNATURE and vim.fn.executable("hyprctl") == 1 then
+      run_system({ "hyprctl", "dispatch", "focuswindow", "class:" .. win }, {})
+    elseif vim.env.SWAYSOCK and vim.fn.executable("swaymsg") == 1 then
+      run_system({ "swaymsg", "[app_id=" .. win .. "] focus" }, {})
+    elseif vim.fn.executable("kdotool") == 1 then
+      -- KDE/KWin: no reliable env marker, so kdotool's presence is the signal.
+      run_system({ "sh", "-c",
+        ("kdotool search --class %s | head -1 | xargs -r kdotool windowactivate")
+          :format(vim.fn.shellescape(win)) }, {})
+    end
+    return
+  end
+  -- X11: the host terminal usually exports $WINDOWID; raising that is the most
+  -- reliable route. Otherwise fall back to activating the first window whose
+  -- class matches `jump_window`.
   local winid = vim.env.WINDOWID
   if winid and winid ~= "" and vim.fn.executable("xdotool") == 1 then
     run_system({ "xdotool", "windowactivate", winid }, {})
+  elseif vim.fn.executable("xdotool") == 1 then
+    run_system({ "sh", "-c",
+      ("xdotool search --class %s | head -1 | xargs -r xdotool windowactivate")
+        :format(vim.fn.shellescape(win)) }, {})
   end
 end
 

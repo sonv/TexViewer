@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.52] — 2026-06-05
+
+### Added
+
+- **`raise_on_jump` now handles Wayland (and X11 by class).** The built-in
+  source-jump focus learned the compositor-specific paths Wayland requires:
+  Hyprland (`hyprctl dispatch focuswindow`), Sway (`swaymsg [app_id=…] focus`),
+  and KDE/KWin (`kdotool`), selected via each compositor's env marker. X11
+  gained a fallback that activates the first window matching the class when
+  `$WINDOWID` isn't set. New `jump_window` option (default `"nvim"`) sets the
+  class / app_id to focus — point it at your terminal's class for terminal
+  nvim (e.g. `"kitty"`, `"foot"`, `"Alacritty"`). GNOME/Mutter still has no
+  general activation API; use the `on_jump` hook there. (macOS unchanged.)
+
 ## [0.1.51] — 2026-06-05
 
 ### Added
