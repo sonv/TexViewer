@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.52"
+local PLUGIN_VERSION = "0.1.53"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -83,18 +83,21 @@ local config = {
   on_jump = nil,
   -- Bring nvim's host window to the front on a source-jump — the focus a
   -- PDF viewer gives you via SyncTeX. On by default. Best-effort and
-  -- platform-aware: macOS `osascript … activate` on the detected terminal/GUI
-  -- app; Wayland per-compositor (Hyprland `hyprctl`, Sway `swaymsg`, KDE
-  -- `kdotool`); X11 `xdotool windowactivate $WINDOWID` (else by class). On
-  -- Wayland and X11-by-class it focuses the `jump_window` class/app_id below.
-  -- Set false to stop the plugin from stealing focus on every click. Runs
-  -- before `on_jump`, so the hook can override or extend it.
+  -- platform-aware. On Linux/BSD it targets THIS nvim's own window by walking
+  -- up the process tree from nvim's PID and raising the ancestor that owns a
+  -- window (Hyprland `hyprctl`, Sway `swaymsg`, KDE `kdotool`, X11 `xdotool`),
+  -- so two terminals each running nvim+mathpreview raise the right one. X11
+  -- prefers `$WINDOWID` when set. macOS uses `osascript … activate` on the
+  -- detected terminal/GUI app. If the PID walk finds nothing it falls back to
+  -- focusing the `jump_window` class/app_id below. Set false to stop the plugin
+  -- from stealing focus on every click. Runs before `on_jump`, so the hook can
+  -- override or extend it.
   raise_on_jump = true,
-  -- Linux window class / app_id that `raise_on_jump` should focus. Default
-  -- "nvim" matches nvim-qt / Neovide. For TERMINAL nvim, set it to your
-  -- terminal's class — e.g. "kitty", "foot", "Alacritty",
-  -- "org.wezfurlong.wezterm". Ignored on macOS. Find it with `kdotool
-  -- getactivewindow getwindowclassname` (KDE), `hyprctl activewindow`
+  -- Linux class / app_id used only as the FALLBACK when the PID walk above
+  -- can't find nvim's window. Default "nvim" matches nvim-qt / Neovide. For
+  -- TERMINAL nvim, set it to your terminal's class — e.g. "kitty", "foot",
+  -- "Alacritty", "org.wezfurlong.wezterm". Ignored on macOS. Find it with
+  -- `kdotool getactivewindow getwindowclassname` (KDE), `hyprctl activewindow`
   -- (Hyprland), or `swaymsg -t get_tree` (Sway) with the terminal focused.
   jump_window = "nvim",
   -- Per-session URLs, written when start_daemon() picks a port.
@@ -496,35 +499,59 @@ local function raise_editor()
     end
     return
   end
-  -- Linux/BSD (best-effort). `jump_window` is the window class / app_id to
-  -- focus — default "nvim" matches nvim-qt/Neovide; for terminal nvim set it
-  -- to YOUR terminal's class (e.g. "kitty", "foot", "Alacritty").
+  -- Linux/BSD (best-effort). We target THIS nvim's own window so two terminals
+  -- each running nvim+mathpreview raise the right one: start from nvim's PID and
+  -- walk up the process tree (nvim -> shell -> terminal), raising the first
+  -- ancestor that actually owns a window. If nothing matches (unusual host,
+  -- missing tool) we fall back to the `jump_window` class/app_id — "anything is
+  -- fair game". `jump_window` defaults to "nvim" (nvim-qt/Neovide); for terminal
+  -- nvim set it to YOUR terminal's class (e.g. "kitty", "foot", "Alacritty").
   local win = config.jump_window or "nvim"
+  local pid = vim.fn.getpid()
+  -- Run `try` (a sh snippet using $P = current ancestor pid) at each level up
+  -- the tree, stopping at the first that exits 0; otherwise run `fallback`.
+  -- `win` is passed as $1 (positional, never interpolated) so it can't break
+  -- the script's quoting.
+  local function walk(try, fallback)
+    local script = ([[
+P=%d
+i=0
+while [ "$P" -gt 1 ] && [ "$i" -lt 12 ]; do
+  if %s; then exit 0; fi
+  P=$(ps -o ppid= -p "$P" 2>/dev/null | tr -d ' ')
+  [ -n "$P" ] || break
+  i=$((i+1))
+done
+%s]]):format(pid, try, fallback)
+    run_system({ "sh", "-c", script, "sh", win }, {})
+  end
   if vim.env.WAYLAND_DISPLAY and vim.env.WAYLAND_DISPLAY ~= "" then
     -- Wayland blocks the generic self-raise, so it's per-compositor. Detect
-    -- via each compositor's env marker, then its CLI.
+    -- via each compositor's env marker, then its CLI. Each selector matches by
+    -- the ancestor PID ($P); the fallback matches by class/app_id ($1).
     if vim.env.HYPRLAND_INSTANCE_SIGNATURE and vim.fn.executable("hyprctl") == 1 then
-      run_system({ "hyprctl", "dispatch", "focuswindow", "class:" .. win }, {})
+      walk([=[[ "$(hyprctl dispatch focuswindow pid:$P)" = ok ]]=],
+        [=[hyprctl dispatch focuswindow class:"$1"]=])
     elseif vim.env.SWAYSOCK and vim.fn.executable("swaymsg") == 1 then
-      run_system({ "swaymsg", "[app_id=" .. win .. "] focus" }, {})
+      walk([=[swaymsg "[pid=$P] focus" | grep -q '"success": *true']=],
+        [=[swaymsg "[app_id=$1] focus"]=])
     elseif vim.fn.executable("kdotool") == 1 then
       -- KDE/KWin: no reliable env marker, so kdotool's presence is the signal.
-      run_system({ "sh", "-c",
-        ("kdotool search --class %s | head -1 | xargs -r kdotool windowactivate")
-          :format(vim.fn.shellescape(win)) }, {})
+      walk([=[W=$(kdotool search --pid "$P" 2>/dev/null | head -1); [ -n "$W" ] && kdotool windowactivate "$W"]=],
+        [=[kdotool search --class "$1" | head -1 | xargs -r kdotool windowactivate]=])
     end
     return
   end
-  -- X11: the host terminal usually exports $WINDOWID; raising that is the most
-  -- reliable route. Otherwise fall back to activating the first window whose
-  -- class matches `jump_window`.
+  -- X11: the host terminal exports $WINDOWID for its own window — the most
+  -- precise signal, so try it first. Then the PID walk, then class.
   local winid = vim.env.WINDOWID
   if winid and winid ~= "" and vim.fn.executable("xdotool") == 1 then
     run_system({ "xdotool", "windowactivate", winid }, {})
-  elseif vim.fn.executable("xdotool") == 1 then
-    run_system({ "sh", "-c",
-      ("xdotool search --class %s | head -1 | xargs -r xdotool windowactivate")
-        :format(vim.fn.shellescape(win)) }, {})
+    return
+  end
+  if vim.fn.executable("xdotool") == 1 then
+    walk([=[W=$(xdotool search --pid "$P" 2>/dev/null | head -1); [ -n "$W" ] && xdotool windowactivate "$W"]=],
+      [=[xdotool search --class "$1" | head -1 | xargs -r xdotool windowactivate]=])
   end
 end
 

@@ -861,14 +861,17 @@ require("mathpreview").setup({
 
   -- raise_on_jump (default true): bring nvim's window to the front on a
   -- source-jump — the focus a PDF viewer gives you via SyncTeX. Best-effort
-  -- and platform-aware: macOS `osascript … activate` on the detected
-  -- terminal/GUI app; Wayland via Hyprland/Sway/KDE; X11 via xdotool.
+  -- and platform-aware. On Linux/BSD it raises THIS nvim's own window by
+  -- walking up the process tree from nvim's PID (nvim → shell → terminal) and
+  -- focusing the ancestor that owns a window, so two terminals each running
+  -- nvim+mathpreview raise the right one. macOS uses `osascript … activate`.
   -- Set false to stop focus-stealing.
   raise_on_jump = true,
 
-  -- Linux window class / app_id raise_on_jump should focus. Default "nvim"
-  -- matches nvim-qt / Neovide; for TERMINAL nvim set your terminal's class
-  -- (e.g. "kitty", "foot", "Alacritty"). Ignored on macOS.
+  -- Linux class / app_id used only as the FALLBACK when the PID walk above
+  -- can't find nvim's window. Default "nvim" matches nvim-qt / Neovide; for
+  -- TERMINAL nvim set your terminal's class (e.g. "kitty", "foot",
+  -- "Alacritty"). Ignored on macOS.
   jump_window = "nvim",
 
   -- on_jump: extra hook run AFTER a Cmd/Ctrl-click has moved nvim's cursor
@@ -883,13 +886,15 @@ require("mathpreview").setup({
 > - **macOS** — detects your terminal (`Terminal`, `iTerm`, `WezTerm`,
 >   `Ghostty`, kitty, Alacritty) or GUI (`Neovide`, `nvim-qt`); inside tmux it
 >   falls back to `$LC_TERMINAL`.
-> - **Wayland** — Hyprland (`hyprctl`), Sway (`swaymsg`), KDE (`kdotool`),
->   focusing the `jump_window` class/app_id. Install the matching tool.
-> - **X11** — `xdotool windowactivate $WINDOWID`, else by `jump_window` class.
+> - **Linux/BSD** — raises *this* nvim's own window by PID: it walks up the
+>   process tree from nvim and focuses the ancestor that owns a window, via
+>   Hyprland (`hyprctl`), Sway (`swaymsg`), KDE (`kdotool`), or X11 (`xdotool`).
+>   Install the matching tool. So two terminals each running nvim+mathpreview
+>   raise the right one.
 >
-> For **terminal** nvim, set `jump_window` to your terminal's class (not
-> `nvim`). **GNOME/Mutter** has no general activation API — use `on_jump` with
-> a shell-extension bridge. The cursor jump itself always works regardless.
+> `jump_window` is only the fallback when the PID walk finds no window. **GNOME/
+> Mutter** has no general activation API — use `on_jump` with a shell-extension
+> bridge. The cursor jump itself always works regardless.
 
 ### Source-jump focus (raise the editor)
 
@@ -899,33 +904,45 @@ cross-platform; **bringing nvim's window to the front** is not — so the
 built-in `raise_on_jump` (default `true`) does it the way each platform
 allows. This is the SyncTeX focus PDF viewers give you.
 
-| Environment | How it raises | Needs installed |
+On Linux/BSD the plugin raises **this nvim's own window**, not just any window
+of a given class: it starts from nvim's PID and walks up the process tree
+(`nvim → shell → terminal`), raising the first ancestor that actually owns a
+window. So if you have two terminals each running nvim+mathpreview, a click
+raises the correct one. `jump_window` (below) is only the fallback used when
+the PID walk can't find a window.
+
+| Environment | How it raises (by PID) | Needs installed |
 | --- | --- | --- |
 | **macOS** | `osascript … activate` on the detected terminal (`Terminal`, `iTerm`, `WezTerm`, `Ghostty`, kitty, Alacritty) or GUI (`Neovide`, `nvim-qt`) | built in (tmux: `$LC_TERMINAL` fallback) |
-| **Hyprland** | `hyprctl dispatch focuswindow class:<jump_window>` | `hyprctl` (ships with Hyprland) |
-| **Sway / wlroots** | `swaymsg [app_id=<jump_window>] focus` | `swaymsg` (ships with Sway) |
-| **KDE/KWin (Wayland)** | `kdotool search --class <jump_window> … windowactivate` | `kdotool` |
-| **X11** | `xdotool windowactivate $WINDOWID`, else by `<jump_window>` class | `xdotool` |
+| **Hyprland** | `hyprctl dispatch focuswindow pid:<ancestor>` | `hyprctl` (ships with Hyprland) |
+| **Sway / wlroots** | `swaymsg [pid=<ancestor>] focus` | `swaymsg` (ships with Sway) |
+| **KDE/KWin (Wayland)** | `kdotool search --pid <ancestor> … windowactivate` | `kdotool` |
+| **X11** | `xdotool windowactivate $WINDOWID`, else `xdotool search --pid <ancestor>` | `xdotool` |
 | **GNOME/Mutter** | no general activation API — use `on_jump` | — |
+
+Each falls back to matching `jump_window` by class/app_id if the PID walk
+turns up nothing.
 
 **Using it:**
 
 1. It's on by default. After `:MathPreviewRestart`, a preview click should
    focus nvim — provided the matching CLI above is installed.
-2. Set `jump_window` to the window's class/app_id (Linux only). GUI nvim
-   (Neovide / nvim-qt) → leave the `"nvim"` default; **terminal** nvim → use
-   your *terminal's* class, e.g. `jump_window = "kitty"` (or `"foot"`,
-   `"Alacritty"`, `"org.wezfurlong.wezterm"`).
-3. Don't know your class? Focus the terminal and run: `kdotool getactivewindow
-   getwindowclassname` (KDE), `hyprctl activewindow` (Hyprland, see the
-   `class:` line), or `swaymsg -t get_tree` (Sway, find the focused node's
-   `app_id`).
+2. No per-window config is needed — PID targeting finds your window
+   automatically. `jump_window` only matters as the fallback; set it to your
+   terminal's class for terminal nvim (e.g. `jump_window = "kitty"`, `"foot"`,
+   `"Alacritty"`, `"org.wezfurlong.wezterm"`), or leave the `"nvim"` default
+   for GUI nvim (Neovide / nvim-qt).
+3. To find your class for that fallback: focus the terminal and run `kdotool
+   getactivewindow getwindowclassname` (KDE), `hyprctl activewindow` (Hyprland,
+   see the `class:` line), or `swaymsg -t get_tree` (Sway, find the focused
+   node's `app_id`).
 4. Set `raise_on_jump = false` to stop the focus change on every click.
 
 On macOS the first activation may trigger a one-time **Automation** permission
-prompt ("… wants to control …"); approve it once. On compositors not covered
-above (or GNOME), drop in an `on_jump = function(jump) … end` hook — it runs
-right after the cursor moves.
+prompt ("… wants to control …"); approve it once. macOS raises the terminal
+*app* (not a specific window/tab — PID targeting there is per-app and harder).
+On compositors not covered above (or GNOME), drop in an `on_jump =
+function(jump) … end` hook — it runs right after the cursor moves.
 
 **Troubleshooting.** If `:MathPreviewStatus` shows `daemon_running =
 false` after `:MathPreview`, check `:messages` for the spawn error

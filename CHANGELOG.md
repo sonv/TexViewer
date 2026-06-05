@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.53] — 2026-06-05
+
+### Changed
+
+- `raise_on_jump` now targets **this** nvim's own window instead of the first
+  window matching a class. On Linux/BSD the plugin walks up the process tree
+  from nvim's PID (`nvim → shell → terminal`) and raises the ancestor that
+  actually owns a window, via each backend's PID selector — Hyprland
+  `focuswindow pid:`, Sway `[pid=…] focus`, KDE `kdotool search --pid`, X11
+  `xdotool search --pid`. So when two terminals are each running
+  nvim+mathpreview, a source-jump raises the correct one. `jump_window`
+  (class/app_id) is now used only as the fallback when the PID walk finds no
+  window; X11 still prefers `$WINDOWID` when the host terminal exports it.
+  Thanks to Gautam Iyer (gi1242) for the approach (`nvim-tex-inv-search`).
+
 ## [0.1.52] — 2026-06-05
 
 ### Added
