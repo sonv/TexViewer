@@ -891,6 +891,42 @@ require("mathpreview").setup({
 > `nvim`). **GNOME/Mutter** has no general activation API — use `on_jump` with
 > a shell-extension bridge. The cursor jump itself always works regardless.
 
+### Source-jump focus (raise the editor)
+
+Cmd/Ctrl-click (or double-click) a rendered token in the preview and the
+plugin moves nvim's cursor to that `(file, line, col)`. Moving the cursor is
+cross-platform; **bringing nvim's window to the front** is not — so the
+built-in `raise_on_jump` (default `true`) does it the way each platform
+allows. This is the SyncTeX focus PDF viewers give you.
+
+| Environment | How it raises | Needs installed |
+| --- | --- | --- |
+| **macOS** | `osascript … activate` on the detected terminal (`Terminal`, `iTerm`, `WezTerm`, `Ghostty`, kitty, Alacritty) or GUI (`Neovide`, `nvim-qt`) | built in (tmux: `$LC_TERMINAL` fallback) |
+| **Hyprland** | `hyprctl dispatch focuswindow class:<jump_window>` | `hyprctl` (ships with Hyprland) |
+| **Sway / wlroots** | `swaymsg [app_id=<jump_window>] focus` | `swaymsg` (ships with Sway) |
+| **KDE/KWin (Wayland)** | `kdotool search --class <jump_window> … windowactivate` | `kdotool` |
+| **X11** | `xdotool windowactivate $WINDOWID`, else by `<jump_window>` class | `xdotool` |
+| **GNOME/Mutter** | no general activation API — use `on_jump` | — |
+
+**Using it:**
+
+1. It's on by default. After `:MathPreviewRestart`, a preview click should
+   focus nvim — provided the matching CLI above is installed.
+2. Set `jump_window` to the window's class/app_id (Linux only). GUI nvim
+   (Neovide / nvim-qt) → leave the `"nvim"` default; **terminal** nvim → use
+   your *terminal's* class, e.g. `jump_window = "kitty"` (or `"foot"`,
+   `"Alacritty"`, `"org.wezfurlong.wezterm"`).
+3. Don't know your class? Focus the terminal and run: `kdotool getactivewindow
+   getwindowclassname` (KDE), `hyprctl activewindow` (Hyprland, see the
+   `class:` line), or `swaymsg -t get_tree` (Sway, find the focused node's
+   `app_id`).
+4. Set `raise_on_jump = false` to stop the focus change on every click.
+
+On macOS the first activation may trigger a one-time **Automation** permission
+prompt ("… wants to control …"); approve it once. On compositors not covered
+above (or GNOME), drop in an `on_jump = function(jump) … end` hook — it runs
+right after the cursor moves.
+
 **Troubleshooting.** If `:MathPreviewStatus` shows `daemon_running =
 false` after `:MathPreview`, check `:messages` for the spawn error
 (usually "binary not found" — set `cmd` in `setup()` to an absolute
