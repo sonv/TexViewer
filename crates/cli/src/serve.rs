@@ -1822,9 +1822,10 @@ fn append_macro_line(target: &Path, line: &str) -> std::io::Result<()> {
 /// file-change handler but driven by an HTTP action (the dialog's Save
 /// button) instead of a filesystem event.
 async fn trigger_rerender(state: &AppState, root_file: &Path) -> anyhow::Result<()> {
+    let seq = begin_render_attempt(state);
     let (out, _timing) = render_cached(state, root_file).await?;
     update_watched(state, &out).await;
-    let _ = broadcast_render(state, out).await;
+    let _ = broadcast_render(state, out, seq).await;
     Ok(())
 }
 
@@ -2163,7 +2164,7 @@ async fn serve_buffer_push(
                 return axum::http::StatusCode::NO_CONTENT;
             }
             update_watched(&state, &out).await;
-            let (op_count, kind) = broadcast_render(&state, out).await;
+            let (op_count, kind) = broadcast_render(&state, out, seq).await;
             let mem = {
                 let blocks = state.last_blocks.read().await;
                 fmt_mem_log(&state, &blocks)
@@ -2375,7 +2376,17 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
                 Ok(payload) => {
                     if sender.send(Message::Text(payload)).await.is_err() { break; }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // The client fell behind and missed delta patches. Applying
+                    // later patches against its now-stale DOM would corrupt it,
+                    // so force a full reload to resync from scratch instead of
+                    // silently continuing.
+                    let payload = serde_json::json!({ "event": "full-reload" }).to_string();
+                    if sender.send(Message::Text(payload)).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             msg = receiver.next() => match msg {
@@ -2392,25 +2403,32 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
 /// `body-updated` event (when too much changed to be worth a patch), and
 /// update `last_blocks` and `current`. Returns `(op_count, "ops"|"blocks (full)")`
 /// for logging.
-async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'static str) {
-    let (ops, patch_cost) = {
-        let prev = state.last_blocks.read().await;
-        let ops = diff_blocks(&prev, &out.blocks);
-        let patch_cost = ops.iter().map(PatchOp::cost).sum::<usize>();
-        (ops, patch_cost)
-    };
+async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usize, &'static str) {
+    // The current viewer config rides along with every render so the
+    // client can re-apply `--body-font-size` and `__mpConfig` values
+    // live — `.mathpreview.toml` edits or `POST /config/set` no
+    // longer require a tab reload to take effect. Snapshot it before taking
+    // the broadcast lock to avoid nesting lock acquisitions.
+    let viewer_config = state.viewer_config.read().await.clone();
+
+    // Hold the `last_blocks` write lock across the whole diff → commit →
+    // broadcast critical section. This serializes concurrent renders so one
+    // can't diff against a stale base, commit state out of order, or send a
+    // patch the client applies against a DOM a newer render already moved.
+    // Re-check the render sequence under the lock and drop this render if a
+    // newer attempt has already taken over.
+    let mut last_blocks = state.last_blocks.write().await;
+    if !is_latest_render_attempt(state, seq) {
+        return (0, "stale");
+    }
+    let ops = diff_blocks(&last_blocks, &out.blocks);
+    let patch_cost = ops.iter().map(PatchOp::cost).sum::<usize>();
     let block_count = out.blocks.len();
     let fallback_full = patch_cost * 2 > block_count.max(1);
 
     // Sample memory after the render so the client sees the cost at the
     // point the page actually displays the update.
     let rss = resident_mib();
-
-    // The current viewer config rides along with every render so the
-    // client can re-apply `--body-font-size` and `__mpConfig` values
-    // live — `.mathpreview.toml` edits or `POST /config/set` no
-    // longer require a tab reload to take effect.
-    let viewer_config = state.viewer_config.read().await.clone();
     let viewer_config_json = serde_json::json!({
         "font_size": viewer_config.font_size,
         "default_page_mode": viewer_config.default_page_mode.as_str(),
@@ -2454,7 +2472,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput) -> (usize, &'stat
         (payload, patch_cost, "ops")
     };
 
-    *state.last_blocks.write().await = out.blocks.clone();
+    *last_blocks = out.blocks.clone();
     *state.current.write().await = out;
     let _ = state.tx.send(payload);
     (op_count, kind)
@@ -3024,7 +3042,18 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             {
                 let mut overrides = state.buffer_overrides.write().await;
                 for path in &changed_paths {
-                    overrides.remove(path);
+                    // Only drop the in-memory buffer override if the file on disk
+                    // now matches it — i.e. the editor saved and there is no
+                    // newer unsaved push. Otherwise a save racing a keystroke
+                    // would revert the preview to the on-disk version and lose
+                    // the just-typed edit.
+                    let drop_override = match std::fs::read_to_string(path) {
+                        Ok(disk) => overrides.get(path).is_none_or(|buf| *buf == disk),
+                        Err(_) => true,
+                    };
+                    if drop_override {
+                        overrides.remove(path);
+                    }
                 }
             }
             *state.preamble_cache.write().await = None;
@@ -3043,7 +3072,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
                         continue;
                     }
                     update_watched(&state, &new_output).await;
-                    let (op_count, kind) = broadcast_render(&state, new_output).await;
+                    let (op_count, kind) = broadcast_render(&state, new_output, seq).await;
                     log_event_verbose(
                         &state,
                         "info",
