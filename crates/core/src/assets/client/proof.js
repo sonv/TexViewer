@@ -134,6 +134,9 @@
         // Popup blockers sometimes refuse the open() above. Fall back to
         // a same-tab navigation so the user always sees the PDF.
         if (!win) window.location.href = url;
+        // Release the object URL once the tab has had time to load it, so
+        // repeated prints don't pin one PDF blob in memory per print.
+        setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
         btn.textContent = originalText;
         btn.classList.remove('busy');
         return;

@@ -53,7 +53,7 @@
         // Keep the log panel current as long as it's open. Cheap — one
         // /debug fetch per WS render. No-op when the panel is closed.
         if (typeof refreshLogPanelIfOpen === 'function') refreshLogPanelIfOpen();
-        if (msg.event === 'patch') {
+        if (msg.event === 'patch' && Array.isArray(msg.ops)) {
           await applyPatch(msg.ops, msg.blocks);
           applyMode(currentProofMode);
           setRefkeysVisible(refkeysVisible, false);
@@ -61,7 +61,7 @@
           restoreSourceHighlight();
           restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
-        } else if (msg.event === 'body-updated') {
+        } else if (msg.event === 'body-updated' && typeof msg.html === 'string') {
           var tStart = performance.now();
           setStatus('updating', '↻ updating');
           var page = document.getElementById('page');

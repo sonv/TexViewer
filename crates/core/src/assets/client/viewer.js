@@ -1572,11 +1572,29 @@
     }
   }
 
-  // Quote a value for TOML: a single-quoted literal when it has no apostrophe
-  // or newline, otherwise a basic (double-quoted) string with escapes.
+  // Quote a value for TOML. A single-quoted literal allows any char except an
+  // apostrophe and control characters (tab excepted). Anything else — including
+  // a stray CR, form feed, or other control char — must be a basic
+  // (double-quoted) string with escapes, or the server's TOML parse rejects it.
   function tomlQuote(s) {
-    if (s.indexOf("'") === -1 && s.indexOf('\n') === -1) return "'" + s + "'";
-    return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"';
+    var needsBasic = false;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c === 39 || (c < 32 && c !== 9) || c === 127) { needsBasic = true; break; }
+    }
+    if (!needsBasic) return "'" + s + "'";
+    var out = '"';
+    for (var j = 0; j < s.length; j++) {
+      var ch = s[j], cc = s.charCodeAt(j);
+      if (ch === '\\') out += '\\\\';
+      else if (ch === '"') out += '\\"';
+      else if (cc === 10) out += '\\n';
+      else if (cc === 13) out += '\\r';
+      else if (cc === 9) out += '\\t';
+      else if (cc < 32 || cc === 127) out += '\\u' + cc.toString(16).padStart(4, '0');
+      else out += ch;
+    }
+    return out + '"';
   }
 
   // Insert `line` at the end of the [text-macros] table in `text`, creating
