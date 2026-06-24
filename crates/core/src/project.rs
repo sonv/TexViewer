@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 
 use crate::ast::Pos;
-use crate::root::resolve_include;
+use crate::root::{resolve_include, MAX_PARENT_DEPTH};
 
 /// The preamble of the root file (everything before `\begin{document}`).
 #[derive(Debug, Clone)]
@@ -205,6 +205,23 @@ fn append_with_includes(
         );
 
         let name = cap.get(1).unwrap().as_str();
+        // Containment: an untrusted `.tex` must not be able to splice files
+        // from outside the project into the served HTML. Reject absolute
+        // targets and relative paths that climb more than MAX_PARENT_DEPTH
+        // levels above their referrer; leave the include command as literal
+        // text so the source still round-trips.
+        if !include_within_bounds(name) {
+            warnings.push(format!("skipped out-of-project include {name}"));
+            push_chunk(
+                out,
+                path.clone(),
+                &src[m.start()..m.end()],
+                offset_pos(src, start_pos, m.start()),
+                is_root_body,
+            );
+            last = m.end();
+            continue;
+        }
         let p = resolve_include(base, name);
         let canonical = p.canonicalize().unwrap_or(p.clone());
         if !visited.insert(canonical.clone()) {
@@ -247,6 +264,37 @@ fn append_with_includes(
         offset_pos(src, start_pos, last),
         is_root_body,
     );
+}
+
+/// Bounded-containment check for an `\input`/`\include`/`\subfile` target.
+/// Returns `false` for absolute paths and for relative paths that climb more
+/// than `MAX_PARENT_DEPTH` levels above the referring file (e.g.
+/// `../../../../../../etc/passwd`). This "bounded" policy still permits the
+/// `../shared/...`-style parent includes real multi-file projects rely on while
+/// blocking the arbitrary-file-read vector. Measured on the path string, so it
+/// is independent of where the project lives on disk.
+///
+/// Scope: this covers the body-include splice path only — `% !TEX root` and
+/// `.sty`/`.bib` resolution are separate and not bounded here.
+fn include_within_bounds(name: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(name);
+    if p.is_absolute() {
+        return false;
+    }
+    let mut depth: i32 = 0;
+    let mut max_up: i32 = 0;
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                depth -= 1;
+                max_up = max_up.max(-depth);
+            }
+            Component::Normal(_) => depth += 1,
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    max_up <= MAX_PARENT_DEPTH as i32
 }
 
 fn push_chunk(
@@ -353,5 +401,107 @@ mod tests {
         assert!(!flattened.contains("Disk child."));
         assert_eq!(fs::read_to_string(&child).unwrap(), "Disk child.\n");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn absolute_include_outside_project_is_skipped() {
+        // Security: an untrusted document must not exfiltrate arbitrary local
+        // files by splicing them into the rendered output via an absolute path.
+        let dir = temp_dir("traversal-abs");
+        let secret_dir = temp_dir("traversal-secret");
+        let secret = secret_dir.join("secret.tex");
+        fs::write(&secret, "TOPSECRET-LEAK\n").unwrap();
+        let root = dir.join("main.tex");
+        fs::write(
+            &root,
+            format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\nBefore.\n\\input{{{}}}\nAfter.\n\\end{{document}}\n",
+                secret.display(),
+            ),
+        )
+        .unwrap();
+
+        let project = load_project(&root).unwrap();
+        let flattened = project
+            .files
+            .iter()
+            .map(|f| f.source.as_str())
+            .collect::<String>();
+
+        assert!(
+            !flattened.contains("TOPSECRET-LEAK"),
+            "absolute include leaked file contents: {flattened}"
+        );
+        assert!(project
+            .warnings
+            .iter()
+            .any(|w| w.contains("out-of-project include")));
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(secret_dir);
+    }
+
+    #[test]
+    fn deep_parent_traversal_include_is_skipped() {
+        // `../../../../../../../../etc/passwd`-style traversal escapes far above
+        // the project root and must be refused.
+        let dir = temp_dir("traversal-deep");
+        let root = dir.join("main.tex");
+        let ups = "../".repeat(MAX_PARENT_DEPTH + 4);
+        fs::write(
+            &root,
+            format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\n\\input{{{ups}etc/hostname}}\n\\end{{document}}\n"
+            ),
+        )
+        .unwrap();
+
+        let project = load_project(&root).unwrap();
+        assert!(project
+            .warnings
+            .iter()
+            .any(|w| w.contains("out-of-project include")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parent_dir_include_within_bounds_is_spliced() {
+        // The bounded policy still allows a normal `../shared` sibling include.
+        let parent = temp_dir("bounds-parent");
+        let proj = parent.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(parent.join("shared.tex"), "SHARED-OK\n").unwrap();
+        let root = proj.join("main.tex");
+        fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\n\\input{../shared}\n\\end{document}\n",
+        )
+        .unwrap();
+
+        let project = load_project(&root).unwrap();
+        let flattened = project
+            .files
+            .iter()
+            .map(|f| f.source.as_str())
+            .collect::<String>();
+
+        assert!(
+            flattened.contains("SHARED-OK"),
+            "bounded parent include should splice: {flattened}"
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn include_bounds_metric() {
+        // Within the project, or a few parents up: allowed.
+        assert!(include_within_bounds("child.tex"));
+        assert!(include_within_bounds("sub/dir/child.tex"));
+        assert!(include_within_bounds("./child.tex"));
+        assert!(include_within_bounds("../shared/preamble.tex"));
+        assert!(include_within_bounds("../../common/defs.tex"));
+        assert!(include_within_bounds("a/../b/child.tex"));
+        // Absolute, or climbing more than MAX_PARENT_DEPTH (4) levels: rejected.
+        assert!(!include_within_bounds("/etc/passwd"));
+        assert!(!include_within_bounds("../../../../../etc/passwd"));
     }
 }
