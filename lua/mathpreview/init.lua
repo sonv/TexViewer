@@ -209,11 +209,6 @@ local function json_encode(value)
   return vim.fn.json_encode(value)
 end
 
-local function json_decode(s)
-  if vim.json and vim.json.decode then return vim.json.decode(s) end
-  return vim.fn.json_decode(s)
-end
-
 local function json_decode(value)
   if vim.json and vim.json.decode then return vim.json.decode(value) end
   return vim.fn.json_decode(value)
@@ -303,6 +298,10 @@ end
 -- Guards against overlapping installs (e.g. a second :MathPreview while the
 -- first is still compiling).
 local installing = false
+-- Guards against overlapping starts: `daemon_job` is only set inside the async
+-- `start_with`, so a second `:MathPreview` during the binary/version check
+-- would otherwise pass the `daemon_job` guard and spawn a duplicate daemon.
+local starting = false
 -- Warn at most once per session about the install dir not being on $PATH.
 local path_hinted = false
 
@@ -387,19 +386,22 @@ local function set_urls(port)
 end
 
 local function open_browser(url)
-  local opener
+  local argv
   if vim.fn.has("mac") == 1 then
-    opener = "open"
+    argv = { "open", url }
   elseif vim.fn.has("unix") == 1 then
-    opener = vim.fn.executable("xdg-open") == 1 and "xdg-open" or nil
+    argv = vim.fn.executable("xdg-open") == 1 and { "xdg-open", url } or nil
   elseif vim.fn.has("win32") == 1 then
-    opener = "start"
+    -- `start` is a cmd.exe builtin, not an executable on $PATH, so jobstart
+    -- can't exec it directly — run it via `cmd /c`. The empty "" is start's
+    -- window-title argument (so a quoted URL isn't mistaken for the title).
+    argv = { "cmd", "/c", "start", "", url }
   end
-  if not opener then
+  if not argv then
     vim.notify("mathpreview: no browser opener found; visit " .. url, vim.log.levels.INFO)
     return
   end
-  vim.fn.jobstart({ opener, url }, { detach = true })
+  vim.fn.jobstart(argv, { detach = true })
 end
 
 -- Resolve the .tex root for the current buffer. For now: just the buffer's
@@ -701,6 +703,9 @@ end
 -- path `cmd`. Callers reach this through ensure_binary(), which guarantees
 -- the binary exists and is current first.
 local function start_with(cmd, opts)
+  -- The in-flight start has resolved; clear the guard now that we're committing
+  -- to (or bailing out of) the actual spawn.
+  starting = false
   local root, err = current_root()
   if not root then
     vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
@@ -713,7 +718,8 @@ local function start_with(cmd, opts)
   if opts.prev_port and port_is_free(opts.prev_port) then
     port = opts.prev_port
   else
-    port = find_free_port(DEFAULT_PORT)
+    -- `scan_from` is bumped past a port that lost a bind race on retry.
+    port = find_free_port(opts.scan_from or DEFAULT_PORT)
   end
   if not port then
     vim.notify(
@@ -755,6 +761,9 @@ local function start_with(cmd, opts)
   -- just printing an exit code. We also report which binary was launched —
   -- the resolved path can be a stale in-checkout build shadowing $PATH.
   local stderr_lines = {}
+  local started_at = uv.now()
+  local retries_left = opts.port_retries
+  if retries_left == nil then retries_left = PORT_SCAN_RANGE end
   local job = vim.fn.jobstart(
     spawn_args,
     {
@@ -768,6 +777,19 @@ local function start_with(cmd, opts)
         daemon_root = nil
         detach_autocmds()
         if code ~= 0 then
+          -- A near-immediate non-zero exit is almost always a port-bind race:
+          -- another process grabbed the probed port between our free-port
+          -- check and the daemon's own bind. Retry on the next port a bounded
+          -- number of times before surfacing the error.
+          if retries_left > 0 and (uv.now() - started_at) < 2000 then
+            local retry_opts = vim.tbl_extend("force", opts, {
+              port_retries = retries_left - 1,
+              scan_from = port + 1,
+            })
+            retry_opts.prev_port = nil -- don't reuse the port that just lost the race
+            vim.schedule(function() start_with(cmd, retry_opts) end)
+            return
+          end
           local tail = vim.trim(table.concat(stderr_lines, "\n"))
           vim.schedule(function()
             local msg = ("mathpreview: daemon for %s exited with code %d (binary: %s)")
@@ -824,15 +846,20 @@ local function ensure_binary(on_ready)
         local got = resolve_cmd()
         if ok and got then
           on_ready(got)
-        elseif ok then
-          vim.notify(
-            "mathpreview: install reported success but no binary found at "
-              .. installed_binary_path() .. " — see :messages.",
-            vim.log.levels.ERROR)
+        else
+          -- on_ready won't run; release the in-flight start guard.
+          starting = false
+          if ok then
+            vim.notify(
+              "mathpreview: install reported success but no binary found at "
+                .. installed_binary_path() .. " — see :messages.",
+              vim.log.levels.ERROR)
+          end
+          -- on failure auto_install already notified with the cargo error.
         end
-        -- on failure auto_install already notified with the cargo error.
       end)
     else
+      starting = false
       vim.notify(
         "mathpreview: `mathpreview-cli` not found on $PATH" ..
         (is_source_checkout() and " and `cargo` is unavailable to install it. " or ". ") ..
@@ -876,6 +903,10 @@ function M.start(opts)
     end
     return
   end
+  -- A start is already resolving its binary/port asynchronously; don't kick off
+  -- a second one (it would race find_free_port and spawn a duplicate daemon).
+  if starting then return end
+  starting = true
   ensure_binary(function(cmd) start_with(cmd, opts) end)
 end
 
