@@ -5,7 +5,7 @@
 use crate::bibtex::{BibEntry, BibStyle};
 use crate::numbering::LabelTable;
 
-use super::util::escape_attr;
+use super::util::{escape_attr, safe_url};
 
 pub(super) fn format_bib_entry(e: &BibEntry, style: BibStyle, labels: &LabelTable) -> String {
     let author = match e.fields.get("author") {
@@ -175,10 +175,17 @@ pub(super) fn format_bib_entry(e: &BibEntry, style: BibStyle, labels: &LabelTabl
             d = escape_attr(d),
         ));
     } else if let Some(u) = url {
-        parts.push(format!(
-            r#"<a class="bib-url" href="{u}" target="_blank" rel="noopener">{u}</a>"#,
-            u = escape_attr(u),
-        ));
+        // Only emit a clickable link for safe schemes; a `javascript:` (or
+        // other unsafe-scheme) `url` field from an untrusted `.bib` would
+        // otherwise become a one-click XSS in the preview origin. Unsafe
+        // URLs are shown as inert escaped text instead of dropped.
+        match safe_url(u) {
+            Some(href) => parts.push(format!(
+                r#"<a class="bib-url" href="{href}" target="_blank" rel="noopener">{text}</a>"#,
+                text = escape_attr(u.trim()),
+            )),
+            None => parts.push(escape_attr(u.trim())),
+        }
     }
     let mut s = parts.join(". ");
     if !s.ends_with('.') {
@@ -257,8 +264,13 @@ fn strip_bib_protective_braces(s: &str) -> String {
                         i += 1;
                     }
                 } else {
-                    out.push(bytes[i] as char);
-                    i += 1;
+                    // The escaped char may be multibyte (`\é`, `\—`); push the
+                    // whole char and advance by its UTF-8 width. A blind 1-byte
+                    // step would land mid-codepoint and panic on the next
+                    // `s[i..]` slice.
+                    let ch = s[i..].chars().next().unwrap_or('\0');
+                    out.push(ch);
+                    i += ch.len_utf8();
                 }
                 keep_next_group = true;
             }
@@ -295,4 +307,20 @@ fn strip_bib_protective_braces(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_braces_handles_backslash_before_multibyte() {
+        // Regression: a backslash before a multibyte char (`\é`, `\—`) in a
+        // `.bib` field used to advance one byte into the codepoint and panic on
+        // the next slice.
+        for s in [r"\é foo", r"author \— name", r"\ÿ", r"trailing \"] {
+            let _ = strip_bib_protective_braces(s); // must not panic
+        }
+        assert!(strip_bib_protective_braces(r"\é").contains('é'));
+    }
 }

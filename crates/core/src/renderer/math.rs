@@ -292,7 +292,11 @@ pub(super) fn split_math_rows(src: &str) -> Vec<&str> {
                 continue;
             }
             b'\\' if i + 1 < bytes.len() => {
-                i += 2;
+                // Skip the backslash and the escaped char. The escaped char may
+                // be multibyte (`\λ`, `\Δ`); a blind `i += 2` would split it and
+                // panic on the next `src[i..]` slice.
+                let next_w = src[i + 1..].chars().next().map_or(1, |c| c.len_utf8());
+                i += 1 + next_w;
                 continue;
             }
             b'{' => brace_depth += 1,

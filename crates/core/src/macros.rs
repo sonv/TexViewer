@@ -100,7 +100,9 @@ pub enum MacrosScope {
 
 impl MacrosScope {
     /// Parse the wire string sent by the dialog (`"global"` / `"project"`).
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Named `from_wire` rather than `from_str` so it doesn't shadow the
+    /// `std::str::FromStr` trait method (it returns `Option`, not `Result`).
+    pub fn from_wire(s: &str) -> Option<Self> {
         match s {
             "global" => Some(MacrosScope::Global),
             "project" => Some(MacrosScope::Project),

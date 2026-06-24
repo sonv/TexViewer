@@ -574,6 +574,17 @@ pub async fn run(
 
     spawn_watcher(state.clone(), watch_rx);
 
+    // When bound to loopback (the default), enforce a `Host`-header allow-list
+    // so a malicious web page cannot drive the unauthenticated control
+    // endpoints via DNS-rebinding or cross-origin requests. For an explicit
+    // non-loopback `--host` (LAN preview) we can't know the expected hostname,
+    // so the guard is disabled and we warn loudly instead.
+    let bind_is_loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/assets/*path", get(serve_asset))
@@ -596,11 +607,26 @@ pub async fn run(
         .route("/restart", post(serve_restart))
         .route("/stop", post(serve_stop))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                host_guard(bind_is_loopback, req, next).await
+            },
+        ))
         .with_state(state.clone());
 
     // Log the bind once we know the address — separate from the
     // `eprintln!` below so the panel can show it too.
     log_event(&state, "info", format!("serving on http://{host}:{port}"));
+    if !bind_is_loopback {
+        let warn = format!(
+            "binding non-loopback host {host} exposes unauthenticated control \
+             endpoints (file writes, editor spawn, /stop, /print) to the \
+             network and disables the Host-header guard — only use on a \
+             trusted network",
+        );
+        eprintln!("mathpreview: WARNING: {warn}");
+        log_event(&state, "warn", warn);
+    }
 
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -609,6 +635,52 @@ pub async fn run(
     eprintln!("mathpreview serving on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Reject any request whose `Host` header is not a loopback name. This defeats
+/// DNS-rebinding and cross-origin CSRF against the local control endpoints
+/// (the daemon has no auth token). A missing `Host` is allowed — browsers
+/// always send one, so it isn't a browser attack vector, and disallowing it
+/// would needlessly break exotic local clients. Only enforced when the daemon
+/// is bound to loopback; see `run`.
+async fn host_guard(
+    enforce: bool,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if enforce {
+        if let Some(value) = req.headers().get(header::HOST) {
+            let allowed = value.to_str().is_ok_and(host_is_loopback);
+            if !allowed {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "forbidden: request Host is not loopback",
+                )
+                    .into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
+/// True when the `Host` header names a loopback address (`localhost`,
+/// `127.0.0.0/8`, `::1`), ignoring the optional `:port` suffix.
+fn host_is_loopback(host_header: &str) -> bool {
+    let host = host_header.trim();
+    let hostname = if let Some(rest) = host.strip_prefix('[') {
+        // Bracketed IPv6 literal: `[::1]` or `[::1]:port`.
+        rest.split(']').next().unwrap_or("")
+    } else {
+        // `host` or `host:port` — strip a trailing `:port` if present.
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    };
+    if hostname.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    hostname
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
@@ -1500,7 +1572,8 @@ fn resolve_config_save_target(
         )),
         "project" => Ok(find_project_config_path(root_dir)
             .unwrap_or_else(|| root_dir.join(mathpreview_core::config::PROJECT_CONFIG_FILENAME))),
-        "custom" | _ => resolve_save_target(scope, custom_path, root_dir),
+        // "custom" and any unrecognized scope resolve the caller-supplied path.
+        _ => resolve_save_target(scope, custom_path, root_dir),
     }
 }
 
@@ -2067,7 +2140,7 @@ async fn serve_buffer_push(
                 &state,
                 "info",
                 format!(
-                    "buffer-push #{seq} {body_len}b → {tot}ms ({op_count} {kind}; body-parse {bp}, render {r}; cache {cache})",
+                    "buffer-push #{seq} {body_len}b → {tot}ms ({op_count} {kind}; body-parse {bp}, render {r}; cache {cache}; {mem})",
                     tot = t0.elapsed().as_millis(),
                     bp = timing.body_parse_ms,
                     r = timing.render_ms,
@@ -2986,10 +3059,26 @@ fn watched_event_paths(
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_render_attempt, diff_blocks, is_buffer_renderable, is_latest_render_attempt,
-        serve_buffer_push, watched_event_paths, websocket_needs_reload, AppState, PatchOp,
-        PlanSlot, WS_PROTOCOL_VERSION,
+        begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
+        is_latest_render_attempt, serve_buffer_push, watched_event_paths, websocket_needs_reload,
+        AppState, PatchOp, PlanSlot, WS_PROTOCOL_VERSION,
     };
+
+    #[test]
+    fn host_guard_accepts_loopback_only() {
+        // Loopback names (with or without port) are allowed.
+        assert!(host_is_loopback("127.0.0.1:23636"));
+        assert!(host_is_loopback("127.0.0.1"));
+        assert!(host_is_loopback("localhost:23636"));
+        assert!(host_is_loopback("LocalHost"));
+        assert!(host_is_loopback("127.5.6.7"));
+        assert!(host_is_loopback("[::1]:23636"));
+        assert!(host_is_loopback("[::1]"));
+        // A rebinding/cross-origin Host is rejected.
+        assert!(!host_is_loopback("evil.example.com:23636"));
+        assert!(!host_is_loopback("192.168.1.5:23636"));
+        assert!(!host_is_loopback("169.254.1.1"));
+    }
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},
         sync::SyncIndex,

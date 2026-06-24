@@ -34,12 +34,22 @@ const MATH_ENVS: &[&str] = &[
 
 const TRANSPARENT_ENVS: &[&str] = &["center"];
 
+/// Maximum recognized-environment nesting before we stop recursing and capture
+/// the rest as an opaque block. Each recognized container (`center`, theorems,
+/// lists, proofs, …) descends with a fresh sub-`Parser` — one stack frame per
+/// level — so without a cap, pathologically nested input (`\begin{center}` ×N)
+/// would overflow the stack and abort the whole daemon. 64 is far deeper than
+/// any real document (LaTeX itself caps list nesting far lower) yet leaves
+/// comfortable headroom below the ~128–256-frame overflow point on a 2 MB
+/// stack — the daemon parses on a default tokio worker thread.
+const MAX_NESTING_DEPTH: u32 = 64;
+
 /// Parse every project file's body into a flat node list, preserving include
 /// order.
 pub fn parse_body(project: &Project, thms: &TheoremRegistry) -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     for f in &project.files {
-        let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms);
+        let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0);
         p.parse_block_into(&mut nodes, None);
     }
     Ok(nodes)
@@ -56,10 +66,19 @@ struct Parser<'a> {
     line: u32,
     col: u32,
     thms: &'a TheoremRegistry,
+    /// Recognized-environment nesting depth, propagated to sub-parsers so the
+    /// recursive descent can bail before overflowing the stack.
+    depth: u32,
 }
 
 impl<'a> Parser<'a> {
-    fn new_at(src: &'a str, file: PathBuf, start: Pos, thms: &'a TheoremRegistry) -> Self {
+    fn new_at(
+        src: &'a str,
+        file: PathBuf,
+        start: Pos,
+        thms: &'a TheoremRegistry,
+        depth: u32,
+    ) -> Self {
         Self {
             src,
             bytes: src.as_bytes(),
@@ -71,6 +90,7 @@ impl<'a> Parser<'a> {
             line: start.line,
             col: start.col,
             thms,
+            depth,
         }
     }
 
@@ -305,7 +325,16 @@ impl<'a> Parser<'a> {
                     if text_start.is_none() {
                         text_start = Some(self.pos());
                     }
-                    let slice = &self.src[self.byte..(self.byte + 2).min(self.bytes.len())];
+                    // Slice `\` plus one full following char — the escaped char
+                    // may be multibyte (`\é`, `\λ`), and a fixed `+2` byte slice
+                    // would split the codepoint and panic. `next_len` is 0 only
+                    // for a trailing `\` at end-of-input.
+                    let next_len = self.src[self.byte + 1..]
+                        .chars()
+                        .next()
+                        .map_or(0, |c| c.len_utf8());
+                    let end = (self.byte + 1 + next_len).min(self.bytes.len());
+                    let slice = &self.src[self.byte..end];
                     text_buf.push_str(slice);
                     self.advance(slice.len());
                     continue;
@@ -581,6 +610,14 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        // Bound recursion: past the nesting cap, capture the environment as an
+        // opaque block rather than descending with another sub-parser, which
+        // would add a stack frame per level and eventually abort the process.
+        if self.depth >= MAX_NESTING_DEPTH {
+            self.capture_opaque_env(out, start, env);
+            return;
+        }
+
         // Theorem-like with optional [role=...]{name}. Recognition comes from
         // the registry (built-ins + the preamble's `\newtheorem` names).
         if self.thms.is_theorem(strip_star(&env)) {
@@ -631,6 +668,13 @@ impl<'a> Parser<'a> {
         }
 
         // Opaque environment — capture body, leave for the renderer.
+        self.capture_opaque_env(out, start, env);
+    }
+
+    /// Capture an environment's body verbatim as an `OpaqueEnv` without
+    /// descending into it. Used both for genuinely opaque environments and as
+    /// the depth-cap fallback for recognized-but-too-deeply-nested ones.
+    fn capture_opaque_env(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
         let body_end = self.find_matching_end(&env);
         let body = self.src[self.byte..body_end].to_string();
         self.advance_to(body_end);
@@ -646,7 +690,13 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos(), self.thms);
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -667,7 +717,13 @@ impl<'a> Parser<'a> {
         };
 
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos(), self.thms);
+        let mut sub = Parser::new_at(
+            &child_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -685,7 +741,13 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos(), self.thms);
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -706,7 +768,13 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner_src, self.file.clone(), self.pos(), self.thms);
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -778,7 +846,13 @@ impl<'a> Parser<'a> {
         };
         let mut children = Vec::new();
         // Parse inner content with a sub-parser so nested commands work.
-        let mut sub = Parser::new_at(&child_src, self.file.clone(), self.pos(), self.thms);
+        let mut sub = Parser::new_at(
+            &child_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
         sub.parse_block_into(&mut children, None);
 
         self.advance_to(body_end);
@@ -817,6 +891,7 @@ impl<'a> Parser<'a> {
                 self.file.clone(),
                 self.pos_at_byte(self.byte + slice_start),
                 self.thms,
+                self.depth + 1,
             );
             sub.parse_block_into(&mut item_children, None);
             list_children.push(Node {
@@ -843,7 +918,13 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end("proof");
         let inner = &self.src[self.byte..body_end];
         let mut children = Vec::new();
-        let mut sub = Parser::new_at(inner, self.file.clone(), self.pos(), self.thms);
+        let mut sub = Parser::new_at(
+            inner,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
         sub.parse_block_into(&mut children, None);
 
         self.advance_to(body_end);
@@ -1422,6 +1503,38 @@ mod tests {
     fn unicode_text_is_preserved() {
         let n = parse("Café naïve §");
         assert!(matches!(&n[0].kind, NodeKind::Text(s) if s == "Café naïve §"));
+    }
+
+    #[test]
+    fn backslash_before_multibyte_char_does_not_panic() {
+        // Regression: `\` followed by a multibyte char (`\é`, `\λ`, `\—`) used
+        // to slice the source at a non-char boundary and panic — trivially
+        // reachable whenever an author types accented text after a backslash.
+        for src in [r"\é", r"\λ words", r"text \— more", r"a \§ b"] {
+            let nodes = parse(src);
+            assert!(!nodes.is_empty(), "parse of {src:?} produced no nodes");
+        }
+        let n = parse(r"\é");
+        assert!(matches!(&n[0].kind, NodeKind::Text(s) if s.contains('é')));
+    }
+
+    #[test]
+    fn deeply_nested_environments_do_not_overflow_stack() {
+        // Regression: recognized container environments recursed one stack
+        // frame per nesting level with no cap, so deeply nested input aborted
+        // the process. Far past MAX_NESTING_DEPTH must still return (the excess
+        // is captured as opaque blocks) rather than overflowing the stack.
+        let depth = MAX_NESTING_DEPTH as usize + 5000;
+        let mut src = String::with_capacity(depth * 28);
+        for _ in 0..depth {
+            src.push_str(r"\begin{center}");
+        }
+        src.push('x');
+        for _ in 0..depth {
+            src.push_str(r"\end{center}");
+        }
+        let nodes = parse(&src);
+        assert!(!nodes.is_empty());
     }
 
     #[test]

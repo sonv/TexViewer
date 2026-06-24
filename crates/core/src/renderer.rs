@@ -1070,7 +1070,9 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // Heading word resolved from the preamble's `\newtheorem` title;
             // fall back to capitalizing the env name for legacy/empty nodes.
             let kind_label = if kind_word.is_empty() {
-                capitalize(env)
+                // `env` is an attacker-controllable `\newtheorem{...}` name; it
+                // is written into heading text, so it must be HTML-escaped.
+                escape_html(&capitalize(env))
             } else {
                 escape_html(kind_word)
             };
@@ -1091,7 +1093,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             writeln!(
                 out,
                 r#"<div class="thm {env_class} {role_class}" id="{id}" data-src="{src}"{refkey}>"#,
-                env_class = format_args!("env-{env}"),
+                // `env` is an attacker-controllable `\newtheorem{...}` name;
+                // `sanitize_id` keeps it a valid class token and prevents it
+                // from breaking out of the attribute (stored-XSS otherwise).
+                env_class = format_args!("env-{}", sanitize_id(env)),
                 role_class = role_class,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
@@ -2610,6 +2615,51 @@ mod tests {
         crate::render_project_from_source(Path::new("t.tex"), source.to_string(), &HtmlOptions::default())
             .unwrap()
             .body_html
+    }
+
+    #[test]
+    fn theorem_env_name_is_sanitized_not_injected() {
+        // Regression: an attacker-controlled `\newtheorem` name was written
+        // raw into the class attribute and the heading-word fallback, allowing
+        // HTML/script injection into the served preview.
+        let payload = r#"x"><img src=q onerror=alert(1)>"#;
+        let src = format!(
+            "\\newtheorem{{{payload}}}{{Lemma}}\n\\begin{{document}}\n\
+             \\begin{{{payload}}}\nbody\n\\end{{{payload}}}\n\\end{{document}}\n"
+        );
+        let body = render_body(&src);
+        assert!(
+            !body.contains("<img"),
+            "env name broke out of markup: {body}"
+        );
+        assert!(!body.contains("onerror="), "{body}");
+        assert!(
+            body.contains(r#"class="thm "#),
+            "theorem still rendered: {body}"
+        );
+    }
+
+    #[test]
+    fn theorem_empty_title_env_name_is_escaped_in_heading() {
+        // Regression: with an empty `\newtheorem` title the heading word fell
+        // back to the raw env name (unescaped).
+        let payload = r#"<b>boom</b>"#;
+        let src = format!(
+            "\\newtheorem{{{payload}}}{{}}\n\\begin{{document}}\n\
+             \\begin{{{payload}}}\nbody\n\\end{{{payload}}}\n\\end{{document}}\n"
+        );
+        let body = render_body(&src);
+        assert!(!body.contains("<b>boom</b>"), "raw env name leaked: {body}");
+    }
+
+    #[test]
+    fn align_row_with_backslash_multibyte_does_not_panic() {
+        // Regression: `\` + multibyte char in a multi-row math env panicked in
+        // split_math_rows (both the numbering and renderer copies).
+        let body = render_body(
+            "\\begin{document}\n\\begin{align}\nx &= \\λ \\\\ y &= 2\n\\end{align}\n\\end{document}\n",
+        );
+        assert!(body.contains("math display"), "{body}");
     }
 
     #[test]

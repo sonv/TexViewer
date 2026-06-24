@@ -56,7 +56,10 @@ enum Cmd {
     Serve {
         /// Input file. Project root is auto-detected.
         input: PathBuf,
-        /// Host to bind. Use 127.0.0.1 by default; 0.0.0.0 for LAN preview.
+        /// Host to bind. Defaults to loopback (127.0.0.1). A non-loopback host
+        /// such as 0.0.0.0 exposes the unauthenticated control endpoints (file
+        /// writes, editor spawn, /stop, /print) to the network and disables the
+        /// Host-header guard — only use it on a trusted network.
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
         /// Port. Default mirrors tinymist's convention.

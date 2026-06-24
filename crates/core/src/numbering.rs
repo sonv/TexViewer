@@ -573,7 +573,11 @@ fn split_math_rows(src: &str) -> Vec<&str> {
                 continue;
             }
             b'\\' if i + 1 < bytes.len() => {
-                i += 2;
+                // Skip the backslash and the escaped char. The escaped char may
+                // be multibyte (`\λ`, `\Δ`); a blind `i += 2` would split it and
+                // panic on the next `src[i..]` slice.
+                let next_w = src[i + 1..].chars().next().map_or(1, |c| c.len_utf8());
+                i += 1 + next_w;
                 continue;
             }
             b'{' => brace_depth += 1,
@@ -743,6 +747,15 @@ mod tests {
     fn nodes(src: &str) -> Vec<Node> {
         let project = project_with("", src);
         parse_body(&project, &TheoremRegistry::with_builtin_defaults()).unwrap()
+    }
+
+    #[test]
+    fn split_math_rows_handles_backslash_before_multibyte() {
+        // Regression: `\` + a multibyte char (`\λ`, `\Δ`) advanced two bytes
+        // into the codepoint and panicked on the next `src[i..]` slice.
+        let rows = split_math_rows(r"x &= \λ \\ y &= 2");
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains('λ'));
     }
 
     /// Parse + number a body whose theorem environments are declared by

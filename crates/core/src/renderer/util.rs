@@ -25,6 +25,39 @@ pub(super) fn escape_attr(s: &str) -> String {
     escape_html(s)
 }
 
+/// Allow-list URL schemes for `href`s built from document content (e.g. a
+/// `.bib` `url` field). Returns the attribute-escaped URL when the scheme is
+/// safe (`http`/`https`/`mailto`/`ftp`) or the URL is relative/scheme-less;
+/// returns `None` for anything else — notably `javascript:` and `data:` —
+/// so the caller can drop or inert the link instead of emitting a clickable
+/// XSS vector. Tabs/newlines/controls are stripped before sniffing the scheme
+/// because browsers ignore them when resolving `javascript:` URLs.
+pub(super) fn safe_url(u: &str) -> Option<String> {
+    let stripped: String = u
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && !c.is_control())
+        .collect();
+    let lower = stripped.to_ascii_lowercase();
+    let scheme = lower.split_once(':').and_then(|(scheme, _)| {
+        let valid = !scheme.is_empty()
+            && scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+        valid.then_some(scheme)
+    });
+    let safe = match scheme {
+        // Explicit scheme — only known-safe ones are allowed through.
+        Some(s) => matches!(s, "http" | "https" | "mailto" | "ftp"),
+        // No scheme: relative / protocol-relative / fragment URL.
+        None => true,
+    };
+    safe.then(|| escape_attr(u.trim()))
+}
+
 pub(super) fn escape_math(s: &str) -> String {
     // Inside HTML, we still need to escape `<` and `&` (MathJax sees the
     // text content of the element). `<` shows up rarely in math; `&` is
@@ -320,7 +353,10 @@ pub(super) fn latex_command_call(src: &str, command: &str) -> Option<LatexComman
     let bytes = src.as_bytes();
     let mut i = 0;
     while i + needle.len() <= bytes.len() {
-        if src[i..].starts_with(&needle) {
+        // Byte-compare the (ASCII) needle so `i` need not be a char boundary;
+        // the scan steps one byte at a time and may land inside a multibyte
+        // char, which would make a `src[i..]` str slice panic.
+        if bytes[i..].starts_with(needle.as_bytes()) {
             let after = i + needle.len();
             if bytes
                 .get(after)
@@ -363,7 +399,10 @@ pub(super) fn latex_command_args(src: &str, command: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + needle.len() <= bytes.len() {
-        if src[i..].starts_with(&needle) {
+        // Byte-compare the (ASCII) needle so `i` need not be a char boundary;
+        // the scan steps one byte at a time and may land inside a multibyte
+        // char, which would make a `src[i..]` str slice panic.
+        if bytes[i..].starts_with(needle.as_bytes()) {
             let after = i + needle.len();
             if bytes
                 .get(after)
@@ -396,4 +435,36 @@ pub(super) fn latex_command_args(src: &str, command: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_url_blocks_dangerous_schemes() {
+        assert!(safe_url("javascript:alert(1)").is_none());
+        assert!(safe_url("  JavaScript:alert(1)").is_none());
+        assert!(safe_url("java\tscript:alert(1)").is_none());
+        assert!(safe_url("data:text/html,<script>1</script>").is_none());
+        assert!(safe_url("vbscript:msgbox(1)").is_none());
+    }
+
+    #[test]
+    fn safe_url_allows_safe_and_relative() {
+        assert!(safe_url("https://example.com/x").is_some());
+        assert!(safe_url("http://a").is_some());
+        assert!(safe_url("mailto:a@b.com").is_some());
+        assert!(safe_url("ftp://host/file").is_some());
+        assert!(safe_url("/relative/path").is_some());
+        assert!(safe_url("page.html#frag").is_some());
+    }
+
+    #[test]
+    fn latex_command_scan_handles_multibyte_source() {
+        // Regression: the byte-walking scan landed inside a multibyte char and
+        // panicked on the next `src[i..]` slice.
+        assert!(latex_command_arg(r"x = \λ \label{eq:a} y", "label").as_deref() == Some("eq:a"));
+        assert!(latex_command_call(r"café \ref{thm:π}", "ref").is_some());
+    }
 }
