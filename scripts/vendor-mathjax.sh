@@ -21,11 +21,29 @@ VENDOR_DIR="$REPO_ROOT/crates/cli/vendor/mathjax"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# Print a tarball's SHA-256, and if the matching *_SHA256 env var is set,
+# verify it before extracting. Lets a re-vendor be pinned to a known-good hash
+# so a typosquatted / hijacked-registry tarball is caught before its bytes are
+# committed (`npm pack` itself does no integrity check). Record the printed
+# hash and pass it back as the env var to lock the next refresh.
+verify_tarball() {
+  local label="$1" file="$2" expected="$3" sha
+  sha="$(shasum -a 256 "$file" | awk '{print $1}')"
+  echo "$label sha256: $sha"
+  if [ -n "$expected" ] && [ "$expected" != "$sha" ]; then
+    echo "ERROR: $label sha256 mismatch (expected $expected, got $sha)" >&2
+    exit 1
+  fi
+}
+
+# Floating major by default; pass an exact version (e.g. `4.0.0`) for a fully
+# reproducible vendor, or set MATHJAX_SHA256 to pin the tarball bytes.
 VERSION="${1:-4}"
 
 echo "fetching mathjax@$VERSION from npm into $TMP_DIR"
 (cd "$TMP_DIR" && npm pack "mathjax@$VERSION" >/dev/null)
 TARBALL="$(ls "$TMP_DIR"/mathjax-*.tgz | head -1)"
+verify_tarball "mathjax@$VERSION" "$TARBALL" "${MATHJAX_SHA256:-}"
 echo "extracting $TARBALL"
 tar -xzf "$TARBALL" -C "$TMP_DIR"
 
@@ -44,6 +62,7 @@ else
   echo "fetching @mathjax/mathjax-newcm-font@$MATHJAX_VERSION from npm"
   (cd "$TMP_DIR" && npm pack "@mathjax/mathjax-newcm-font@$MATHJAX_VERSION" >/dev/null)
   FONT_TARBALL="$(ls "$TMP_DIR"/*newcm-font-*.tgz | head -1)"
+  verify_tarball "newcm-font@$MATHJAX_VERSION" "$FONT_TARBALL" "${NEWCM_FONT_SHA256:-}"
   mkdir -p "$TMP_DIR/font"
   tar -xzf "$FONT_TARBALL" -C "$TMP_DIR/font"
   FONT_PKG="$TMP_DIR/font/package"

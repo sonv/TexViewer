@@ -17,9 +17,28 @@ VENDOR_DIR="$REPO_ROOT/crates/cli/vendor/newcm-text"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "fetching web-computer-modern from npm into $TMP_DIR"
-(cd "$TMP_DIR" && npm pack web-computer-modern >/dev/null)
+# Print a tarball's SHA-256 and, if NEWCM_TEXT_SHA256 is set, verify it before
+# extracting — `npm pack` does no integrity check, so this pins the vendored
+# bytes against a typosquatted / hijacked-registry tarball. Record the printed
+# hash and pass it back to lock the next refresh.
+verify_tarball() {
+  local file="$1" expected="$2" sha
+  sha="$(shasum -a 256 "$file" | awk '{print $1}')"
+  echo "web-computer-modern sha256: $sha"
+  if [ -n "$expected" ] && [ "$expected" != "$sha" ]; then
+    echo "ERROR: web-computer-modern sha256 mismatch (expected $expected, got $sha)" >&2
+    exit 1
+  fi
+}
+
+# Default to latest; set NEWCM_VERSION to pin an exact version (and
+# NEWCM_TEXT_SHA256 to pin the bytes) for a reproducible vendor.
+VERSION="${NEWCM_VERSION:-latest}"
+
+echo "fetching web-computer-modern@$VERSION from npm into $TMP_DIR"
+(cd "$TMP_DIR" && npm pack "web-computer-modern@$VERSION" >/dev/null)
 TARBALL="$(ls "$TMP_DIR"/web-computer-modern-*.tgz | head -1)"
+verify_tarball "$TARBALL" "${NEWCM_TEXT_SHA256:-}"
 echo "extracting $TARBALL"
 tar -xzf "$TARBALL" -C "$TMP_DIR"
 
