@@ -637,27 +637,46 @@ pub async fn run(
     Ok(())
 }
 
-/// Reject any request whose `Host` header is not a loopback name. This defeats
-/// DNS-rebinding and cross-origin CSRF against the local control endpoints
-/// (the daemon has no auth token). A missing `Host` is allowed — browsers
-/// always send one, so it isn't a browser attack vector, and disallowing it
-/// would needlessly break exotic local clients. Only enforced when the daemon
-/// is bound to loopback; see `run`.
+/// Guard the unauthenticated control endpoints against browser-driven attacks
+/// (the daemon has no auth token). Two checks, both only when bound to loopback:
+///
+///   * `Host` must be a loopback name — defeats DNS-rebinding (the attacker's
+///     domain re-resolved to 127.0.0.1 still carries `Host: attacker.com`).
+///   * `Origin`, if present, must be loopback — defeats classic cross-origin
+///     CSRF on the no-preflight endpoints (`/stop`, `/restart`, `/print`,
+///     `/buffer`), where the browser sends `Host: 127.0.0.1` but
+///     `Origin: http://evil.example`.
+///
+/// A missing `Host` or `Origin` is allowed: browsers always send `Host`, and
+/// same-origin/top-level non-`Origin` requests (the served page itself, the
+/// nvim plugin's `curl`) are legitimate. The combination blocks the browser
+/// attack surface without breaking local non-browser clients.
 async fn host_guard(
     enforce: bool,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     if enforce {
-        if let Some(value) = req.headers().get(header::HOST) {
-            let allowed = value.to_str().is_ok_and(host_is_loopback);
-            if !allowed {
-                return (
-                    StatusCode::FORBIDDEN,
-                    "forbidden: request Host is not loopback",
-                )
-                    .into_response();
-            }
+        let headers = req.headers();
+        let host_ok = headers
+            .get(header::HOST)
+            .is_none_or(|v| v.to_str().is_ok_and(host_is_loopback));
+        if !host_ok {
+            return (
+                StatusCode::FORBIDDEN,
+                "forbidden: request Host is not loopback",
+            )
+                .into_response();
+        }
+        let origin_ok = headers
+            .get(header::ORIGIN)
+            .is_none_or(|v| v.to_str().is_ok_and(origin_is_loopback));
+        if !origin_ok {
+            return (
+                StatusCode::FORBIDDEN,
+                "forbidden: cross-origin request rejected",
+            )
+                .into_response();
         }
     }
     next.run(req).await
@@ -681,6 +700,19 @@ fn host_is_loopback(host_header: &str) -> bool {
         .parse::<std::net::IpAddr>()
         .map(|ip| ip.is_loopback())
         .unwrap_or(false)
+}
+
+/// True when an `Origin` header (`scheme://host[:port]`) is a loopback origin.
+/// A `null` origin (sandboxed iframe, `file://`, etc.) is not loopback, so it
+/// is rejected.
+fn origin_is_loopback(origin: &str) -> bool {
+    let authority = origin
+        .split_once("://")
+        .map_or(origin, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or("");
+    !authority.is_empty() && host_is_loopback(authority)
 }
 
 async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
@@ -3060,8 +3092,8 @@ fn watched_event_paths(
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
-        is_latest_render_attempt, serve_buffer_push, watched_event_paths, websocket_needs_reload,
-        AppState, PatchOp, PlanSlot, WS_PROTOCOL_VERSION,
+        is_latest_render_attempt, origin_is_loopback, serve_buffer_push, watched_event_paths,
+        websocket_needs_reload, AppState, PatchOp, PlanSlot, WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -3078,6 +3110,19 @@ mod tests {
         assert!(!host_is_loopback("evil.example.com:23636"));
         assert!(!host_is_loopback("192.168.1.5:23636"));
         assert!(!host_is_loopback("169.254.1.1"));
+    }
+
+    #[test]
+    fn origin_guard_rejects_cross_origin() {
+        // The served page's own origin (classic CSRF carries the attacker's).
+        assert!(origin_is_loopback("http://127.0.0.1:23636"));
+        assert!(origin_is_loopback("http://localhost:23636"));
+        assert!(origin_is_loopback("https://[::1]:23636"));
+        // Cross-origin / null origins are rejected.
+        assert!(!origin_is_loopback("https://evil.example"));
+        assert!(!origin_is_loopback("http://192.168.1.5:23636"));
+        assert!(!origin_is_loopback("null"));
+        assert!(!origin_is_loopback(""));
     }
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},

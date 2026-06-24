@@ -936,6 +936,10 @@ fn command_brace_arg(
 /// Find `\usepackage` and `\input` targets in `src` that look like they could
 /// resolve to a local file (i.e. a sibling `.sty` or `.tex`).
 pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
+    // Strip comments first so a commented-out `% \usepackage{…}` / `% \input{…}`
+    // doesn't still pull in its file (matches `scan`'s behavior).
+    let src = strip_line_comments(src);
+    let src = src.as_str();
     let mut out = Vec::new();
     let usepkg =
         Regex::new(r"\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{\s*([^}]+?)\s*\}")
@@ -962,6 +966,11 @@ pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
     }
     for cap in inp.captures_iter(src) {
         let n = cap.get(1).unwrap().as_str().trim();
+        // Containment: don't follow `\input` to absolute or deep-`../` files
+        // outside the project (defense-in-depth; mirrors the body-include guard).
+        if !crate::root::path_within_bounds(n) {
+            continue;
+        }
         let p = Path::new(n);
         let joined = if p.is_absolute() {
             p.to_path_buf()
@@ -1055,16 +1064,49 @@ fn is_text_flow_macro(name: &str) -> bool {
 }
 
 fn count_mandatory_args(spec: &str) -> u8 {
-    // xparse spec: each `m` is a mandatory arg. `o`, `O{default}`, `s`, `t`, `e{...}`
-    // are optional / other forms we don't faithfully reproduce here.
-    spec.chars().filter(|c| *c == 'm').count().min(9) as u8
+    // xparse spec: each `m` is a mandatory arg. Count only top-level `m`s:
+    // argument *defaults* and embedded-token specs live inside `{...}`
+    // (e.g. `O{matrix}`, `e{m}`), and an `m` in a default would otherwise
+    // inflate the arity and make the macro over-consume a following `{...}`.
+    let mut depth = 0i32;
+    let mut count = 0usize;
+    for ch in spec.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = (depth - 1).max(0),
+            'm' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count.min(9) as u8
 }
 
 fn leading_optional_default(spec: &str) -> Option<String> {
-    // `O{default}` as the first slot → default for #1.
-    let re = Regex::new(r"^\s*O\{([^}]*)\}").unwrap();
-    re.captures(spec)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+    // `O{default}` as the first slot → default for #1. Read the brace group
+    // with balancing so a default that itself contains braces (`O{\mathbf{x}}`)
+    // isn't truncated at the first `}`.
+    let rest = spec.trim_start().strip_prefix('O')?.strip_prefix('{')?;
+    let bytes = rest.as_bytes();
+    let mut depth = 1i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(rest[..i].to_string());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Brace-/bracket-aware micro-scanner that mirrors what a recursive descent
@@ -1129,7 +1171,9 @@ impl<'a> ArgScanner<'a> {
         let save = self.pos;
         let arg = self.optional_arg()?;
         match arg.trim().parse::<u8>() {
-            Ok(n) => Some(n),
+            // LaTeX allows at most 9 args; clamp so a typo like `[12]` can't
+            // make the macro consume extra following `{...}` groups.
+            Ok(n) => Some(n.min(9)),
             Err(_) => {
                 self.pos = save;
                 None
@@ -1228,6 +1272,61 @@ mod tests {
 
     fn find_by_name<'a>(ms: &'a [ExtractedMacro], name: &str) -> Option<&'a ExtractedMacro> {
         ms.iter().find(|m| m.name == name)
+    }
+
+    #[test]
+    fn xparse_arg_count_ignores_m_in_defaults() {
+        assert_eq!(count_mandatory_args("m O{matrix}"), 1);
+        assert_eq!(count_mandatory_args("m e{m}"), 1);
+        assert_eq!(count_mandatory_args("O{maximal} m"), 1);
+        assert_eq!(count_mandatory_args("m m m"), 3);
+    }
+
+    #[test]
+    fn leading_optional_default_balances_braces() {
+        assert_eq!(
+            leading_optional_default("O{\\mathbf{x}} m").as_deref(),
+            Some("\\mathbf{x}")
+        );
+        assert_eq!(
+            leading_optional_default("O{plain}").as_deref(),
+            Some("plain")
+        );
+        assert_eq!(leading_optional_default("m O{x}"), None);
+    }
+
+    #[test]
+    fn newcommand_arg_count_is_clamped_to_nine() {
+        let ms = extract("\\newcommand{\\x}[12]{#1}\n");
+        let x = find_by_name(&ms, "x").expect("\\x present");
+        assert!(x.n_args <= 9, "n_args should clamp to 9, got {}", x.n_args);
+    }
+
+    #[test]
+    fn collect_referenced_files_strips_comments_and_bounds_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-collect-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dep.tex"), "\\newcommand{\\d}{x}\n").unwrap();
+
+        // Uncommented include is followed.
+        let found = collect_referenced_files("\\input{dep}\n", &dir);
+        assert!(found.iter().any(|p| p.ends_with("dep.tex")));
+
+        // A commented-out include is ignored.
+        let commented = collect_referenced_files("% \\input{dep}\n", &dir);
+        assert!(
+            commented.is_empty(),
+            "commented include was followed: {commented:?}"
+        );
+
+        // An absolute / out-of-bounds include is refused.
+        assert!(collect_referenced_files("\\input{/etc/hostname}\n", &dir).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

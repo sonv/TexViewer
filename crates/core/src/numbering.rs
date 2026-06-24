@@ -143,7 +143,9 @@ pub fn assign_numbers(
             for (k, base) in state.labels.cite_order.iter().zip(labels.iter()) {
                 let final_label = if *seen.get(base).unwrap_or(&0) > 1 {
                     let c = counters.entry(base.clone()).or_insert(0);
-                    let suffix = (b'a' + (*c as u8)) as char;
+                    // base-26 (a..z, aa, ab, …) so many colliding labels can't
+                    // overflow a byte or produce non-letter glyphs.
+                    let suffix = alphabetic_suffix(*c + 1);
                     *c += 1;
                     format!("{base}{suffix}")
                 } else {
@@ -247,7 +249,10 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 state.appendix = true;
                 state.section_prefix = None;
                 state.section_counters = [0; 7];
-                state.thm_counters.clear();
+                // Reset only sectioning-derived theorem counters; continuous
+                // (never-reset) counters keep counting across \appendix, as in
+                // a real LaTeX build.
+                reset_theorem_counters(state, 0);
                 state.eq_in_section = 0;
             }
             NodeKind::Section {
@@ -382,7 +387,9 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                             record_label(&mut state.labels, l, &n, "Equation");
                         }
                     }
-                } else if numbered {
+                } else if numbered && !row_is_unnumbered(body) {
+                    // A single display with \notag/\nonumber/\tag does not
+                    // advance the auto-counter (the manual \tag renders itself).
                     let n = next_equation_number(state);
                     *number = Some(n.clone());
                     if let Some(l) = label {
@@ -645,7 +652,13 @@ fn skip_row_separator_spacing(src: &str, mut i: usize) -> usize {
 }
 
 fn row_is_unnumbered(row: &str) -> bool {
-    has_latex_command(row, "notag") || has_latex_command(row, "nonumber")
+    has_latex_command(row, "notag")
+        || has_latex_command(row, "nonumber")
+        // A manual \tag / \tag* supplies its own number and does not advance the
+        // automatic equation counter (amsmath semantics). `has_latex_command`
+        // treats a trailing `*` as a word boundary, so match both spellings.
+        || has_latex_command(row, "tag")
+        || has_latex_command(row, "tag*")
 }
 
 fn has_latex_command(src: &str, command: &str) -> bool {
@@ -776,6 +789,38 @@ mod tests {
             BibStyle::Numeric,
             &TheoremRegistry::with_builtin_defaults(),
         )
+    }
+
+    #[test]
+    fn tag_row_does_not_consume_equation_number() {
+        let mut ns = nodes(
+            "\\section{S}\n\
+             \\begin{align}\n\
+             a &= b \\label{eq:a}\\\\\n\
+             c &= d \\tag{$\\star$}\\\\\n\
+             e &= f \\label{eq:c}\n\
+             \\end{align}\n",
+        );
+        let labels = assign(&mut ns);
+        assert_eq!(labels.number.get("eq:a").unwrap(), "1.1");
+        // The \tag row supplies its own number and is skipped, so eq:c stays
+        // 1.2 rather than being offset to 1.3.
+        assert_eq!(labels.number.get("eq:c").unwrap(), "1.2");
+    }
+
+    #[test]
+    fn appendix_preserves_continuous_theorem_counter() {
+        let labels = number_with(
+            "\\newtheorem{thm}{Theorem}\n",
+            "\\section{One}\n\
+             \\begin{thm}\\label{t1}A\\end{thm}\n\
+             \\appendix\n\
+             \\section{App}\n\
+             \\begin{thm}\\label{t2}B\\end{thm}\n",
+        );
+        assert_eq!(labels.number.get("t1").unwrap(), "1");
+        // Continuous (never-reset) counter keeps counting across \appendix.
+        assert_eq!(labels.number.get("t2").unwrap(), "2");
     }
 
     #[test]
