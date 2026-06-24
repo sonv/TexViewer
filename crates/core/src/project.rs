@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 
 use crate::ast::Pos;
-use crate::root::{resolve_include, MAX_PARENT_DEPTH};
+use crate::root::{path_within_bounds, resolve_include};
 
 /// The preamble of the root file (everything before `\begin{document}`).
 #[derive(Debug, Clone)]
@@ -210,7 +210,7 @@ fn append_with_includes(
         // targets and relative paths that climb more than MAX_PARENT_DEPTH
         // levels above their referrer; leave the include command as literal
         // text so the source still round-trips.
-        if !include_within_bounds(name) {
+        if !path_within_bounds(name) {
             warnings.push(format!("skipped out-of-project include {name}"));
             push_chunk(
                 out,
@@ -264,37 +264,6 @@ fn append_with_includes(
         offset_pos(src, start_pos, last),
         is_root_body,
     );
-}
-
-/// Bounded-containment check for an `\input`/`\include`/`\subfile` target.
-/// Returns `false` for absolute paths and for relative paths that climb more
-/// than `MAX_PARENT_DEPTH` levels above the referring file (e.g.
-/// `../../../../../../etc/passwd`). This "bounded" policy still permits the
-/// `../shared/...`-style parent includes real multi-file projects rely on while
-/// blocking the arbitrary-file-read vector. Measured on the path string, so it
-/// is independent of where the project lives on disk.
-///
-/// Scope: this covers the body-include splice path only — `% !TEX root` and
-/// `.sty`/`.bib` resolution are separate and not bounded here.
-fn include_within_bounds(name: &str) -> bool {
-    use std::path::Component;
-    let p = Path::new(name);
-    if p.is_absolute() {
-        return false;
-    }
-    let mut depth: i32 = 0;
-    let mut max_up: i32 = 0;
-    for comp in p.components() {
-        match comp {
-            Component::ParentDir => {
-                depth -= 1;
-                max_up = max_up.max(-depth);
-            }
-            Component::Normal(_) => depth += 1,
-            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
-        }
-    }
-    max_up <= MAX_PARENT_DEPTH as i32
 }
 
 fn push_chunk(
@@ -446,7 +415,7 @@ mod tests {
         // the project root and must be refused.
         let dir = temp_dir("traversal-deep");
         let root = dir.join("main.tex");
-        let ups = "../".repeat(MAX_PARENT_DEPTH + 4);
+        let ups = "../".repeat(crate::root::MAX_PARENT_DEPTH + 4);
         fs::write(
             &root,
             format!(
@@ -489,19 +458,5 @@ mod tests {
             "bounded parent include should splice: {flattened}"
         );
         let _ = fs::remove_dir_all(parent);
-    }
-
-    #[test]
-    fn include_bounds_metric() {
-        // Within the project, or a few parents up: allowed.
-        assert!(include_within_bounds("child.tex"));
-        assert!(include_within_bounds("sub/dir/child.tex"));
-        assert!(include_within_bounds("./child.tex"));
-        assert!(include_within_bounds("../shared/preamble.tex"));
-        assert!(include_within_bounds("../../common/defs.tex"));
-        assert!(include_within_bounds("a/../b/child.tex"));
-        // Absolute, or climbing more than MAX_PARENT_DEPTH (4) levels: rejected.
-        assert!(!include_within_bounds("/etc/passwd"));
-        assert!(!include_within_bounds("../../../../../etc/passwd"));
     }
 }

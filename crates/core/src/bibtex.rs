@@ -14,6 +14,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::project::Project;
+use crate::root::path_within_bounds;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BibEntry {
@@ -249,13 +250,21 @@ fn find_bib_paths(preamble: &str, base: &Path) -> Vec<PathBuf> {
     let addres = Regex::new(r"\\addbibresource\s*(?:\[[^\]]*\])?\s*\{\s*([^}]+?)\s*\}").unwrap();
     let bibcmd = Regex::new(r"\\bibliography\s*\{\s*([^}]+?)\s*\}").unwrap();
     let mut out = Vec::new();
+    // Containment: a `.bib` path is read and its contents rendered into the
+    // references section, so an untrusted document must not point it at an
+    // absolute or deep-`../` file outside the project (arbitrary-file read).
     for cap in addres.captures_iter(preamble) {
-        out.push(resolve(&cap[1], base, "bib"));
+        if path_within_bounds(&cap[1]) {
+            out.push(resolve(&cap[1], base, "bib"));
+        }
     }
     for cap in bibcmd.captures_iter(preamble) {
         // `\bibliography{a,b}` allows comma-separated names without extension.
         for name in cap[1].split(',') {
-            out.push(resolve(name.trim(), base, "bib"));
+            let name = name.trim();
+            if path_within_bounds(name) {
+                out.push(resolve(name, base, "bib"));
+            }
         }
     }
     out
@@ -454,5 +463,40 @@ mod tests {
             bib["Smith2024"].fields.get("title").unwrap(),
             "Body bibliography"
         );
+    }
+
+    #[test]
+    fn absolute_bib_outside_project_is_not_loaded() {
+        // Security: an untrusted document must not exfiltrate a file by pointing
+        // `\bibliography{...}` at an absolute path outside the project.
+        let secret_dir =
+            std::env::temp_dir().join(format!("mathpreview-bib-secret-{}", std::process::id()));
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        let secret = secret_dir.join("secret.bib");
+        std::fs::write(
+            &secret,
+            "@article{Leak2024,\n  author = {X},\n  title = {SECRET},\n  year = {2024},\n}\n",
+        )
+        .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("mathpreview-bib-abs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        let project = crate::project::load_project_from_source(
+            &root,
+            format!(
+                "\\begin{{document}}\n\\cite{{Leak2024}}.\n\\bibliography{{{}}}\n\\end{{document}}\n",
+                secret.with_extension("").display(),
+            ),
+        )
+        .unwrap();
+        let bib = load_project_bib(&project).unwrap();
+
+        assert!(
+            !bib.contains_key("Leak2024"),
+            "absolute .bib path leaked entries"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(secret_dir);
     }
 }

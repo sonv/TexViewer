@@ -51,6 +51,12 @@ fn magic_root(file: &Path, src: &str) -> Result<Option<PathBuf>> {
     let Some(m) = re.captures(src).and_then(|c| c.get(1)) else {
         return Ok(None);
     };
+    // Containment: ignore a `% !TEX root` that points outside the project
+    // (absolute, or deep `../` traversal) so an untrusted document can't make
+    // the daemon load and render an arbitrary local file as the "root".
+    if !path_within_bounds(m.as_str()) {
+        return Ok(None);
+    }
     let rel = Path::new(m.as_str());
     let base = file.parent().unwrap_or_else(|| Path::new("."));
     let abs = if rel.is_absolute() {
@@ -156,6 +162,36 @@ pub fn resolve_include(base: &Path, name: &str) -> PathBuf {
     }
 }
 
+/// Bounded-containment check for a document-supplied file reference
+/// (`\input`/`\include`/`\subfile`, `% !TEX root`, `\bibliography`, …).
+/// Returns `false` for absolute paths and for relative paths that climb more
+/// than [`MAX_PARENT_DEPTH`] levels above the referring file — the
+/// arbitrary-file-read vector by which an untrusted document could pull files
+/// from outside the project into the rendered/served output. Still permits the
+/// `../shared/...`-style parent references real multi-file projects rely on.
+/// Measured on the path string, so it is independent of where the project
+/// lives on disk.
+pub(crate) fn path_within_bounds(name: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(name);
+    if p.is_absolute() {
+        return false;
+    }
+    let mut depth: i32 = 0;
+    let mut max_up: i32 = 0;
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                depth -= 1;
+                max_up = max_up.max(-depth);
+            }
+            Component::Normal(_) => depth += 1,
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    max_up <= MAX_PARENT_DEPTH as i32
+}
+
 fn canonicalize(p: &Path) -> Result<PathBuf> {
     p.canonicalize()
         .with_context(|| format!("canonicalizing {}", p.display()))
@@ -168,4 +204,61 @@ fn canonicalize(p: &Path) -> Result<PathBuf> {
                 Err(anyhow!("cannot canonicalize {}", p.display()))
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_bounds_metric() {
+        // In-project or a few parents up: allowed.
+        assert!(path_within_bounds("main.tex"));
+        assert!(path_within_bounds("chapters/intro.tex"));
+        assert!(path_within_bounds("./main.tex"));
+        assert!(path_within_bounds("../main.tex"));
+        assert!(path_within_bounds("../../shared/defs.tex"));
+        assert!(path_within_bounds("a/../b/refs.bib"));
+        // Absolute, or climbing past MAX_PARENT_DEPTH (4): rejected.
+        assert!(!path_within_bounds("/etc/passwd"));
+        assert!(!path_within_bounds("../../../../../etc/passwd"));
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mathpreview-root-{name}-{nonce}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn magic_root_outside_project_is_ignored() {
+        // A `% !TEX root` pointing at an absolute system file must not hijack
+        // the project root (which would render that file's contents).
+        let dir = temp_dir("magic-abs");
+        let chapter = dir.join("chapter.tex");
+        fs::write(&chapter, "% !TEX root = /etc/hostname\nChapter body.\n").unwrap();
+        let resolved = resolve_root(&chapter).unwrap();
+        assert_eq!(resolved, chapter.canonicalize().unwrap());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn magic_root_relative_within_project_is_honored() {
+        let dir = temp_dir("magic-rel");
+        let main = dir.join("main.tex");
+        fs::write(
+            &main,
+            "\\begin{document}\n\\input{chapter}\n\\end{document}\n",
+        )
+        .unwrap();
+        let chapter = dir.join("chapter.tex");
+        fs::write(&chapter, "% !TEX root = main.tex\nChapter body.\n").unwrap();
+        let resolved = resolve_root(&chapter).unwrap();
+        assert_eq!(resolved, main.canonicalize().unwrap());
+        let _ = fs::remove_dir_all(dir);
+    }
 }
