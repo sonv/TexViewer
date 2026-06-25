@@ -17,6 +17,25 @@ summary.
 
 Nothing yet.
 
+## [0.1.58] — 2026-06-25
+
+### Added
+
+- **Annotation / callout environments render with math.** Review-package
+  environments — `todo`, `note`, `note*`, `added`, `removed`, `marked`,
+  `markedleft`, `markedright`, `highlighted`, `quoted` — are now parsed
+  *recursively* and shown as titled, color-tinted boxes, so math and nested
+  content inside them typeset. Previously they fell through to the opaque path
+  and their bodies (including `$…$`) were dumped as raw text. Each box takes an
+  optional `[title]` where the environment defines one.
+- **Inline review commands.** `\add`, `\remove`, `\highlight` render their
+  argument (text *or* math) with an underline / strikethrough / highlight (the
+  optional `[color]` is honored), and `\replace{old}{new}` shows struck-through
+  `old` followed by underlined `new`. `\sidenote` continues to render as a
+  margin chip. Only this recognized set is treated as callouts; other unknown
+  environments (`verbatim`, `lstlisting`, floats, …) keep the existing opaque
+  path, so the change is scoped and doesn't disturb them.
+
 ## [0.1.57] — 2026-06-25
 
 ### Fixed

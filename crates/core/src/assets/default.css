@@ -600,6 +600,50 @@ body.page-mode-dynamic main#page {
 .thm-num { font-variant-numeric: tabular-nums; color: var(--fg); }
 .sec-num { color: var(--fg); font-variant-numeric: tabular-nums; margin-right: 0.45em; }
 
+/* Annotation / callout boxes (review packages like marktext: todo, note,
+   added, removed, marked, highlighted, quoted). Styled like theorem boxes but
+   with per-type tints; the title and body are fully rendered, so math works. */
+.callout {
+  margin: 0.95em 0;
+  padding: 0.6em 0.9em 0.66em;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  background: #fff;
+  border-radius: 2px;
+}
+.callout-head {
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.3em;
+}
+.callout-body > :first-child { margin-top: 0; }
+.callout-body > :last-child { margin-bottom: 0; }
+.callout-todo        { border-left-color: #d08a00; background: #fff8ec; }
+.callout-todo .callout-head { color: #b5740a; }
+.callout-note        { border-left-color: #2f6fd0; background: #eef4fd; }
+.callout-note .callout-head { color: #2059b0; }
+.callout-added       { border-left-color: #2f9e44; background: #eefbf1; }
+.callout-added .callout-head { color: #2b8a3e; }
+.callout-removed     { border-left-color: #e03131; background: #fdeeee; }
+.callout-removed .callout-head { color: #c92a2a; }
+.callout-marked      { border-left-color: #2f9e44; background: #f3fbf5; }
+.callout-marked .callout-head { color: #2b8a3e; }
+.callout-highlighted { border-left-color: #d9b400; background: #fffbe6; }
+.callout-highlighted .callout-head { color: #a88a00; }
+.callout-quote       { border-left-color: var(--muted); background: #f7f7f5; font-style: italic; }
+.callout-quote .callout-head { color: var(--muted); }
+
+/* Inline review marks (\add, \remove, \replace, \highlight). An explicit
+   `[color]` overrides these defaults via an inline style. */
+.review-add { text-decoration: underline; text-decoration-color: #2059b0; }
+.review-remove { text-decoration: line-through; text-decoration-color: #c92a2a; }
+.review-highlight { background: rgba(255, 240, 130, 0.6); border-radius: 2px; padding: 0 1px; }
+
 /* LaTeX-style display math spacing:
    \abovedisplayskip and \belowdisplayskip are ~12pt in standard classes,
    roughly 1em at body text size. Equation number sits on the right at the
@@ -1716,6 +1760,24 @@ body.theme-dark .side-link:hover,
 body.theme-dark .side-link.active { background: #2f333b; }
 body.theme-dark main#page { border-color: #353941; }
 body.theme-dark .thm { background: #2a2d34; }
+/* Callouts on dark: darker tints, brighter accents for contrast. */
+body.theme-dark .callout { background: #2a2d34; border-color: #353941; }
+body.theme-dark .callout-todo        { background: #2e2a20; border-left-color: #e0a83a; }
+body.theme-dark .callout-todo .callout-head { color: #e8b75a; }
+body.theme-dark .callout-note        { background: #1f2733; border-left-color: #5a93e0; }
+body.theme-dark .callout-note .callout-head { color: #7fb0ef; }
+body.theme-dark .callout-added       { background: #1f2c22; border-left-color: #5bc46f; }
+body.theme-dark .callout-added .callout-head { color: #74d98a; }
+body.theme-dark .callout-removed     { background: #2e2122; border-left-color: #e06464; }
+body.theme-dark .callout-removed .callout-head { color: #ef8a8a; }
+body.theme-dark .callout-marked      { background: #1f2c22; border-left-color: #5bc46f; }
+body.theme-dark .callout-marked .callout-head { color: #74d98a; }
+body.theme-dark .callout-highlighted { background: #2c2a1d; border-left-color: #d9c14a; }
+body.theme-dark .callout-highlighted .callout-head { color: #e3d06a; }
+body.theme-dark .callout-quote       { background: #26282e; }
+body.theme-dark .review-add { text-decoration-color: #7fb0ef; }
+body.theme-dark .review-remove { text-decoration-color: #ef8a8a; }
+body.theme-dark .review-highlight { background: rgba(217, 193, 74, 0.25); }
 body.theme-dark .eq-refkey-chip,
 body.theme-dark .refkey-chip,
 body.theme-dark .cmdline-suggestion { background: #2a2d34; border-color: #3d414a; color: var(--muted); }

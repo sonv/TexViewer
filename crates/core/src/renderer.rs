@@ -1473,6 +1473,30 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 }
             }
         }
+        NodeKind::Callout { env, class, title } => {
+            let id = ctx.idgen.next("callout");
+            record_container(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<div class="callout callout-{cls} env-{env}" id="{id}" data-src="{src}">"#,
+                cls = escape_attr(class),
+                env = escape_attr(&sanitize_id(env)),
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            if let Some(t) = title {
+                writeln!(
+                    out,
+                    r#"<div class="callout-head">{}</div>"#,
+                    render_latex_text_with_math(t, ctx.labels),
+                )
+                .unwrap();
+            }
+            out.push_str(r#"<div class="callout-body">"#);
+            write_chunked_children(out, &n.children, ctx);
+            out.push_str("</div></div>\n");
+        }
         NodeKind::OpaqueCmd { name, raw } => {
             match name.as_str() {
                 "today" => out.push_str("(today)"),
@@ -1539,6 +1563,50 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         write!(
                             out,
                             r#"<span class="sidenote sidenote-note" id="{id}" data-src="{src_attr}" data-label="note"><span class="sidenote-marker">note</span><span class="sidenote-content">{content}</span></span>"#,
+                        )
+                        .unwrap();
+                    }
+                }
+                // Inline review commands (marktext): \add / \remove / \highlight
+                // take `[color]{content}`; render the content (text OR math via
+                // render_latex_text_with_math) wrapped in a decoration span, with
+                // the optional color sanitized into the relevant CSS property.
+                "add" | "remove" | "highlight" => {
+                    if let Some(call) = latex_command_call(raw, name) {
+                        let content = render_latex_text_with_math(&call.arg, ctx.labels);
+                        let (klass, prop) = match name.as_str() {
+                            "add" => ("review-add", "text-decoration-color"),
+                            "remove" => ("review-remove", "text-decoration-color"),
+                            _ => ("review-highlight", "background-color"),
+                        };
+                        let style = call
+                            .optional
+                            .as_deref()
+                            .map(|c| color_to_css(None, c))
+                            .filter(|c| !c.is_empty())
+                            .map(|css| format!(r#" style="{prop}:{css}""#))
+                            .unwrap_or_default();
+                        write!(out, r#"<span class="{klass}"{style}>{content}</span>"#).unwrap();
+                    }
+                }
+                // \replace{old}{new}: struck-through old followed by underlined
+                // new. Two required braces — the generic reader returns only the
+                // first, so read both groups directly.
+                "replace" => {
+                    let after = raw
+                        .find("replace")
+                        .map(|i| i + "replace".len())
+                        .unwrap_or(0);
+                    let first = read_delim(raw, after, b'{', b'}');
+                    let second = first
+                        .as_ref()
+                        .and_then(|(_, next)| read_delim(raw, *next, b'{', b'}'));
+                    if let (Some((a, _)), Some((b, _))) = (first.as_ref(), second.as_ref()) {
+                        let a_html = render_latex_text_with_math(a, ctx.labels);
+                        let b_html = render_latex_text_with_math(b, ctx.labels);
+                        write!(
+                            out,
+                            r#"<span class="review-remove">{a_html}</span> <span class="review-add">{b_html}</span>"#,
                         )
                         .unwrap();
                     }
@@ -2615,6 +2683,47 @@ mod tests {
         crate::render_project_from_source(Path::new("t.tex"), source.to_string(), &HtmlOptions::default())
             .unwrap()
             .body_html
+    }
+
+    #[test]
+    fn callout_env_renders_box_with_typeset_math() {
+        let body = render_body(
+            "\\begin{document}\n\\begin{todo}[Fix this]\ntext $E=mc^2$ text\n\\end{todo}\n\\end{document}\n",
+        );
+        assert!(body.contains(r#"class="callout callout-todo"#), "{body}");
+        assert!(body.contains("callout-head"), "{body}");
+        assert!(text_content(&body).contains("Fix this"), "{body}");
+        // The math inside renders as a typeset node, not raw `$...$`.
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "math not typeset: {body}"
+        );
+        assert!(
+            !text_content(&body).contains("$E=mc^2$"),
+            "raw math leaked: {body}"
+        );
+    }
+
+    #[test]
+    fn review_commands_render_decorations_with_math() {
+        let body = render_body(
+            "\\begin{document}\n\\add[red]{$x$} \\remove{old} \\replace{a}{b} \\highlight{h}\n\\end{document}\n",
+        );
+        assert!(body.contains("review-add"), "add missing: {body}");
+        assert!(body.contains("review-remove"), "remove missing: {body}");
+        assert!(
+            body.contains("review-highlight"),
+            "highlight missing: {body}"
+        );
+        // \add[red]{$x$} carries the color and typesets the math.
+        assert!(
+            body.contains("text-decoration-color:red"),
+            "color missing: {body}"
+        );
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "math in \\add not typeset: {body}"
+        );
     }
 
     #[test]

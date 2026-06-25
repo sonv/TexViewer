@@ -124,6 +124,15 @@ pub enum NodeKind {
     Cite { keys: Vec<String> },
     /// Other `\begin{env}` ... `\end{env}` passed through opaquely.
     OpaqueEnv { env: String, body: String },
+    /// A recognized annotation / callout box (`\begin{todo}[title]` … etc.).
+    /// Unlike `OpaqueEnv`, the body is parsed into `children` so math and nested
+    /// content render. `title` is the resolved `[title]` (or a default); `class`
+    /// is the CSS modifier (`todo`, `note`, `added`, …).
+    Callout {
+        env: String,
+        class: String,
+        title: Option<String>,
+    },
     /// `\begin{abstract}` ... `\end{abstract}` rendered as front matter.
     Abstract,
     /// `\command[opt]{arg}{arg}` passed through opaquely.

@@ -44,6 +44,32 @@ const TRANSPARENT_ENVS: &[&str] = &["center"];
 /// stack — the daemon parses on a default tokio worker thread.
 const MAX_NESTING_DEPTH: u32 = 64;
 
+/// Annotation / callout environments (e.g. review packages like marktext's
+/// `todo`, `note`, `added`, …). Rendered as a titled box whose body is parsed
+/// *recursively* — so math and nested content inside them work, unlike the
+/// opaque fallback. Tuple: (env name, CSS class, default title, whether the
+/// optional `[arg]` is a title). For some of these the optional arg is a color
+/// or tcolorbox options rather than a title, so we consume but ignore it.
+const CALLOUT_ENVS: &[(&str, &str, &str, bool)] = &[
+    ("todo", "todo", "TODO", true),
+    ("note", "note", "Note", true),
+    ("note*", "note", "Note", true),
+    ("added", "added", "Added", true),
+    ("removed", "removed", "Removed", true),
+    ("marked", "marked", "Marked", true),
+    ("markedleft", "marked", "Marked", false),
+    ("markedright", "marked", "Marked", false),
+    ("highlighted", "highlighted", "Highlighted", false),
+    ("quoted", "quote", "Quote", false),
+];
+
+fn callout_for(env: &str) -> Option<(&'static str, &'static str, bool)> {
+    CALLOUT_ENVS
+        .iter()
+        .find(|(name, ..)| *name == env)
+        .map(|(_, class, title, arg_is_title)| (*class, *title, *arg_is_title))
+}
+
 /// Parse every project file's body into a flat node list, preserving include
 /// order.
 pub fn parse_body(project: &Project, thms: &TheoremRegistry) -> Result<Vec<Node>> {
@@ -630,6 +656,11 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        if let Some((class, default_title, arg_is_title)) = callout_for(&env) {
+            self.parse_callout(out, start, env, class, default_title, arg_is_title);
+            return;
+        }
+
         if let Some(kind) = list_kind_for(&env) {
             self.parse_list(out, start, env, kind);
             return;
@@ -932,6 +963,57 @@ impl<'a> Parser<'a> {
 
         out.push(Node {
             kind: NodeKind::Proof { of, role },
+            span: self.span_from(start),
+            children,
+        });
+    }
+
+    /// Parse a callout/annotation environment (`\begin{todo}[title] … \end`).
+    /// Captures the optional `[arg]` (used as the title when it's a title for
+    /// this env), then sub-parses the body so math and nested content render.
+    fn parse_callout(
+        &mut self,
+        out: &mut Vec<Node>,
+        start: Pos,
+        env: String,
+        class: &str,
+        default_title: &str,
+        arg_is_title: bool,
+    ) {
+        self.skip_ws_inline();
+        // Always consume any leading `[...]` so it isn't left in the body, but
+        // only use it as the title when this env's optional arg is a title (for
+        // others it's a color / tcolorbox options).
+        let arg = self.optional_arg();
+        let title = if arg_is_title {
+            arg.map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| default_title.to_string())
+        } else {
+            default_title.to_string()
+        };
+
+        let body_end = self.find_matching_end(&env);
+        let inner = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(
+            inner,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
+        sub.parse_block_into(&mut children, None);
+
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+
+        out.push(Node {
+            kind: NodeKind::Callout {
+                env,
+                class: class.to_string(),
+                title: Some(title),
+            },
             span: self.span_from(start),
             children,
         });
@@ -1516,6 +1598,61 @@ mod tests {
         }
         let n = parse(r"\é");
         assert!(matches!(&n[0].kind, NodeKind::Text(s) if s.contains('é')));
+    }
+
+    #[test]
+    fn callout_env_parses_body_recursively_with_title() {
+        let n = parse("\\begin{todo}[My title]\ntext $E=mc^2$ text\n\\end{todo}\n");
+        let callout = n
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Callout { .. }))
+            .expect("a Callout node");
+        match &callout.kind {
+            NodeKind::Callout { env, class, title } => {
+                assert_eq!(env, "todo");
+                assert_eq!(class, "todo");
+                assert_eq!(title.as_deref(), Some("My title"));
+            }
+            _ => unreachable!(),
+        }
+        // Body is parsed (not dumped raw): the math is an InlineMath child.
+        assert!(
+            callout
+                .children
+                .iter()
+                .any(|c| matches!(&c.kind, NodeKind::InlineMath(s) if s.contains("mc^2"))),
+            "math inside the callout was not parsed: {:?}",
+            callout.children
+        );
+    }
+
+    #[test]
+    fn callout_default_title_and_non_title_optional_arg() {
+        // No optional arg → env's default title.
+        let n = parse("\\begin{note}\nx\n\\end{note}\n");
+        let title = n.iter().find_map(|node| match &node.kind {
+            NodeKind::Callout { title, .. } => Some(title.clone()),
+            _ => None,
+        });
+        assert_eq!(title.flatten().as_deref(), Some("Note"));
+
+        // `quoted`'s optional arg is a color, not a title — it must be consumed
+        // and ignored, not rendered as the title.
+        let n2 = parse("\\begin{quoted}[cyan!75!black]\nx\n\\end{quoted}\n");
+        let t2 = n2.iter().find_map(|node| match &node.kind {
+            NodeKind::Callout { title, .. } => Some(title.clone()),
+            _ => None,
+        });
+        assert_eq!(t2.flatten().as_deref(), Some("Quote"));
+    }
+
+    #[test]
+    fn verbatim_env_stays_opaque() {
+        // Non-callout, non-recognized envs keep the opaque (raw) path.
+        let n = parse("\\begin{verbatim}\n$x$\n\\end{verbatim}\n");
+        assert!(n.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "verbatim")
+        ));
     }
 
     #[test]
