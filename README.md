@@ -24,8 +24,10 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   on every `TextChanged`. No disk writes, no git pollution. `VimLeavePre`
   reaps the daemon so quitting nvim doesn't leave it bound.
 - **nvim ↔ HTML source sync**: cursor movement in nvim can scroll and
-  highlight the matching rendered word/math/ref element, and double-click
-  or Alt/Cmd-click in the browser can jump nvim back to the source line.
+  highlight the matching rendered word/math/ref element, a visual-mode
+  selection tints the whole matching region in the preview, and
+  double-click or Alt/Cmd-click in the browser can jump nvim back to the
+  source line.
 - **Macro extraction** from real preambles — `\newcommand`,
   `\DeclareMathOperator`, `\NewDocumentCommand`, `\def`, `\let`,
   `\DeclarePairedDelimiter`, and the `\newdelim` wrapper. Multi-file scan
@@ -813,7 +815,7 @@ The four commands `plugin/mathpreview.lua` registers on startup:
 
 | Command | What it does |
 | --- | --- |
-| `:MathPreview` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the browser tab. Attach `TextChanged` / `CursorMoved` autocmds and start the `/jump` poll. If the daemon is already running, just reopen the browser tab. |
+| `:MathPreview` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the browser tab. Attach `TextChanged` / `CursorMoved` / `ModeChanged` autocmds and start the `/jump` poll. If the daemon is already running, just reopen the browser tab. |
 | `:MathPreviewStop` | Kill the daemon, detach autocmds, stop the poll. Also fires from `VimLeavePre`. |
 | `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after preamble changes the daemon's macro cache misses. |
 | `:MathPreviewStatus` | `print(vim.inspect(...))` of the runtime state: PID/port, root file, push and cursor counts, last error, resolved binary path, nvim version. |
@@ -838,6 +840,15 @@ paragraph-separator lines inside theorem/proof environments also have
 invisible source anchors, so placing the cursor on an empty line syncs
 to that whitespace instead of jumping to the top of the enclosing
 environment.
+
+Selecting a region in **visual mode** highlights the matching region in
+the preview. As you extend the selection, the plugin POSTs the source
+range to `/selection`; the daemon resolves it — server-side, via the same
+sync index — to every rendered element the range overlaps and the browser
+tints them as one continuous block. Leaving visual mode clears the
+highlight. Linewise (`V`) covers whole rows and blockwise (`Ctrl-V`) is
+treated as its bounding rectangle. This reuses the `sync` and
+`cursor_debounce_ms` settings — no extra configuration.
 
 **`setup()` is optional.** The defaults in `lua/mathpreview/init.lua`
 are fine for the standard case. Override only if you need to:
