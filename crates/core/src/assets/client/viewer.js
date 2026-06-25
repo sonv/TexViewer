@@ -1814,6 +1814,8 @@
       document.documentElement.style.setProperty(
         '--body-font-size', cfg.font_size + 'px'
       );
+      // Font size changes line heights/wrapping, so the gutter must re-measure.
+      if (lineNumbersVisible) scheduleLineNumbers();
     }
     window.__mpConfig = window.__mpConfig || {};
     if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
@@ -2494,6 +2496,13 @@
     if (!lineNumbersVisible) return;
 
     var pageRect = page.getBoundingClientRect();
+    // #page is CSS `zoom`ed (var(--page-scale)); getClientRects returns rendered
+    // (zoomed) coords, but a child's `top` is in the page's unzoomed local space.
+    // Convert measured offsets to local space so the gutter aligns at any scale.
+    // Self-correcting: this ratio is 1 when the page isn't scaled, so the
+    // common 1:1 case is unchanged.
+    var scale = page.offsetHeight > 0 ? pageRect.height / page.offsetHeight : 1;
+    if (!isFinite(scale) || scale <= 0) scale = 1;
     var walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
       acceptNode: function(node) {
         if (!node.nodeValue || !/\S/.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
@@ -2511,7 +2520,7 @@
       for (var r = 0; r < rects.length; r++) {
         var rect = rects[r];
         if (rect.width === 0 && rect.height === 0) continue;
-        entries.push({ top: rect.top - pageRect.top, h: rect.height });
+        entries.push({ top: (rect.top - pageRect.top) / scale, h: rect.height / scale });
       }
     }
     if (!entries.length) return;
@@ -2537,7 +2546,12 @@
     for (var k = 0; k < lines.length; k++) {
       var num = document.createElement('span');
       num.className = 'lineno-num';
+      // Center the (fixed 11px) number within the line's measured height so it
+      // tracks the text baseline at any body font size, instead of sitting at
+      // the top of a tall line.
       num.style.top = Math.round(lines[k].top) + 'px';
+      num.style.height = Math.round(lines[k].h) + 'px';
+      num.style.lineHeight = Math.round(lines[k].h) + 'px';
       num.textContent = String(k + 1);
       layer.appendChild(num);
     }

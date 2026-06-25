@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.57] — 2026-06-25
+
+### Fixed
+
+- Line-number gutter alignment at non-default font sizes and page scales. Each
+  number is now vertically centered on its line using the measured line height
+  (so it tracks the text as the body font grows, instead of sitting at the top
+  of a tall line), positions are converted out of the page's CSS-`zoom` space so
+  they stay aligned when the page is scaled (A4 fit / zoom), and changing the
+  font size in the config now re-lays-out the gutter.
+
 ## [0.1.56] — 2026-06-25
 
 ### Fixed
