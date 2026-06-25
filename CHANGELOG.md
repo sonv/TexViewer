@@ -17,6 +17,16 @@ summary.
 
 Nothing yet.
 
+## [0.1.55] — 2026-06-25
+
+### Fixed
+
+- **Viewer reload loop.** 0.1.54 bumped the WebSocket protocol to 66 on the
+  server but left the browser's hardcoded copy at 65, so every connection
+  failed the version check and the page reloaded in a tight loop (constant
+  flashing). The client now reports 66, and a `client_ws_protocol_matches_server`
+  test keeps the two copies in lockstep so this can't drift again.
+
 ## [0.1.54] — 2026-06-25
 
 ### Added

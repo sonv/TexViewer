@@ -3608,7 +3608,10 @@ mod tests {
         assert!(out.html.contains("mathpreview.topbarHidden"));
         assert!(out.html.contains("topbar-hidden"));
         assert!(out.html.contains("topbarOffset"));
-        assert!(out.html.contains("WS_PROTOCOL_VERSION = '65'"));
+        // Presence only — the exact value is pinned against the server const by
+        // serve.rs's `client_ws_protocol_matches_server`, so this needn't churn
+        // on every protocol bump.
+        assert!(out.html.contains("WS_PROTOCOL_VERSION = '"));
         assert!(out.html.contains("margin-card-grip"));
         assert!(out.html.contains("initMarginDnd"));
         assert!(out.html.contains("decorateRefkeyChips"));

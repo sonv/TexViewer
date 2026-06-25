@@ -3229,6 +3229,20 @@ mod tests {
     }
 
     #[test]
+    fn client_ws_protocol_matches_server() {
+        // The browser builds `/ws?v=<this>` from a hardcoded JS copy of the
+        // protocol version; if it doesn't equal the server const, every connect
+        // triggers a full-reload (infinite reload loop). Keep them in lockstep.
+        let footer = include_str!("../../core/src/assets/client/footer.js");
+        let needle = format!("WS_PROTOCOL_VERSION = '{WS_PROTOCOL_VERSION}'");
+        assert!(
+            footer.contains(&needle),
+            "footer.js WS_PROTOCOL_VERSION must equal the server's {WS_PROTOCOL_VERSION:?} — \
+             update crates/core/src/assets/client/footer.js"
+        );
+    }
+
+    #[test]
     fn buffer_guard_only_defers_unclosed_math() {
         assert!(is_buffer_renderable(r"\begin{document}\section{A"));
         assert!(is_buffer_renderable(r"\begin{document}\begin{proof} text"));
