@@ -17,6 +17,58 @@ summary.
 
 Nothing yet.
 
+## [0.1.54] — 2026-06-25
+
+### Added
+
+- **Editor selection → preview highlight.** A visual-mode selection in nvim
+  tints the matching region in the preview (the range generalization of the
+  existing cursor sync) — live as you extend it, cleared on leaving visual
+  mode. New `POST /selection` route and `source-range` WebSocket event;
+  linewise `V` covers whole rows, blockwise `Ctrl-V` is its bounding rectangle.
+
+### Fixed
+
+- The live render no longer panics on a `\` immediately before a multibyte
+  character (accented text, Greek, em-dash, …) — fixed across the parser,
+  bibliography normalizer, equation-row splitter, and command scanners. This
+  was reachable per-keystroke on perfectly ordinary input.
+- Deeply nested environments no longer overflow the stack (nesting is capped
+  and the excess is captured as an opaque block).
+- Equation numbering matches LaTeX more closely: `\tag` / `\tag*` rows no longer
+  consume the automatic counter, `\appendix` preserves continuously-numbered
+  theorem counters, and alphabetic bibliography labels no longer overflow with
+  many colliding keys.
+- Macro extraction: xparse argument counts ignore `m` inside defaults,
+  `\newcommand[N]` is clamped to 9, optional defaults are read brace-balanced,
+  and commented-out `% \input` / `% \usepackage` lines no longer pull in files.
+- The preview no longer desyncs or drops edits under concurrent renders, a
+  lagging WebSocket client, or a save racing a keystroke.
+- nvim: a second `:MathPreview` during startup can no longer spawn a duplicate
+  daemon; a port-bind race now retries on the next port; the Windows browser
+  opener works (`cmd /c start`).
+- Viewer: the print PDF's object URL is released after use; the macro-save TOML
+  encoder handles control characters.
+
+### Security
+
+- The daemon now rejects cross-origin and DNS-rebinding requests (`Host` +
+  `Origin` checks) against its unauthenticated control endpoints (`/stop`,
+  `/restart`, `/print`, `/buffer`, …).
+- HTML/script injection via `\newtheorem` names and `.bib` `url` fields is
+  closed (escaping + URL-scheme allow-list).
+- `\input` / `\include` / `\subfile`, `% !TEX root`, and `\bibliography` /
+  `\addbibresource` path resolution is bounded to the project, so an untrusted
+  document can't read arbitrary local files into the preview.
+- `--host` documents the exposure and the daemon warns on non-loopback binds.
+
+### Changed
+
+- WebSocket protocol **65 → 66**; open tabs hard-reload to pick up the new
+  `source-range` event.
+- Release CI hardened: least-privilege `GITHUB_TOKEN`, SHA-pinned actions,
+  `cargo --locked` builds. Vendoring scripts gain opt-in SHA-256 verification.
+
 ## [0.1.53] — 2026-06-05
 
 ### Changed
