@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.56] — 2026-06-25
+
+### Fixed
+
+- The viewer's line-number gutter now re-measures when the layout reflows —
+  window resize, page-mode switch (A4 ↔ dynamic), zoom, and topbar hide/show.
+  Previously it was only recomputed on render, so resizing the window left the
+  numbers misaligned against the wrapped lines.
+
+### Added
+
+- The nvim plugin shows live progress (spinner, elapsed time, current crate)
+  while it builds the daemon binary on first run or a version-skew reinstall,
+  instead of appearing to hang.
+
 ## [0.1.55] — 2026-06-25
 
 ### Fixed

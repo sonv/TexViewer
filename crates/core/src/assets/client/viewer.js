@@ -2185,6 +2185,7 @@
     }
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    if (lineNumbersVisible) scheduleLineNumbers();
   }
 
   function setPageMode(mode) {
@@ -2201,6 +2202,7 @@
     lastPageGuideSignature = '';
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    if (lineNumbersVisible) scheduleLineNumbers();
   }
 
   function updatePageScale(_contentHeight) {
@@ -2248,6 +2250,7 @@
     currentUserZoom = clampUserZoom(z);
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    if (lineNumbersVisible) scheduleLineNumbers();
     if (persist) {
       try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
     }

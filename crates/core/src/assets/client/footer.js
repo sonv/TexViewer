@@ -228,6 +228,9 @@
   window.addEventListener('resize', function() {
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    // Resizing reflows wrapped text, so the gutter line numbers must be
+    // re-measured (rAF-coalesced; only when the gutter is shown).
+    if (lineNumbersVisible) scheduleLineNumbers();
   });
   window.addEventListener('scroll', scheduleActivePageUpdate, { passive: true });
   connect();
