@@ -221,8 +221,39 @@ end
 -- thread with { code, stdout, stderr }.
 local function run_system(args, opts, on_done)
   opts = opts or {}
+  -- Optional: called with each stderr line as it arrives (for live progress).
+  -- When unset, behavior is identical to before — the sync POSTs don't use it.
+  local on_line = opts.on_stderr_line
   if vim.system then
-    vim.system(args, opts, function(res)
+    if not on_line then
+      vim.system(args, opts, function(res)
+        if on_done then vim.schedule(function() on_done(res) end) end
+      end)
+      return
+    end
+    -- Streaming variant: forward each stderr line live, still capturing the
+    -- full stderr for the final result.
+    local err, buf = {}, ""
+    vim.system(args, {
+      cwd = opts.cwd,
+      stdin = opts.stdin,
+      stderr = function(_, data)
+        if not data then return end
+        err[#err + 1] = data
+        buf = buf .. data
+        local start = 1
+        while true do
+          local nl = buf:find("\n", start, true)
+          if not nl then break end
+          local line = buf:sub(start, nl - 1)
+          start = nl + 1
+          vim.schedule(function() on_line(line) end)
+        end
+        buf = buf:sub(start)
+      end,
+    }, function(res)
+      res = res or {}
+      res.stderr = table.concat(err)
       if on_done then vim.schedule(function() on_done(res) end) end
     end)
     return
@@ -231,7 +262,15 @@ local function run_system(args, opts, on_done)
   local job = vim.fn.jobstart(args, {
     cwd = opts.cwd,  -- nil → inherit nvim's cwd
     on_stdout = function(_, data) if data then vim.list_extend(stdout, data) end end,
-    on_stderr = function(_, data) if data then vim.list_extend(stderr, data) end end,
+    on_stderr = function(_, data)
+      if not data then return end
+      vim.list_extend(stderr, data)
+      if on_line then
+        for _, l in ipairs(data) do
+          if l ~= "" then on_line(l) end
+        end
+      end
+    end,
     on_exit = function(_, code)
       if on_done then
         on_done({
@@ -243,7 +282,7 @@ local function run_system(args, opts, on_done)
     end,
   })
   if job <= 0 then
-    if on_done then on_done({ code = -1, stderr = "could not start curl" }) end
+    if on_done then on_done({ code = -1, stderr = "could not start " .. tostring(args[1]) }) end
     return
   end
   if opts.stdin then
@@ -328,29 +367,68 @@ end
 -- async. Notifies on start (so the user waits out the one-time ~30s build) and
 -- on finish, then calls on_done(ok) on the main thread. Assumes the caller has
 -- confirmed this is a source checkout with cargo available.
+local INSTALL_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
 local function auto_install(on_done)
   if installing then return end  -- one already in flight; its callback will start us
   installing = true
+  local started = uv.now()
+  local frame = 0
+  local step = "" -- latest cargo step, e.g. "compiling mathpreview-core"
+  local progress = uv.new_timer()
+  local function stop_progress()
+    if progress then
+      progress:stop()
+      progress:close()
+      progress = nil
+    end
+    -- Clear the cmdline spinner line.
+    vim.api.nvim_echo({ { "" } }, false, {})
+  end
   vim.notify(
     ("mathpreview: installing mathpreview-cli to %s (first run, ~30s) — please "
       .. "wait, :MathPreview will start automatically when it finishes…")
       :format(cargo_bin_dir()),
     vim.log.levels.INFO)
-  run_system(cargo_install_args(), { cwd = plugin_root() }, function(res)
-    installing = false
-    local ok = res and res.code == 0
-    if ok then
-      vim.notify("mathpreview: install complete — starting daemon.", vim.log.levels.INFO)
-      hint_path_if_needed()
-    else
-      vim.notify(
-        ("mathpreview: install failed (cargo exit %s). See :messages; you can also "
-          .. "install the binary manually (README) or set `cmd` in setup().\n%s"):format(
-          res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
-        vim.log.levels.ERROR)
+  -- Live progress on the cmdline (history=false → not added to :messages) so the
+  -- one-time build doesn't look frozen: a spinner, elapsed seconds, and the
+  -- crate cargo is currently compiling.
+  progress:start(0, 120, vim.schedule_wrap(function()
+    if not installing then return end
+    frame = frame + 1
+    local secs = math.floor((uv.now() - started) / 1000)
+    local spin = INSTALL_SPINNER[(frame % #INSTALL_SPINNER) + 1]
+    local msg = ("%s building mathpreview-cli… %ds"):format(spin, secs)
+    if step ~= "" then msg = msg .. "  " .. step end
+    vim.api.nvim_echo({ { msg, "Comment" } }, false, {})
+  end))
+  local on_stderr_line = function(line)
+    local crate = line:match("^%s*Compiling%s+(%S+)")
+    if crate then
+      step = "compiling " .. crate
+    elseif line:match("^%s*Finished") then
+      step = "finishing…"
     end
-    if on_done then on_done(ok) end
-  end)
+  end
+  run_system(
+    cargo_install_args(),
+    { cwd = plugin_root(), on_stderr_line = on_stderr_line },
+    function(res)
+      installing = false
+      stop_progress()
+      local ok = res and res.code == 0
+      if ok then
+        vim.notify("mathpreview: install complete — starting daemon.", vim.log.levels.INFO)
+        hint_path_if_needed()
+      else
+        vim.notify(
+          ("mathpreview: install failed (cargo exit %s). See :messages; you can also "
+            .. "install the binary manually (README) or set `cmd` in setup().\n%s"):format(
+            res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
+          vim.log.levels.ERROR)
+      end
+      if on_done then on_done(ok) end
+    end)
 end
 
 -- True if `port` is free on 127.0.0.1. We `bind` AND `listen`: libuv sets
