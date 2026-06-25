@@ -59,6 +59,7 @@
           setRefkeysVisible(refkeysVisible, false);
           decorateRefkeyChips(document.getElementById('page'));
           restoreSourceHighlight();
+          restoreSourceRange();
           restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'body-updated' && typeof msg.html === 'string') {
@@ -157,12 +158,15 @@
           setRefkeysVisible(refkeysVisible, false);
           decorateRefkeyChips(document.getElementById('page'));
           restoreSourceHighlight();
+          restoreSourceRange();
           restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
           if (msg.element_id) {
             revealSourceElement(msg.element_id, true);
           }
+        } else if (msg.event === 'source-range') {
+          highlightSourceRange(msg.element_ids || [], true);
         } else if (msg.event === 'full-reload') {
           location.reload();
         } else if (msg.event === 'error') {

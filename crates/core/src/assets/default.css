@@ -780,6 +780,13 @@ body.refkey-visible .eq-refkey-list {
   background: rgba(91, 62, 162, 0.07);
   transition: background 0.12s ease, outline-color 0.12s ease;
 }
+/* Editor visual-selection highlight: a calm, persistent tint (no outline, no
+   flash) so a multi-element selection reads as one continuous tinted region. */
+.source-range {
+  background: rgba(91, 62, 162, 0.16);
+  border-radius: 2px;
+  transition: background 0.12s ease;
+}
 .source-space {
   display: inline-block;
   position: relative;
@@ -1740,6 +1747,7 @@ body.theme-dark .page-guide { border-top-color: rgba(179, 157, 232, 0.40); }
 body.theme-dark .math.math-selected,
 body.theme-dark .math:focus,
 body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
+body.theme-dark .source-range { background: rgba(179, 157, 232, 0.20); }
 body.theme-dark .source-space.source-active::after { border-left-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .math.math-search-hit { background: rgba(216, 151, 0, 0.16); }
 body.theme-dark .math.math-search-active { outline-color: rgba(216, 151, 0, 0.85); background: rgba(216, 151, 0, 0.22); }

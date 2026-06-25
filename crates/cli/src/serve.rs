@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "65";
+const WS_PROTOCOL_VERSION: &str = "66";
 
 #[derive(Clone)]
 struct AppState {
@@ -433,6 +433,20 @@ struct SourceRequest {
     col: Option<u32>,
 }
 
+/// Body for `POST /selection` — the editor's current visual selection as an
+/// inclusive 1-based source range. `clear: true` (sent when the user leaves
+/// visual mode) drops the highlight. Missing bounds also clear.
+#[derive(Debug, Deserialize)]
+struct RangeRequest {
+    file: PathBuf,
+    #[serde(default)]
+    clear: bool,
+    start_line: Option<u32>,
+    start_col: Option<u32>,
+    end_line: Option<u32>,
+    end_col: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct SourceJump {
     seq: u64,
@@ -593,6 +607,7 @@ pub async fn run(
         .route("/ws", get(serve_ws))
         .route("/buffer", axum::routing::post(serve_buffer_push))
         .route("/cursor", post(serve_cursor))
+        .route("/selection", post(serve_selection))
         .route("/jump", get(serve_jump_poll).post(serve_jump))
         .route("/reveal-source", post(serve_reveal_source))
         .route("/macros/append", post(serve_macros_append))
@@ -1005,6 +1020,41 @@ async fn serve_cursor(
         "line": line,
         "col": col,
         "element_id": element_id,
+    })
+    .to_string();
+    let _ = state.tx.send(payload);
+    axum::http::StatusCode::NO_CONTENT
+}
+
+/// `POST /selection` — map the editor's visual selection (a source range) to
+/// every rendered leaf element it overlaps and broadcast a `source-range` event
+/// so the browser highlights them. The range generalization of `serve_cursor`.
+async fn serve_selection(
+    State(state): State<AppState>,
+    Json(req): Json<RangeRequest>,
+) -> axum::http::StatusCode {
+    let file = normalize_source_path(req.file);
+    let bounds = (req.start_line, req.start_col, req.end_line, req.end_col);
+    let element_ids: Vec<String> = match bounds {
+        // A real range — resolve overlapping leaves. `end_col` defaults to "end
+        // of line" (u32::MAX), not 1, so a linewise (V) selection covers the row.
+        (Some(sl), sc, Some(el), ec) if !req.clear => {
+            let current = state.current.read().await;
+            current.sync.leaves_in_range(
+                &file,
+                sl.max(1),
+                sc.unwrap_or(1).max(1),
+                el.max(1),
+                ec.unwrap_or(u32::MAX),
+            )
+        }
+        // clear == true, or incomplete bounds → empty list dismisses the highlight.
+        _ => Vec::new(),
+    };
+    let payload = serde_json::json!({
+        "event": "source-range",
+        "file": file,
+        "element_ids": element_ids,
     })
     .to_string();
     let _ = state.tx.send(payload);

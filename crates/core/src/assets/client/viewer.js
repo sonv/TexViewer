@@ -587,6 +587,32 @@
     if (activeSourceId) revealSourceElement(activeSourceId, false);
   }
 
+  // Highlight every element of the editor's visual selection. Unlike the cursor
+  // flash, this is persistent (no timeout) — it stays until the daemon sends an
+  // empty list (selection dismissed) or a new range. `ids` come pre-resolved
+  // from the daemon's SyncIndex range lookup.
+  function highlightSourceRange(ids, shouldScroll) {
+    document.querySelectorAll('.source-range').forEach(function(el) {
+      el.classList.remove('source-range');
+    });
+    activeSourceRangeIds = Array.isArray(ids) ? ids : [];
+    var first = null;
+    activeSourceRangeIds.forEach(function(id) {
+      var el = visibleSyncElement(document.getElementById(id));
+      if (!el) return;
+      el.classList.add('source-range');
+      if (!first) first = el;
+    });
+    if (shouldScroll && first) scrollSourceIntoView(first);
+  }
+
+  // Re-apply the selection highlight after a re-render rebuilds the DOM (no
+  // scroll — don't yank the view on every keystroke), mirroring
+  // restoreSourceHighlight for the cursor.
+  function restoreSourceRange() {
+    if (activeSourceRangeIds.length) highlightSourceRange(activeSourceRangeIds, false);
+  }
+
   function sourceElementFromTarget(target) {
     if (!target || !target.closest) return null;
     var el = target.closest('#page [data-src]');

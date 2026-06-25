@@ -103,6 +103,7 @@ local config = {
   -- Per-session URLs, written when start_daemon() picks a port.
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
+  selection_url = nil, -- http://127.0.0.1:<port>/selection
   jump_url = nil,   -- http://127.0.0.1:<port>/jump
   debug_url = nil,  -- http://127.0.0.1:<port>/debug
 }
@@ -116,6 +117,7 @@ local daemon_root = nil  -- root .tex file path the daemon serves, or nil
 -- Push state (carried across pushes for :MathPreviewStatus).
 local timer = nil
 local cursor_timer = nil
+local selection_timer = nil
 local last_jump_seq = 0
 local last_status = {
   pushes = 0,
@@ -381,6 +383,7 @@ local function set_urls(port)
   local base = "http://127.0.0.1:" .. tostring(port)
   config.url = base .. "/buffer"
   config.cursor_url = base .. "/cursor"
+  config.selection_url = base .. "/selection"
   config.jump_url = base .. "/jump"
   config.debug_url = base .. "/debug"
 end
@@ -468,6 +471,78 @@ local function post_cursor()
     end
   end)
   last_status.cursor_posts = last_status.cursor_posts + 1
+end
+
+-- True for any visual sub-mode: charwise (v), linewise (V), or blockwise
+-- (Ctrl-V, byte 0x16). Detected by byte so the source carries no control char.
+local function is_visual(m)
+  if not m or m == "" then return false end
+  local c = m:sub(1, 1)
+  return c == "v" or c == "V" or m:byte(1) == 22
+end
+
+-- Shared JSON POST used by the selection senders (mirrors post_cursor's curl).
+local function post_sync_json(url, payload, label)
+  local args = {
+    "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "2",
+    "--header", "content-type: application/json",
+    "--data-binary", "@-",
+    "-X", "POST",
+    url,
+  }
+  run_system(args, { stdin = payload }, function(res)
+    if res and res.code ~= 0 then
+      last_status.last_error = ("%s curl exit %d: %s"):format(
+        label, res.code or -1, (res.stderr or ""):gsub("%s+$", ""))
+    else
+      last_status.last_error = nil
+    end
+  end)
+end
+
+-- Send the editor's current visual selection as a source range so the preview
+-- highlights the matching elements. Reads both ends live: getpos("v") is the
+-- anchor (the '< / '> marks are stale until visual mode is left) and the cursor
+-- is the moving end. Coordinate care: getpos col is already 1-based, but
+-- nvim_win_get_cursor col is 0-based and needs +1 (the post_cursor convention).
+local function post_selection()
+  if not daemon_job or not config.sync then return end
+  -- The debounce may fire just after the user left visual mode; bail so we
+  -- don't read a stale getpos("v"). ModeChanged handles the dismiss/clear.
+  local m = vim.fn.mode()
+  if not is_visual(m) then return end
+  local buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(buf)
+  if path == "" then return end
+  local anchor = vim.fn.getpos("v")           -- [bufnum, lnum(1), col(1), off]
+  local cursor = vim.api.nvim_win_get_cursor(0) -- {line(1), col(0)}
+  local a_line, a_col = anchor[2], anchor[3]
+  local c_line, c_col = cursor[1], cursor[2] + 1
+  -- Order so start <= end by (line, col).
+  local sl, sc, el, ec
+  if a_line < c_line or (a_line == c_line and a_col <= c_col) then
+    sl, sc, el, ec = a_line, a_col, c_line, c_col
+  else
+    sl, sc, el, ec = c_line, c_col, a_line, a_col
+  end
+  -- Linewise (V) covers whole rows; the large sentinel means "through EOL".
+  if m == "V" then
+    sc, ec = 1, 2147483647
+  end
+  local payload = json_encode({
+    file = path, start_line = sl, start_col = sc, end_line = el, end_col = ec,
+  })
+  post_sync_json(config.selection_url, payload, "selection")
+end
+
+-- Tell the daemon to drop the selection highlight (sent on leaving visual mode).
+local function post_selection_clear()
+  if not daemon_job then return end
+  local buf = vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(buf)
+  if path == "" then return end
+  post_sync_json(config.selection_url, json_encode({ file = path, clear = true }),
+    "selection-clear")
 end
 
 -- Best-effort "bring the editor to the front" on a source-jump — the focus
@@ -665,6 +740,18 @@ local function debounced_cursor()
   end))
 end
 
+-- Separate timer from cursor_timer: a visual drag fires CursorMoved rapidly,
+-- and sharing the timer would cancel pending cursor posts (and vice versa).
+local function debounced_selection()
+  if not daemon_job or not config.sync then return end
+  if selection_timer then selection_timer:stop(); selection_timer:close() end
+  selection_timer = uv.new_timer()
+  selection_timer:start(config.cursor_debounce_ms, 0, vim.schedule_wrap(function()
+    post_selection()
+    if selection_timer then selection_timer:close(); selection_timer = nil end
+  end))
+end
+
 -- Attach the TextChanged / CursorMoved autocmds and start jump polling.
 -- Idempotent — clearing the augroup before re-creating it.
 local function attach_autocmds()
@@ -683,7 +770,34 @@ local function attach_autocmds()
     pattern = "*",
     callback = function(args)
       if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
-        debounced_cursor()
+        -- CursorMoved also fires while extending a visual selection, so route
+        -- to the range sender when a visual mode is active.
+        if is_visual(vim.fn.mode()) then
+          debounced_selection()
+        else
+          debounced_cursor()
+        end
+      end
+    end,
+  })
+  -- Seed the highlight on entering visual mode (no CursorMoved yet) and clear it
+  -- on leaving. `*:*` then a mode() check avoids embedding the Ctrl-V byte in a
+  -- pattern; vim.v.event tells us what we came from / went to.
+  vim.api.nvim_create_autocmd("ModeChanged", {
+    group = "mathpreview",
+    pattern = "*:*",
+    callback = function(args)
+      if not vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then return end
+      local ev = vim.v.event or {}
+      if is_visual(ev.new_mode or vim.fn.mode()) then
+        debounced_selection()
+      elseif is_visual(ev.old_mode or "") then
+        if selection_timer then
+          selection_timer:stop()
+          selection_timer:close()
+          selection_timer = nil
+        end
+        post_selection_clear()
       end
     end,
   })

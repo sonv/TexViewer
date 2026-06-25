@@ -36,6 +36,9 @@
   var selectedMath = null;
   var activeSourceId = null;
   var sourceFlashTimer = 0;
+  // Element ids of the editor's current visual selection (persistent highlight,
+  // re-applied across re-renders). Empty when no selection is active.
+  var activeSourceRangeIds = [];
   var vimPendingKey = '';
   var vimPendingTimer = 0;
   var lastSearchQuery = '';

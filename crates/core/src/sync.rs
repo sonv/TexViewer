@@ -97,6 +97,40 @@ impl SyncIndex {
         self.lookup_by_source_position_filtered(file, line, col, Some(SyncKind::Leaf), false)
     }
 
+    /// All leaf element ids in `file` whose source span overlaps the inclusive
+    /// range `start..=end`. The range generalization of
+    /// [`Self::lookup_leaf_by_source_position`] used for highlighting an editor
+    /// selection. Leaf-only (so a multi-word selection doesn't also flag the
+    /// enclosing theorem/proof container), and — unlike the point lookup — it
+    /// does NOT snap to the nearest entry: a selection over un-indexed source
+    /// simply yields fewer (or no) ids.
+    pub fn leaves_in_range(
+        &self,
+        file: &Path,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    ) -> Vec<String> {
+        let start = Pos {
+            line: start_line,
+            col: start_col,
+            byte: 0,
+        };
+        let end = Pos {
+            line: end_line,
+            col: end_col,
+            byte: 0,
+        };
+        self.entries
+            .iter()
+            .filter(|e| e.kind == SyncKind::Leaf && same_path(&e.file, file))
+            // Overlap: entry.start <= sel_end && entry.end >= sel_start.
+            .filter(|e| pos_before_or_equal(e.start, end) && pos_after_or_equal(e.end, start))
+            .map(|e| e.element_id.clone())
+            .collect()
+    }
+
     fn lookup_by_source_position_filtered(
         &self,
         file: &Path,
@@ -235,5 +269,37 @@ mod tests {
             .expect("leaf word entry");
         assert_eq!(in_word.element_id, "srcw-1");
         assert!(sync.lookup_leaf_by_source_position(&file, 15, 1).is_none());
+    }
+
+    #[test]
+    fn leaves_in_range_returns_overlapping_leaves_only() {
+        let file = PathBuf::from("/tmp/main.tex");
+        let other = PathBuf::from("/tmp/other.tex");
+        let mut sync = SyncIndex::new();
+        // A container spanning the whole region (must be excluded).
+        sync.record_with_kind(
+            "proof-1",
+            file.clone(),
+            pos(10, 1),
+            pos(20, 1),
+            None,
+            SyncKind::Container,
+        );
+        sync.record("w-a", file.clone(), pos(11, 1), pos(11, 5), None);
+        sync.record("w-b", file.clone(), pos(12, 1), pos(12, 5), None);
+        sync.record("w-c", file.clone(), pos(18, 1), pos(18, 5), None);
+        // Same source coordinates but a different file — must be excluded.
+        sync.record("other-w", other, pos(11, 1), pos(11, 5), None);
+
+        // Selection covering lines 11..12 hits w-a and w-b, not the container,
+        // not the far w-c, not the other file.
+        let ids = sync.leaves_in_range(&file, 11, 1, 12, 3);
+        assert_eq!(ids, vec!["w-a".to_string(), "w-b".to_string()]);
+
+        // A boundary-touching selection still overlaps (inclusive).
+        assert_eq!(sync.leaves_in_range(&file, 11, 5, 11, 5), vec!["w-a"]);
+
+        // A selection over un-indexed source snaps to nothing (no fallback).
+        assert!(sync.leaves_in_range(&file, 30, 1, 31, 1).is_empty());
     }
 }
