@@ -1696,6 +1696,13 @@
     if (!isFinite(fontSize) || fontSize <= 0) fontSize = 18;
     var fs = document.getElementById('config-font-size');
     if (fs) fs.value = String(fontSize);
+    var uiFontSize = parseInt(
+      getComputedStyle(document.documentElement).getPropertyValue('--ui-font-size'),
+      10
+    );
+    if (!isFinite(uiFontSize) || uiFontSize <= 0) uiFontSize = 12;
+    var uifs = document.getElementById('config-ui-font-size');
+    if (uifs) uifs.value = String(uiFontSize);
     var trig = document.getElementById('config-source-jump-trigger');
     if (trig) trig.value = cfg.sourceJumpTrigger || 'cmd-click';
     var mode = document.getElementById('config-default-page-mode');
@@ -1762,6 +1769,8 @@
     }
     var fontSize = parseInt(document.getElementById('config-font-size').value, 10);
     if (isFinite(fontSize) && fontSize > 0) payload.values['viewer.font-size'] = fontSize;
+    var uiFontSize = parseInt(document.getElementById('config-ui-font-size').value, 10);
+    if (isFinite(uiFontSize) && uiFontSize > 0) payload.values['viewer.ui-font-size'] = uiFontSize;
     var trig = document.getElementById('config-source-jump-trigger').value;
     if (trig) payload.values['viewer.source-jump.trigger'] = trig;
     var mode = document.getElementById('config-default-page-mode').value;
@@ -1817,6 +1826,16 @@
       // Font size changes line heights/wrapping, so the gutter must re-measure.
       if (lineNumbersVisible) scheduleLineNumbers();
     }
+    if (typeof cfg.ui_font_size === 'number') {
+      // Scales the toolbar (topbar) and the index/pages side panel (TOC);
+      // independent of the document body font. Doesn't affect the rendered
+      // paper, so no line-number re-measure is needed — but it changes the
+      // toolbar's height, so re-anchor the floating side controls.
+      document.documentElement.style.setProperty(
+        '--ui-font-size', cfg.ui_font_size + 'px'
+      );
+      syncTopbarHeight();
+    }
     window.__mpConfig = window.__mpConfig || {};
     if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
     if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
@@ -1865,6 +1884,7 @@
     section('viewer config (live)');
     var vc = snapshot.viewer_config || {};
     row('font-size', vc.font_size + ' px');
+    row('ui-font-size', vc.ui_font_size + ' px');
     row('source-jump trigger', vc.source_jump_trigger);
     row('default page mode', vc.default_page_mode);
     row('default theme', vc.default_theme);
@@ -2175,6 +2195,27 @@
     }, 250);
   }
 
+  // Keep the `--topbar-height` layout variable in sync with the toolbar's
+  // ACTUAL rendered height. The floating side controls anchor to it — the toc
+  // pill (`top: calc(var(--topbar-height) + 4px)`), the index/pages side panel,
+  // the search panel, and the margin column. The toolbar's height is
+  // content-driven and now varies with the `ui-font-size` knob (and with
+  // responsive wrapping), so a hard-coded constant would let those controls
+  // drift over/under the toolbar's real bottom. Measuring is cheap and has no
+  // feedback loop: the variable doesn't affect the toolbar's own height.
+  function syncTopbarHeight() {
+    var topbar = document.querySelector('.topbar');
+    if (!topbar) return;
+    // While the banner is hidden it has zero height — leave the variable at its
+    // last visible value so the side controls keep their place (the dedicated
+    // `body.topbar-hidden` rules handle the page-shell / margin offsets).
+    if (topbarHidden || document.body.classList.contains('topbar-hidden')) return;
+    var h = Math.round(topbar.getBoundingClientRect().height);
+    if (h > 0) {
+      document.documentElement.style.setProperty('--topbar-height', h + 'px');
+    }
+  }
+
   function setTopbarHidden(hidden, persist) {
     topbarHidden = !!hidden;
     document.body.classList.toggle('topbar-hidden', topbarHidden);
@@ -2186,6 +2227,7 @@
       try { localStorage.setItem('mathpreview.topbarHidden', topbarHidden ? '1' : '0'); } catch (e) {}
     }
     updatePageScale();
+    syncTopbarHeight();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
   }

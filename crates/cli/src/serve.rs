@@ -316,6 +316,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
         "editor_cmd": state.editor_cmd.as_ref(),
         "viewer_config": {
             "font_size": viewer_config.font_size,
+            "ui_font_size": viewer_config.ui_font_size,
             "default_page_mode": viewer_config.default_page_mode.as_str(),
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
@@ -2372,8 +2373,9 @@ async fn render_cached(
                     state,
                     "info",
                     format!(
-                        "config reloaded: font-size={}, source-jump-trigger={}, default-page-mode={}, default-theme={}",
+                        "config reloaded: font-size={}, ui-font-size={}, source-jump-trigger={}, default-page-mode={}, default-theme={}",
                         resolved.viewer.font_size,
+                        resolved.viewer.ui_font_size,
                         resolved.viewer.source_jump_trigger.as_str(),
                         resolved.viewer.default_page_mode.as_str(),
                         resolved.viewer.default_theme.as_str(),
@@ -2481,6 +2483,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
     let rss = resident_mib();
     let viewer_config_json = serde_json::json!({
         "font_size": viewer_config.font_size,
+        "ui_font_size": viewer_config.ui_font_size,
         "default_page_mode": viewer_config.default_page_mode.as_str(),
         "default_theme": viewer_config.default_theme.as_str(),
         "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),

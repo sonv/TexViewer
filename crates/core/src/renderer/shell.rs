@@ -54,8 +54,8 @@ pub(super) fn wrap_in_shell(
     // by source order, and as a separate `<script>` so client JS can read
     // the values at init without round-tripping through localStorage.
     let config_css = format!(
-        ":root {{ --body-font-size: {}px; }}",
-        opts.viewer_config.font_size,
+        ":root {{ --body-font-size: {}px; --ui-font-size: {}px; }}",
+        opts.viewer_config.font_size, opts.viewer_config.ui_font_size,
     );
     // The trigger string comes from a finite enum (cmd-click / ctrl-click
     // / alt-click / double-click) with no JSON-special characters, so a
@@ -266,6 +266,9 @@ pub(super) fn wrap_in_shell(
       <legend>Fields</legend>
       <label>Body font size (px)
         <input type="number" id="config-font-size" min="10" max="40" step="1">
+      </label>
+      <label>UI font size (px)
+        <input type="number" id="config-ui-font-size" min="9" max="20" step="1">
       </label>
       <label>Source-jump trigger
         <select id="config-source-jump-trigger">

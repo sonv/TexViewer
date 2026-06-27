@@ -220,13 +220,21 @@
   initCmdline();
   initMarginDnd();
   decorateRefkeyChips(document.getElementById('page'));
+  syncTopbarHeight();
   scheduleNavigationRefresh();
   startMathObserver();
   refreshAfterInitialEngine(40);
   setTimeout(ensureInitialTypeset, 1200);
-  window.addEventListener('load', scheduleNavigationRefresh);
+  window.addEventListener('load', function() {
+    // Re-measure once fonts/layout have fully settled.
+    syncTopbarHeight();
+    scheduleNavigationRefresh();
+  });
   window.addEventListener('resize', function() {
     updatePageScale();
+    // Responsive wrapping changes the toolbar's height, so re-anchor the
+    // floating side controls before refreshing navigation.
+    syncTopbarHeight();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     // Resizing reflows wrapped text, so the gutter line numbers must be
     // re-measured (rAF-coalesced; only when the gutter is shown).

@@ -17,6 +17,27 @@ summary.
 
 Nothing yet.
 
+## [0.1.59] — 2026-06-28
+
+### Added
+
+- **Adjustable toolbar / TOC font size.** A new `[viewer] ui-font-size = N`
+  setting (default 12) scales the toolbar (topbar) and the index/pages side
+  panel (TOC) independently of the document body font. Adjustable from the
+  config dialog ("UI font size (px)"), the `.mathpreview.toml` file, and live
+  over the WebSocket without a reload. The chrome's font sizes now derive from a
+  single `--ui-font-size` CSS variable (descendants via `em`), so the default
+  reproduces the previous pixel sizes exactly and scales as one when changed.
+
+### Fixed
+
+- The floating side controls (the "toc" pill, the index/pages panel, the search
+  panel, and the margin column) now stay anchored to the toolbar's **actual**
+  height. `--topbar-height` was a hard-coded constant; it is now measured from
+  the rendered toolbar and kept in sync on load, resize, banner show/hide, and
+  UI-font-size changes — so a larger `ui-font-size` (or responsive wrapping) no
+  longer leaves those controls overlapping or floating off the toolbar's edge.
+
 ## [0.1.58] — 2026-06-25
 
 ### Added

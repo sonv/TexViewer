@@ -117,6 +117,10 @@ pub struct Config {
 pub struct ViewerConfig {
     /// Body font size in CSS pixels. Default 18.
     pub font_size: Option<u32>,
+    /// UI-chrome font size in CSS pixels — scales the toolbar (topbar) and
+    /// the index/pages side panel (TOC) independently of the document font.
+    /// Default 12.
+    pub ui_font_size: Option<u32>,
     /// Initial page mode for new clients. localStorage still wins once
     /// the user toggles in-browser; this sets the *default* for a
     /// fresh tab. `"a4"` or `"dynamic"`.
@@ -217,6 +221,7 @@ pub struct ResolvedConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedViewerConfig {
     pub font_size: u32,
+    pub ui_font_size: u32,
     pub default_page_mode: PageMode,
     pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
@@ -229,6 +234,7 @@ impl Default for ResolvedConfig {
         Self {
             viewer: ResolvedViewerConfig {
                 font_size: 18,
+                ui_font_size: 12,
                 default_page_mode: PageMode::A4,
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
@@ -261,6 +267,10 @@ impl Config {
         ResolvedConfig {
             viewer: ResolvedViewerConfig {
                 font_size: self.viewer.font_size.unwrap_or(defaults.viewer.font_size),
+                ui_font_size: self
+                    .viewer
+                    .ui_font_size
+                    .unwrap_or(defaults.viewer.ui_font_size),
                 default_page_mode: self
                     .viewer
                     .default_page_mode
@@ -308,6 +318,9 @@ impl ViewerConfig {
     fn merge(&mut self, other: ViewerConfig) {
         if other.font_size.is_some() {
             self.font_size = other.font_size;
+        }
+        if other.ui_font_size.is_some() {
+            self.ui_font_size = other.ui_font_size;
         }
         if other.default_page_mode.is_some() {
             self.default_page_mode = other.default_page_mode;
@@ -405,6 +418,7 @@ mod tests {
         let cfg = Config::default().resolve();
         assert_eq!(cfg, ResolvedConfig::default());
         assert_eq!(cfg.viewer.font_size, 18);
+        assert_eq!(cfg.viewer.ui_font_size, 12);
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
     }
 
@@ -445,6 +459,7 @@ mod tests {
         let src = r#"
 [viewer]
 font-size = 22
+ui-font-size = 15
 
 [viewer.source-jump]
 trigger = "double-click"
@@ -452,6 +467,7 @@ trigger = "double-click"
         let cfg = Config::parse(src, Path::new("test.toml")).unwrap();
         let resolved = cfg.resolve();
         assert_eq!(resolved.viewer.font_size, 22);
+        assert_eq!(resolved.viewer.ui_font_size, 15);
         assert_eq!(
             resolved.viewer.source_jump_trigger,
             SourceJumpTrigger::DoubleClick

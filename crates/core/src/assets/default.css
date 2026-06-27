@@ -61,6 +61,12 @@
      overrides this from `[viewer] font-size = N` in config.toml by
      re-declaring `--body-font-size` in a trailing `<style>` block. */
   --body-font-size: 18px;
+  /* UI-chrome font size — scales the toolbar (.topbar) and the index/pages
+     side panel (.side-panel, the "toc"), independently of the document font.
+     The daemon overrides this from `[viewer] ui-font-size = N` the same way
+     it overrides --body-font-size. Children in those subtrees use `em` so
+     they all scale from this one value. */
+  --ui-font-size: 12px;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -80,7 +86,7 @@ html, body {
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 12px;
+  font-size: var(--ui-font-size);
 }
 .topbar-row {
   display: flex;
@@ -99,7 +105,7 @@ html, body {
 .topbar-row-actions {
   flex-wrap: wrap;
   row-gap: 6px;
-  font-size: 12px;
+  font-size: 1em;
 }
 .topbar-actions-spacer { flex: 1; min-width: 0; }
 
@@ -115,12 +121,12 @@ html, body {
 }
 .topbar-doc-title {
   font-weight: 700;
-  font-size: 13px;
+  font-size: 1.08em;
   flex-shrink: 0;
   color: var(--fg);
 }
 .topbar-doc-path {
-  font-size: 11px;
+  font-size: 0.92em;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow: hidden;
@@ -176,7 +182,7 @@ body.topbar-hidden .topbar { display: none; }
 }
 .theme-toggle-icon {
   display: inline-block;
-  font-size: 14px;
+  font-size: 1.17em;
   line-height: 1;
   transition: transform 240ms cubic-bezier(0.3, 1.4, 0.5, 1);
 }
@@ -210,7 +216,9 @@ body.topbar-hidden .topbar { display: none; }
   border: none;
   border-radius: 0 4px 4px 0;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 10px;
+  /* The floating "toc" pill is position:fixed (not a .side-panel child), so
+     it can't inherit the em cascade — scale it from the variable directly. */
+  font-size: calc(var(--ui-font-size) * 0.83);
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
@@ -398,7 +406,7 @@ body.theme-dark .search-help code { background: rgba(255, 255, 255, 0.07); }
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.05);
   z-index: 9;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 12px;
+  font-size: var(--ui-font-size);
   transform: translateX(0);
   transition: transform 0.16s ease;
 }
@@ -987,7 +995,7 @@ body.refkey-visible .refkey-chip { display: block; }
 .math.display > .refkey-chip { top: 50%; transform: translateY(-50%); }
 .thm > .refkey-chip { top: 0.72em; }
 .float-placeholder > .refkey-chip { top: 0; }
-.status { font-size: 11px; padding: 2px 6px; border-radius: 3px; color: var(--muted); }
+.status { font-size: 0.92em; padding: 2px 6px; border-radius: 3px; color: var(--muted); }
 .status.live { color: #1e7e1e; }
 .status.dead { color: #b22222; }
 .status.updating { color: var(--accent); }
