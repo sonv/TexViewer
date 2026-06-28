@@ -344,6 +344,18 @@
       setTheme(themeMode === 'dark' ? 'light' : 'dark', true);
       return;
     }
+    var marginZoom = e.target.closest('.margin-card-zoom');
+    if (marginZoom) {
+      var zcard = marginZoom.closest('.margin-card');
+      if (zcard) openMarginZoom(zcard);
+      return;
+    }
+    // Dismiss the magnify overlay: explicit close button, or a click on the
+    // dialog backdrop (the <dialog> element itself, outside its content box).
+    if (e.target.closest('#margin-zoom-close') || e.target.id === 'margin-zoom-dialog') {
+      closeMarginZoom();
+      return;
+    }
     var marginClose = e.target.closest('.margin-card-close');
     if (marginClose) {
       var card = marginClose.closest('.margin-card');
@@ -461,6 +473,16 @@
 
     if (handleZoomKeys(e)) {
       e.preventDefault();
+      return;
+    }
+
+    // Cmd/Ctrl+M toggles margin mode. macOS browsers don't see Cmd+M (the OS
+    // takes it for window-minimize) — that's fine; Ctrl+M covers Linux/Windows
+    // and works everywhere the page receives it. Skip while typing.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey &&
+        (e.key === 'm' || e.key === 'M') && !isEditableTarget(e.target)) {
+      e.preventDefault();
+      setMarginMode(!marginMode, true);
       return;
     }
 

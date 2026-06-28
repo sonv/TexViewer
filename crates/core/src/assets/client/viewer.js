@@ -465,6 +465,10 @@
 
   function handleVimNavigation(e) {
     if (e.defaultPrevented || e.altKey || e.metaKey || isEditableTarget(e.target)) return false;
+    // A modal dialog (e.g. the margin magnify overlay) puts focus on a button,
+    // not an input, so isEditableTarget won't catch it — guard explicitly so
+    // j/k/h/l/g/G and `/` `:` don't scroll the page or open panels behind it.
+    if (document.querySelector('dialog[open]')) return false;
     var vh = window.innerHeight || document.documentElement.clientHeight || 800;
     var vw = window.innerWidth || document.documentElement.clientWidth || 1000;
     var line = Math.max(28, Math.round(vh * 0.06));
@@ -817,8 +821,13 @@
     if (persist) {
       try { localStorage.setItem('mathpreview.marginMode', marginMode ? '1' : '0'); } catch (e) {}
     }
+    // Margin mode toggles the pin-on-click interaction (and the inline
+    // sidenote layout). It does NOT remove already-pinned cards — those stay
+    // visible so you can turn margin mode off to click through to the document,
+    // then turn it back on, without losing your pins. `:clear` is the explicit
+    // way to remove all cards. Column visibility is driven by whether cards
+    // exist (see updateMarginCardsClass), not by this mode flag.
     if (!marginMode) {
-      closeAllMarginCards();
       clearSidenoteLayout();
     } else {
       scheduleSidenoteLayout();
@@ -829,18 +838,54 @@
   /// refkey input + feedback span) at the top of #margin survives a
   /// "close all" wipe and isn't accidentally rebuilt on every card pin.
   function marginCardsEl() { return document.getElementById('margin-cards'); }
+  function marginCardsLeftEl() { return document.getElementById('margin-cards-left'); }
+  function marginCardsContainers() {
+    return [marginCardsEl(), marginCardsLeftEl()].filter(Boolean);
+  }
 
-  /// Toggle the `margin-has-cards` body class. Layout rules that shift
-  /// the page content (`#page-shell`) live behind that class so the
-  /// reading area stays centered when margin mode is on but no card is
-  /// pinned. Called after every pinnedRefs mutation.
+  /// Per-card left/right dock side, persisted by pin key so a card returns to
+  /// the side you last dragged it to (within and across sessions). Default
+  /// right — the historical single-column position.
+  function loadMarginSides() {
+    try { return JSON.parse(localStorage.getItem('mathpreview.marginSides') || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function marginSideFor(key) {
+    return loadMarginSides()[key] === 'left' ? 'left' : 'right';
+  }
+  function setMarginSide(key, side) {
+    if (!key) return;
+    var m = loadMarginSides();
+    m[key] = (side === 'left') ? 'left' : 'right';
+    try { localStorage.setItem('mathpreview.marginSides', JSON.stringify(m)); } catch (e) {}
+  }
+  function marginContainerForSide(side) {
+    return side === 'left' ? marginCardsLeftEl() : marginCardsEl();
+  }
+  /// Append a freshly built card to its remembered column.
+  function placeMarginCard(card, key) {
+    var side = marginSideFor(key);
+    card.dataset.side = side;
+    var container = marginContainerForSide(side) || marginCardsEl();
+    if (container) container.appendChild(card);
+  }
+
+  /// Drive margin-column visibility from card presence (NOT from margin mode),
+  /// so pinned cards survive turning the pin-on-click mode off. Each column is
+  /// shown only when it actually holds a card. `margin-has-cards` is kept for
+  /// any consumers that care whether anything is pinned at all.
   function updateMarginCardsClass() {
+    var right = marginCardsEl();
+    var left = marginCardsLeftEl();
+    var rightHas = !!(right && right.querySelector('.margin-card'));
+    var leftHas = !!(left && left.querySelector('.margin-card'));
     document.body.classList.toggle('margin-has-cards', pinnedRefs.size > 0);
+    document.body.classList.toggle('margin-right-has-cards', rightHas);
+    document.body.classList.toggle('margin-left-has-cards', leftHas);
   }
 
   function closeAllMarginCards() {
-    var cards = marginCardsEl();
-    if (cards) cards.innerHTML = '';
+    marginCardsContainers().forEach(function(c) { c.innerHTML = ''; });
     pinnedRefs.clear();
     updateMarginCardsClass();
   }
@@ -936,6 +981,13 @@
     } else {
       title.textContent = (link.textContent || '').trim() || pinKeyFor(link);
     }
+    // Magnify: opens this note centered on screen, enlarged, for reading.
+    var zoom = document.createElement('button');
+    zoom.type = 'button';
+    zoom.className = 'margin-card-zoom';
+    zoom.setAttribute('aria-label', 'magnify');
+    zoom.title = 'magnify (read full size)';
+    zoom.textContent = '⤢';
     var close = document.createElement('button');
     close.type = 'button';
     close.className = 'margin-card-close';
@@ -944,6 +996,7 @@
     close.textContent = '×';
     head.appendChild(grip);
     head.appendChild(title);
+    head.appendChild(zoom);
     head.appendChild(close);
 
     var body = document.createElement('div');
@@ -964,7 +1017,7 @@
   /// entry intact.
   var dragSourceCard = null;
   function clearDropIndicators() {
-    var cards = document.querySelectorAll('#margin-cards .margin-card');
+    var cards = document.querySelectorAll('.margin-cards .margin-card');
     cards.forEach(function(c) {
       c.classList.remove('drop-above');
       c.classList.remove('drop-below');
@@ -974,57 +1027,98 @@
     var rect = card.getBoundingClientRect();
     return clientY < rect.top + rect.height / 2 ? 'above' : 'below';
   }
+  /// Drag-to-reorder AND drag-across-columns for margin cards. Both the right
+  /// (#margin-cards) and left (#margin-cards-left) stacks get the same handlers,
+  /// so a card can be reordered within a column or moved to the other side; the
+  /// target column is whichever container received the drop (e.currentTarget).
+  /// The card's remembered side is updated so it returns there next time.
   function initMarginDnd() {
-    var cards = marginCardsEl();
-    if (!cards || cards.dataset.dndInit === '1') return;
-    cards.dataset.dndInit = '1';
-    cards.addEventListener('dragstart', function(e) {
-      var card = e.target && e.target.closest && e.target.closest('.margin-card');
-      if (!card || card.parentNode !== cards) return;
-      dragSourceCard = card;
-      card.classList.add('dragging');
-      // Some browsers need at least one setData call to start a drag.
-      try { e.dataTransfer.setData('text/plain', card.dataset.pinKey || ''); } catch (err) {}
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    cards.addEventListener('dragover', function(e) {
-      if (!dragSourceCard) return;
-      var card = e.target && e.target.closest && e.target.closest('.margin-card');
-      e.preventDefault(); // required to enable drop
-      e.dataTransfer.dropEffect = 'move';
-      clearDropIndicators();
-      if (!card || card === dragSourceCard) return;
-      var pos = dropPositionFor(card, e.clientY);
-      card.classList.add(pos === 'above' ? 'drop-above' : 'drop-below');
-    });
-    cards.addEventListener('dragleave', function(e) {
-      // Only clear when leaving the cards container entirely (not when
-      // moving between child cards), otherwise the indicator flickers.
-      if (e.target === cards) clearDropIndicators();
-    });
-    cards.addEventListener('drop', function(e) {
-      if (!dragSourceCard) return;
-      e.preventDefault();
-      var card = e.target && e.target.closest && e.target.closest('.margin-card');
-      if (card && card !== dragSourceCard) {
+    marginCardsContainers().forEach(function(cards) {
+      if (cards.dataset.dndInit === '1') return;
+      cards.dataset.dndInit = '1';
+      cards.addEventListener('dragstart', function(e) {
+        var card = e.target && e.target.closest && e.target.closest('.margin-card');
+        if (!card) return;
+        dragSourceCard = card;
+        card.classList.add('dragging');
+        // Reveal both columns as drop targets for the duration of the drag —
+        // an empty column is display:none and otherwise couldn't catch the
+        // first card dropped onto it (CSS shows them under .margin-dragging).
+        document.body.classList.add('margin-dragging');
+        // Some browsers need at least one setData call to start a drag.
+        try { e.dataTransfer.setData('text/plain', card.dataset.pinKey || ''); } catch (err) {}
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      cards.addEventListener('dragover', function(e) {
+        if (!dragSourceCard) return;
+        var card = e.target && e.target.closest && e.target.closest('.margin-card');
+        e.preventDefault(); // required to enable drop
+        e.dataTransfer.dropEffect = 'move';
+        clearDropIndicators();
+        if (!card || card === dragSourceCard) return;
         var pos = dropPositionFor(card, e.clientY);
-        if (pos === 'above') cards.insertBefore(dragSourceCard, card);
-        else cards.insertBefore(dragSourceCard, card.nextSibling);
-      } else if (!card) {
-        // Dropped on the container, not on a card → append to end.
-        cards.appendChild(dragSourceCard);
-      }
-      clearDropIndicators();
-      dragSourceCard.classList.remove('dragging');
-      dragSourceCard = null;
-    });
-    cards.addEventListener('dragend', function() {
-      clearDropIndicators();
-      if (dragSourceCard) {
+        card.classList.add(pos === 'above' ? 'drop-above' : 'drop-below');
+      });
+      cards.addEventListener('dragleave', function(e) {
+        // Only clear when leaving the cards container entirely (not when
+        // moving between child cards), otherwise the indicator flickers.
+        if (e.target === cards) clearDropIndicators();
+      });
+      cards.addEventListener('drop', function(e) {
+        if (!dragSourceCard) return;
+        e.preventDefault();
+        var dest = e.currentTarget;
+        var card = e.target && e.target.closest && e.target.closest('.margin-card');
+        if (card && card !== dragSourceCard) {
+          var pos = dropPositionFor(card, e.clientY);
+          if (pos === 'above') dest.insertBefore(dragSourceCard, card);
+          else dest.insertBefore(dragSourceCard, card.nextSibling);
+        } else if (card !== dragSourceCard) {
+          // Dropped on empty container space → append to that column's end.
+          dest.appendChild(dragSourceCard);
+        }
+        var side = (dest === marginCardsLeftEl()) ? 'left' : 'right';
+        dragSourceCard.dataset.side = side;
+        setMarginSide(dragSourceCard.dataset.pinKey, side);
+        clearDropIndicators();
         dragSourceCard.classList.remove('dragging');
         dragSourceCard = null;
-      }
+        document.body.classList.remove('margin-dragging');
+        updateMarginCardsClass();
+      });
+      cards.addEventListener('dragend', function() {
+        clearDropIndicators();
+        document.body.classList.remove('margin-dragging');
+        if (dragSourceCard) {
+          dragSourceCard.classList.remove('dragging');
+          dragSourceCard = null;
+        }
+      });
     });
+  }
+
+  /// Open a margin card's content centered on screen, enlarged, for reading
+  /// (#4). Clones the card body into a modal <dialog>; Esc / backdrop / the
+  /// close button dismiss it (wired in patch.js). Cloning keeps the live card
+  /// (and its already-typeset math) intact.
+  function openMarginZoom(card) {
+    var dlg = document.getElementById('margin-zoom-dialog');
+    var body = document.getElementById('margin-zoom-body');
+    if (!dlg || !body || !card) return;
+    var src = card.querySelector('.margin-card-body');
+    body.innerHTML = '';
+    if (src) {
+      var clone = src.cloneNode(true);
+      // Drop the in-column constraints (max-height / overflow / 1em sizing) so
+      // the dialog's own enlarged, scrollable sizing governs the magnified view.
+      clone.classList.remove('margin-card-body');
+      body.appendChild(clone);
+    }
+    if (typeof dlg.showModal === 'function' && !dlg.open) dlg.showModal();
+  }
+  function closeMarginZoom() {
+    var dlg = document.getElementById('margin-zoom-dialog');
+    if (dlg && dlg.open) dlg.close();
   }
 
   function togglePinReference(link) {
@@ -1042,9 +1136,8 @@
     if (!marginMode) setMarginMode(true, true);
     var clone = clonePreviewContent(link, target);
     var card = buildMarginCard(link, clone);
-    var cards = marginCardsEl();
-    if (!cards) return;
-    cards.appendChild(card);
+    if (!marginCardsEl()) return;
+    placeMarginCard(card, key);
     pinnedRefs.set(key, card);
     updateMarginCardsClass();
   }
@@ -1078,9 +1171,8 @@
     if (!marginMode) setMarginMode(true, true);
     var clone = clonePreviewContent(synthetic, target);
     var card = buildMarginCard(synthetic, clone);
-    var cards = marginCardsEl();
-    if (!cards) return { ok: false, reason: 'no-margin' };
-    cards.appendChild(card);
+    if (!marginCardsEl()) return { ok: false, reason: 'no-margin' };
+    placeMarginCard(card, key);
     pinnedRefs.set(key, card);
     updateMarginCardsClass();
     return { ok: true, reason: 'pinned' };
@@ -2292,6 +2384,10 @@
 
   function setUserZoom(z, persist) {
     currentUserZoom = clampUserZoom(z);
+    // The document zoom is applied via CSS `zoom` on main#page only; the margin
+    // columns are fixed-position siblings outside it, so expose the user-zoom
+    // factor as a variable they can fold into their sizing to track the text.
+    document.documentElement.style.setProperty('--user-zoom', currentUserZoom.toFixed(4));
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();

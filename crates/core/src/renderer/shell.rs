@@ -142,7 +142,7 @@ pub(super) fn wrap_in_shell(
     <button class="macros-toggle" id="macros-toggle" type="button" title="add a \\newcommand override for the viewer">macros</button>
     <button class="config-toggle" id="config-toggle" type="button" title="edit viewer config (font size, source-jump trigger, default mode/theme)">config</button>
     <button class="log-toggle" id="log-toggle" type="button" title="show daemon state + recent log entries">log</button>
-    <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards (click \\ref / \\cite to pin)">margin</button>
+    <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards — click \\ref / \\cite to pin (Cmd/Ctrl+M)">margin</button>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
       <button data-mode="main">main only</button>
@@ -181,9 +181,16 @@ pub(super) fn wrap_in_shell(
   </main>
 </div>
 {warnings_html}
+<aside id="margin-left">
+  <div class="margin-cards" id="margin-cards-left"></div>
+</aside>
 <aside id="margin">
   <div class="margin-cards" id="margin-cards"></div>
 </aside>
+<dialog class="margin-zoom-dialog" id="margin-zoom-dialog" aria-label="magnified margin note">
+  <button type="button" class="margin-zoom-close" id="margin-zoom-close" aria-label="close" title="close (Esc)">×</button>
+  <div class="margin-zoom-body" id="margin-zoom-body"></div>
+</dialog>
 <dialog class="macros-dialog" id="macros-dialog">
   <form method="dialog" class="macros-dialog-form" id="macros-dialog-form">
     <h2 class="macros-dialog-title">Add a macro</h2>

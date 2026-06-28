@@ -17,6 +17,37 @@ summary.
 
 Nothing yet.
 
+## [0.1.62] — 2026-06-28
+
+### Added
+
+- **Margin notes dock left or right.** Drag any pinned card to a left or right
+  gutter column; each card remembers its side (persisted). A dashed drop zone
+  appears while dragging so the destination is obvious.
+- **Magnify a margin note.** Each card has a ⤢ button that opens the note
+  centered on screen, enlarged, for comfortable reading; Esc, a backdrop click,
+  or × dismiss it.
+- **`Cmd/Ctrl+M` toggles margin mode** (in addition to the toolbar button).
+
+### Changed
+
+- **The reading frame no longer shifts when notes are pinned** — it stays
+  centered and the columns overlay the gutters (click-through except on the
+  cards themselves).
+- **Pinned notes survive turning margin mode off**, so you can click through to
+  the document without losing them. `:clear` (or each card's ×) removes them.
+- **Long notes scroll inside their card** instead of stretching the column, and
+  an over-wide equation scrolls horizontally.
+
+### Fixed
+
+- **Margin notes scale with `Cmd/Ctrl` +/- zoom.** The document zoom is applied
+  to the page via CSS `zoom`, which the fixed margin columns didn't inherit; they
+  now track the zoom so the notes match the document text size.
+- A right-edge gutter sidenote no longer forces a horizontal scrollbar now that
+  the page stays centered.
+- A left-docked column yields to the open TOC side panel instead of covering it.
+
 ## [0.1.61] — 2026-06-28
 
 ### Changed

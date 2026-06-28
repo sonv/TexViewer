@@ -75,6 +75,12 @@ html, body {
   color: var(--fg);
   font: var(--body-font-size)/1.42 'NewCM Text', 'Latin Modern Roman', 'CMU Serif', 'Computer Modern Serif', 'STIX Two Text', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
 }
+/* The page stays centered (no shift), so a right-edge gutter sidenote can reach
+   past the viewport. `clip` removes the resulting horizontal scrollbar WITHOUT
+   making body a scroll container — so the sticky topbar still sticks (which
+   `overflow-x: hidden` would break). Fixed margin columns aren't clipped (they
+   anchor to the viewport, not body). */
+body { overflow-x: clip; }
 .topbar {
   display: flex;
   flex-direction: column;
@@ -1096,34 +1102,50 @@ body.margin-mode .sidenote {
 .sidenote { cursor: pointer; }
 .sidenote:hover { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08); }
 
-aside#margin { display: none; }
-
-/* The margin column. Sized so most display equations fit without
-   horizontal overflow on a normal laptop screen; equations wider than
-   this still scroll inside the card via `overflow-x: auto`.
-   Flush with the viewport edges (right: 0, bottom: 0) so there is no
-   visible gap between the reading area and the column when cards are
-   pinned. */
-body.margin-mode aside#margin {
-  display: block;
+/* The margin columns — one on each viewport edge. A card can be dragged to
+   either side; each column appears only when it actually holds a card
+   (driven by the body.margin-{left,right}-has-cards classes, NOT by margin
+   mode, so pinned cards survive turning the pin-on-click mode off).
+   Sized so most display equations fit; wider ones scroll inside the card. */
+aside#margin, aside#margin-left {
+  display: none;
   position: fixed;
   top: var(--topbar-height);
-  right: 0;
   bottom: 0;
   width: min(540px, 36vw);
   min-width: 320px;
   overflow-y: auto;
   z-index: 100;
-  /* The aside is layered over the page's right gutter, where sidenote
-     chips also live. Letting the empty aside catch clicks would make
-     chips unreachable; make the aside itself pass clicks through, and
-     restore the click target on its actual children (the cards). */
+  /* The aside overlays the page gutter, where sidenote chips also live.
+     Letting the empty aside catch clicks would make the document under it
+     unreachable; pass clicks through the aside, restore them on the cards. */
   pointer-events: none;
 }
-body.margin-mode aside#margin > * {
+aside#margin { right: 0; }
+aside#margin-left { left: 0; }
+body.margin-right-has-cards aside#margin { display: block; }
+body.margin-left-has-cards aside#margin-left { display: block; }
+aside#margin > *, aside#margin-left > * {
   pointer-events: auto;
 }
-body.topbar-hidden.margin-mode aside#margin { top: 0; }
+body.topbar-hidden aside#margin,
+body.topbar-hidden aside#margin-left { top: 0; }
+/* While dragging a card, show BOTH columns as drop targets even when empty
+   (a display:none column can't catch a drop), and mark the empty column with a
+   dashed zone so the left/right destination is obvious. */
+body.margin-dragging aside#margin,
+body.margin-dragging aside#margin-left { display: block; }
+body.margin-dragging .margin-cards:empty {
+  min-height: 140px;
+  margin: 8px;
+  border-radius: 6px;
+  outline: 2px dashed var(--accent, #b04b00);
+  outline-offset: -2px;
+}
+/* The TOC side panel sits on the left (left:16px, width:236px, z-index 9). When
+   it's open, push the left margin column past it so the panel stays clickable
+   (mirrors the log-panel's 268px offset). */
+body.side-panel-open aside#margin-left { left: 268px; }
 
 /* Macros override dialog — toolbar `macros` button opens this <dialog>
    to append a new \newcommand to either the global or project file.
@@ -1564,27 +1586,11 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 }
 .cmdline-feedback.error { color: #b22222; }
 
-/* When at least one card is pinned (`body.margin-has-cards`), pin the
-   #page-shell against the margin column. `margin-right` is set to
-   exactly the column width so the shell's right edge meets the column's
-   left edge with no gap. `margin-left: auto` absorbs the remaining slack
-   on the LEFT instead of the right, so any empty space lives away from
-   the cards — the reading field reads as continuous with the margin
-   strip rather than floating in the middle of the viewport. */
-body.margin-mode.margin-has-cards #page-shell,
-body.margin-mode.margin-has-cards details.warnings {
-  margin-left: auto;
-  margin-right: min(540px, 36vw);
-}
-/* On narrow viewports there isn't room for both the shell at its
-   default width and the margin column. Cap the shell's max-width in
-   dynamic mode so it stays clear of the column even on a small
-   laptop. A4 mode keeps its fixed sheet width; on very narrow windows
-   the A4 sheet may sit underneath the margin column (the user can
-   hide the margin or switch to dynamic). */
-body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
-  max-width: calc(100vw - min(540px, 36vw) - 32px);
-}
+/* The reading field stays centered even when cards are pinned — the margin
+   columns are fixed overlays in the viewport gutters (pointer-events:none
+   except on the cards themselves), so they don't reflow or push the page.
+   On a narrow viewport a column may sit over the page edge; drag the card to
+   the emptier side, magnify it, or hide the margin. */
 
 .margin-card {
   background: #fff;
@@ -1602,6 +1608,12 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
      the 0.75 etc. ratios reproduce the prior fixed px at the default 18px. */
   font-size: calc(var(--body-font-size) * 0.75);
   line-height: 1.5;
+  /* Cmd/Ctrl +/- zooms main#page via CSS `zoom`, which the fixed margin column
+     doesn't inherit. Apply the same user-zoom factor here so the notes track
+     the document text size as you zoom. (The auto fit-to-width part of the page
+     scale is deliberately excluded — margin notes shouldn't shrink on small
+     screens, only follow the explicit zoom.) */
+  zoom: var(--user-zoom, 1);
   animation: margin-card-in 180ms ease-out;
 }
 .margin-card:last-child {
@@ -1668,7 +1680,23 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   padding: 0 4px;
 }
 .margin-card-close:hover { color: #000; }
-.margin-card-body { font-size: 1em; }
+.margin-card-zoom {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: calc(var(--body-font-size) * 0.78);
+  line-height: 1;
+  color: var(--muted, #888);
+  padding: 0 2px;
+}
+.margin-card-zoom:hover { color: var(--accent, #b04b00); }
+.margin-card-body {
+  font-size: 1em;
+  /* A long note scrolls within its card instead of stretching the column;
+     use the magnify button to read the whole thing full size. */
+  max-height: 60vh;
+  overflow: auto;
+}
 .margin-card-body .blk { padding: 0; }
 .margin-card-body .thm,
 .margin-card-body .proof,
@@ -1677,12 +1705,53 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   padding: 0;
   border: none;
 }
-.margin-card-body .math.display { margin: 0.4em 0; }
+/* A display equation wider than the card scrolls horizontally rather than
+   spilling out (matches the hover-preview behavior). */
+.margin-card-body .math.display { margin: 0.4em 0; overflow-x: auto; }
 
 @keyframes margin-card-in {
   from { opacity: 0; transform: translateX(8px); }
   to   { opacity: 1; transform: translateX(0); }
 }
+
+/* Magnified margin note (#4): the card's magnify button opens its content
+   centered on screen, enlarged, over a dimmed backdrop. Esc, a backdrop
+   click, or the × close it (the <dialog> centers itself via showModal). */
+.margin-zoom-dialog {
+  border: none;
+  border-radius: 8px;
+  padding: 0;
+  width: auto;
+  max-width: min(900px, 92vw);
+  max-height: 88vh;
+  background: var(--paper, #fff);
+  color: var(--fg);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.3);
+}
+.margin-zoom-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.margin-zoom-close {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted, #888);
+  padding: 2px 6px;
+  z-index: 1;
+}
+.margin-zoom-close:hover { color: var(--fg); }
+.margin-zoom-body {
+  padding: 30px 34px;
+  overflow: auto;
+  max-height: 88vh;
+  /* A comfortable reading size — a touch larger than the document body. */
+  font-size: calc(var(--body-font-size) * 1.15);
+  line-height: 1.55;
+}
+.margin-zoom-body .math.display { overflow-x: auto; }
 
 .hover-preview {
   position: fixed;
