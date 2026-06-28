@@ -17,6 +17,15 @@ summary.
 
 Nothing yet.
 
+## [0.1.73] — 2026-06-28
+
+### Changed
+
+- **Equation row highlight: one box around the block, a fill per row.** Replaces
+  v0.1.72's per-row outline — whose edges clipped against each row's glyph bounds,
+  leaving "missing lines" — with a single clean box around the whole equation (an
+  HTML outline on its SVG) plus a fill tint on each highlighted row.
+
 ## [0.1.72] — 2026-06-28
 
 ### Changed

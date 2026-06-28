@@ -637,10 +637,13 @@
     if (shouldScroll && first) scrollSourceIntoView(first);
   }
 
-  // Remove all per-row math highlight rectangles.
+  // Remove all per-row math highlight rectangles and the whole-block box.
   function clearMathRowHighlights() {
     document.querySelectorAll('rect.mp-row-hl').forEach(function(r) {
       if (r.parentNode) r.parentNode.removeChild(r);
+    });
+    document.querySelectorAll('.math.display.mp-math-active').forEach(function(el) {
+      el.classList.remove('mp-math-active');
     });
   }
 
@@ -658,6 +661,9 @@
       if (!mr || !mr.id) return;
       var block = document.getElementById(mr.id);
       if (!block) return;
+      // Box the whole equation block (CSS outline on its SVG); the rows below
+      // get the fill. One clean box beats per-row strokes that clip mid-edge.
+      block.classList.add('mp-math-active');
       var svg = block.querySelector('svg');
       // The OUTERMOST table is the align/gather itself (first in document
       // order). Take only ITS direct rows: a descendant query would also grab
