@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.69] — 2026-06-28
+
+### Changed
+
+- **The preview highlight follows the cursor's line, not just selections.**
+  Moving the cursor in the editor now highlights the element(s) on its current
+  line in the preview — and the specific `align`/`gather` row, reusing the
+  per-row highlight — with the same band a visual selection uses, gently
+  scrolling to keep it in view. Previously a normal-mode cursor move only briefly
+  flashed the single element under it. (Cursor sync stays gated by the existing
+  `sync` option.)
+
 ## [0.1.68] — 2026-06-28
 
 ### Added

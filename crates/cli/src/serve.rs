@@ -1030,20 +1030,18 @@ async fn serve_cursor(
 ) -> axum::http::StatusCode {
     let file = normalize_source_path(req.file);
     let line = req.line.max(1);
-    let col = req.col.unwrap_or(1).max(1);
-    let element_id = {
+    // Track the cursor's LINE: highlight every element on it (and the specific
+    // align/gather row, via per-row math) — the same band the visual selection
+    // uses — so the preview follows the cursor, not just during a selection.
+    let (element_ids, math_rows) = {
         let current = state.current.read().await;
-        current
-            .sync
-            .lookup_leaf_by_source_position(&file, line, col)
-            .map(|entry| entry.element_id.clone())
+        source_range_highlight(&current.sync, &file, line, 1, line, u32::MAX)
     };
     let payload = serde_json::json!({
-        "event": "source-cursor",
+        "event": "source-range",
         "file": file,
-        "line": line,
-        "col": col,
-        "element_id": element_id,
+        "element_ids": element_ids,
+        "math_rows": math_rows,
     })
     .to_string();
     let _ = state.tx.send(payload);
@@ -1053,6 +1051,29 @@ async fn serve_cursor(
 /// `POST /selection` — map the editor's visual selection (a source range) to
 /// every rendered leaf element it overlaps and broadcast a `source-range` event
 /// so the browser highlights them. The range generalization of `serve_cursor`.
+/// Resolve the leaf ids and per-row math hits for a source line/col range — the
+/// shared core of the visual-selection highlight and the cursor-line highlight.
+/// Drops the whole-block id of any multi-row math block we have per-row info on,
+/// so the client highlights the individual rows instead.
+fn source_range_highlight(
+    sync: &SyncIndex,
+    file: &std::path::Path,
+    sl: u32,
+    sc: u32,
+    el: u32,
+    ec: u32,
+) -> (Vec<String>, Vec<serde_json::Value>) {
+    let mut ids = sync.leaves_in_range(file, sl, sc, el, ec);
+    let hits = sync.math_rows_in_range(file, sl, el);
+    let row_ids: std::collections::HashSet<&str> = hits.iter().map(|(id, _, _)| id.as_str()).collect();
+    ids.retain(|id| !row_ids.contains(id.as_str()));
+    let math_rows = hits
+        .iter()
+        .map(|(id, count, rows)| serde_json::json!({ "id": id, "count": count, "rows": rows }))
+        .collect();
+    (ids, math_rows)
+}
+
 async fn serve_selection(
     State(state): State<AppState>,
     Json(req): Json<RangeRequest>,
@@ -1064,25 +1085,14 @@ async fn serve_selection(
         // of line" (u32::MAX), not 1, so a linewise (V) selection covers the row.
         (Some(sl), sc, Some(el), ec) if !req.clear => {
             let current = state.current.read().await;
-            let mut ids = current.sync.leaves_in_range(
+            source_range_highlight(
+                &current.sync,
                 &file,
                 sl.max(1),
                 sc.unwrap_or(1).max(1),
                 el.max(1),
                 ec.unwrap_or(u32::MAX),
-            );
-            // For multi-row math blocks, highlight the selected ROWS instead of
-            // the whole block: emit per-block row indices and drop the block's
-            // whole-block id so the client doesn't also flood-highlight it.
-            let hits = current.sync.math_rows_in_range(&file, sl.max(1), el.max(1));
-            let row_ids: std::collections::HashSet<&str> =
-                hits.iter().map(|(id, _, _)| id.as_str()).collect();
-            ids.retain(|id| !row_ids.contains(id.as_str()));
-            let math_rows = hits
-                .iter()
-                .map(|(id, count, rows)| serde_json::json!({ "id": id, "count": count, "rows": rows }))
-                .collect();
-            (ids, math_rows)
+            )
         }
         // clear == true, or incomplete bounds → empty lists dismiss the highlight.
         _ => (Vec::new(), Vec::new()),
