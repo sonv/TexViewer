@@ -17,6 +17,29 @@ summary.
 
 Nothing yet.
 
+## [0.1.66] — 2026-06-28
+
+### Added
+
+- **One preview tab per file.** `:MathPreview` now runs a separate daemon (and
+  browser tab) per root `.tex` file, so opening another file with `:e` and
+  running `:MathPreview` gives it its OWN viewer instead of reusing the first
+  file's. The plugin keeps a registry of daemons and routes edits / cursor /
+  source-jumps to the file you're in — including a project's `\input`/`\include`
+  children, which the root daemon watches. Re-running `:MathPreview` on a file
+  you already opened reuses its tab; `:MathPreviewStop`/`Restart` act on the
+  current buffer's daemon; quitting nvim stops them all.
+
+### Changed
+
+- **Reuse a stale tab across nvim restarts.** After you quit and reopen nvim and
+  run `:MathPreview`, a previous session's tab (still open in the browser,
+  retrying its WebSocket) reconnects to the rebound port and hard-reloads; the
+  plugin now waits briefly for that and opens a new tab only if none reconnected.
+  Tunable via `stale_tab_wait_ms` (default 1500 ms; set 0 to open immediately).
+  Reliable when the new daemon rebinds the same port (the common single-file
+  case); orphaned tabs on a now-different port can't be revived.
+
 ## [0.1.65] — 2026-06-28
 
 ### Fixed

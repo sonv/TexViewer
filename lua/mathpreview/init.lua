@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.65"
+local PLUGIN_VERSION = "0.1.66"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -110,13 +110,23 @@ local config = {
 
 local uv = vim.uv or vim.loop
 
-local daemon_job = nil   -- jobid of the running daemon, or nil
-local daemon_port = nil  -- port the daemon bound, or nil
-local daemon_root = nil  -- root .tex file path the daemon serves, or nil
--- Whether we've already opened (or reused) a browser tab for the CURRENT daemon
--- session. Lets a repeat :MathPreview reuse the tab even when the daemon is too
--- old to report its connected-client count. Reset when the daemon stops/dies.
-local browser_opened = false
+-- One daemon (and browser tab) PER root .tex file, so `:e other.tex` +
+-- :MathPreview opens its own viewer instead of reusing the first file's.
+-- `daemons` is the registry, keyed by absolute root path; each entry is
+-- `{ job, port, root, opened, jump_seq }` (`opened` = we've opened/reused a tab
+-- this session; `jump_seq` = that daemon's last source-jump sequence).
+local daemons = {}
+-- The globals below MIRROR whichever entry is "active" — the daemon for the
+-- buffer you're currently in. A BufEnter autocmd keeps them in sync, so the
+-- existing push / cursor / selection / jump code (which reads these + config.*
+-- URLs) routes to the right daemon without per-call lookups. nil = the current
+-- buffer has no daemon.
+local daemon_job = nil   -- active daemon's jobid, or nil
+local daemon_port = nil  -- active daemon's port
+local daemon_root = nil  -- active daemon's root .tex path
+-- Roots we're deliberately stopping (M.stop/M.restart), so the daemon's on_exit
+-- doesn't mistake the SIGTERM for a port-bind race and auto-restart it.
+local stopping = {}
 
 -- Push state (carried across pushes for :MathPreviewStatus).
 local timer = nil
@@ -346,7 +356,13 @@ local installing = false
 -- Guards against overlapping starts: `daemon_job` is only set inside the async
 -- `start_with`, so a second `:MathPreview` during the binary/version check
 -- would otherwise pass the `daemon_job` guard and spawn a duplicate daemon.
-local starting = false
+-- Roots whose first-time start is mid-resolve (binary/port), so a duplicate
+-- :MathPreview for the SAME file is dropped while a DIFFERENT file can still
+-- start concurrently. Keyed by root path.
+local starting = {}
+-- True only while a source-jump's `:edit` is running, so the BufEnter handler
+-- doesn't churn the active daemon mid-jump.
+local in_jump = false
 -- Warn at most once per session about the install dir not being on $PATH.
 local path_hinted = false
 
@@ -373,9 +389,20 @@ end
 -- confirmed this is a source checkout with cargo available.
 local INSTALL_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
+-- Callbacks waiting on the single in-flight install. Multiple files can request
+-- a start (and thus an install) concurrently now that there's a daemon per
+-- root; every one's on_done must fire when the shared build finishes, or the
+-- later callers' `starting[root]` guard would stay stuck true forever.
+local install_waiters = {}
+
 local function auto_install(on_done)
-  if installing then return end  -- one already in flight; its callback will start us
+  if installing then
+    -- One build is already running; ride its result instead of dropping ours.
+    if on_done then install_waiters[#install_waiters + 1] = on_done end
+    return
+  end
   installing = true
+  install_waiters = on_done and { on_done } or {}
   local started = uv.now()
   local frame = 0
   local step = "" -- latest cargo step, e.g. "compiling mathpreview-core"
@@ -431,7 +458,11 @@ local function auto_install(on_done)
             res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
           vim.log.levels.ERROR)
       end
-      if on_done then on_done(ok) end
+      -- Fan out to every caller that requested this build (the first plus any
+      -- that arrived while it ran), then clear the queue.
+      local waiters = install_waiters
+      install_waiters = {}
+      for _, cb in ipairs(waiters) do cb(ok) end
     end)
 end
 
@@ -497,22 +528,20 @@ end
 -- Only open a fresh tab when none is connected (you closed it). Falls back to
 -- opening if the count can't be determined. The /debug curl runs async; its
 -- callback is already main-loop-scheduled by run_system.
-local function reuse_or_open_browser()
-  local url = "http://127.0.0.1:" .. tostring(daemon_port) .. "/"
-  local function do_open() browser_opened = true; open_browser(url) end
+local function reuse_or_open_browser(entry)
+  local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
+  local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
+  local function do_open() entry.opened = true; open_browser(url) end
   local function say_reuse()
-    browser_opened = true
+    entry.opened = true
     vim.notify("mathpreview: preview already open — reusing tab (" .. url .. ")",
       vim.log.levels.INFO)
   end
-  if not config.debug_url then
-    -- No URL to query: fall back to "did we already open one this session?".
-    if browser_opened then say_reuse() else do_open() end
-    return
-  end
   run_system(
-    { "curl", "--silent", "--max-time", "2", config.debug_url }, {},
+    { "curl", "--silent", "--max-time", "2", debug_url }, {},
     function(res)
+      -- The daemon may have been stopped/replaced during the async curl.
+      if daemons[entry.root] ~= entry then return end
       local clients
       if res and res.code == 0 and res.stdout and res.stdout ~= "" then
         local ok, data = pcall(vim.json.decode, res.stdout)
@@ -523,9 +552,9 @@ local function reuse_or_open_browser()
         -- one is open; open a fresh tab if it was closed (clients == 0).
         if clients > 0 then say_reuse() else do_open() end
       else
-        -- Daemon too old to report `clients` — fall back to the session flag so
-        -- a repeat :MathPreview still doesn't stack a duplicate tab.
-        if browser_opened then say_reuse() else do_open() end
+        -- Daemon too old to report `clients` — fall back to this daemon's
+        -- session flag so a repeat :MathPreview still doesn't stack a duplicate.
+        if entry.opened then say_reuse() else do_open() end
       end
     end)
 end
@@ -764,7 +793,11 @@ local function jump_to_source(jump)
   local line = math.max(1, tonumber(jump.line) or 1)
   local col = math.max(0, (tonumber(jump.col) or 1) - 1)
   if vim.api.nvim_buf_get_name(0) ~= file then
-    vim.cmd("edit " .. vim.fn.fnameescape(file))
+    -- Opening the target fires BufEnter synchronously; keep the jumping
+    -- daemon active across it (the target is usually an \input of its project).
+    in_jump = true
+    pcall(vim.cmd, "edit " .. vim.fn.fnameescape(file))
+    in_jump = false
   end
   local line_count = vim.api.nvim_buf_line_count(0)
   line = math.min(line, math.max(1, line_count))
@@ -875,8 +908,74 @@ local function debounced_selection()
   end))
 end
 
--- Attach the TextChanged / CursorMoved autocmds and start jump polling.
--- Idempotent — clearing the augroup before re-creating it.
+local function daemon_count()
+  local n = 0
+  for _ in pairs(daemons) do n = n + 1 end
+  return n
+end
+
+-- The registry entry whose daemon is currently "active" (mirrored by the
+-- globals), or nil.
+local function active_entry()
+  return daemon_root and daemons[daemon_root] or nil
+end
+
+-- Point the active globals (and the jump poll) at `entry`'s daemon, so pushes,
+-- cursor/selection sync, and source-jumps route to it. Saves the outgoing
+-- daemon's jump sequence first. No-op if `entry` is already active.
+local function activate(entry)
+  if daemon_root == entry.root then return end
+  local prev = active_entry()
+  if prev then prev.jump_seq = last_jump_seq end
+  stop_jump_poll()
+  daemon_job = entry.job
+  daemon_port = entry.port
+  daemon_root = entry.root
+  last_jump_seq = entry.jump_seq or 0
+  set_urls(entry.port)
+  start_jump_poll()
+end
+
+-- The current buffer has no daemon: clear the active globals so pushes no-op.
+local function deactivate()
+  if not daemon_root then return end  -- already inactive — skip needless churn
+  local prev = active_entry()
+  if prev then prev.jump_seq = last_jump_seq end
+  stop_jump_poll()
+  daemon_job = nil
+  daemon_port = nil
+  daemon_root = nil
+end
+
+-- Keep the active daemon in step with the buffer you're in (called on
+-- BufEnter). Switch ONLY when you enter a file that has its OWN daemon (a
+-- previewed root). Otherwise keep the current active daemon: the buffer may be
+-- an \input/\include of its project — which the daemon watches, so edits must
+-- still push — and even an unrelated buffer is harmless (the daemon ignores
+-- pushes for files it doesn't watch, as before). We never deactivate here;
+-- a daemon only goes inactive when it actually stops (on_exit / stop_all).
+local function activate_for_current_buffer()
+  if in_jump then return end
+  local path = vim.api.nvim_buf_get_name(0)
+  local entry = path ~= "" and daemons[path] or nil
+  if entry then activate(entry) end
+end
+
+-- Kill every daemon (VimLeavePre / full teardown).
+local function stop_all()
+  for root, d in pairs(daemons) do
+    stopping[root] = true
+    pcall(vim.fn.jobstop, d.job)
+    daemons[root] = nil
+  end
+  deactivate()
+  pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
+end
+
+-- Attach the TextChanged / CursorMoved autocmds. The push/cursor/selection
+-- callbacks route to whichever daemon is active (kept in sync with the current
+-- buffer by the BufEnter handler below); the per-daemon jump poll is started by
+-- activate(), not here. Idempotent — clears the augroup before re-creating it.
 local function attach_autocmds()
   vim.api.nvim_create_augroup("mathpreview", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
@@ -924,26 +1023,35 @@ local function attach_autocmds()
       end
     end,
   })
+  -- Keep the active daemon in sync with the buffer you're in, so edits/cursor/
+  -- jumps route to that file's daemon (and tab). Buffers with no daemon
+  -- deactivate pushing until you :MathPreview them.
+  vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
+    group = "mathpreview",
+    pattern = "*",
+    callback = function() activate_for_current_buffer() end,
+  })
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = "mathpreview",
-    callback = function() M.stop() end,
+    callback = function() stop_all() end,
   })
-  start_jump_poll()
 end
 
 local function detach_autocmds()
   pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
-  stop_jump_poll()
 end
 
 -- Spawn the daemon for the current buffer using an already-resolved binary
 -- path `cmd`. Callers reach this through ensure_binary(), which guarantees
 -- the binary exists and is current first.
 local function start_with(cmd, opts)
-  -- The in-flight start has resolved; clear the guard now that we're committing
-  -- to (or bailing out of) the actual spawn.
-  starting = false
-  local root, err = current_root()
+  -- Prefer the root pinned by the caller (M.start / restart) so an async binary
+  -- resolve or a buffer switch in between can't re-root us onto another file.
+  local root, err = opts.root, nil
+  if not root then root, err = current_root() end
+  -- The in-flight start for this root has resolved; clear its guard now that
+  -- we're committing to (or bailing out of) the actual spawn.
+  if root then starting[root] = nil end
   if not root then
     vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
     return
@@ -1007,13 +1115,27 @@ local function start_with(cmd, opts)
       on_stderr = function(_, data)
         if data then vim.list_extend(stderr_lines, data) end
       end,
-      on_exit = function(_, code)
-        local exited_root = daemon_root or "<unknown>"
-        daemon_job = nil
-        daemon_port = nil
-        daemon_root = nil
-        browser_opened = false
-        detach_autocmds()
+      on_exit = function(jid, code)
+        -- A late exit from a job we've already replaced under the same root
+        -- (restart spawned a new daemon before the old SIGTERM landed): the new
+        -- registrant owns this root now, so don't tear down its state.
+        local cur = daemons[root]
+        if cur and cur.job ~= jid then return end
+        local exited_root = root
+        local was_stopping = stopping[root]
+        stopping[root] = nil
+        daemons[root] = nil
+        if daemon_root == root then
+          -- The active daemon died: clear the globals (don't save its now-gone
+          -- jump seq back into a removed entry).
+          stop_jump_poll()
+          daemon_job = nil
+          daemon_port = nil
+          daemon_root = nil
+        end
+        if daemon_count() == 0 then detach_autocmds() end
+        -- A deliberate stop/restart: don't treat the SIGTERM as a crash.
+        if was_stopping then return end
         if code ~= 0 then
           -- A near-immediate non-zero exit is almost always a port-bind race:
           -- another process grabbed the probed port between our free-port
@@ -1044,27 +1166,40 @@ local function start_with(cmd, opts)
     vim.notify("mathpreview: failed to spawn daemon", vim.log.levels.ERROR)
     return
   end
-  daemon_job = job
-  daemon_port = port
-  daemon_root = root
-  set_urls(port)
-  attach_autocmds()
-  -- Daemon takes ~100-300 ms to bind the port and finish initial render.
-  -- Defer the browser open so the first GET / hits a ready server.
-  -- Skip the open on a restart that rebound the same port: the existing
-  -- tab reconnects on its own, so opening another would just pile up
-  -- duplicates (the bug where 10 restarts left 10 tabs). If the restart
-  -- had to move to a new port, the old tab is stale, so we do open.
+  -- Register this file's daemon and make it the active one. attach_autocmds is
+  -- global (push routing) — only needed once, when the first daemon starts.
+  local first = daemon_count() == 0
+  local entry = { job = job, port = port, root = root, opened = false, jump_seq = 0 }
+  stopping[root] = nil
+  daemons[root] = entry
+  if first then attach_autocmds() end
+  -- Activate only if this daemon serves the buffer you're actually in;
+  -- otherwise sync to the current buffer (it may have changed during the async
+  -- binary resolve / restart gap).
+  if vim.api.nvim_buf_get_name(0) == root then
+    activate(entry)
+  else
+    activate_for_current_buffer()
+  end
+  -- Skip the open on a restart that rebound the same port: the existing tab
+  -- reconnects on its own (opening another would pile up duplicates).
   local reused_tab = opts.prev_port ~= nil and port == opts.prev_port
   if config.auto_open_browser then
-    -- Either way a tab now exists for this session (freshly opened, or the
-    -- restart's same-port reconnect), so mark it so a later :MathPreview reuses
-    -- it instead of opening another.
-    browser_opened = true
-    if not reused_tab then
+    if reused_tab then
+      entry.opened = true
+    else
+      -- A previous session's tab (still open in the browser, retrying its
+      -- WebSocket every 1s) reconnects to this rebound port and hard-reloads
+      -- itself. Wait for that, then reuse_or_open_browser opens a fresh tab
+      -- only if none reconnected (clients == 0). Also covers the daemon's
+      -- ~100-300ms bind time. Set stale_tab_wait_ms = 0 to skip the wait
+      -- (opens immediately; a stale tab would then become a duplicate).
+      local wait = config.stale_tab_wait_ms
+      if wait == nil then wait = 1500 end
       vim.defer_fn(function()
-        open_browser("http://127.0.0.1:" .. tostring(port) .. "/")
-      end, 350)
+        -- Only if this exact daemon is still the one registered for the root.
+        if daemons[root] == entry then reuse_or_open_browser(entry) end
+      end, wait)
     end
   end
   vim.notify(
@@ -1080,7 +1215,7 @@ end
 --   * current binary → proceed as-is
 --   * a user `cmd` / unrelated $PATH binary → proceed, warn on skew
 -- Every (re)install emits auto_install's "installing… please wait" notice.
-local function ensure_binary(on_ready)
+local function ensure_binary(root, on_ready)
   local cmd = resolve_cmd()
   local can_build = is_source_checkout() and vim.fn.executable("cargo") == 1
 
@@ -1091,8 +1226,8 @@ local function ensure_binary(on_ready)
         if ok and got then
           on_ready(got)
         else
-          -- on_ready won't run; release the in-flight start guard.
-          starting = false
+          -- on_ready won't run; release the in-flight start guard for this root.
+          starting[root] = nil
           if ok then
             vim.notify(
               "mathpreview: install reported success but no binary found at "
@@ -1103,7 +1238,7 @@ local function ensure_binary(on_ready)
         end
       end)
     else
-      starting = false
+      starting[root] = nil
       vim.notify(
         "mathpreview: `mathpreview-cli` not found on $PATH" ..
         (is_source_checkout() and " and `cargo` is unavailable to install it. " or ". ") ..
@@ -1141,36 +1276,60 @@ end
 
 function M.start(opts)
   opts = opts or {}
-  if daemon_job then
-    if config.auto_open_browser then
-      reuse_or_open_browser()
-    end
+  local root, err = opts.root, nil
+  if not root then root, err = current_root() end
+  if not root then
+    vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
     return
   end
-  -- A start is already resolving its binary/port asynchronously; don't kick off
-  -- a second one (it would race find_free_port and spawn a duplicate daemon).
-  if starting then return end
-  starting = true
-  ensure_binary(function(cmd) start_with(cmd, opts) end)
+  -- Already serving THIS file → make it active and reuse its tab (don't open a
+  -- duplicate). A different file falls through and starts its own daemon + tab.
+  local entry = daemons[root]
+  if entry and entry.job then
+    activate(entry)
+    if config.auto_open_browser then reuse_or_open_browser(entry) end
+    return
+  end
+  -- A start for THIS file is already resolving its binary/port asynchronously;
+  -- don't kick off a second one for it (would race find_free_port). A different
+  -- file can still start concurrently (per-root guard).
+  if starting[root] then return end
+  starting[root] = true
+  opts.root = root  -- pin the root across the async binary resolve / buffer change
+  ensure_binary(root, function(cmd) start_with(cmd, opts) end)
+end
+
+-- The daemon for the current buffer's file, else the active one (so :MathStop /
+-- :MathRestart in a non-.tex buffer still act on the preview you were last in).
+local function target_entry()
+  local path = vim.api.nvim_buf_get_name(0)
+  return (path ~= "" and daemons[path]) or active_entry()
 end
 
 function M.stop()
-  if not daemon_job then return end
-  local job = daemon_job
-  daemon_job = nil
-  -- browser_opened is reset by the daemon's on_exit when the job actually ends;
-  -- on :MathPreviewRestart, start_with then sets it again for the same-port tab.
-  pcall(vim.fn.jobstop, job)
-  detach_autocmds()
+  local entry = target_entry()
+  if not entry then return end
+  stopping[entry.root] = true
+  daemons[entry.root] = nil
+  if daemon_root == entry.root then
+    stop_jump_poll()
+    daemon_job = nil
+    daemon_port = nil
+    daemon_root = nil
+  end
+  pcall(vim.fn.jobstop, entry.job)  -- its on_exit is now a no-op (already deregistered)
+  if daemon_count() == 0 then detach_autocmds() end
 end
 
 function M.restart()
+  local entry = target_entry()
+  if not entry then M.start() return end
   -- Remember the port so the restart can rebind it and let the open tab
   -- reconnect, instead of opening a fresh one each time.
-  local prev_port = daemon_port
+  local prev_port, root = entry.port, entry.root
   M.stop()
   -- Give the OS a moment to release the port before re-binding.
-  vim.defer_fn(function() M.start({ prev_port = prev_port }) end, 200)
+  vim.defer_fn(function() M.start({ prev_port = prev_port, root = root }) end, 200)
 end
 
 function M.status()
@@ -1178,6 +1337,7 @@ function M.status()
   local buf = vim.api.nvim_get_current_buf()
   return {
     daemon_running = daemon_job ~= nil,
+    daemons_running = daemon_count(),  -- total across all open files
     daemon_port = daemon_port,
     daemon_root = daemon_root,
     url = config.url,
