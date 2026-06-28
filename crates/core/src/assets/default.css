@@ -41,6 +41,16 @@
   --supporting: #2b6cb0;
   --standard: #888;
   --omitted: #b25800;
+  /* Per-type accent for theorem-like boxes (color-coded by statement type). */
+  --thm-c-theorem: #2f6fd0;
+  --thm-c-lemma: #2f9e44;
+  --thm-c-proposition: #8a5cd0;
+  --thm-c-corollary: #0c8599;
+  --thm-c-definition: #d9870a;
+  --thm-c-remark: #868e96;
+  --thm-c-example: #e8590c;
+  --thm-c-claim: #c2255c;
+  --thm-c-conjecture: #5c7cfa;
   --border: #e0e0e0;
   --border-strong: #c8c4ba;
   --button-bg: #fff;
@@ -603,14 +613,35 @@ body.page-mode-dynamic main#page {
   padding: 0.72em 0.9em 0.76em;
   border: 1px solid var(--border);
   background: #fff;
-  border-left: 3px solid var(--standard);
+  /* Left accent + heading word follow --thm-accent (set per type below), falling
+     back to the neutral --standard when the statement type isn't color-coded. */
+  border-left: 3px solid var(--thm-accent, var(--standard));
 }
-.thm.role-main       { border-left-color: var(--accent); }
-.thm.role-supporting { border-left-color: var(--supporting); }
-.thm.role-standard   { border-left-color: var(--standard); }
-.thm.role-omitted    { border-left: 1px dashed var(--omitted); border-color: var(--omitted); }
+/* Color-code by statement type. Each type just sets --thm-accent (a theme-switched
+   palette var), which the border and heading word pick up — so the same rules work
+   in light and dark without specificity fights. */
+.thm.thm-type-theorem     { --thm-accent: var(--thm-c-theorem); }
+.thm.thm-type-lemma       { --thm-accent: var(--thm-c-lemma); }
+.thm.thm-type-proposition { --thm-accent: var(--thm-c-proposition); }
+.thm.thm-type-corollary   { --thm-accent: var(--thm-c-corollary); }
+.thm.thm-type-definition  { --thm-accent: var(--thm-c-definition); }
+.thm.thm-type-remark      { --thm-accent: var(--thm-c-remark); }
+.thm.thm-type-example     { --thm-accent: var(--thm-c-example); }
+.thm.thm-type-claim       { --thm-accent: var(--thm-c-claim); }
+.thm.thm-type-conjecture  { --thm-accent: var(--thm-c-conjecture); }
+/* An explicit role classification (main/supporting/omitted) is a deliberate
+   annotation and overrides the per-type color; standard role keeps the type
+   color. These follow the type rules so they win at equal specificity. */
+.thm.role-main       { --thm-accent: var(--accent); }
+.thm.role-supporting { --thm-accent: var(--supporting); }
+.thm.role-omitted    {
+  --thm-accent: var(--omitted);
+  border-left-style: dashed;
+  border-left-width: 1px;
+  border-color: var(--omitted);
+}
 .thm-head { display: block; font-family: inherit; font-weight: 700; margin-bottom: 0.28em; }
-.thm-kind { color: var(--accent); }
+.thm-kind { color: var(--thm-accent, var(--standard)); }
 .thm-num { font-variant-numeric: tabular-nums; color: var(--fg); }
 .sec-num { color: var(--fg); font-variant-numeric: tabular-nums; margin-right: 0.45em; }
 
@@ -756,9 +787,6 @@ body.refkey-visible .eq-refkey-list {
 .math.display + * {
   margin-top: 0.3em;
 }
-.thm.role-supporting .thm-kind { color: var(--supporting); }
-.thm.role-standard .thm-kind   { color: var(--standard); }
-.thm.role-omitted .thm-kind    { color: var(--omitted); }
 .thm-name { color: var(--muted); font-weight: 400; }
 .thm-body { margin: 0; font-style: italic; }
 .thm-omitref { margin-top: 0.3em; font-size: 0.92em; color: var(--omitted); }
@@ -1847,6 +1875,16 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   --supporting: #7eb3e4;
   --standard: #8a8a8a;
   --omitted: #d29257;
+  /* Per-type accent for theorem-like boxes, brightened for the dark theme. */
+  --thm-c-theorem: #5a93e0;
+  --thm-c-lemma: #5bc46f;
+  --thm-c-proposition: #b18be8;
+  --thm-c-corollary: #3bc9db;
+  --thm-c-definition: #e0a83a;
+  --thm-c-remark: #adb5bd;
+  --thm-c-example: #ff922b;
+  --thm-c-claim: #f06595;
+  --thm-c-conjecture: #91a7ff;
   --border: #353941;
   --border-strong: #4a4e57;
   --button-bg: #2a2d34;

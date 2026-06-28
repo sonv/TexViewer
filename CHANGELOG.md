@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.74] — 2026-06-28
+
+### Added
+
+- **Color-coded theorem boxes by statement type.** Theorem-like boxes (theorem,
+  lemma, proposition, corollary, definition, remark, example, claim, conjecture)
+  now carry a distinct accent color on their left border and heading word. The
+  type is read from the `\newtheorem` title word, so an abbreviated environment
+  (`\newtheorem{lem}{Lemma}`) still color-codes correctly. An explicit role
+  (main/supporting/omitted) still overrides the per-type color. Light and dark
+  themes each have their own palette.
+
 ## [0.1.73] — 2026-06-28
 
 ### Changed

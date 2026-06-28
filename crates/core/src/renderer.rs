@@ -1075,6 +1075,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .unwrap_or_else(|| ctx.idgen.next("thm"));
             record_container(ctx, &id, &n.span, label.as_deref());
             let role_class = role.as_css_class();
+            // Per-type class for color-coding (theorem/lemma/proposition/…). Key
+            // off the resolved title word ("Lemma") rather than the env name so an
+            // abbreviated `\newtheorem{lem}{Lemma}` still color-codes as a lemma;
+            // fall back to the env name when no title word is known.
+            let type_word = if kind_word.is_empty() { env } else { kind_word };
+            let type_class = format!("thm-type-{}", sanitize_id(&type_word.to_lowercase()));
             // Heading word resolved from the preamble's `\newtheorem` title;
             // fall back to capitalizing the env name for legacy/empty nodes.
             let kind_label = if kind_word.is_empty() {
@@ -1100,11 +1106,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             let role_pill = role_pill_html(*role);
             writeln!(
                 out,
-                r#"<div class="thm {env_class} {role_class}" id="{id}" data-src="{src}"{refkey}>"#,
+                r#"<div class="thm {env_class} {type_class} {role_class}" id="{id}" data-src="{src}"{refkey}>"#,
                 // `env` is an attacker-controllable `\newtheorem{...}` name;
                 // `sanitize_id` keeps it a valid class token and prevents it
                 // from breaking out of the attribute (stored-XSS otherwise).
                 env_class = format_args!("env-{}", sanitize_id(env)),
+                type_class = type_class,
                 role_class = role_class,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
