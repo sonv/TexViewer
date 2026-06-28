@@ -310,8 +310,22 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
         }))
         .collect();
 
+    // Project root + the files this daemon watches (root + \input/\include +
+    // bib). The nvim plugin uses this to route an edit in any project file to
+    // the daemon that actually owns it (one daemon per file), so editing an
+    // \input updates the right tab even with several projects open.
+    let root_file = state.current.read().await.root_file.display().to_string();
+    let watched: Vec<String> = {
+        let w = state.watched.read().await;
+        let mut v: Vec<String> = w.iter().map(|p| p.display().to_string()).collect();
+        v.sort();
+        v
+    };
+
     Json(serde_json::json!({
         "ws_protocol": WS_PROTOCOL_VERSION,
+        "root": root_file,
+        "watched": watched,
         // Number of connected browser tabs (live WebSocket subscribers). The
         // nvim plugin reads this to reuse an already-open tab instead of opening
         // a duplicate on a repeat :MathPreview.

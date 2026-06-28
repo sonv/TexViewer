@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.66"
+local PLUGIN_VERSION = "0.1.67"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -914,10 +914,54 @@ local function daemon_count()
   return n
 end
 
+-- Absolute, symlink-resolved path — matches the canonical paths the daemon
+-- reports in /debug `watched` (e.g. macOS /tmp → /private/tmp), so the plugin
+-- can match a buffer against a daemon's watched-file set.
+local function canon(p)
+  if not p or p == "" then return p end
+  return vim.fn.resolve(vim.fn.fnamemodify(p, ":p"))
+end
+
+-- Refresh a daemon entry's watched-file set (root + \input/\include + bib) from
+-- its /debug, so routing knows which daemon owns which file. Async, best-effort;
+-- ignored if the daemon was replaced/stopped meanwhile.
+local function fetch_watched(entry)
+  local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
+  run_system({ "curl", "--silent", "--max-time", "2", debug_url }, {}, function(res)
+    if daemons[entry.root] ~= entry then return end
+    if not (res and res.code == 0 and res.stdout and res.stdout ~= "") then return end
+    local ok, data = pcall(vim.json.decode, res.stdout)
+    if not ok or type(data) ~= "table" then return end
+    local set = {}
+    if type(data.root) == "string" then set[canon(data.root)] = true end
+    if type(data.watched) == "table" then
+      for _, p in ipairs(data.watched) do
+        if type(p) == "string" then set[canon(p)] = true end
+      end
+    end
+    entry.watched = set
+  end)
+end
+
 -- The registry entry whose daemon is currently "active" (mirrored by the
 -- globals), or nil.
 local function active_entry()
   return daemon_root and daemons[daemon_root] or nil
+end
+
+-- The daemon that OWNS a file: a previewed root (exact registry key), else the
+-- daemon whose watched-set contains it (an \input/\include of that project).
+-- This is what makes editing any project file route to the right tab even with
+-- several projects open at once. nil if no running daemon owns it.
+local function daemon_for_file(path)
+  if not path or path == "" then return nil end
+  local entry = daemons[path]
+  if entry then return entry end
+  local c = canon(path)
+  for _, d in pairs(daemons) do
+    if d.watched and d.watched[c] then return d end
+  end
+  return nil
 end
 
 -- Point the active globals (and the jump poll) at `entry`'s daemon, so pushes,
@@ -934,6 +978,7 @@ local function activate(entry)
   last_jump_seq = entry.jump_seq or 0
   set_urls(entry.port)
   start_jump_poll()
+  fetch_watched(entry)  -- keep this daemon's owned-file set current
 end
 
 -- The current buffer has no daemon: clear the active globals so pushes no-op.
@@ -956,8 +1001,10 @@ end
 -- a daemon only goes inactive when it actually stops (on_exit / stop_all).
 local function activate_for_current_buffer()
   if in_jump then return end
-  local path = vim.api.nvim_buf_get_name(0)
-  local entry = path ~= "" and daemons[path] or nil
+  -- Route to the daemon that OWNS this buffer (its root, or a project whose
+  -- \input/\include set contains it). If none owns it, keep the current active
+  -- daemon (harmless: an unrelated file is rejected by the daemon).
+  local entry = daemon_for_file(vim.api.nvim_buf_get_name(0))
   if entry then activate(entry) end
 end
 
@@ -1181,6 +1228,12 @@ local function start_with(cmd, opts)
   else
     activate_for_current_buffer()
   end
+  -- Populate this daemon's watched-file set once its first render has resolved
+  -- the project's \input/\include graph (activate's immediate fetch can race the
+  -- initial render and come back with just the root).
+  vim.defer_fn(function()
+    if daemons[root] == entry then fetch_watched(entry) end
+  end, 700)
   -- Skip the open on a restart that rebound the same port: the existing tab
   -- reconnects on its own (opening another would pile up duplicates).
   local reused_tab = opts.prev_port ~= nil and port == opts.prev_port
@@ -1302,8 +1355,7 @@ end
 -- The daemon for the current buffer's file, else the active one (so :MathStop /
 -- :MathRestart in a non-.tex buffer still act on the preview you were last in).
 local function target_entry()
-  local path = vim.api.nvim_buf_get_name(0)
-  return (path ~= "" and daemons[path]) or active_entry()
+  return daemon_for_file(vim.api.nvim_buf_get_name(0)) or active_entry()
 end
 
 function M.stop()

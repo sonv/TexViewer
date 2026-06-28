@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.67] — 2026-06-28
+
+### Changed
+
+- **Edits route to the daemon that owns the file — robust across multiple open
+  projects.** Building on per-file daemons (0.1.66): each daemon now reports its
+  watched-file set (root + `\input`/`\include` + bib) via `/debug`, and the
+  plugin routes an edit (and `:MathStop`/`:MathRestart`) in any project file to
+  the daemon that watches it — matched on canonical, symlink-resolved paths. So
+  with several projects open at once, editing an `\input` of one always updates
+  that project's tab. This removes the prior "an `\include` of a non-active
+  project could mis-route" caveat.
+
 ## [0.1.66] — 2026-06-28
 
 ### Added
