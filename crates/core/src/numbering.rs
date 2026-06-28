@@ -365,6 +365,15 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                     for row in rows {
                         if row_is_unnumbered(row) {
                             row_numbers.push(None);
+                            // A manual \tag{X} row carries its own number X
+                            // (MathJax renders it); map the row's labels to X so
+                            // \ref / \eqref resolve. \notag / \nonumber rows are
+                            // truly unnumbered and get nothing.
+                            if let Some(tag) = tag_value(row) {
+                                for l in labels_from_latex(row) {
+                                    record_label(&mut state.labels, l, &tag, "Equation");
+                                }
+                            }
                             continue;
                         }
 
@@ -388,8 +397,6 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                         }
                     }
                 } else if numbered && !row_is_unnumbered(body) {
-                    // A single display with \notag/\nonumber/\tag does not
-                    // advance the auto-counter (the manual \tag renders itself).
                     let n = next_equation_number(state);
                     *number = Some(n.clone());
                     if let Some(l) = label {
@@ -401,6 +408,25 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                     let pending = std::mem::take(&mut state.pending_labels);
                     for l in pending {
                         record_label(&mut state.labels, l, &n, "Equation");
+                    }
+                } else if numbered {
+                    // Unnumbered single display (\notag / \nonumber / \tag): it
+                    // does NOT advance the auto-counter, and `*number` stays None
+                    // so the renderer adds no eq-num (MathJax draws the tag). But
+                    // a manual \tag{X} still supplies its own number X, so map any
+                    // labels to it for \ref / \eqref. \notag / \nonumber leave it
+                    // truly unnumbered → labels get no number (refs fall back).
+                    if let Some(tag) = tag_value(body) {
+                        if let Some(l) = label {
+                            record_label(&mut state.labels, l.clone(), &tag, "Equation");
+                        }
+                        for l in labels_from_latex(body) {
+                            record_label(&mut state.labels, l, &tag, "Equation");
+                        }
+                        let pending = std::mem::take(&mut state.pending_labels);
+                        for l in pending {
+                            record_label(&mut state.labels, l, &tag, "Equation");
+                        }
                     }
                 }
             }
@@ -661,6 +687,60 @@ fn row_is_unnumbered(row: &str) -> bool {
         || has_latex_command(row, "tag*")
 }
 
+/// Extract the argument of a manual `\tag{…}` / `\tag*{…}` — the author-supplied
+/// equation number (e.g. `"a"`, `"$\star$"`). Both spellings store the same
+/// reference value (amsmath: `\ref` shows the bare tag, `\eqref` wraps it in
+/// parens); `\tag*` only changes how the equation itself prints, which MathJax
+/// handles. Returns `None` when there is no braced `\tag` (e.g. `\tagsomething`,
+/// or a `\tag` with no argument). Brace-matching mirrors `labels_from_latex`.
+fn tag_value(src: &str) -> Option<String> {
+    let needle = "\\tag";
+    let bytes = src.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(found) = src[search_from..].find(needle) {
+        let start = search_from + found;
+        let mut i = start + needle.len();
+        // Accept an optional `*` (`\tag*{…}`).
+        if bytes.get(i) == Some(&b'*') {
+            i += 1;
+        }
+        // Anything else alphabetic means this was `\tagfoo`, not `\tag`.
+        if bytes.get(i).is_some_and(u8::is_ascii_alphabetic) {
+            search_from = start + needle.len();
+            continue;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'{') {
+            search_from = start + needle.len();
+            continue;
+        }
+        let arg_start = i + 1;
+        let mut depth = 1i32;
+        i = arg_start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' if i + 1 < bytes.len() => {
+                    i += 2;
+                    continue;
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(src[arg_start..i].trim().to_string());
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        return None;
+    }
+    None
+}
+
 fn has_latex_command(src: &str, command: &str) -> bool {
     let needle = format!("\\{command}");
     let bytes = src.as_bytes();
@@ -806,6 +886,60 @@ mod tests {
         // The \tag row supplies its own number and is skipped, so eq:c stays
         // 1.2 rather than being offset to 1.3.
         assert_eq!(labels.number.get("eq:c").unwrap(), "1.2");
+    }
+
+    #[test]
+    fn tag_equation_label_resolves_to_its_tag() {
+        // Regression: \begin{equation}\label{eq:a} … \tag{a}\end{equation}
+        // referenced via \ref/\eqref must show the tag "a", not the key "eq:a".
+        let mut ns = nodes("\\begin{equation} \\label{eq:a} a^2 \\tag{a} \\end{equation}\n");
+        let labels = assign(&mut ns);
+        assert_eq!(labels.number.get("eq:a").map(String::as_str), Some("a"));
+        assert_eq!(labels.resolve_ref(RefKind::Ref, "eq:a"), "a");
+        assert_eq!(labels.resolve_ref(RefKind::Eqref, "eq:a"), "(a)");
+    }
+
+    #[test]
+    fn tag_star_equation_label_resolves_to_its_tag() {
+        let mut ns = nodes("\\begin{equation}\\label{eq:s} x \\tag*{$\\dagger$} \\end{equation}\n");
+        let labels = assign(&mut ns);
+        assert_eq!(
+            labels.number.get("eq:s").map(String::as_str),
+            Some("$\\dagger$")
+        );
+        assert_eq!(labels.resolve_ref(RefKind::Eqref, "eq:s"), "($\\dagger$)");
+    }
+
+    #[test]
+    fn tag_row_label_resolves_to_its_tag() {
+        // A \tag row inside align with its own \label maps to the tag, while the
+        // auto-numbered rows keep their continuous numbers.
+        let mut ns = nodes(
+            "\\section{S}\n\
+             \\begin{align}\n\
+             a &= b \\label{eq:a}\\\\\n\
+             c &= d \\tag{$\\star$}\\label{eq:t}\\\\\n\
+             e &= f \\label{eq:c}\n\
+             \\end{align}\n",
+        );
+        let labels = assign(&mut ns);
+        assert_eq!(labels.number.get("eq:a").unwrap(), "1.1");
+        assert_eq!(
+            labels.number.get("eq:t").map(String::as_str),
+            Some("$\\star$")
+        );
+        assert_eq!(labels.number.get("eq:c").unwrap(), "1.2");
+    }
+
+    #[test]
+    fn notag_equation_label_gets_no_number() {
+        // \notag without a manual \tag is truly unnumbered: a label on it has no
+        // number, so refs fall back to the key (matches LaTeX — labeling an
+        // unnumbered equation is a no-op).
+        let mut ns = nodes("\\begin{equation}\\label{eq:n} y \\notag \\end{equation}\n");
+        let labels = assign(&mut ns);
+        assert!(!labels.number.contains_key("eq:n"));
+        assert_eq!(labels.resolve_ref(RefKind::Ref, "eq:n"), "eq:n");
     }
 
     #[test]

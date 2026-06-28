@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.60] — 2026-06-28
+
+### Fixed
+
+- **`\ref` / `\eqref` to a `\tag`'d equation now resolve to the tag, not the
+  label key.** An equation with a manual `\tag{a}` (e.g.
+  `\begin{equation}\label{eq:a} … \tag{a}\end{equation}`) is correctly excluded
+  from the automatic counter, but its label was never mapped to the tag — so
+  `\ref{eq:a}` rendered `eq:a` and `\eqref{eq:a}` rendered `(eq:a)`. The tag
+  value is now recorded as the label's number, so they resolve to `a` / `(a)`.
+  Covers single displays and `\tag` rows inside `align` / `gather`, and both
+  `\tag` and `\tag*`. (`\notag` / `\nonumber` equations stay unnumbered, so a
+  label on one still falls back to the key — matching LaTeX.)
+
 ## [0.1.59] — 2026-06-28
 
 ### Added
