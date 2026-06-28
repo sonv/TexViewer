@@ -16,6 +16,10 @@ pub enum SyncKind {
     #[default]
     Leaf,
     Container,
+    /// A block-level leaf (e.g. a section heading): included in a selection
+    /// range like a Leaf, but excluded from the single-point cursor lookup so a
+    /// cursor on it doesn't flash the whole line — only inline leaves flash.
+    Block,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,7 +185,9 @@ impl SyncIndex {
         };
         self.entries
             .iter()
-            .filter(|e| e.kind == SyncKind::Leaf && same_path(&e.file, file))
+            // Leaf and Block both participate in a selection range; only
+            // Container (theorem/proof wrappers) is excluded.
+            .filter(|e| e.kind != SyncKind::Container && same_path(&e.file, file))
             // Overlap: entry.start <= sel_end && entry.end >= sel_start.
             .filter(|e| pos_before_or_equal(e.start, end) && pos_after_or_equal(e.end, start))
             .map(|e| e.element_id.clone())

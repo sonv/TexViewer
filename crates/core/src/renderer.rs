@@ -983,6 +983,12 @@ fn record_container(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&s
     record_with_kind(ctx, id, span, label, SyncKind::Container);
 }
 
+/// A block-level leaf (section heading): selectable as a range, but the cursor's
+/// single-point flash skips it so it doesn't light up the whole line.
+fn record_block(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>) {
+    record_with_kind(ctx, id, span, label, SyncKind::Block);
+}
+
 fn record_with_kind(
     ctx: &mut RenderCtx,
     id: &str,
@@ -1031,7 +1037,9 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .as_deref()
                 .map(sanitize_id)
                 .unwrap_or_else(|| ctx.idgen.next("sec"));
-            record(ctx, &id, &n.span, label.as_deref());
+            // Block-level: selectable, but the cursor flash skips it (so moving
+            // the cursor onto a heading doesn't flash the whole heading line).
+            record_block(ctx, &id, &n.span, label.as_deref());
             // \part=0, \chapter=1 → h1; \section=2 → h2; …; subparagraph=6 → h6.
             let h = (*level).clamp(1, 6);
             let num_html = number

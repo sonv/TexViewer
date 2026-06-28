@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.71] — 2026-06-28
+
+### Changed
+
+- **Cursor tracking no longer flashes whole-line block elements.** Moving the
+  cursor onto a section heading (a block-level leaf) no longer lights up the
+  entire line — outside equations only the inline content under the cursor (a
+  word, inline math, a ref) flashes, and multi-row equations still band the
+  cursor's row. Headings are still highlighted when you visually *select* them.
+  (Implementation: a new `SyncKind::Block` that's part of a selection range but
+  excluded from the single-point cursor lookup.)
+
 ## [0.1.70] — 2026-06-28
 
 ### Changed
