@@ -165,6 +165,9 @@
           restoreMathSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
+          // Cursor moved off a math row back to prose → drop the row band, then
+          // flash the element under the cursor (the original behavior).
+          clearSourceRangeHighlights();
           if (msg.element_id) {
             revealSourceElement(msg.element_id, true);
           }

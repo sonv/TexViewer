@@ -595,7 +595,28 @@
   // flash, this is persistent (no timeout) — it stays until the daemon sends an
   // empty list (selection dismissed) or a new range. `ids` come pre-resolved
   // from the daemon's SyncIndex range lookup.
+  // Clear the flashing point highlight (cursor on prose / single equation).
+  function clearSourceActive() {
+    if (sourceFlashTimer) { clearTimeout(sourceFlashTimer); sourceFlashTimer = 0; }
+    document.querySelectorAll('.source-active').forEach(function(el) {
+      el.classList.remove('source-active');
+    });
+    activeSourceId = null;
+  }
+
+  // Clear the line/row band (visual selection or cursor-on-math-row).
+  function clearSourceRangeHighlights() {
+    document.querySelectorAll('.source-range').forEach(function(el) {
+      el.classList.remove('source-range');
+    });
+    clearMathRowHighlights();
+    activeSourceRangeIds = [];
+    activeMathRows = [];
+  }
+
   function highlightSourceRange(ids, shouldScroll, mathRows) {
+    // Cursor moved onto a math row → drop any lingering prose flash.
+    clearSourceActive();
     document.querySelectorAll('.source-range').forEach(function(el) {
       el.classList.remove('source-range');
     });

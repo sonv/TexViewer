@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.70] — 2026-06-28
+
+### Changed
+
+- **Cursor tracking: flashing highlight on prose, persistent band on math rows.**
+  Refines v0.1.69 — a cursor on a multi-row `align`/`gather` row highlights that
+  row with the persistent band (so you can see which line you're on), while on
+  prose, sections, or a single equation it restores the original brief *flash* on
+  the element under the cursor instead of a constant band. Moving between the two
+  clears the other.
+
 ## [0.1.69] — 2026-06-28
 
 ### Changed

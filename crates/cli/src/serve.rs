@@ -1030,21 +1030,36 @@ async fn serve_cursor(
 ) -> axum::http::StatusCode {
     let file = normalize_source_path(req.file);
     let line = req.line.max(1);
-    // Track the cursor's LINE: highlight every element on it (and the specific
-    // align/gather row, via per-row math) — the same band the visual selection
-    // uses — so the preview follows the cursor, not just during a selection.
-    let (element_ids, math_rows) = {
-        let current = state.current.read().await;
-        source_range_highlight(&current.sync, &file, line, 1, line, u32::MAX)
+    let col = req.col.unwrap_or(1).max(1);
+    let current = state.current.read().await;
+    // On a multi-row math block, track the cursor's ROW with the persistent band
+    // (and per-row math) so you can see which align/gather line you're on.
+    // Everywhere else (prose, sections, single equations), keep the original
+    // flashing point highlight on the element under the cursor.
+    let payload = if current.sync.math_rows_in_range(&file, line, line).is_empty() {
+        let element_id = current
+            .sync
+            .lookup_leaf_by_source_position(&file, line, col)
+            .map(|entry| entry.element_id.clone());
+        serde_json::json!({
+            "event": "source-cursor",
+            "file": file,
+            "line": line,
+            "col": col,
+            "element_id": element_id,
+        })
+    } else {
+        let (element_ids, math_rows) =
+            source_range_highlight(&current.sync, &file, line, 1, line, u32::MAX);
+        serde_json::json!({
+            "event": "source-range",
+            "file": file,
+            "element_ids": element_ids,
+            "math_rows": math_rows,
+        })
     };
-    let payload = serde_json::json!({
-        "event": "source-range",
-        "file": file,
-        "element_ids": element_ids,
-        "math_rows": math_rows,
-    })
-    .to_string();
-    let _ = state.tx.send(payload);
+    drop(current);
+    let _ = state.tx.send(payload.to_string());
     axum::http::StatusCode::NO_CONTENT
 }
 
