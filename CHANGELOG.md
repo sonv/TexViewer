@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.65] — 2026-06-28
+
+### Fixed
+
+- **Repeat `:MathPreview` reuses the open tab even against an older daemon.**
+  v0.1.64 decided reuse from the daemon's connected-client count; if the running
+  binary predated that field, it fell back to opening a new tab — so a repeat
+  `:MathPreview` in the same session could still duplicate. The plugin now also
+  tracks, per daemon session, whether it already opened a tab, and reuses on
+  that when the client count isn't available. (The count still takes over when
+  present, so a tab you closed is reopened.) Two different files in two nvim
+  windows still get their own tabs.
+
 ## [0.1.64] — 2026-06-28
 
 ### Changed

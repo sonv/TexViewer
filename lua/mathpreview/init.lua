@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.64"
+local PLUGIN_VERSION = "0.1.65"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -113,6 +113,10 @@ local uv = vim.uv or vim.loop
 local daemon_job = nil   -- jobid of the running daemon, or nil
 local daemon_port = nil  -- port the daemon bound, or nil
 local daemon_root = nil  -- root .tex file path the daemon serves, or nil
+-- Whether we've already opened (or reused) a browser tab for the CURRENT daemon
+-- session. Lets a repeat :MathPreview reuse the tab even when the daemon is too
+-- old to report its connected-client count. Reset when the daemon stops/dies.
+local browser_opened = false
 
 -- Push state (carried across pushes for :MathPreviewStatus).
 local timer = nil
@@ -495,7 +499,17 @@ end
 -- callback is already main-loop-scheduled by run_system.
 local function reuse_or_open_browser()
   local url = "http://127.0.0.1:" .. tostring(daemon_port) .. "/"
-  if not config.debug_url then open_browser(url); return end
+  local function do_open() browser_opened = true; open_browser(url) end
+  local function say_reuse()
+    browser_opened = true
+    vim.notify("mathpreview: preview already open — reusing tab (" .. url .. ")",
+      vim.log.levels.INFO)
+  end
+  if not config.debug_url then
+    -- No URL to query: fall back to "did we already open one this session?".
+    if browser_opened then say_reuse() else do_open() end
+    return
+  end
   run_system(
     { "curl", "--silent", "--max-time", "2", config.debug_url }, {},
     function(res)
@@ -504,11 +518,14 @@ local function reuse_or_open_browser()
         local ok, data = pcall(vim.json.decode, res.stdout)
         if ok and type(data) == "table" then clients = data.clients end
       end
-      if type(clients) == "number" and clients > 0 then
-        vim.notify("mathpreview: preview already open — reusing tab (" .. url .. ")",
-          vim.log.levels.INFO)
+      if type(clients) == "number" then
+        -- Authoritative: the daemon knows how many tabs are connected. Reuse if
+        -- one is open; open a fresh tab if it was closed (clients == 0).
+        if clients > 0 then say_reuse() else do_open() end
       else
-        open_browser(url)
+        -- Daemon too old to report `clients` — fall back to the session flag so
+        -- a repeat :MathPreview still doesn't stack a duplicate tab.
+        if browser_opened then say_reuse() else do_open() end
       end
     end)
 end
@@ -995,6 +1012,7 @@ local function start_with(cmd, opts)
         daemon_job = nil
         daemon_port = nil
         daemon_root = nil
+        browser_opened = false
         detach_autocmds()
         if code ~= 0 then
           -- A near-immediate non-zero exit is almost always a port-bind race:
@@ -1038,10 +1056,16 @@ local function start_with(cmd, opts)
   -- duplicates (the bug where 10 restarts left 10 tabs). If the restart
   -- had to move to a new port, the old tab is stale, so we do open.
   local reused_tab = opts.prev_port ~= nil and port == opts.prev_port
-  if config.auto_open_browser and not reused_tab then
-    vim.defer_fn(function()
-      open_browser("http://127.0.0.1:" .. tostring(port) .. "/")
-    end, 350)
+  if config.auto_open_browser then
+    -- Either way a tab now exists for this session (freshly opened, or the
+    -- restart's same-port reconnect), so mark it so a later :MathPreview reuses
+    -- it instead of opening another.
+    browser_opened = true
+    if not reused_tab then
+      vim.defer_fn(function()
+        open_browser("http://127.0.0.1:" .. tostring(port) .. "/")
+      end, 350)
+    end
   end
   vim.notify(
     ("mathpreview: serving %s on http://127.0.0.1:%d"):format(vim.fn.fnamemodify(root, ":~"), port),
@@ -1134,6 +1158,8 @@ function M.stop()
   if not daemon_job then return end
   local job = daemon_job
   daemon_job = nil
+  -- browser_opened is reset by the daemon's on_exit when the job actually ends;
+  -- on :MathPreviewRestart, start_with then sets it again for the same-port tab.
   pcall(vim.fn.jobstop, job)
   detach_autocmds()
 end
