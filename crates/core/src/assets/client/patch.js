@@ -685,6 +685,9 @@
       var ms = Math.round(performance.now() - tStart);
       nodes.forEach(function(node) { node.classList.remove('math-pending'); });
       restoreMathSearchHighlights();
+      // Math is only now typeset; re-apply any per-row selection highlight that
+      // fell back to whole-block because the SVG didn't exist yet.
+      restoreSourceRange();
       setStatus('live',
         '● live / idle typeset ' + ms + 'ms (' + nodes.length + ' math)' +
         memSuffix(window._lastRss));

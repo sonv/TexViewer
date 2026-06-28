@@ -1059,26 +1059,39 @@ async fn serve_selection(
 ) -> axum::http::StatusCode {
     let file = normalize_source_path(req.file);
     let bounds = (req.start_line, req.start_col, req.end_line, req.end_col);
-    let element_ids: Vec<String> = match bounds {
+    let (element_ids, math_rows): (Vec<String>, Vec<serde_json::Value>) = match bounds {
         // A real range — resolve overlapping leaves. `end_col` defaults to "end
         // of line" (u32::MAX), not 1, so a linewise (V) selection covers the row.
         (Some(sl), sc, Some(el), ec) if !req.clear => {
             let current = state.current.read().await;
-            current.sync.leaves_in_range(
+            let mut ids = current.sync.leaves_in_range(
                 &file,
                 sl.max(1),
                 sc.unwrap_or(1).max(1),
                 el.max(1),
                 ec.unwrap_or(u32::MAX),
-            )
+            );
+            // For multi-row math blocks, highlight the selected ROWS instead of
+            // the whole block: emit per-block row indices and drop the block's
+            // whole-block id so the client doesn't also flood-highlight it.
+            let hits = current.sync.math_rows_in_range(&file, sl.max(1), el.max(1));
+            let row_ids: std::collections::HashSet<&str> =
+                hits.iter().map(|(id, _, _)| id.as_str()).collect();
+            ids.retain(|id| !row_ids.contains(id.as_str()));
+            let math_rows = hits
+                .iter()
+                .map(|(id, count, rows)| serde_json::json!({ "id": id, "count": count, "rows": rows }))
+                .collect();
+            (ids, math_rows)
         }
-        // clear == true, or incomplete bounds → empty list dismisses the highlight.
-        _ => Vec::new(),
+        // clear == true, or incomplete bounds → empty lists dismiss the highlight.
+        _ => (Vec::new(), Vec::new()),
     };
     let payload = serde_json::json!({
         "event": "source-range",
         "file": file,
         "element_ids": element_ids,
+        "math_rows": math_rows,
     })
     .to_string();
     let _ = state.tx.send(payload);

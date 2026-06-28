@@ -29,9 +29,22 @@ pub struct SyncEntry {
     pub kind: SyncKind,
 }
 
+/// Per-row source spans for a multi-row display-math block (align/gather/…).
+/// Lets an editor selection highlight the individual rows it covers rather than
+/// the whole block. `rows[i]` is the (start_line, end_line) of the i-th rendered
+/// table row, so the client maps overlapping indices to the SVG `mtr` groups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MathRowsEntry {
+    pub element_id: String,
+    pub file: PathBuf,
+    pub rows: Vec<(u32, u32)>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SyncIndex {
     pub entries: Vec<SyncEntry>,
+    #[serde(default)]
+    pub math_rows: Vec<MathRowsEntry>,
     by_label: HashMap<String, usize>,
 }
 
@@ -73,6 +86,50 @@ impl SyncIndex {
             label,
             kind,
         });
+    }
+
+    /// Record the per-row source spans of a multi-row math block.
+    pub fn record_math_rows(
+        &mut self,
+        element_id: impl Into<String>,
+        file: PathBuf,
+        rows: Vec<(u32, u32)>,
+    ) {
+        self.math_rows.push(MathRowsEntry {
+            element_id: element_id.into(),
+            file,
+            rows,
+        });
+    }
+
+    /// For each multi-row math block in `file` with at least one row whose line
+    /// span overlaps `[start_line, end_line]`, return its element id, total row
+    /// count, and the overlapping row indices (line-based; the client maps the
+    /// indices to the rendered `mtr` rows and falls back to a whole-block
+    /// highlight if the count doesn't match).
+    pub fn math_rows_in_range(
+        &self,
+        file: &Path,
+        start_line: u32,
+        end_line: u32,
+    ) -> Vec<(String, usize, Vec<usize>)> {
+        let mut out = Vec::new();
+        for m in &self.math_rows {
+            if !same_path(&m.file, file) {
+                continue;
+            }
+            let hits: Vec<usize> = m
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, &(rs, re))| rs <= end_line && re >= start_line)
+                .map(|(i, _)| i)
+                .collect();
+            if !hits.is_empty() {
+                out.push((m.element_id.clone(), m.rows.len(), hits));
+            }
+        }
+        out
     }
 
     pub fn lookup_by_label(&self, label: &str) -> Option<&SyncEntry> {
@@ -301,5 +358,30 @@ mod tests {
 
         // A selection over un-indexed source snaps to nothing (no fallback).
         assert!(sync.leaves_in_range(&file, 30, 1, 31, 1).is_empty());
+    }
+
+    #[test]
+    fn math_rows_in_range_returns_overlapping_row_indices() {
+        let file = PathBuf::from("/tmp/main.tex");
+        let mut sync = SyncIndex::new();
+        // A 3-row align with rows on source lines 4, 5, 6.
+        sync.record_math_rows("dm-1", file.clone(), vec![(4, 4), (5, 5), (6, 6)]);
+
+        // Selecting lines 4..5 hits rows 0 and 1 (not row 2); count is reported.
+        assert_eq!(
+            sync.math_rows_in_range(&file, 4, 5),
+            vec![("dm-1".to_string(), 3, vec![0, 1])]
+        );
+        // A single-line selection on row 2.
+        assert_eq!(
+            sync.math_rows_in_range(&file, 6, 6),
+            vec![("dm-1".to_string(), 3, vec![2])]
+        );
+        // No overlap → nothing.
+        assert!(sync.math_rows_in_range(&file, 1, 2).is_empty());
+        // Wrong file → nothing.
+        assert!(sync
+            .math_rows_in_range(Path::new("/tmp/other.tex"), 4, 6)
+            .is_empty());
     }
 }

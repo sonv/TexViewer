@@ -39,6 +39,8 @@
   // Element ids of the editor's current visual selection (persistent highlight,
   // re-applied across re-renders). Empty when no selection is active.
   var activeSourceRangeIds = [];
+  // Per-block selected rows for multi-row math (align/gather): [{id,count,rows}].
+  var activeMathRows = [];
   var vimPendingKey = '';
   var vimPendingTimer = 0;
   var lastSearchQuery = '';

@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.68] — 2026-06-28
+
+### Added
+
+- **Editor selection highlights individual rows of multi-line math.** Selecting
+  lines of an `align` / `gather` (etc.) in the editor now highlights exactly
+  those rows in the preview — a translucent band behind each selected row —
+  instead of the whole block. The daemon maps the selected source lines to row
+  indices (recorded in the sync index per multi-row block) and the viewer tints
+  the matching MathJax table rows by inserting an SVG `<rect>` inside each row,
+  so it stays aligned under page zoom. It accounts for a trailing `\\` and for
+  rows containing nested `matrix`/`cases`, and falls back to a whole-block
+  highlight when the rendered row structure can't be matched.
+
 ## [0.1.67] — 2026-06-28
 
 ### Changed

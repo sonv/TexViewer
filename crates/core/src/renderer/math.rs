@@ -245,6 +245,37 @@ pub(super) fn label_alias_anchors(body: &str, primary: Option<&str>) -> String {
     out
 }
 
+/// Per-row source line ranges `(start_line, end_line)` (1-based, inclusive) for
+/// a multi-row display-math `body`, given the source line of the block's
+/// `\begin{env}` (always the line the body starts on). Rows are the same
+/// `\\`-split rows MathJax renders as table rows, so the i-th range corresponds
+/// to the i-th rendered `mtr` — letting an editor selection highlight the rows
+/// it covers. Uses each (trimmed) row slice's offset within `body` to count the
+/// newlines before it.
+pub(super) fn math_row_line_ranges(body: &str, start_line: u32) -> Vec<(u32, u32)> {
+    let mut rows = split_math_rows(body);
+    // A trailing `\\` leaves an empty final row that MathJax does NOT render as
+    // a table row — drop it so our row count/indices line up with the rendered
+    // `mtr` rows. (Empty rows in the middle, from `\\ \\`, are kept: MathJax
+    // does render those as blank rows.)
+    if rows.last().is_some_and(|r| r.is_empty()) {
+        rows.pop();
+    }
+    let base = body.as_ptr() as usize;
+    let bytes = body.as_bytes();
+    let line_at = |upto: usize| -> u32 {
+        let upto = upto.min(bytes.len());
+        start_line + bytes[..upto].iter().filter(|&&b| b == b'\n').count() as u32
+    };
+    rows.iter()
+        .map(|r| {
+            let off = (r.as_ptr() as usize).saturating_sub(base).min(bytes.len());
+            let end = (off + r.len()).min(bytes.len());
+            (line_at(off), line_at(end))
+        })
+        .collect()
+}
+
 pub(super) fn split_math_rows(src: &str) -> Vec<&str> {
     let bytes = src.as_bytes();
     let mut rows = Vec::new();
@@ -658,5 +689,32 @@ pub(super) fn write_flow_marker(
             label_text = escape_html(&label_text),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn math_row_line_ranges_maps_rows_to_source_lines() {
+        // Body as captured after `\begin{align}` on source line 3: a leading
+        // newline, then one row per line (4, 5, 6). `\\` is the LaTeX row sep.
+        let body = "\na &= b \\\\\nc &= d \\\\\ne &= f\n";
+        assert_eq!(math_row_line_ranges(body, 3), vec![(4, 4), (5, 5), (6, 6)]);
+    }
+
+    #[test]
+    fn math_row_line_ranges_single_row_is_one_range() {
+        // A one-liner align (all on the \begin line, source line 3).
+        let body = " a &= b ";
+        assert_eq!(math_row_line_ranges(body, 3), vec![(3, 3)]);
+    }
+
+    #[test]
+    fn math_row_line_ranges_drops_trailing_backslash_row() {
+        // A final `\\` must not add a phantom row — MathJax renders 2 rows here.
+        let body = "\na &= b \\\\\nc &= d \\\\\n";
+        assert_eq!(math_row_line_ranges(body, 3), vec![(4, 4), (5, 5)]);
     }
 }

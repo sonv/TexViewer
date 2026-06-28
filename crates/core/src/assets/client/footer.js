@@ -169,7 +169,7 @@
             revealSourceElement(msg.element_id, true);
           }
         } else if (msg.event === 'source-range') {
-          highlightSourceRange(msg.element_ids || [], true);
+          highlightSourceRange(msg.element_ids || [], true, msg.math_rows || []);
         } else if (msg.event === 'full-reload') {
           location.reload();
         } else if (msg.event === 'error') {

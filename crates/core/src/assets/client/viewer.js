@@ -595,11 +595,12 @@
   // flash, this is persistent (no timeout) — it stays until the daemon sends an
   // empty list (selection dismissed) or a new range. `ids` come pre-resolved
   // from the daemon's SyncIndex range lookup.
-  function highlightSourceRange(ids, shouldScroll) {
+  function highlightSourceRange(ids, shouldScroll, mathRows) {
     document.querySelectorAll('.source-range').forEach(function(el) {
       el.classList.remove('source-range');
     });
     activeSourceRangeIds = Array.isArray(ids) ? ids : [];
+    activeMathRows = Array.isArray(mathRows) ? mathRows : [];
     var first = null;
     activeSourceRangeIds.forEach(function(id) {
       var el = visibleSyncElement(document.getElementById(id));
@@ -607,14 +608,78 @@
       el.classList.add('source-range');
       if (!first) first = el;
     });
+    highlightMathRows(activeMathRows);
+    if (!first && activeMathRows.length) {
+      var mb = document.getElementById(activeMathRows[0].id);
+      if (mb) first = mb;
+    }
     if (shouldScroll && first) scrollSourceIntoView(first);
+  }
+
+  // Remove all per-row math highlight rectangles.
+  function clearMathRowHighlights() {
+    document.querySelectorAll('rect.mp-row-hl').forEach(function(r) {
+      if (r.parentNode) r.parentNode.removeChild(r);
+    });
+  }
+
+  // Highlight the selected rows of multi-row math blocks (align/gather). Each
+  // entry is { id, count, rows } from the daemon: `count` is the number of rows
+  // it expects (a guard against MathJax merging/dropping rows) and `rows` the
+  // selected indices. We insert a translucent <rect> behind each selected SVG
+  // table row (data-mml-node="mtr"); the rect lives INSIDE the row's <g>, so it
+  // inherits the row transform and scales with the page zoom — no coordinate
+  // conversion needed. If the rendered row count doesn't match what the daemon
+  // expected, fall back to highlighting the whole block.
+  function highlightMathRows(mathRows) {
+    clearMathRowHighlights();
+    (mathRows || []).forEach(function(mr) {
+      if (!mr || !mr.id) return;
+      var block = document.getElementById(mr.id);
+      if (!block) return;
+      var svg = block.querySelector('svg');
+      // The OUTERMOST table is the align/gather itself (first in document
+      // order). Take only ITS direct rows: a descendant query would also grab
+      // mtr from a nested matrix/cases/aligned inside a row, inflating the
+      // count and breaking the index→row mapping.
+      var mtable = svg ? svg.querySelector('[data-mml-node="mtable"]') : null;
+      var groups = [];
+      if (mtable) {
+        mtable.querySelectorAll('[data-mml-node="mtr"],[data-mml-node="mlabeledtr"]')
+          .forEach(function(g) {
+            if (g.closest('[data-mml-node="mtable"]') === mtable) groups.push(g);
+          });
+      }
+      if (!groups.length || groups.length !== mr.count) {
+        block.classList.add('source-range');
+        return;
+      }
+      (mr.rows || []).forEach(function(i) {
+        var g = groups[i];
+        if (!g || !g.getBBox) return;
+        var bb;
+        try { bb = g.getBBox(); } catch (e) { return; }
+        if (!bb || !isFinite(bb.width) || bb.width <= 0 || bb.height <= 0) return;
+        var padY = bb.height * 0.12;
+        var padX = bb.height * 0.1;
+        var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('class', 'mp-row-hl');
+        rect.setAttribute('x', bb.x - padX);
+        rect.setAttribute('y', bb.y - padY);
+        rect.setAttribute('width', bb.width + padX * 2);
+        rect.setAttribute('height', bb.height + padY * 2);
+        g.insertBefore(rect, g.firstChild);
+      });
+    });
   }
 
   // Re-apply the selection highlight after a re-render rebuilds the DOM (no
   // scroll — don't yank the view on every keystroke), mirroring
   // restoreSourceHighlight for the cursor.
   function restoreSourceRange() {
-    if (activeSourceRangeIds.length) highlightSourceRange(activeSourceRangeIds, false);
+    if (activeSourceRangeIds.length || activeMathRows.length) {
+      highlightSourceRange(activeSourceRangeIds, false, activeMathRows);
+    }
   }
 
   function sourceElementFromTarget(target) {
