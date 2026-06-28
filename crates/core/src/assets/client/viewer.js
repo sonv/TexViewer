@@ -882,6 +882,28 @@
     document.body.classList.toggle('margin-has-cards', pinnedRefs.size > 0);
     document.body.classList.toggle('margin-right-has-cards', rightHas);
     document.body.classList.toggle('margin-left-has-cards', leftHas);
+    // Drop a side's expanded state once it has no cards, so a freshly pinned
+    // card doesn't inherit a previous (since-closed) card's expanded column.
+    if (!rightHas) document.body.classList.remove('margin-right-expanded');
+    if (!leftHas) document.body.classList.remove('margin-left-expanded');
+    // Reflect each card's column-expanded state on its pin button.
+    var rightExp = document.body.classList.contains('margin-right-expanded');
+    var leftExp = document.body.classList.contains('margin-left-expanded');
+    document.querySelectorAll('.margin-card').forEach(function(card) {
+      var btn = card.querySelector('.margin-card-pin');
+      if (!btn) return;
+      var on = (card.dataset.side === 'left') ? leftExp : rightExp;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+
+  /// Toggle whether a card's column expands past the gutter, over the text.
+  /// Per-side (a column shares one width), triggered by any card's pin button.
+  function toggleMarginExpand(card) {
+    var side = (card && card.dataset.side === 'left') ? 'left' : 'right';
+    document.body.classList.toggle('margin-' + side + '-expanded');
+    updateMarginCardsClass();
   }
 
   function closeAllMarginCards() {
@@ -988,6 +1010,15 @@
     zoom.setAttribute('aria-label', 'magnify');
     zoom.title = 'magnify (read full size)';
     zoom.textContent = '⤢';
+    // Pin: expand this card's column past the gutter, over the text, so a note
+    // that's too narrow in the margin can be read in place. Toggles per side.
+    var pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'margin-card-pin';
+    pin.setAttribute('aria-label', 'pin open over the text');
+    pin.setAttribute('aria-pressed', 'false');
+    pin.title = 'pin open over the text';
+    pin.textContent = '📌';
     var close = document.createElement('button');
     close.type = 'button';
     close.className = 'margin-card-close';
@@ -997,6 +1028,7 @@
     head.appendChild(grip);
     head.appendChild(title);
     head.appendChild(zoom);
+    head.appendChild(pin);
     head.appendChild(close);
 
     var body = document.createElement('div');
@@ -2375,6 +2407,13 @@
       shell.style.width = Math.round(naturalWidth * currentUserZoom) + 'px';
       shell.style.height = '';
     }
+    // Gutter beside the centered page — the default width of each margin column,
+    // so notes sit in the whitespace without overlapping the text (a card's pin
+    // button expands its column past this, over the text).
+    var vw = document.documentElement.clientWidth || 0;
+    var shellW = parseFloat(shell.style.width) || 0;
+    var gutter = Math.max(0, Math.floor((vw - shellW) / 2));
+    document.documentElement.style.setProperty('--margin-gutter', gutter + 'px');
   }
 
   function clampUserZoom(z) {
@@ -2384,10 +2423,6 @@
 
   function setUserZoom(z, persist) {
     currentUserZoom = clampUserZoom(z);
-    // The document zoom is applied via CSS `zoom` on main#page only; the margin
-    // columns are fixed-position siblings outside it, so expose the user-zoom
-    // factor as a variable they can fold into their sizing to track the text.
-    document.documentElement.style.setProperty('--user-zoom', currentUserZoom.toFixed(4));
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();

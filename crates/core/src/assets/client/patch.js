@@ -350,6 +350,12 @@
       if (zcard) openMarginZoom(zcard);
       return;
     }
+    var marginPin = e.target.closest('.margin-card-pin');
+    if (marginPin) {
+      var pcard = marginPin.closest('.margin-card');
+      if (pcard) toggleMarginExpand(pcard);
+      return;
+    }
     // Dismiss the magnify overlay: explicit close button, or a click on the
     // dialog backdrop (the <dialog> element itself, outside its content box).
     if (e.target.closest('#margin-zoom-close') || e.target.id === 'margin-zoom-dialog') {

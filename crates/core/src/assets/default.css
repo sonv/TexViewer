@@ -1106,14 +1106,15 @@ body.margin-mode .sidenote {
    either side; each column appears only when it actually holds a card
    (driven by the body.margin-{left,right}-has-cards classes, NOT by margin
    mode, so pinned cards survive turning the pin-on-click mode off).
-   Sized so most display equations fit; wider ones scroll inside the card. */
+   By default a column fills only the GUTTER beside the centered page
+   (--margin-gutter, measured in JS), so notes don't overlap the text. A card's
+   pin button expands its column over the text (body.margin-{side}-expanded). */
 aside#margin, aside#margin-left {
   display: none;
   position: fixed;
   top: var(--topbar-height);
   bottom: 0;
-  width: min(540px, 36vw);
-  min-width: 320px;
+  width: clamp(180px, var(--margin-gutter, 320px), 460px);
   overflow-y: auto;
   z-index: 100;
   /* The aside overlays the page gutter, where sidenote chips also live.
@@ -1146,6 +1147,9 @@ body.margin-dragging .margin-cards:empty {
    it's open, push the left margin column past it so the panel stays clickable
    (mirrors the log-panel's 268px offset). */
 body.side-panel-open aside#margin-left { left: 268px; }
+/* Pin button: expand a column past the gutter, over the text, for reading. */
+body.margin-right-expanded aside#margin,
+body.margin-left-expanded aside#margin-left { width: min(540px, 44vw); }
 
 /* Macros override dialog — toolbar `macros` button opens this <dialog>
    to append a new \newcommand to either the global or project file.
@@ -1602,18 +1606,14 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   border-left: 1px solid var(--rule, #ddd);
   margin: 0;
   padding: 10px 12px;
-  /* Margin cards hold document content (equations, theorems, …), so they scale
-     with the document text (--body-font-size), not the UI chrome. Every size in
-     the card derives from it via calc() so the whole card grows as one unit;
-     the 0.75 etc. ratios reproduce the prior fixed px at the default 18px. */
-  font-size: calc(var(--body-font-size) * 0.75);
+  /* Margin cards hold document content (equations, theorems, …), so their text
+     MATCHES the main text: size = body font × the document's --page-scale (the
+     same factor main#page is CSS-`zoom`ed by, which includes Cmd/Ctrl +/- zoom
+     AND the A4 fit-to-width). The fixed column can't inherit that zoom, so it's
+     folded into the font here. Everything else in the card uses `em`, so the
+     whole card scales as one unit from this base. */
+  font-size: calc(var(--body-font-size) * var(--page-scale, 1));
   line-height: 1.5;
-  /* Cmd/Ctrl +/- zooms main#page via CSS `zoom`, which the fixed margin column
-     doesn't inherit. Apply the same user-zoom factor here so the notes track
-     the document text size as you zoom. (The auto fit-to-width part of the page
-     scale is deliberately excluded — margin notes shouldn't shrink on small
-     screens, only follow the explicit zoom.) */
-  zoom: var(--user-zoom, 1);
   animation: margin-card-in 180ms ease-out;
 }
 .margin-card:last-child {
@@ -1632,7 +1632,7 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: calc(var(--body-font-size) * 0.667);
+  font-size: 0.667em;
   color: var(--muted, #666);
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   min-width: 0;
@@ -1645,7 +1645,7 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 .margin-card-grip {
   cursor: grab;
   color: var(--muted, #aaa);
-  font-size: calc(var(--body-font-size) * 0.667);
+  font-size: 0.667em;
   letter-spacing: -2px;
   user-select: none;
   padding: 0 2px;
@@ -1662,7 +1662,9 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
    The rendered "Theorem 2.1" / "(3.1)" sits next to it in muted text. */
 .margin-card-key {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: calc(var(--body-font-size) * 0.611);
+  /* Child of .margin-card-title (0.667em), so 0.916em here ≈ 0.611 of the card
+     base — matching the previous 11px at the default size. */
+  font-size: 0.916em;
   color: var(--accent, #b04b00);
   background: rgba(0, 0, 0, 0.045);
   padding: 1px 5px;
@@ -1674,22 +1676,26 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: calc(var(--body-font-size) * 0.889);
+  font-size: 0.889em;
   line-height: 1;
   color: var(--muted, #888);
   padding: 0 4px;
 }
 .margin-card-close:hover { color: #000; }
-.margin-card-zoom {
+.margin-card-zoom,
+.margin-card-pin {
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: calc(var(--body-font-size) * 0.78);
+  font-size: 0.78em;
   line-height: 1;
   color: var(--muted, #888);
   padding: 0 2px;
 }
-.margin-card-zoom:hover { color: var(--accent, #b04b00); }
+.margin-card-zoom:hover,
+.margin-card-pin:hover { color: var(--accent, #b04b00); }
+/* Pin "active" = this card's column is expanded over the text. */
+.margin-card-pin.active { color: var(--accent, #b04b00); }
 .margin-card-body {
   font-size: 1em;
   /* A long note scrolls within its card instead of stretching the column;

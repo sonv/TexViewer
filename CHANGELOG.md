@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.63] — 2026-06-28
+
+### Changed
+
+- **Margin notes match the main text size.** They now scale with the document's
+  page scale (`--page-scale` — which includes `Cmd/Ctrl` +/- zoom and the A4
+  fit-to-width), so a note reads at the same size as the body text in every mode
+  (previously a fixed 0.75×).
+- **Margin columns no longer overlap the text by default.** Each column fits the
+  whitespace gutter beside the centered page (computed from the page width). A
+  new per-card **📌 pin** button expands that column out over the text when you
+  want to read a note that's too narrow in the gutter; click again to dock it
+  back. (On a very narrow window the column keeps a small minimum width, so it
+  can still slightly overlap there.)
+
 ## [0.1.62] — 2026-06-28
 
 ### Added
