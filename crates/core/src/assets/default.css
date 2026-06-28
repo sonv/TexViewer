@@ -1596,7 +1596,11 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   border-left: 1px solid var(--rule, #ddd);
   margin: 0;
   padding: 10px 12px;
-  font-size: 13.5px;
+  /* Margin cards hold document content (equations, theorems, …), so they scale
+     with the document text (--body-font-size), not the UI chrome. Every size in
+     the card derives from it via calc() so the whole card grows as one unit;
+     the 0.75 etc. ratios reproduce the prior fixed px at the default 18px. */
+  font-size: calc(var(--body-font-size) * 0.75);
   line-height: 1.5;
   animation: margin-card-in 180ms ease-out;
 }
@@ -1616,7 +1620,7 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 12px;
+  font-size: calc(var(--body-font-size) * 0.667);
   color: var(--muted, #666);
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   min-width: 0;
@@ -1629,7 +1633,7 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
 .margin-card-grip {
   cursor: grab;
   color: var(--muted, #aaa);
-  font-size: 12px;
+  font-size: calc(var(--body-font-size) * 0.667);
   letter-spacing: -2px;
   user-select: none;
   padding: 0 2px;
@@ -1646,7 +1650,7 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
    The rendered "Theorem 2.1" / "(3.1)" sits next to it in muted text. */
 .margin-card-key {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: calc(var(--body-font-size) * 0.611);
   color: var(--accent, #b04b00);
   background: rgba(0, 0, 0, 0.045);
   padding: 1px 5px;
@@ -1658,13 +1662,13 @@ body.page-mode-dynamic.margin-mode.margin-has-cards #page-shell {
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: 16px;
+  font-size: calc(var(--body-font-size) * 0.889);
   line-height: 1;
   color: var(--muted, #888);
   padding: 0 4px;
 }
 .margin-card-close:hover { color: #000; }
-.margin-card-body { font-size: 13.5px; }
+.margin-card-body { font-size: 1em; }
 .margin-card-body .blk { padding: 0; }
 .margin-card-body .thm,
 .margin-card-body .proof,

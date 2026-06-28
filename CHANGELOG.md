@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.61] — 2026-06-28
+
+### Changed
+
+- **Margin cards now scale with the document text.** In margin mode, the
+  equations / theorems / annotations pinned to the margin column derive their
+  font size from `--body-font-size` instead of fixed pixels, so they grow and
+  shrink with the body font-size setting and stay proportional to the main text.
+  The whole card (content, title, `\label` key, close button) scales as one
+  unit; the column keeps its width, and over-wide equations still scroll inside
+  the card.
+
 ## [0.1.60] — 2026-06-28
 
 ### Fixed
