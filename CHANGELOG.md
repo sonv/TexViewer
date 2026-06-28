@@ -17,6 +17,15 @@ summary.
 
 Nothing yet.
 
+## [0.1.72] — 2026-06-28
+
+### Changed
+
+- **Highlighted equation rows are boxed.** The per-row highlight (cursor or
+  selection on an `align`/`gather` row) now draws a crisp outline around the row
+  plus a faint fill, instead of just a fill tint — making the active line clearer.
+  The border stays a constant width at any zoom (`non-scaling-stroke`).
+
 ## [0.1.71] — 2026-06-28
 
 ### Changed

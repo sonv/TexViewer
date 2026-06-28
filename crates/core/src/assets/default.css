@@ -845,12 +845,18 @@ body.refkey-visible .eq-refkey-list {
   border-radius: 2px;
   transition: background 0.12s ease;
 }
-/* Per-row highlight for a multi-row math selection (align/gather): a translucent
-   <rect> inserted behind each selected SVG table row by highlightMathRows. It
-   lives inside the math SVG, so it scales with the page zoom. A class rule beats
-   MathJax's inherited `fill` (presentation attributes lose to CSS), so the rect
-   shows as a tint rather than a solid currentColor box. */
-.mp-row-hl { fill: rgba(91, 62, 162, 0.16); }
+/* Per-row highlight for a multi-row math selection (align/gather): a <rect>
+   inserted behind each selected SVG table row by highlightMathRows. It lives
+   inside the math SVG, so it scales with the page zoom. A class rule beats
+   MathJax's inherited `fill` (presentation attributes lose to CSS). A faint fill
+   plus a boxed outline marks the row clearly; `non-scaling-stroke` keeps the
+   border a constant ~1.4px regardless of the SVG's internal scale or page zoom. */
+.mp-row-hl {
+  fill: rgba(91, 62, 162, 0.10);
+  stroke: rgba(91, 62, 162, 0.55);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
 .source-space {
   display: inline-block;
   position: relative;
@@ -1903,7 +1909,7 @@ body.theme-dark .math.math-selected,
 body.theme-dark .math:focus,
 body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .source-range { background: rgba(179, 157, 232, 0.20); }
-body.theme-dark .mp-row-hl { fill: rgba(179, 157, 232, 0.22); }
+body.theme-dark .mp-row-hl { fill: rgba(179, 157, 232, 0.14); stroke: rgba(179, 157, 232, 0.6); }
 body.theme-dark .source-space.source-active::after { border-left-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .math.math-search-hit { background: rgba(216, 151, 0, 0.16); }
 body.theme-dark .math.math-search-active { outline-color: rgba(216, 151, 0, 0.85); background: rgba(216, 151, 0, 0.22); }
