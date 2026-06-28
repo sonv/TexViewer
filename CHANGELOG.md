@@ -17,7 +17,19 @@ summary.
 
 Nothing yet.
 
-## [0.1.63] — 2026-06-28
+## [0.1.64] — 2026-06-28
+
+### Changed
+
+- **`:MathPreview` reuses an already-open preview tab** instead of opening a new
+  one each time the daemon is already running. The plugin asks the daemon how
+  many browser tabs are connected (new `/debug` `clients` count, the live
+  WebSocket subscriber count) and reuses the open one — it live-reloads, so it's
+  already current — opening a fresh tab only when none is connected (e.g. you
+  closed it). (`:MathPreviewRestart` already reused the tab by rebinding the
+  same port.)
+
+
 
 ### Changed
 

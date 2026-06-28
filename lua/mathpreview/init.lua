@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.63"
+local PLUGIN_VERSION = "0.1.64"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -483,6 +483,34 @@ local function open_browser(url)
     return
   end
   vim.fn.jobstart(argv, { detach = true })
+end
+
+-- The daemon is already running and the user ran :MathPreview again. Don't
+-- stack up duplicate tabs (the "every run opens another tab" complaint): ask
+-- the daemon how many browser tabs are connected (`/debug` → `clients`, the
+-- live WebSocket count). If one is already open, reuse it — the tab live-
+-- reloads, so it's already showing the current document — and just say so.
+-- Only open a fresh tab when none is connected (you closed it). Falls back to
+-- opening if the count can't be determined. The /debug curl runs async; its
+-- callback is already main-loop-scheduled by run_system.
+local function reuse_or_open_browser()
+  local url = "http://127.0.0.1:" .. tostring(daemon_port) .. "/"
+  if not config.debug_url then open_browser(url); return end
+  run_system(
+    { "curl", "--silent", "--max-time", "2", config.debug_url }, {},
+    function(res)
+      local clients
+      if res and res.code == 0 and res.stdout and res.stdout ~= "" then
+        local ok, data = pcall(vim.json.decode, res.stdout)
+        if ok and type(data) == "table" then clients = data.clients end
+      end
+      if type(clients) == "number" and clients > 0 then
+        vim.notify("mathpreview: preview already open — reusing tab (" .. url .. ")",
+          vim.log.levels.INFO)
+      else
+        open_browser(url)
+      end
+    end)
 end
 
 -- Resolve the .tex root for the current buffer. For now: just the buffer's
@@ -1091,7 +1119,7 @@ function M.start(opts)
   opts = opts or {}
   if daemon_job then
     if config.auto_open_browser then
-      open_browser("http://127.0.0.1:" .. tostring(daemon_port) .. "/")
+      reuse_or_open_browser()
     end
     return
   end

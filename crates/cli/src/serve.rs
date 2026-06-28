@@ -312,6 +312,10 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
 
     Json(serde_json::json!({
         "ws_protocol": WS_PROTOCOL_VERSION,
+        // Number of connected browser tabs (live WebSocket subscribers). The
+        // nvim plugin reads this to reuse an already-open tab instead of opening
+        // a duplicate on a repeat :MathPreview.
+        "clients": state.tx.receiver_count(),
         "debug_logging": state.debug_logging.load(Ordering::Acquire),
         "editor_cmd": state.editor_cmd.as_ref(),
         "viewer_config": {
@@ -555,7 +559,12 @@ pub async fn run(
         mem_at_start,
     );
 
-    let (tx, _rx) = broadcast::channel::<String>(16);
+    // Drop the initial receiver immediately so `tx.receiver_count()` reflects
+    // exactly the number of connected WebSocket clients (browser tabs) — the
+    // `/debug` `clients` field the plugin uses to decide whether to reuse an
+    // open tab. New tabs subscribe via `tx.subscribe()` regardless, and every
+    // `tx.send` already ignores the "no receivers" error.
+    let (tx, _) = broadcast::channel::<String>(16);
     let (watch_tx, watch_rx) = std_mpsc::channel::<HashSet<PathBuf>>();
     let last_blocks = initial.blocks.clone();
     let initial_viewer_config = opts.viewer_config.clone();
