@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.78] — 2026-06-29
+
+### Fixed
+
+- **Pinning one margin note no longer expands the others.** The 📌 pin was
+  implemented per-column, so expanding one card widened every card sharing that
+  margin column. Pinning is now per-card: only the clicked card grows out over
+  the text; its siblings stay at gutter width, hugging the page edge. (The column
+  widens just enough to host the pinned card.) Each pin button now reflects its
+  own card's state, and the expand follows a card when it's dragged to the other
+  margin or removed when it's closed.
+
 ## [0.1.77] — 2026-06-29
 
 ### Fixed

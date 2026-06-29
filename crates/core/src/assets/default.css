@@ -1193,9 +1193,26 @@ body.margin-dragging .margin-cards:empty {
    it's open, push the left margin column past it so the panel stays clickable
    (mirrors the log-panel's 268px offset). */
 body.side-panel-open aside#margin-left { left: 268px; }
-/* Pin button: expand a column past the gutter, over the text, for reading. */
+/* Pin button: expand a card past the gutter, over the text, for reading. The
+   column widens to make room, but the pin is PER-CARD: only the pinned card
+   (.expanded) fills the wider column; its un-pinned siblings keep the gutter
+   width and hug the page edge, so they stay put while one card juts over text. */
 body.margin-right-expanded aside#margin,
 body.margin-left-expanded aside#margin-left { width: min(540px, 44vw); }
+body.margin-right-expanded aside#margin .margin-card {
+  width: clamp(180px, var(--margin-gutter, 320px), 460px);
+  margin-left: auto;
+}
+body.margin-left-expanded aside#margin-left .margin-card {
+  width: clamp(180px, var(--margin-gutter, 320px), 460px);
+  margin-right: auto;
+}
+body.margin-right-expanded aside#margin .margin-card.expanded,
+body.margin-left-expanded aside#margin-left .margin-card.expanded {
+  width: auto;
+  margin-left: 0;
+  margin-right: 0;
+}
 
 /* Macros override dialog — toolbar `macros` button opens this <dialog>
    to append a new \newcommand to either the global or project file.
