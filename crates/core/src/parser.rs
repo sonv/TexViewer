@@ -686,6 +686,11 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        if env == "quote" || env == "quotation" {
+            self.parse_quote(out, start, env);
+            return;
+        }
+
         if TRANSPARENT_ENVS.contains(&env.as_str()) {
             self.parse_transparent_env(out, env);
             return;
@@ -714,6 +719,31 @@ impl<'a> Parser<'a> {
             kind: NodeKind::OpaqueEnv { env, body },
             span: self.span_from(start),
             children: vec![],
+        });
+    }
+
+    /// `quote` / `quotation`: parse the body into children (so math, refs, and
+    /// nested blocks render) and keep a `Quote` wrapper node for the renderer to
+    /// emit as a `<blockquote>`. Mirrors `parse_transparent_env` but, unlike it,
+    /// retains a containing node rather than flattening the children.
+    fn parse_quote(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
+        let body_end = self.find_matching_end(&env);
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
+        sub.parse_block_into(&mut children, None);
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.push(Node {
+            kind: NodeKind::Quote { env },
+            span: self.span_from(start),
+            children,
         });
     }
 
@@ -1624,6 +1654,35 @@ mod tests {
             "math inside the callout was not parsed: {:?}",
             callout.children
         );
+    }
+
+    #[test]
+    fn quote_env_parses_body_into_children_so_math_renders() {
+        // `quote`/`quotation` must NOT be opaque: the body is parsed so inline
+        // and display math become real nodes (regression: math wasn't rendering).
+        for env in ["quote", "quotation"] {
+            let n = parse(&format!(
+                "\\begin{{{env}}}\ninline $E=mc^2$ here\n\\begin{{equation}}\na=b\n\\end{{equation}}\n\\end{{{env}}}\n"
+            ));
+            let q = n
+                .iter()
+                .find(|node| matches!(&node.kind, NodeKind::Quote { env: e } if e == env))
+                .unwrap_or_else(|| panic!("a Quote node for {env}"));
+            assert!(
+                q.children
+                    .iter()
+                    .any(|c| matches!(&c.kind, NodeKind::InlineMath(s) if s.contains("mc^2"))),
+                "inline math inside {env} was not parsed: {:?}",
+                q.children
+            );
+            assert!(
+                q.children
+                    .iter()
+                    .any(|c| matches!(&c.kind, NodeKind::DisplayMath { .. })),
+                "display math inside {env} was not parsed: {:?}",
+                q.children
+            );
+        }
     }
 
     #[test]

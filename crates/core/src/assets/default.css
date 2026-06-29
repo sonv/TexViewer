@@ -977,6 +977,11 @@ body.refkey-visible .eq-refkey-list {
 .bib-missing { color: var(--omitted); font-style: italic; }
 .blk { display: contents; }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
+/* `quote` / `quotation`: an indented block quotation. Body is parsed normally,
+   so math, refs, and nested blocks render inside. */
+blockquote.quote { margin: 0.8em 1.6em; padding-left: 0.85em; border-left: 3px solid var(--border-strong); }
+blockquote.quote > :first-child { margin-top: 0; }
+blockquote.quote > :last-child { margin-bottom: 0; }
 .float-placeholder { margin: 1em 0; text-align: center; color: var(--muted); }
 .float-placeholder figcaption { font-size: 0.95em; line-height: 1.35; }
 .float-kind { font-weight: 700; color: var(--fg); }

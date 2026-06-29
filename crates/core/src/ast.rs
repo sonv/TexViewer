@@ -133,6 +133,11 @@ pub enum NodeKind {
         class: String,
         title: Option<String>,
     },
+    /// `\begin{quote}` / `\begin{quotation}` — an indented block quotation.
+    /// Like `Callout`, the body is parsed into `children` so math and nested
+    /// content render (an `OpaqueEnv` would emit the body as plain text, leaving
+    /// math un-typeset). `env` distinguishes `quote` from `quotation`.
+    Quote { env: String },
     /// `\begin{abstract}` ... `\end{abstract}` rendered as front matter.
     Abstract,
     /// `\command[opt]{arg}{arg}` passed through opaquely.

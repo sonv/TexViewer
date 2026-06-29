@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.77] — 2026-06-29
+
+### Fixed
+
+- **Math now renders inside `quote` / `quotation` environments.** They weren't
+  recognized, so they were captured as opaque blocks and their entire body —
+  including any `$…$` or display math — was emitted as escaped text. They're now
+  parsed like other block environments: the body is fully rendered (math
+  typeset, `\ref`/`\eqref` resolved, display equations numbered) inside a
+  `<blockquote>`.
+
 ## [0.1.76] — 2026-06-29
 
 ### Fixed

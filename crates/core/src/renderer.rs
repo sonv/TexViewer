@@ -1497,6 +1497,20 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 }
             }
         }
+        NodeKind::Quote { env } => {
+            let id = ctx.idgen.next("quote");
+            record_container(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<blockquote class="quote env-{env}" id="{id}" data-src="{src}">"#,
+                env = escape_attr(&sanitize_id(env)),
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_chunked_children(out, &n.children, ctx);
+            out.push_str("</blockquote>\n");
+        }
         NodeKind::Callout { env, class, title } => {
             let id = ctx.idgen.next("callout");
             record_container(ctx, &id, &n.span, None);
@@ -2726,6 +2740,24 @@ mod tests {
             !text_content(&body).contains("$E=mc^2$"),
             "raw math leaked: {body}"
         );
+    }
+
+    #[test]
+    fn quote_env_renders_blockquote_with_typeset_math() {
+        let body = render_body(
+            "\\begin{document}\n\\begin{quote}\nsay $E=mc^2$ now\n\\end{quote}\n\\end{document}\n",
+        );
+        assert!(
+            body.contains(r#"<blockquote class="quote env-quote"#),
+            "no blockquote wrapper: {body}"
+        );
+        // Math inside the quote is typeset, not dumped as raw text or an opaque env.
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "math not typeset in quote: {body}"
+        );
+        assert!(!body.contains("opaque-env\" data-env=\"quote"), "quote went opaque: {body}");
+        assert!(!text_content(&body).contains("$E=mc^2$"), "raw math leaked: {body}");
     }
 
     #[test]
