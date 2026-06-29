@@ -17,6 +17,22 @@ summary.
 
 Nothing yet.
 
+## [0.1.75] — 2026-06-29
+
+### Fixed
+
+- **Source-jump now focuses the correct nvim window on KDE/KWin (Wayland).** The
+  inverse-search window-raise ran `kdotool search --pid` (and the `--class`
+  fallback) without `--all`, so kdotool only searched the *current* virtual
+  desktop. When the editor sat on a different desktop than the focused viewer,
+  the PID match missed and the class fallback activated the wrong nvim window.
+  Both searches now pass `--all` (every desktop/activity), and the PID match is
+  validated as a real `{uuid}` window id before activating, so the process-tree
+  walk keeps climbing on a miss instead of grabbing a stray window. Also
+  corrected a stale comment — KDE *is* reliably detectable via
+  `XDG_CURRENT_DESKTOP=KDE`. Thanks to @gi1242 for the diagnosis and the
+  reference implementation (`nvim-tex-inv-search`).
+
 ## [0.1.74] — 2026-06-28
 
 ### Added

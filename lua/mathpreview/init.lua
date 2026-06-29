@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.74"
+local PLUGIN_VERSION = "0.1.75"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -77,7 +77,7 @@ local config = {
   -- Example (KDE/Plasma + Wayland, nvim-qt, via kdotool):
   --   on_jump = function()
   --     vim.system({ "sh", "-c",
-  --       "kdotool search --class nvim | head -1 | xargs kdotool windowactivate" })
+  --       "kdotool search --all --class nvim | head -1 | xargs kdotool windowactivate" })
   --   end
   -- Runs in a scheduled (main-loop) context; errors are caught and logged.
   on_jump = nil,
@@ -765,9 +765,17 @@ done
       walk([=[swaymsg "[pid=$P] focus" | grep -q '"success": *true']=],
         [=[swaymsg "[app_id=$1] focus"]=])
     elseif vim.fn.executable("kdotool") == 1 then
-      -- KDE/KWin: no reliable env marker, so kdotool's presence is the signal.
-      walk([=[W=$(kdotool search --pid "$P" 2>/dev/null | head -1); [ -n "$W" ] && kdotool windowactivate "$W"]=],
-        [=[kdotool search --class "$1" | head -1 | xargs -r kdotool windowactivate]=])
+      -- KDE/KWin (Wayland). XDG_CURRENT_DESKTOP=KDE identifies the session, but
+      -- kdotool (a KWin scripting bridge) is what drives the window, so its
+      -- presence is the hard requirement. `--all` is essential: it searches
+      -- EVERY virtual desktop/activity, so the jump finds THIS nvim even when it
+      -- sits on a different desktop than the focused viewer. Without it kdotool
+      -- only searches the current desktop, so the --pid match misses and the
+      -- --class fallback activates the wrong nvim window. kdotool prints the id
+      -- as `{uuid}`; activate only when the match looks like one, so an empty or
+      -- odd result lets the process-tree walk keep climbing.
+      walk([=[W=$(kdotool search --all --pid "$P" 2>/dev/null | head -1); case "$W" in \{*\}) kdotool windowactivate "$W";; *) false;; esac]=],
+        [=[kdotool search --all --class "$1" | head -1 | xargs -r kdotool windowactivate]=])
     end
     return
   end
