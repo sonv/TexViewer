@@ -17,6 +17,30 @@ summary.
 
 Nothing yet.
 
+## [0.1.76] — 2026-06-29
+
+### Fixed
+
+- **Source-jump focuses the right editor window under Hyprland, Sway, and tmux
+  too.** A cross-platform audit of the window-raise turned up the same class of
+  bug the KDE fix addressed, in three more spots:
+  - **Hyprland:** `hyprctl dispatch focuswindow pid:…` prints `ok` even when the
+    PID matched no window, so the process-tree walk stopped at nvim's own PID and
+    a *terminal* nvim jump focused nothing. It now confirms a client actually owns
+    the PID (`hyprctl -j clients`) before focusing, so the walk climbs to the
+    terminal and the class fallback is reachable.
+  - **Sway:** `swaymsg "[pid=…] focus"` returns `success:true` even when the
+    criteria matched no container — same stall. It now checks the tree owns the
+    PID first.
+  - **X11 under tmux/screen:** `$WINDOWID` is inherited from whichever terminal
+    started the multiplexer, so after reattaching elsewhere it focused the wrong
+    (or a closed) window. The `$WINDOWID` fast-path is now skipped under
+    `$TMUX`/`$STY`, falling through to the PID/class search.
+
+  macOS was audited in the same pass and found correct — the terminal/GUI app
+  detection and `osascript` activation resolve the right app (including VS Code
+  via its `Code` bundle name).
+
 ## [0.1.75] — 2026-06-29
 
 ### Fixed

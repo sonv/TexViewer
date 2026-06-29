@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.75"
+local PLUGIN_VERSION = "0.1.76"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -759,10 +759,21 @@ done
     -- via each compositor's env marker, then its CLI. Each selector matches by
     -- the ancestor PID ($P); the fallback matches by class/app_id ($1).
     if vim.env.HYPRLAND_INSTANCE_SIGNATURE and vim.fn.executable("hyprctl") == 1 then
-      walk([=[[ "$(hyprctl dispatch focuswindow pid:$P)" = ok ]]=],
+      -- `hyprctl dispatch focuswindow` prints "ok" whenever the dispatcher RAN,
+      -- even if pid:$P matched no window. Trusting "ok" would stop the walk at
+      -- nvim's own PID — which owns no toplevel for terminal nvim — and never
+      -- climb to the terminal (nor reach the class fallback). So gate on a real
+      -- client owning $P first; a miss keeps the walk climbing to the ancestor
+      -- that does. The PID can't be a substring of a bigger one ([^0-9]|$).
+      walk([=[hyprctl -j clients 2>/dev/null | grep -qE "\"pid\": *$P([^0-9]|$)" && hyprctl dispatch focuswindow pid:$P >/dev/null 2>&1]=],
         [=[hyprctl dispatch focuswindow class:"$1"]=])
     elseif vim.env.SWAYSOCK and vim.fn.executable("swaymsg") == 1 then
-      walk([=[swaymsg "[pid=$P] focus" | grep -q '"success": *true']=],
+      -- swaymsg replies {"success":true} when the command RAN, even if [pid=$P]
+      -- matched no container — so checking success would stop the walk at nvim's
+      -- own PID. Confirm a container actually owns $P (it's in the tree) before
+      -- focusing, so a miss climbs to the terminal ancestor (then the app_id
+      -- fallback). [^0-9]|$ keeps $P from matching a longer PID.
+      walk([=[swaymsg -t get_tree 2>/dev/null | grep -qE "\"pid\": *$P([^0-9]|$)" && swaymsg "[pid=$P] focus" >/dev/null 2>&1]=],
         [=[swaymsg "[app_id=$1] focus"]=])
     elseif vim.fn.executable("kdotool") == 1 then
       -- KDE/KWin (Wayland). XDG_CURRENT_DESKTOP=KDE identifies the session, but
@@ -780,9 +791,16 @@ done
     return
   end
   -- X11: the host terminal exports $WINDOWID for its own window — the most
-  -- precise signal, so try it first. Then the PID walk, then class.
+  -- precise signal, so try it first. Then the PID walk, then class. But
+  -- $WINDOWID is captured at spawn and inherited verbatim under a multiplexer:
+  -- a tmux/screen pane keeps the WINDOWID of whichever terminal first started
+  -- the server, so after reattaching from another terminal it points at the
+  -- wrong (or a closed) window. Skip it under $TMUX/$STY and let the PID walk /
+  -- class fallback below find the live window instead.
   local winid = vim.env.WINDOWID
-  if winid and winid ~= "" and vim.fn.executable("xdotool") == 1 then
+  local multiplexed = (vim.env.TMUX and vim.env.TMUX ~= "")
+    or (vim.env.STY and vim.env.STY ~= "")
+  if winid and winid ~= "" and not multiplexed and vim.fn.executable("xdotool") == 1 then
     run_system({ "xdotool", "windowactivate", winid }, {})
     return
   end
