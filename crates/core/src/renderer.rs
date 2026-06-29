@@ -178,6 +178,7 @@ pub fn render(
     // Make the document's \newcommand definitions + the TOML [text-macros]
     // templates available to the inline text renderer for this render.
     install_text_macros(preamble, opts);
+    reset_footnote_counter();
     let mut idgen = IdGen::default();
     let mut ctx = RenderCtx {
         sync,
@@ -1605,6 +1606,22 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         .unwrap();
                     }
                 }
+                // `\footnote[opt]{text}`. HTML has no footnote, and a continuous
+                // preview has no "page foot", so render a numbered superscript
+                // marker whose note pops up on hover / keyboard focus. The note
+                // lives in the DOM right after the marker (so its math typesets
+                // and screen readers reach it via aria-describedby); CSS reveals
+                // it on `:hover` / `:focus-within`.
+                "footnote" => {
+                    if let Some(call) = latex_command_call(raw, "footnote") {
+                        let content = render_latex_text_with_math(&call.arg, ctx.labels);
+                        let num = next_footnote_number();
+                        // Register the marker as a source-jump anchor (inline
+                        // footnotes nested in a command arg can't — no ctx/span).
+                        record(ctx, &format!("fn-{num}"), &n.span, None);
+                        out.push_str(&footnote_html(num, &content, Some(&data_src(&n.span))));
+                    }
+                }
                 // Inline review commands (marktext): \add / \remove / \highlight
                 // take `[color]{content}`; render the content (text OR math via
                 // render_latex_text_with_math) wrapped in a decoration span, with
@@ -2378,6 +2395,16 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
                 .unwrap();
                 i = next;
             }
+            ("footnote", Some((inner, next))) => {
+                // A footnote nested inside a command argument (section title,
+                // \emph{…}, theorem statement, caption, …) reaches the inline
+                // renderer, which has no RenderCtx — so number it via the
+                // thread-local counter shared with the block path, keeping the
+                // sequence in document order. No source-jump anchor here.
+                let content = render_latex_text_with_math(inner, labels);
+                out.push_str(&footnote_html(next_footnote_number(), &content, None));
+                i = next;
+            }
             (other, Some((inner, next))) => {
                 // Unknown command with one arg — render the arg's text so the
                 // reader still sees the words. Drop the command name.
@@ -2418,9 +2445,42 @@ thread_local! {
     static TEXT_MACROS: std::cell::RefCell<std::collections::HashMap<String, TextMacroDef>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static EXPAND_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Sequential footnote number for the current render. Thread-local (like the
+    /// macro table) so the inline-text renderer — which has no `&mut RenderCtx`
+    /// — can number footnotes nested inside section titles, `\emph{…}`, theorem
+    /// statements, etc. in the same document-order sequence as block footnotes.
+    static FOOTNOTE_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 const MAX_EXPAND_DEPTH: u32 = 32;
+
+/// Reset per-render footnote numbering. Called at the top of the render walk.
+fn reset_footnote_counter() {
+    FOOTNOTE_COUNTER.with(|c| c.set(0));
+}
+
+/// Allocate the next footnote number (1-based) for the current render.
+fn next_footnote_number() -> usize {
+    FOOTNOTE_COUNTER.with(|c| {
+        let n = c.get() + 1;
+        c.set(n);
+        n
+    })
+}
+
+/// Build a footnote: a numbered superscript marker whose note pops up on hover
+/// or keyboard focus (the note sits in the DOM right after the marker so its
+/// math typesets and screen readers reach it via `aria-describedby`). `src` is
+/// the marker's `data-src` for source-jump; footnotes nested inside a command
+/// argument are rendered without a span and pass `None`.
+fn footnote_html(num: usize, content: &str, src: Option<&str>) -> String {
+    let src_attr = src
+        .map(|s| format!(r#" data-src="{}""#, escape_attr(s)))
+        .unwrap_or_default();
+    format!(
+        r#"<span class="footnote"><sup class="footnote-ref" id="fn-{num}"{src_attr} tabindex="0" role="doc-noteref" aria-describedby="fnpop-{num}">{num}</sup><span class="footnote-pop" id="fnpop-{num}" role="doc-footnote">{content}</span></span>"#,
+    )
+}
 
 /// Install the per-render text-macro table: the document's `\newcommand`s
 /// (LaTeX, re-rendered) plus the TOML `[text-macros]` templates (HTML), with
@@ -2758,6 +2818,65 @@ mod tests {
         );
         assert!(!body.contains("opaque-env\" data-env=\"quote"), "quote went opaque: {body}");
         assert!(!text_content(&body).contains("$E=mc^2$"), "raw math leaked: {body}");
+    }
+
+    #[test]
+    fn footnote_renders_inline_marker_with_hover_popover_and_math() {
+        let body = render_body(
+            "\\begin{document}\nFirst\\footnote{Note with $x^2$.} and second\\footnote{Two.} done.\n\\end{document}\n",
+        );
+        // Inline numbered superscript markers, keyboard-focusable and ARIA-linked
+        // to their popover — NOT the note text dumped into the sentence (the bug).
+        assert!(
+            body.contains(r#"<sup class="footnote-ref" id="fn-1""#),
+            "no marker 1: {body}"
+        );
+        assert!(
+            body.contains(r#"aria-describedby="fnpop-1""#),
+            "marker 1 aria: {body}"
+        );
+        assert!(body.contains(r#"id="fn-2""#), "no marker 2: {body}");
+        // The note lives in a hover/focus popover (not an end-of-document
+        // section), with its math typeset.
+        assert!(
+            body.contains(r#"<span class="footnote-pop" id="fnpop-1""#),
+            "no popover: {body}"
+        );
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "math not typeset in footnote: {body}"
+        );
+        // No bottom-of-document footnotes section.
+        assert!(
+            !body.contains(r#"<section class="footnotes">"#),
+            "unexpected bottom section: {body}"
+        );
+        // The note content is wrapped in its popover, right after the marker.
+        let marker = body.find(r#"id="fn-1""#).expect("marker 1");
+        let note = body.find("Note with").expect("note text present");
+        assert!(note > marker, "note not placed after its marker: {body}");
+    }
+
+    #[test]
+    fn footnote_nested_in_command_arg_still_renders_marker_in_order() {
+        // A footnote inside a section title reaches the inline renderer (which
+        // has no RenderCtx); it must still produce a numbered marker + popover —
+        // not dump its text — and share the document-order counter with prose
+        // footnotes (heading note = 1, prose note = 2).
+        let body = render_body(
+            "\\begin{document}\n\\section{Title\\footnote{In a heading.}}\nBody\\footnote{In prose.} text.\n\\end{document}\n",
+        );
+        assert!(body.contains(r#"id="fn-1""#), "no fn-1 marker: {body}");
+        assert!(body.contains(r#"id="fn-2""#), "no fn-2 marker: {body}");
+        assert_eq!(
+            body.matches(r#"class="footnote-pop"#).count(),
+            2,
+            "expected two popovers: {body}"
+        );
+        assert!(
+            !body.contains("TitleIn a heading."),
+            "footnote text leaked into the heading: {body}"
+        );
     }
 
     #[test]

@@ -186,16 +186,48 @@
       requestRevealSource(e);
     }
   });
+  // A footnote popover is CSS :hover/:focus-within, centered with
+  // translateX(-50%). Near a page edge (or under body{overflow-x:clip}) the
+  // overhanging half would be clipped with no scroll recovery, so clamp the
+  // shown popover into the viewport — the only complete fix, since CSS can't
+  // know the marker's X. Reset to the centered base, measure, then nudge in.
+  function positionFootnotePopover(fn) {
+    var pop = fn.querySelector('.footnote-pop');
+    if (!pop) return;
+    pop.style.transform = '';
+    var r = pop.getBoundingClientRect();
+    var m = 8, dx = 0;
+    if (r.right > window.innerWidth - m) dx = (window.innerWidth - m) - r.right;
+    if (r.left + dx < m) dx = m - r.left;
+    if (dx) pop.style.transform = 'translateX(calc(-50% + ' + Math.round(dx) + 'px))';
+  }
+  function clearFootnotePopover(fn) {
+    var pop = fn.querySelector('.footnote-pop');
+    if (pop) pop.style.transform = '';
+    fn._fnPos = false;
+  }
   document.addEventListener('mouseover', function(e) {
+    var fn = e.target && e.target.closest && e.target.closest('.footnote');
+    if (fn && !fn._fnPos) { fn._fnPos = true; positionFootnotePopover(fn); }
     var link = isPinnableLink(e.target);
     if (link) scheduleHoverPreview(link);
   });
   document.addEventListener('mouseout', function(e) {
+    var fn = e.target && e.target.closest && e.target.closest('.footnote');
+    if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
     var link = isPinnableLink(e.target);
     if (!link) return;
     var related = e.relatedTarget;
     if (related && link.contains(related)) return;
     hideHoverPreview();
+  });
+  document.addEventListener('focusin', function(e) {
+    var fn = e.target && e.target.closest && e.target.closest('.footnote');
+    if (fn) positionFootnotePopover(fn);
+  });
+  document.addEventListener('focusout', function(e) {
+    var fn = e.target && e.target.closest && e.target.closest('.footnote');
+    if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
   });
   document.addEventListener('scroll', hideHoverPreview, { passive: true });
   document.addEventListener('click', function(e) {

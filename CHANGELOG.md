@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.79] — 2026-06-29
+
+### Fixed
+
+- **`\footnote` is rendered as a hover/focus popover instead of dumping its text
+  inline.** HTML has no footnote, and a continuous preview has no page foot, so a
+  footnote now shows as a small numbered superscript marker whose note pops up on
+  hover or keyboard focus, with its math/refs typeset. Footnotes nested inside a
+  section title, `\emph{…}`, a theorem statement, a caption, etc. are handled too
+  (their text used to leak into the heading/text), numbered in one document-order
+  sequence with prose footnotes. The popover is clamped within the viewport so a
+  note on a marker near the page edge isn't clipped, and it's reachable by
+  keyboard and screen readers (`role="doc-noteref"` + `aria-describedby`).
+
 ## [0.1.78] — 2026-06-29
 
 ### Fixed

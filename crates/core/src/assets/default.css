@@ -1148,6 +1148,62 @@ body.margin-mode .sidenote {
 .sidenote { cursor: pointer; }
 .sidenote:hover { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08); }
 
+/* Footnotes. HTML has no footnote and a continuous preview has no page foot, so
+   render a numbered superscript marker and reveal the note in a popover on hover
+   or keyboard focus (the note sits in the DOM right after the marker). */
+.footnote { position: relative; }
+.footnote-ref {
+  font-size: 0.72em;
+  vertical-align: super;
+  line-height: 0;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: help;
+}
+.footnote-ref:focus { outline: none; }
+.footnote-ref:hover,
+.footnote-ref:focus { text-decoration: underline; }
+.footnote-pop {
+  display: none;
+  position: absolute;
+  bottom: 1.5em;            /* float above the marker's line */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  width: max-content;
+  max-width: min(340px, 80vw);
+  padding: 0.5em 0.7em;
+  font-size: 0.9em;         /* sibling of the <sup>, so this is body-relative */
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  color: var(--fg);
+  background: var(--paper);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.16);
+  cursor: auto;
+}
+.footnote:hover .footnote-pop,
+.footnote:focus-within .footnote-pop { display: block; }
+/* Transparent bridge over the gap down to the marker, so moving the cursor from
+   the marker up into the popover doesn't cross dead space and dismiss it. Kept
+   narrow and centered on the marker (not the full popover width) so it doesn't
+   blanket adjacent text or neighbouring markers below the open popover. */
+.footnote-pop::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2.6em;
+  height: 1.6em;
+}
+.footnote-pop > :first-child { margin-top: 0; }
+.footnote-pop > :last-child { margin-bottom: 0; }
+.footnote-pop .math.display { margin: 0.3em 0; overflow-x: auto; }
+
 /* The margin columns — one on each viewport edge. A card can be dragged to
    either side; each column appears only when it actually holds a card
    (driven by the body.margin-{left,right}-has-cards classes, NOT by margin
