@@ -17,6 +17,25 @@ summary.
 
 Nothing yet.
 
+## [0.1.81] — 2026-07-02
+
+### Added
+
+- **Theorem numbering is now a dropdown in the config (⚙) dialog** — Auto /
+  Continuous / Section, next to the other viewer settings. Saving writes it to
+  the chosen `.mathpreview.toml` and re-renders live (the numbers update in
+  place, no reload).
+
+### Fixed
+
+- **Source-jump lands on the clicked text, not the whole environment box, inside
+  `\emph{…}` / `\textbf{…}` and similar inline commands.** These render as inline
+  commands that previously carried no source position of their own, so a
+  Cmd/Ctrl-click on an `\emph`-wrapped theorem statement walked up to the
+  enclosing box and jumped there — and the preview then snapped to the box.
+  They're now wrapped in a source-mapped span pointing at the command's own line,
+  so the jump (and the preview's cursor-sync back) is precise.
+
 ## [0.1.80] — 2026-07-02
 
 ### Added

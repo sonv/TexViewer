@@ -1930,6 +1930,8 @@
     if (mode) mode.value = cfg.defaultPageMode || 'a4';
     var theme = document.getElementById('config-default-theme');
     if (theme) theme.value = cfg.defaultTheme || 'system';
+    var thmNum = document.getElementById('config-theorem-numbering');
+    if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
     var wrap = document.getElementById('config-wrap-equations');
     // Default on when unset (matches the server default).
     if (wrap) wrap.checked = cfg.wrapEquations !== false;
@@ -1998,6 +2000,8 @@
     if (mode) payload.values['viewer.default-page-mode'] = mode;
     var theme = document.getElementById('config-default-theme').value;
     if (theme) payload.values['viewer.default-theme'] = theme;
+    var thmNumEl = document.getElementById('config-theorem-numbering');
+    if (thmNumEl && thmNumEl.value) payload.values['viewer.theorem-numbering'] = thmNumEl.value;
     var wrapEl = document.getElementById('config-wrap-equations');
     if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
     var mjxEl = document.getElementById('config-mathjax-config');

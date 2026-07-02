@@ -66,11 +66,12 @@ pub(super) fn wrap_in_shell(
     let mathjax_config_js = serde_json::to_string(&opts.viewer_config.mathjax_config)
         .unwrap_or_else(|_| "\"\"".to_string());
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, mathjaxConfig: {mjx} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", mathjaxConfig: {mjx} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
         wrap = opts.viewer_config.wrap_equations,
+        thm = opts.viewer_config.theorem_numbering.as_str(),
         mjx = mathjax_config_js,
     );
 
@@ -296,6 +297,13 @@ pub(super) fn wrap_in_shell(
           <option value="system">System (match OS)</option>
           <option value="light">Light</option>
           <option value="dark">Dark</option>
+        </select>
+      </label>
+      <label>Theorem numbering
+        <select id="config-theorem-numbering">
+          <option value="auto">Auto (from \newtheorem)</option>
+          <option value="continuous">Continuous (1, 2, 3…)</option>
+          <option value="section">Per section (1.1, 1.2…)</option>
         </select>
       </label>
       <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">

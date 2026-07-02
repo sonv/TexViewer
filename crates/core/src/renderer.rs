@@ -1695,8 +1695,26 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                     // Route the raw token through the inline parser so known
                     // text commands (\emph, \textbf, accents, refs that
                     // slipped past the body parser) render correctly and
-                    // unknown ones fall back to their content argument.
-                    out.push_str(&render_inline_latex(raw, ctx.labels));
+                    // unknown ones fall back to their content argument. Wrap the
+                    // result in a source-mapped span so a source-jump click on,
+                    // say, an `\emph{…}`-wrapped theorem statement lands on THIS
+                    // command's line — without a data-src of its own the click
+                    // would walk up to the enclosing box and jump there instead.
+                    let rendered = render_inline_latex(raw, ctx.labels);
+                    if rendered.is_empty() {
+                        // Nothing visible (e.g. a spacing/no-op command).
+                    } else {
+                        let id = ctx.idgen.next("srcw");
+                        record(ctx, &id, &n.span, None);
+                        write!(
+                            out,
+                            r#"<span class="src-word" id="{id}" data-src="{src}">{rendered}</span>"#,
+                            id = escape_attr(&id),
+                            src = escape_attr(&data_src(&n.span)),
+                            rendered = rendered,
+                        )
+                        .unwrap();
+                    }
                 }
             }
         }
@@ -3221,6 +3239,21 @@ mod tests {
         assert!(
             !thm_name.contains("$Y$"),
             "literal $Y$ should not survive in the rendered name; got: {thm_name}",
+        );
+    }
+
+    #[test]
+    fn inline_command_is_source_mapped_so_clicks_dont_hit_the_box() {
+        // `\emph{…}` / `\textbf{…}` render as OpaqueCmd nodes; without a data-src
+        // of their own, a source-jump click inside (e.g. an \emph-wrapped theorem
+        // statement) walks up to the enclosing box and jumps there. They're now
+        // wrapped in a source-mapped span pointing at the command's own line.
+        let body = render_body(
+            "\\begin{document}\nText \\emph{emphasized phrase} here.\n\\end{document}\n",
+        );
+        assert!(
+            body.contains(r#"data-src="t.tex:2:6"><em>emphasized phrase</em></span>"#),
+            "emph not wrapped in a source-mapped span: {body}"
         );
     }
 
