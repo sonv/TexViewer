@@ -158,6 +158,28 @@ impl TheoremRegistry {
         reg
     }
 
+    /// Override the detected per-counter reset levels with a global scheme from
+    /// the viewer config. `Auto` keeps what was detected from `\newtheorem` (or
+    /// the built-in default); `Continuous` makes every theorem counter number
+    /// document-wide (no section prefix); `Section` forces per-section numbering.
+    /// Applied after the registry is built, so it wins over both detection and
+    /// the built-in default — the escape hatch for declarations the viewer can't
+    /// see (a conditional `\if…\newtheorem` block, an unresolvable package).
+    pub fn apply_numbering_scheme(&mut self, scheme: crate::config::TheoremNumbering) {
+        use crate::config::TheoremNumbering;
+        let level = match scheme {
+            TheoremNumbering::Auto => return,
+            TheoremNumbering::Continuous => None,
+            TheoremNumbering::Section => Some(2), // within-section (N.M)
+        };
+        // Reset every counter that backs a theorem-like environment.
+        let counters: std::collections::HashSet<String> =
+            self.defs.values().map(|d| d.counter.clone()).collect();
+        for c in counters {
+            self.counter_reset.insert(c, level);
+        }
+    }
+
     fn apply(&mut self, decl: Decl) {
         match decl {
             Decl::NewTheorem {
@@ -379,6 +401,39 @@ fn scan_declarations(src: &str) -> Vec<Decl> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbering_scheme_override_forces_continuous_then_section() {
+        let mut r =
+            TheoremRegistry::from_sources(&["\\newtheorem{theorem}{Theorem}[section]".to_string()]);
+        assert_eq!(r.reset_level("theorem"), Some(2));
+        r.apply_numbering_scheme(crate::config::TheoremNumbering::Continuous);
+        assert_eq!(
+            r.reset_level("theorem"),
+            None,
+            "continuous should clear the reset"
+        );
+        r.apply_numbering_scheme(crate::config::TheoremNumbering::Section);
+        assert_eq!(
+            r.reset_level("theorem"),
+            Some(2),
+            "section should restore N.M"
+        );
+        r.apply_numbering_scheme(crate::config::TheoremNumbering::Auto);
+        assert_eq!(r.reset_level("theorem"), Some(2), "auto is a no-op");
+    }
+
+    #[test]
+    fn continuous_override_rescues_ambiguous_conditional_declaration() {
+        // A conditional double-declaration is skipped → stuck at the built-in
+        // section default; the config override recovers continuous numbering.
+        let mut r = TheoremRegistry::from_sources(&[
+            "\\newtheorem{theorem}{Theorem}[section]\n\\newtheorem{theorem}{Theorem}".to_string(),
+        ]);
+        assert_eq!(r.reset_level("theorem"), Some(2));
+        r.apply_numbering_scheme(crate::config::TheoremNumbering::Continuous);
+        assert_eq!(r.reset_level("theorem"), None);
+    }
 
     #[test]
     fn builtin_defaults_share_theorem_counter_section_reset() {

@@ -86,7 +86,10 @@ fn finish_render(
     // Theorem environments + their counters/titles are driven by the
     // preamble's `\newtheorem` declarations (including local `.sty` packages)
     // so numbering matches a real build.
-    let thms = theorems::TheoremRegistry::from_project(&project);
+    let mut thms = theorems::TheoremRegistry::from_project(&project);
+    // Config override (`[viewer] theorem-numbering`): force continuous/section
+    // numbering when the `\newtheorem` declarations aren't visible to detection.
+    thms.apply_numbering_scheme(opts.viewer_config.theorem_numbering);
     let mut body = parser::parse_body(&project, &thms)?;
     let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms);
     let mut sync = SyncIndex::new();

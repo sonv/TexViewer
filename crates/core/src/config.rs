@@ -139,6 +139,13 @@ pub struct ViewerConfig {
     /// extra macros, packages…). Don't reassign `window.MathJax` wholesale —
     /// the client adapter relies on the generated config.
     pub mathjax_config: Option<String>,
+    /// How theorem-like environments are numbered. `"auto"` (default) follows
+    /// the document's `\newtheorem` declarations; `"continuous"` forces one
+    /// document-wide sequence (Theorem 1, 2, 3…); `"section"` forces per-section
+    /// numbering (Theorem 1.1, 1.2…). Use the override when the declarations
+    /// aren't visible to the viewer — e.g. inside a conditional `\if…\newtheorem`
+    /// block (which the viewer can't evaluate) or a package it can't resolve.
+    pub theorem_numbering: Option<TheoremNumbering>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
 }
@@ -173,6 +180,28 @@ impl Theme {
             Theme::System => "system",
             Theme::Light => "light",
             Theme::Dark => "dark",
+        }
+    }
+}
+
+/// How theorem-like environments are numbered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TheoremNumbering {
+    /// Follow the document's `\newtheorem` declarations (default).
+    Auto,
+    /// One document-wide sequence (Theorem 1, 2, 3…), ignoring section resets.
+    Continuous,
+    /// Per-section numbering (Theorem 1.1, 1.2, 2.1…).
+    Section,
+}
+
+impl TheoremNumbering {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TheoremNumbering::Auto => "auto",
+            TheoremNumbering::Continuous => "continuous",
+            TheoremNumbering::Section => "section",
         }
     }
 }
@@ -227,6 +256,7 @@ pub struct ResolvedViewerConfig {
     pub source_jump_trigger: SourceJumpTrigger,
     pub wrap_equations: bool,
     pub mathjax_config: String,
+    pub theorem_numbering: TheoremNumbering,
 }
 
 impl Default for ResolvedConfig {
@@ -240,6 +270,7 @@ impl Default for ResolvedConfig {
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
                 wrap_equations: true,
                 mathjax_config: String::new(),
+                theorem_numbering: TheoremNumbering::Auto,
             },
             text_macros: HashMap::new(),
         }
@@ -289,6 +320,10 @@ impl Config {
                     .wrap_equations
                     .unwrap_or(defaults.viewer.wrap_equations),
                 mathjax_config: self.viewer.mathjax_config.unwrap_or_default(),
+                theorem_numbering: self
+                    .viewer
+                    .theorem_numbering
+                    .unwrap_or(defaults.viewer.theorem_numbering),
             },
             text_macros: self.text_macros,
         }
@@ -333,6 +368,9 @@ impl ViewerConfig {
         }
         if other.mathjax_config.is_some() {
             self.mathjax_config = other.mathjax_config;
+        }
+        if other.theorem_numbering.is_some() {
+            self.theorem_numbering = other.theorem_numbering;
         }
         self.source_jump.merge(other.source_jump);
     }

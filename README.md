@@ -564,6 +564,7 @@ overrides, applied per field with last-wins semantics:
 font-size = 18                  # body text size in CSS pixels
 wrap-equations = true           # wrap long display math (MathJax line-breaking);
                                 # set false to let it overflow + scroll instead
+theorem-numbering = "auto"      # | "continuous" | "section" — see below
 
 [viewer.source-jump]
 # Which click gesture sends `POST /reveal-source` to spawn `--editor`
@@ -578,6 +579,16 @@ math overflow and scroll horizontally — closer to how a non-`breqn` PDF
 typesets it on one line. It's also a checkbox in the **config** toolbar dialog.
 This affects the **preview only** — it can't change how `latexmk` breaks lines
 in the PDF.
+
+**Theorem numbering.** By default (`theorem-numbering = "auto"`) theorem-likes
+are numbered from the document's `\newtheorem` declarations — continuously
+(Theorem 1, 2, 3…) for a bare `\newtheorem{theorem}{Theorem}`, or per-section
+(1.1, 1.2, 2.1…) when it carries `[section]`. Set `"continuous"` or `"section"`
+to force one scheme regardless. Use it when the declarations aren't visible to
+the viewer — e.g. inside a conditional `\if…\newtheorem…\else…\fi` block (which
+the viewer can't evaluate, so it falls back to a default) or a package it can't
+resolve. Put it in the project's `.mathpreview.toml` so it applies to that paper
+only; it takes effect on the next render (save the file, or `:MathPreviewRestart`).
 
 **Raw MathJax config.** For anything `wrap-equations` doesn't cover, drop a
 snippet of JavaScript in `mathjax-config`; it runs right after the generated

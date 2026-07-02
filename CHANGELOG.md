@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.80] — 2026-07-02
+
+### Added
+
+- **`[viewer] theorem-numbering` config option** to force how theorem-like
+  environments are numbered: `"auto"` (default — follow the document's
+  `\newtheorem`), `"continuous"` (one document-wide sequence: Theorem 1, 2, 3…),
+  or `"section"` (per-section: 1.1, 1.2…). The override handles the case where
+  the declarations aren't visible to the viewer — e.g. a conditional
+  `\if…\newtheorem…\else…\fi` block, which the viewer can't evaluate, so it fell
+  back to a section-reset default even when the active branch numbers
+  continuously. Continuous numbering is now selectable regardless of detection.
+  Set it in the project's `.mathpreview.toml`; applies on the next render.
+
 ## [0.1.79] — 2026-06-29
 
 ### Fixed
