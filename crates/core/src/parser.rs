@@ -7,13 +7,170 @@
 //! `\omitref`. Everything else passes through as opaque tokens. Source
 //! positions survive to every leaf.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span};
-use crate::theorems::TheoremRegistry;
 use crate::project::Project;
+use crate::theorems::TheoremRegistry;
+
+/// A user `\newenvironment{name}[nargs][default]{begin}{end}` definition.
+#[derive(Clone)]
+struct EnvMacro {
+    /// Code emitted at `\begin{name}` (leading/trailing whitespace trimmed so
+    /// the wrapped body keeps its real line numbers — see `parse_user_env`).
+    begin: String,
+    /// Code emitted at `\end{name}`.
+    end: String,
+    /// Number of arguments (`#1`…`#n`).
+    nargs: u8,
+    /// Default for the first argument, when it's declared optional.
+    default: Option<String>,
+}
+
+thread_local! {
+    /// User `\newenvironment` definitions for the current `parse_body`, keyed by
+    /// env name. Thread-local (like the renderer's macro table) so every
+    /// sub-parser sees them without threading a reference through `new_at`.
+    static ENV_MACROS: RefCell<HashMap<String, EnvMacro>> = RefCell::new(HashMap::new());
+}
+
+/// Scan `\newenvironment` / `\renewenvironment` declarations out of preamble
+/// source into a name → definition map.
+fn extract_env_macros(src: &str) -> HashMap<String, EnvMacro> {
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\\(?:re)?newenvironment\*?").unwrap());
+    let mut out = HashMap::new();
+    for m in RE.find_iter(src) {
+        let mut p = skip_ascii_ws(src, m.end());
+        let Some((name, np)) = read_braced(src, p) else {
+            continue;
+        };
+        p = skip_ascii_ws(src, np);
+        let mut nargs = 0u8;
+        let mut default = None;
+        if let Some((n, np)) = read_bracketed(src, p) {
+            nargs = n.trim().parse().unwrap_or(0);
+            p = skip_ascii_ws(src, np);
+            if let Some((d, np2)) = read_bracketed(src, p) {
+                default = Some(d);
+                p = skip_ascii_ws(src, np2);
+            }
+        }
+        let Some((begin, np)) = read_braced(src, p) else {
+            continue;
+        };
+        p = skip_ascii_ws(src, np);
+        let Some((end, _)) = read_braced(src, p) else {
+            continue;
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        out.insert(
+            name,
+            EnvMacro {
+                begin: begin.trim().to_string(),
+                end: end.trim().to_string(),
+                nargs,
+                default,
+            },
+        );
+    }
+    out
+}
+
+fn skip_ascii_ws(src: &str, mut i: usize) -> usize {
+    let b = src.as_bytes();
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// If `src[from]` is `{`, return the group's inner text and the index past `}`.
+fn read_braced(src: &str, from: usize) -> Option<(String, usize)> {
+    let b = src.as_bytes();
+    if b.get(from) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut i = from;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1, // skip the escaped next byte
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((src[from + 1..i].to_string(), i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// If `src[from]` is `[`, return the optional-arg text and the index past `]`.
+fn read_bracketed(src: &str, from: usize) -> Option<(String, usize)> {
+    let b = src.as_bytes();
+    if b.get(from) != Some(&b'[') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let start = from + 1;
+    let mut i = start;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b']' if depth == 0 => return Some((src[start..i].to_string(), i + 1)),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Substitute `#1`…`#9` in a `\newenvironment` begin/end template with `args`
+/// (`##` → a literal `#`); out-of-range or absent references become empty.
+fn substitute_env_args(template: &str, args: &[String]) -> String {
+    if !template.contains('#') {
+        return template.to_string();
+    }
+    let bytes = template.as_bytes();
+    let mut out = String::with_capacity(template.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' && i + 1 < bytes.len() {
+            let c = bytes[i + 1];
+            if c == b'#' {
+                out.push('#');
+                i += 2;
+                continue;
+            }
+            if c.is_ascii_digit() {
+                let idx = (c - b'0') as usize;
+                if idx >= 1 && idx <= args.len() {
+                    out.push_str(&args[idx - 1]);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        let ch = template[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
 
 const MATH_ENVS: &[&str] = &[
     "equation",
@@ -73,6 +230,9 @@ fn callout_for(env: &str) -> Option<(&'static str, &'static str, bool)> {
 /// Parse every project file's body into a flat node list, preserving include
 /// order.
 pub fn parse_body(project: &Project, thms: &TheoremRegistry) -> Result<Vec<Node>> {
+    // User `\newenvironment` definitions for this parse (thread-local; read by
+    // parse_environment when it meets an otherwise-unknown environment).
+    ENV_MACROS.with(|m| *m.borrow_mut() = extract_env_macros(&project.preamble.source));
     let mut nodes = Vec::new();
     for f in &project.files {
         let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0);
@@ -703,8 +863,61 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        // User-defined environment (`\newenvironment`): expand to its begin/end
+        // code around the body and parse THAT, so the body's math/refs render and
+        // the wrapper (e.g. `\begin{quote}\itshape`) is honored — instead of the
+        // body being dumped verbatim as an opaque block.
+        let user_def = ENV_MACROS.with(|m| m.borrow().get(&env).cloned());
+        if let Some(def) = user_def {
+            self.parse_user_env(out, start, &env, &def);
+            return;
+        }
+
         // Opaque environment — capture body, leave for the renderer.
         self.capture_opaque_env(out, start, env);
+    }
+
+    /// Expand a `\newenvironment` at `\begin{env}`: read its arguments, splice
+    /// the body into `begin + body + end`, and parse that transparently (its
+    /// nodes flatten into `out`). Because the begin/end code is trimmed of
+    /// surrounding whitespace, single-line wrappers (the common case) leave the
+    /// body's line/col — hence source-jump — intact; a wrapper with interior
+    /// newlines only shifts positions, it never drops content.
+    fn parse_user_env(&mut self, out: &mut Vec<Node>, start: Pos, env: &str, def: &EnvMacro) {
+        let mut args: Vec<String> = Vec::new();
+        if def.nargs > 0 {
+            let mut remaining = def.nargs;
+            if def.default.is_some() {
+                let a = self
+                    .optional_arg()
+                    .or_else(|| def.default.clone())
+                    .unwrap_or_default();
+                args.push(a);
+                remaining = remaining.saturating_sub(1);
+            }
+            for _ in 0..remaining {
+                args.push(self.balanced_brace_arg().unwrap_or_default());
+            }
+        }
+        let body_end = self.find_matching_end(env);
+        let body_src = &self.src[self.byte..body_end];
+        let begin = substitute_env_args(&def.begin, &args);
+        let end = substitute_env_args(&def.end, &args);
+        let expanded = format!("{begin}{body_src}{end}");
+        let mut children = Vec::new();
+        {
+            let mut sub = Parser::new_at(
+                &expanded,
+                self.file.clone(),
+                start,
+                self.thms,
+                self.depth + 1,
+            );
+            sub.parse_block_into(&mut children, None);
+        }
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.extend(children);
     }
 
     /// Capture an environment's body verbatim as an `OpaqueEnv` without

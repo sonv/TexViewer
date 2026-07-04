@@ -2839,6 +2839,33 @@ mod tests {
     }
 
     #[test]
+    fn user_newenvironment_expands_so_body_math_renders() {
+        // A `\newenvironment` wrapper (referee = quote + italic) is expanded to
+        // its begin/end code around the body and parsed — so the body's math
+        // renders, instead of the whole env being dumped as an opaque block.
+        let body = render_body(concat!(
+            "\\newenvironment{referee}{\n\\begin{quote}\\itshape}{\n\\end{quote}}\n",
+            "\\begin{document}\n\\begin{referee}\nClaim $x^2 = y$ holds.\n\\end{referee}\n\\end{document}\n",
+        ));
+        assert!(
+            !body.contains(r#"opaque-env" data-env="referee"#),
+            "referee went opaque: {body}"
+        );
+        assert!(
+            body.contains(r#"<blockquote class="quote"#),
+            "no blockquote wrapper from the expansion: {body}"
+        );
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "body math not typeset: {body}"
+        );
+        assert!(
+            !text_content(&body).contains("$x^2 = y$"),
+            "raw math leaked: {body}"
+        );
+    }
+
+    #[test]
     fn footnote_renders_inline_marker_with_hover_popover_and_math() {
         let body = render_body(
             "\\begin{document}\nFirst\\footnote{Note with $x^2$.} and second\\footnote{Two.} done.\n\\end{document}\n",

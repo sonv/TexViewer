@@ -17,6 +17,23 @@ summary.
 
 Nothing yet.
 
+## [0.1.82] — 2026-07-02
+
+### Added
+
+- **User `\newenvironment` definitions are now expanded, so math renders inside
+  custom environments.** An environment defined with
+  `\newenvironment{name}[args]{begin}{end}` — e.g. a `referee` box that wraps
+  content in `\begin{quote}\itshape … \end{quote}` — is expanded to its begin/end
+  code around the body and parsed, so **math, refs, and nested environments
+  inside it render** instead of the body being dumped as opaque text. Arguments
+  (`#1`…) and nesting are supported, and the begin/end code is trimmed of
+  surrounding whitespace so the body keeps its real line numbers (source-jump
+  stays precise). Runaway/self-referential definitions are bounded by the nesting
+  cap. (Known gap: a *bare* font switch in the wrapper such as `\itshape` — one
+  that styles the rest of the environment without braces — isn't applied yet, so
+  the content renders upright; `{\itshape …}` and `\emph{…}` do work.)
+
 ## [0.1.81] — 2026-07-02
 
 ### Added
