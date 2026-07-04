@@ -17,6 +17,16 @@ summary.
 
 Nothing yet.
 
+## [0.1.83] — 2026-07-02
+
+### Fixed
+
+- **`\newenvironment` definitions in `\input`'d files / local packages are now
+  loaded**, not just those in the root preamble — matching how `\newcommand` and
+  `\newtheorem` are already gathered from referenced files. So a custom
+  environment defined in an included macros file expands (and its body's math
+  renders) just like one defined inline in the main file.
+
 ## [0.1.82] — 2026-07-02
 
 ### Added

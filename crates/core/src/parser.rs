@@ -8,7 +8,7 @@
 //! positions survive to every leaf.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -38,8 +38,37 @@ thread_local! {
     static ENV_MACROS: RefCell<HashMap<String, EnvMacro>> = RefCell::new(HashMap::new());
 }
 
-/// Scan `\newenvironment` / `\renewenvironment` declarations out of preamble
-/// source into a name → definition map.
+/// Gather `\newenvironment` definitions from the whole project — the root
+/// preamble plus every local `.sty` / `.tex` it `\usepackage`s / `\input`s (the
+/// same files the macro and theorem extractors read), so a definition in an
+/// included file is honored, not just one in the root preamble.
+fn env_macros_for_project(project: &Project) -> HashMap<String, EnvMacro> {
+    let mut sources: Vec<String> = vec![project.preamble.source.clone()];
+    let base = project
+        .preamble
+        .file
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    visited.insert(project.preamble.file.clone());
+    for f in crate::macros::collect_referenced_files(&project.preamble.source, base) {
+        if !visited.insert(f.clone()) {
+            continue;
+        }
+        if let Ok(src) = std::fs::read_to_string(&f) {
+            sources.push(src);
+        }
+    }
+    let mut out = HashMap::new();
+    for src in &sources {
+        // Later sources win (a `\renewenvironment` in a package overrides).
+        out.extend(extract_env_macros(src));
+    }
+    out
+}
+
+/// Scan `\newenvironment` / `\renewenvironment` declarations out of one source
+/// into a name → definition map.
 fn extract_env_macros(src: &str) -> HashMap<String, EnvMacro> {
     static RE: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"\\(?:re)?newenvironment\*?").unwrap());
@@ -231,8 +260,9 @@ fn callout_for(env: &str) -> Option<(&'static str, &'static str, bool)> {
 /// order.
 pub fn parse_body(project: &Project, thms: &TheoremRegistry) -> Result<Vec<Node>> {
     // User `\newenvironment` definitions for this parse (thread-local; read by
-    // parse_environment when it meets an otherwise-unknown environment).
-    ENV_MACROS.with(|m| *m.borrow_mut() = extract_env_macros(&project.preamble.source));
+    // parse_environment when it meets an otherwise-unknown environment). Scans
+    // the root preamble AND its `\input`/`\usepackage`d files.
+    ENV_MACROS.with(|m| *m.borrow_mut() = env_macros_for_project(project));
     let mut nodes = Vec::new();
     for f in &project.files {
         let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0);
@@ -1867,6 +1897,26 @@ mod tests {
             "math inside the callout was not parsed: {:?}",
             callout.children
         );
+    }
+
+    #[test]
+    fn extract_env_macros_parses_definitions() {
+        let m = extract_env_macros(concat!(
+            "\\newenvironment{referee}{\n\\begin{quote}\\itshape}{\n\\end{quote}}\n",
+            "\\newenvironment{named}[1]{X#1}{Y}\n",
+            "\\renewcommand{\\x}{y}\n", // not an environment — must be ignored
+        ));
+        let r = m.get("referee").expect("referee defined");
+        // Surrounding whitespace (incl. the leading newlines) is trimmed so the
+        // wrapped body keeps its real line numbers.
+        assert_eq!(r.begin, "\\begin{quote}\\itshape");
+        assert_eq!(r.end, "\\end{quote}");
+        assert_eq!(r.nargs, 0);
+        let n = m.get("named").expect("named defined");
+        assert_eq!(n.nargs, 1);
+        assert_eq!(n.begin, "X#1");
+        assert_eq!(n.end, "Y");
+        assert!(!m.contains_key("x"), "renewcommand must not be picked up");
     }
 
     #[test]
