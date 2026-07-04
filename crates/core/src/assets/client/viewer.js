@@ -274,6 +274,11 @@
     mathSearchResults = [];
     mathSearchIndex = -1;
     clearMathSearchHighlights();
+    textSearchQuery = '';
+    textSearchResults = [];
+    textSearchIndex = -1;
+    clearTextHighlights();
+    updateSearchCount(-1, 0);
     var selection = window.getSelection ? window.getSelection() : null;
     if (selection && selection.removeAllRanges) selection.removeAllRanges();
   }
@@ -349,6 +354,7 @@
       mathSearchQuery = '';
       mathSearchIndex = -1;
       clearMathSearchHighlights();
+      updateSearchCount(-1, 0);
       return false;
     }
 
@@ -374,6 +380,7 @@
     var active = mathSearchResults[mathSearchIndex];
     applyMathSearchHighlights(active);
     scrollSourceIntoView(active.target || active.math);
+    updateSearchCount(mathSearchIndex, mathSearchResults.length);
     setStatus('live',
       '● math ' + (mathSearchIndex + 1) + '/' + mathSearchResults.length + ' ' + query);
     return true;
@@ -394,6 +401,181 @@
     }
     mathSearchIndex = Math.max(0, Math.min(oldIndex, mathSearchResults.length - 1));
     applyMathSearchHighlights(mathSearchResults[mathSearchIndex]);
+  }
+
+  // --- Plain-text search (vim `/`): own match list so it cycles at the ends
+  // and shows current/total, with all matches highlighted via the CSS Custom
+  // Highlight API (no DOM mutation) and the active one distinct. ---
+
+  function supportsHighlightApi() {
+    return typeof Highlight !== 'undefined' && typeof CSS !== 'undefined' && CSS.highlights;
+  }
+
+  // Flatten the page's visible text into one string plus a node index, so a
+  // query can match ACROSS the per-word `src-word` spans (and the spaces
+  // between them). Skips math source, chrome, and hidden/overlay text.
+  function collectSearchText() {
+    var page = pageEl();
+    if (!page) return { text: '', nodes: [] };
+    var nodes = [];
+    var parts = [];
+    var offset = 0;
+    var walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+        var p = node.parentElement;
+        if (p && p.closest &&
+            p.closest('.math-source, .search-panel, .side-panel, .topbar, .lineno-layer, ' +
+                      '.page-guide-layer, .refkey-chip, .footnote-pop, .sidenote, ' +
+                      '.proof.folded, [aria-hidden="true"]')) {
+          // Skip math LaTeX source, chrome, and content that's hidden until
+          // hover/margin-mode/unfold (a match there would count but scroll to
+          // nowhere and corrupt the current/total ordering).
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var node;
+    while ((node = walker.nextNode())) {
+      nodes.push({ node: node, start: offset, len: node.nodeValue.length });
+      parts.push(node.nodeValue);
+      offset += node.nodeValue.length;
+    }
+    return { text: parts.join(''), nodes: nodes };
+  }
+
+  // Map a flat offset to a { node, offset } DOM position. `atEnd` picks the side
+  // when the offset lands on a node boundary: for a match END keep it at the end
+  // of the previous node (`<=`); for a match START move it to the start of the
+  // next node (`<`), so the range can't anchor behind skipped/hidden DOM (inline
+  // math, an aria-hidden break) that sits between two flat-adjacent text nodes.
+  function locateFlat(nodes, pos, atEnd) {
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var end = n.start + n.len;
+      if (atEnd ? pos <= end : pos < end) return { node: n.node, offset: pos - n.start };
+    }
+    var last = nodes[nodes.length - 1];
+    return last ? { node: last.node, offset: last.len } : null;
+  }
+
+  function buildTextMatches(query) {
+    var q = (query || '').toLowerCase();
+    if (!q) return [];
+    var flat = collectSearchText();
+    var hay = flat.text.toLowerCase();
+    var results = [];
+    var idx = 0;
+    while ((idx = hay.indexOf(q, idx)) !== -1) {
+      var a = locateFlat(flat.nodes, idx, false);
+      var b = locateFlat(flat.nodes, idx + q.length, true);
+      if (a && b) {
+        try {
+          var r = document.createRange();
+          r.setStart(a.node, a.offset);
+          r.setEnd(b.node, b.offset);
+          results.push(r);
+        } catch (e) {}
+      }
+      idx += q.length; // non-overlapping, like a plain search
+    }
+    return results;
+  }
+
+  // First match at/after the current viewport top (so a fresh `/` lands on the
+  // nearest match, then cycles from there).
+  function firstTextResultIndex(results, backwards) {
+    if (!results.length) return -1;
+    var y = window.scrollY + topbarOffset() + 1;
+    function top(r) { return r.getBoundingClientRect().top + window.scrollY; }
+    if (backwards) {
+      for (var i = results.length - 1; i >= 0; i--) if (top(results[i]) < y) return i;
+      return results.length - 1;
+    }
+    for (var j = 0; j < results.length; j++) if (top(results[j]) >= y) return j;
+    return 0;
+  }
+
+  function clearTextHighlights() {
+    if (supportsHighlightApi()) {
+      CSS.highlights.delete('mp-search-hit');
+      CSS.highlights.delete('mp-search-active');
+    }
+  }
+
+  function applyTextHighlights() {
+    if (!supportsHighlightApi()) {
+      // Fallback: select the active match (native highlight); cycle + counter
+      // still work, just no all-match highlight.
+      var active = textSearchResults[textSearchIndex];
+      var sel = window.getSelection && window.getSelection();
+      if (active && sel) { sel.removeAllRanges(); sel.addRange(active.cloneRange()); }
+      return;
+    }
+    var hit = new Highlight();
+    var act = new Highlight();
+    for (var i = 0; i < textSearchResults.length; i++) {
+      if (i === textSearchIndex) act.add(textSearchResults[i]);
+      else hit.add(textSearchResults[i]);
+    }
+    CSS.highlights.set('mp-search-hit', hit);
+    CSS.highlights.set('mp-search-active', act);
+  }
+
+  function scrollRangeIntoView(range) {
+    if (!range || !range.getBoundingClientRect) return;
+    var rect = range.getBoundingClientRect();
+    if (rect.top >= topbarOffset() + 8 && rect.bottom <= window.innerHeight - 8) return;
+    var y = rect.top + window.scrollY - Math.max(topbarOffset() + 16, window.innerHeight * 0.3);
+    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+  }
+
+  // Shared current/total pill in the search panel; empty when idle.
+  function updateSearchCount(index, total) {
+    var el = document.getElementById('search-count');
+    if (el) el.textContent = total > 0 ? (index + 1) + '/' + total : '';
+  }
+
+  function runPlainSearch(query, backwards) {
+    var sameQuery = textSearchQuery === query;
+    textSearchResults = buildTextMatches(query);
+    textSearchQuery = query;
+    if (!textSearchResults.length) {
+      textSearchIndex = -1;
+      clearTextHighlights();
+      updateSearchCount(-1, 0);
+      return false;
+    }
+    var next;
+    if (sameQuery && textSearchIndex >= 0) {
+      next = textSearchIndex + (backwards ? -1 : 1);
+      if (next < 0) next = textSearchResults.length - 1;         // wrap at the top
+      if (next >= textSearchResults.length) next = 0;            // wrap at the end
+    } else {
+      next = firstTextResultIndex(textSearchResults, backwards);
+    }
+    textSearchIndex = next;
+    applyTextHighlights();
+    scrollRangeIntoView(textSearchResults[textSearchIndex]);
+    updateSearchCount(textSearchIndex, textSearchResults.length);
+    return true;
+  }
+
+  // Rebuild after a live re-render (the old Ranges point at replaced nodes).
+  function restoreTextSearchHighlights() {
+    if (!searchPanelIsOpen() || !textSearchQuery) { clearTextHighlights(); return; }
+    var old = textSearchIndex;
+    textSearchResults = buildTextMatches(textSearchQuery);
+    if (!textSearchResults.length) {
+      textSearchIndex = -1;
+      clearTextHighlights();
+      updateSearchCount(-1, 0);
+      return;
+    }
+    textSearchIndex = Math.max(0, Math.min(old, textSearchResults.length - 1));
+    applyTextHighlights();
+    updateSearchCount(textSearchIndex, textSearchResults.length);
   }
 
   function runSearch(backwards) {
@@ -420,20 +602,27 @@
     if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
       return true;
     }
-    if (mathSearchQuery) clearSearchSession();
-    var found = false;
-    try {
-      if (window.find) {
-        found = window.find(query, false, !!backwards, true, false, false, false);
-      }
-    } catch (e) {
-      found = false;
+    // Fully end any prior math session (not just its highlight classes) before a
+    // plain search, or restoreMathSearchHighlights would revive the old glyph
+    // paint on the next live re-render. The math fallback below repopulates this
+    // state if it fires.
+    if (mathSearchQuery) {
+      mathSearchQuery = '';
+      mathSearchResults = [];
+      mathSearchIndex = -1;
+      clearMathSearchHighlights();
     }
+    var found = runPlainSearch(query, backwards);
     if (!found && runMathSearch(query, backwards)) {
       return true;
     }
     if (!found && recorded) viewerJumpStack.pop();
-    setStatus(found ? 'live' : 'dead', (found ? '● found ' : '○ no match ') + query);
+    setStatus(
+      found ? 'live' : 'dead',
+      found
+        ? '● ' + (textSearchIndex + 1) + '/' + textSearchResults.length + ' ' + query
+        : '○ no match ' + query
+    );
     return found;
   }
 

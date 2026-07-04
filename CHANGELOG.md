@@ -17,6 +17,21 @@ summary.
 
 Nothing yet.
 
+## [0.1.84] — 2026-07-02
+
+### Added
+
+- **`/` search cycles at both ends and shows a `current/total` counter.** The
+  in-viewer plain-text search now keeps its own match list (like the math
+  search already did), so Enter / Shift+Enter **wrap around** at the last/first
+  match, and the panel shows a vim-style **`3/12`** counter (for both text and
+  math searches). All matches are highlighted — the active one emphasized — via
+  the CSS Custom Highlight API (no DOM mutation, so highlights survive live
+  re-renders and don't clear when the input loses focus). Matching works across
+  the per-word source spans and skips math LaTeX source, chrome, and
+  hidden/folded content (footnotes, sidenotes, folded proofs). Falls back to
+  selecting the active match where the Highlight API isn't available.
+
 ## [0.1.83] — 2026-07-02
 
 ### Fixed

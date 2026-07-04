@@ -47,6 +47,11 @@
   var mathSearchQuery = '';
   var mathSearchResults = [];
   var mathSearchIndex = -1;
+  // Plain-text search: our own match list (Ranges) so `/` cycles at the ends
+  // and shows current/total — native window.find gives neither.
+  var textSearchQuery = '';
+  var textSearchResults = [];
+  var textSearchIndex = -1;
   var viewerJumpStack = [];
 
   function pageEl() {

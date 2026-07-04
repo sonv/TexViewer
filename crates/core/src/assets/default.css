@@ -306,10 +306,10 @@ body.topbar-hidden .topbar { display: none; }
   /* Row 1: `/` label + input, full width.
      Row 2: help text, full width — so the long shortcut hint can't
      squeeze the input. */
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto;
   grid-template-areas:
-    "label input"
-    "help  help";
+    "label input count"
+    "help  help  help";
   align-items: center;
   column-gap: 9px;
   row-gap: 6px;
@@ -351,6 +351,22 @@ body.topbar-hidden .topbar { display: none; }
 body.theme-dark .search-panel input:focus {
   box-shadow: 0 0 0 2px rgba(179, 157, 232, 0.28);
 }
+/* Current/total match counter (vim-style), shown to the right of the input. */
+.search-count {
+  grid-area: count;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  min-width: 3.2em;
+  text-align: right;
+  white-space: nowrap;
+}
+/* Plain-text search highlights (CSS Custom Highlight API): every match tinted,
+   the active one stronger. No DOM mutation, so it survives live re-renders. */
+::highlight(mp-search-hit) { background-color: rgba(255, 208, 0, 0.32); }
+::highlight(mp-search-active) { background-color: #ff9a3c; color: #1a1a1a; }
+body.theme-dark ::highlight(mp-search-hit) { background-color: rgba(255, 208, 0, 0.26); }
+body.theme-dark ::highlight(mp-search-active) { background-color: #e08427; color: #16130c; }
 .search-help {
   grid-area: help;
   color: var(--muted);

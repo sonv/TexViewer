@@ -64,6 +64,7 @@
           restoreSourceHighlight();
           restoreSourceRange();
           restoreMathSearchHighlights();
+          restoreTextSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'body-updated' && typeof msg.html === 'string') {
           var tStart = performance.now();
@@ -163,6 +164,7 @@
           restoreSourceHighlight();
           restoreSourceRange();
           restoreMathSearchHighlights();
+          restoreTextSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
           // Cursor moved off a math row back to prose → drop the row band, then

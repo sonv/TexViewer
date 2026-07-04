@@ -166,6 +166,7 @@ pub(super) fn wrap_in_shell(
 <div class="search-panel" id="search-panel" hidden>
   <label for="search-input">/</label>
   <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
+  <span class="search-count" id="search-count" aria-live="polite"></span>
   <span class="search-help">Enter next · Shift+Enter previous · Esc close · prefix <code>m:</code> or <code>$</code> for math-only</span>
 </div>
 <aside class="side-panel" id="viewer-side" aria-label="document navigation">
