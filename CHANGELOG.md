@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.85] — 2026-07-02
+
+### Added
+
+- **nvim's `/` search is mirrored into the preview.** While the editor's search
+  highlighting is active (`hlsearch`), every match of the pattern is highlighted
+  in the preview too — vim-hlsearch style, in a distinct green so it doesn't
+  clash with the in-viewer `/` panel search (whose active match always paints on
+  top). Follows `n` / `N` / `*`, updates on a new `/` or `?` pattern, and clears
+  on `:nohlsearch`. Passive by design — the existing cursor-sync already scrolls
+  the preview to the match you're on. Works per tab with multiple previews open
+  (switching buffers re-syncs the newly-active tab). Disable with
+  `sync_search = false` in `setup()`.
+
 ## [0.1.84] — 2026-07-02
 
 ### Added

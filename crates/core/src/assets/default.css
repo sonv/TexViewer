@@ -367,6 +367,10 @@ body.theme-dark .search-panel input:focus {
 ::highlight(mp-search-active) { background-color: #ff9a3c; color: #1a1a1a; }
 body.theme-dark ::highlight(mp-search-hit) { background-color: rgba(255, 208, 0, 0.26); }
 body.theme-dark ::highlight(mp-search-active) { background-color: #e08427; color: #16130c; }
+/* Editor-driven (nvim `/`) search highlight — vim hlsearch yellow, distinct
+   from the in-viewer panel search above. */
+::highlight(mp-editor-search) { background-color: rgba(120, 200, 120, 0.4); }
+body.theme-dark ::highlight(mp-editor-search) { background-color: rgba(120, 200, 120, 0.3); }
 .search-help {
   grid-area: help;
   color: var(--muted);

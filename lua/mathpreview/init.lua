@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.84"
+local PLUGIN_VERSION = "0.1.85"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -45,6 +45,10 @@ local config = {
   jump_wait_ms = 25000,
   jump_retry_ms = 1000,
   sync = true,
+  -- Mirror the editor's `/` search into the preview (hlsearch-style highlight
+  -- of every match). Requires `sync` and the 'hlsearch' option. Set false to
+  -- keep the preview search independent of the editor's.
+  sync_search = true,
   auto_open_browser = true,
   -- Where `cargo install` drops the auto-built binary. nil → cargo's default
   -- (`$CARGO_HOME/bin`, usually `~/.cargo/bin`, which rustup puts on $PATH).
@@ -104,6 +108,7 @@ local config = {
   url = nil,        -- http://127.0.0.1:<port>/buffer
   cursor_url = nil, -- http://127.0.0.1:<port>/cursor
   selection_url = nil, -- http://127.0.0.1:<port>/selection
+  search_url = nil, -- http://127.0.0.1:<port>/search
   jump_url = nil,   -- http://127.0.0.1:<port>/jump
   debug_url = nil,  -- http://127.0.0.1:<port>/debug
 }
@@ -497,6 +502,7 @@ local function set_urls(port)
   config.url = base .. "/buffer"
   config.cursor_url = base .. "/cursor"
   config.selection_url = base .. "/selection"
+  config.search_url = base .. "/search"
   config.jump_url = base .. "/jump"
   config.debug_url = base .. "/debug"
 end
@@ -650,6 +656,28 @@ local function post_sync_json(url, payload, label)
       last_status.last_error = nil
     end
   end)
+end
+
+-- Mirror the editor's `/` search into the preview. Sends the search register
+-- (@/) while search highlighting is active (`v:hlsearch`, which needs the
+-- 'hlsearch' option), and an empty string to clear on `:nohlsearch`. Deduped so
+-- it only posts on a change. Reset to nil on (de)activate so a fresh daemon
+-- re-syncs. Called from CursorMoved (n / N / *) and CmdlineLeave (/ ? :noh).
+local last_search_sent = nil
+local function post_search()
+  if not daemon_job or not config.sync or config.sync_search == false then return end
+  if not config.search_url then return end
+  local active = vim.o.hlsearch and vim.v.hlsearch == 1
+  -- Strip the word-boundary / magic atoms that `*` and friends add, so a plain
+  -- word still matches the rendered text (the browser does a literal search).
+  local pattern = ""
+  if active then
+    pattern = vim.fn.getreg("/") or ""
+    pattern = pattern:gsub("\\[<>vVcC]", ""):gsub("\\[zZ][se]", "")
+  end
+  if pattern == last_search_sent then return end
+  last_search_sent = pattern
+  post_sync_json(config.search_url, json_encode({ query = pattern }), "search")
 end
 
 -- Send the editor's current visual selection as a source range so the preview
@@ -1005,6 +1033,12 @@ local function activate(entry)
   set_urls(entry.port)
   start_jump_poll()
   fetch_watched(entry)  -- keep this daemon's owned-file set current
+  -- The dedup cache assumes the RECEIVER already shows the last-sent pattern;
+  -- a different daemon's tab hasn't seen it. Invalidate and push the current
+  -- search state so the newly-active tab mirrors it immediately (BufEnter
+  -- doesn't guarantee a following CursorMoved).
+  last_search_sent = nil
+  post_search()
 end
 
 -- The current buffer has no daemon: clear the active globals so pushes no-op.
@@ -1016,6 +1050,7 @@ local function deactivate()
   daemon_job = nil
   daemon_port = nil
   daemon_root = nil
+  last_search_sent = nil
 end
 
 -- Keep the active daemon in step with the buffer you're in (called on
@@ -1065,6 +1100,9 @@ local function attach_autocmds()
     pattern = "*",
     callback = function(args)
       if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
+        -- Mirror the `/` search hlsearch (catches n / N / * — they move the
+        -- cursor); deduped, so this is cheap on every move.
+        post_search()
         -- CursorMoved also fires while extending a visual selection, so route
         -- to the range sender when a visual mode is active.
         if is_visual(vim.fn.mode()) then
@@ -1072,6 +1110,18 @@ local function attach_autocmds()
         else
           debounced_cursor()
         end
+      end
+    end,
+  })
+  -- Promptly mirror `/` / `?` (new pattern) and `:noh` (clear) — those don't
+  -- always move the cursor, so CursorMoved alone would lag. Deferred so @/ and
+  -- v:hlsearch reflect the command's result.
+  vim.api.nvim_create_autocmd("CmdlineLeave", {
+    group = "mathpreview",
+    pattern = { "/", "?", ":" },
+    callback = function(args)
+      if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
+        vim.schedule(post_search)
       end
     end,
   })

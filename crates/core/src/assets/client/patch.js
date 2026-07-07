@@ -718,6 +718,7 @@
       nodes.forEach(function(node) { node.classList.remove('math-pending'); });
       restoreMathSearchHighlights();
       restoreTextSearchHighlights();
+      restoreEditorSearchHighlights();
       // Math is only now typeset; re-apply any per-row selection highlight that
       // fell back to whole-block because the SVG didn't exist yet.
       restoreSourceRange();

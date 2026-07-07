@@ -65,6 +65,7 @@
           restoreSourceRange();
           restoreMathSearchHighlights();
           restoreTextSearchHighlights();
+          restoreEditorSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'body-updated' && typeof msg.html === 'string') {
           var tStart = performance.now();
@@ -165,6 +166,7 @@
           restoreSourceRange();
           restoreMathSearchHighlights();
           restoreTextSearchHighlights();
+          restoreEditorSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
           // Cursor moved off a math row back to prose → drop the row band, then
@@ -175,6 +177,10 @@
           }
         } else if (msg.event === 'source-range') {
           highlightSourceRange(msg.element_ids || [], true, msg.math_rows || []);
+        } else if (msg.event === 'search-sync') {
+          // The editor's `/` search pattern — highlight its matches in the
+          // preview (empty string / omitted clears them).
+          editorSearchHighlight(typeof msg.query === 'string' ? msg.query : '');
         } else if (msg.event === 'full-reload') {
           location.reload();
         } else if (msg.event === 'error') {

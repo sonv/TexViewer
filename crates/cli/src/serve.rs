@@ -452,6 +452,17 @@ struct SourceRequest {
     col: Option<u32>,
 }
 
+/// Body for `POST /search` — the editor's active `/` search pattern, mirrored
+/// into the preview as an hlsearch-style highlight. An empty/omitted `query`
+/// (or `clear: true`) drops the highlight (e.g. after `:nohlsearch`).
+#[derive(Debug, Deserialize)]
+struct SearchRequest {
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    clear: Option<bool>,
+}
+
 /// Body for `POST /selection` — the editor's current visual selection as an
 /// inclusive 1-based source range. `clear: true` (sent when the user leaves
 /// visual mode) drops the highlight. Missing bounds also clear.
@@ -632,6 +643,7 @@ pub async fn run(
         .route("/buffer", axum::routing::post(serve_buffer_push))
         .route("/cursor", post(serve_cursor))
         .route("/selection", post(serve_selection))
+        .route("/search", post(serve_search))
         .route("/jump", get(serve_jump_poll).post(serve_jump))
         .route("/reveal-source", post(serve_reveal_source))
         .route("/macros/append", post(serve_macros_append))
@@ -1087,6 +1099,23 @@ fn source_range_highlight(
         .map(|(id, count, rows)| serde_json::json!({ "id": id, "count": count, "rows": rows }))
         .collect();
     (ids, math_rows)
+}
+
+/// `POST /search` — mirror the editor's active `/` pattern into the preview as
+/// an hlsearch-style highlight (all matches). Broadcast-only; the browser does
+/// the text matching against the rendered DOM. Empty query / `clear` removes it.
+async fn serve_search(
+    State(state): State<AppState>,
+    Json(req): Json<SearchRequest>,
+) -> axum::http::StatusCode {
+    let query = if req.clear.unwrap_or(false) {
+        String::new()
+    } else {
+        req.query.unwrap_or_default()
+    };
+    let payload = serde_json::json!({ "event": "search-sync", "query": query });
+    let _ = state.tx.send(payload.to_string());
+    axum::http::StatusCode::NO_CONTENT
 }
 
 async fn serve_selection(

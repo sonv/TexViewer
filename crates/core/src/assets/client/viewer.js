@@ -515,6 +515,11 @@
     }
     var hit = new Highlight();
     var act = new Highlight();
+    // Explicit paint order (default is registration order, which flips across
+    // delete/re-add cycles): the active match must stay above the all-match
+    // tint AND above the editor-search green when they overlap.
+    hit.priority = 1;
+    act.priority = 2;
     for (var i = 0; i < textSearchResults.length; i++) {
       if (i === textSearchIndex) act.add(textSearchResults[i]);
       else hit.add(textSearchResults[i]);
@@ -560,6 +565,35 @@
     scrollRangeIntoView(textSearchResults[textSearchIndex]);
     updateSearchCount(textSearchIndex, textSearchResults.length);
     return true;
+  }
+
+  // --- Editor-driven search highlight: nvim's `/` pattern, pushed by the plugin
+  // over the WS. Highlighted (all matches) like vim's hlsearch, in a distinct
+  // color from the in-viewer `/` panel. Passive — no navigation, since the
+  // cursor-sync already scrolls the preview to the current match. ---
+
+  function editorSearchHighlight(query) {
+    editorSearchQuery = (query || '').trim();
+    if (!editorSearchQuery || !supportsHighlightApi()) {
+      clearEditorSearchHighlight();
+      return;
+    }
+    var hl = new Highlight();
+    // Below the panel search's highlights (hit=1, active=2), so the in-viewer
+    // search the user is actively navigating always paints on top.
+    hl.priority = 0;
+    buildTextMatches(editorSearchQuery).forEach(function(r) { hl.add(r); });
+    CSS.highlights.set('mp-editor-search', hl);
+  }
+
+  function clearEditorSearchHighlight() {
+    editorSearchQuery = '';
+    if (supportsHighlightApi()) CSS.highlights.delete('mp-editor-search');
+  }
+
+  // Rebuild after a live re-render (the old Ranges point at replaced nodes).
+  function restoreEditorSearchHighlights() {
+    if (editorSearchQuery) editorSearchHighlight(editorSearchQuery);
   }
 
   // Rebuild after a live re-render (the old Ranges point at replaced nodes).

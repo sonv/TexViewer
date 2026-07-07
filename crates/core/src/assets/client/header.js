@@ -52,6 +52,9 @@
   var textSearchQuery = '';
   var textSearchResults = [];
   var textSearchIndex = -1;
+  // Editor-driven search: the nvim `/` pattern, pushed by the plugin and
+  // highlighted (all matches) in the preview like vim's hlsearch.
+  var editorSearchQuery = '';
   var viewerJumpStack = [];
 
   function pageEl() {
