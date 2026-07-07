@@ -847,6 +847,15 @@
     if (activeSourceId) revealSourceElement(activeSourceId, false);
   }
 
+  // Scroll a sync element into view WITHOUT the flash — the cursor sits on a
+  // block-level element (a section heading) that deliberately doesn't flash,
+  // but the viewer must still follow it (e.g. a search wrapping to the top).
+  function scrollSourceElementOnly(id) {
+    if (!id) return;
+    var el = visibleSyncElement(document.getElementById(id));
+    if (el) scrollSourceIntoView(el);
+  }
+
   // Highlight every element of the editor's visual selection. Unlike the cursor
   // flash, this is persistent (no timeout) — it stays until the daemon sends an
   // empty list (selection dismissed) or a new range. `ids` come pre-resolved

@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "66";
+const WS_PROTOCOL_VERSION: &str = "67";
 
 #[derive(Clone)]
 struct AppState {
@@ -1059,12 +1059,29 @@ async fn serve_cursor(
             .sync
             .lookup_leaf_by_source_position(&file, line, col)
             .map(|entry| entry.element_id.clone());
+        // The point lookup deliberately excludes block-level elements (section
+        // headings — SyncKind::Block) so they don't flash on a bare cursor
+        // move. But the viewer must still FOLLOW the cursor onto them (e.g. a
+        // search wrapping to a heading match), so fall back to the first
+        // element on the line and tell the client to scroll without flashing.
+        let (element_id, scroll_only) = match element_id {
+            Some(id) => (Some(id), false),
+            None => (
+                current
+                    .sync
+                    .leaves_in_range(&file, line, 1, line, u32::MAX)
+                    .into_iter()
+                    .next(),
+                true,
+            ),
+        };
         serde_json::json!({
             "event": "source-cursor",
             "file": file,
             "line": line,
             "col": col,
             "element_id": element_id,
+            "scroll_only": scroll_only,
         })
     } else {
         let (element_ids, math_rows) =

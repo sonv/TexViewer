@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.88] — 2026-07-02
+
+### Fixed
+
+- **The preview follows the cursor onto section headings again** — e.g. when
+  cycling search matches with `n` wraps to a match in a heading near the top,
+  the viewer now scrolls there. Headings are deliberately excluded from the
+  cursor *flash* (0.1.71); that exclusion also silently dropped the *follow*.
+  The daemon now falls back to the block-level element on the cursor's line and
+  the viewer scrolls to it without flashing. (WS protocol bumped, so stale tabs
+  reload once.)
+
 ## [0.1.87] — 2026-07-02
 
 ### Fixed

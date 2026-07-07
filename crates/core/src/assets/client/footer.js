@@ -11,7 +11,7 @@
   // MUST match WS_PROTOCOL_VERSION in crates/cli/src/serve.rs — a mismatch makes
   // the server full-reload every connect (an infinite reload loop). The
   // `client_ws_protocol_matches_server` test guards this.
-  var WS_PROTOCOL_VERSION = '66';
+  var WS_PROTOCOL_VERSION = '67';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -170,10 +170,13 @@
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
           // Cursor moved off a math row back to prose → drop the row band, then
-          // flash the element under the cursor (the original behavior).
+          // flash the element under the cursor (the original behavior). A
+          // scroll_only event targets a block-level element (section heading):
+          // follow it without the flash.
           clearSourceRangeHighlights();
           if (msg.element_id) {
-            revealSourceElement(msg.element_id, true);
+            if (msg.scroll_only) scrollSourceElementOnly(msg.element_id);
+            else revealSourceElement(msg.element_id, true);
           }
         } else if (msg.event === 'source-range') {
           highlightSourceRange(msg.element_ids || [], true, msg.math_rows || []);
