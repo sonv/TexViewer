@@ -1848,6 +1848,97 @@ mod tests {
         parse_body(&project, &thms).unwrap()
     }
 
+    fn parse_with_preamble(preamble: &str, src: &str) -> Vec<Node> {
+        let project = Project {
+            root: PathBuf::from("t.tex"),
+            preamble: Preamble {
+                source: preamble.to_string(),
+                file: PathBuf::from("t.tex"),
+            },
+            files: vec![ProjectFile {
+                path: PathBuf::from("t.tex"),
+                source: src.to_string(),
+                start: Pos::ZERO,
+                is_root_body: true,
+            }],
+            warnings: vec![],
+        };
+        let thms = TheoremRegistry::from_preamble(&project.preamble.source);
+        parse_body(&project, &thms).unwrap()
+    }
+
+    #[test]
+    fn scratch_commented_newenvironment_is_ignored() {
+        let m = extract_env_macros("% \\newenvironment{dead}{X}{Y}\n");
+        assert!(
+            !m.contains_key("dead"),
+            "commented-out \\newenvironment was honored"
+        );
+    }
+
+    #[test]
+    fn scratch_commented_def_shadows_live_one() {
+        let m = extract_env_macros(concat!(
+            "\\newenvironment{foo}{NEW}{E}\n",
+            "% old version, kept for reference:\n",
+            "% \\newenvironment{foo}{OLD}{E}\n",
+        ));
+        assert_eq!(
+            m.get("foo").unwrap().begin,
+            "NEW",
+            "commented-out old def shadowed the live one"
+        );
+    }
+
+    #[test]
+    fn scratch_percent_continuation_def_is_parsed() {
+        // Standard LaTeX style: trailing % to suppress spurious spaces.
+        let m = extract_env_macros("\\newenvironment{cont}%\n  {B}%\n  {E}\n");
+        assert!(
+            m.contains_key("cont"),
+            "%%-continued \\newenvironment definition was dropped"
+        );
+    }
+
+    #[test]
+    fn scratch_iffalse_block_def_is_ignored() {
+        let m = extract_env_macros("\\iffalse\n\\newenvironment{ghost}{X}{Y}\n\\fi\n");
+        assert!(!m.contains_key("ghost"), "\\iffalse-guarded def honored");
+    }
+
+    #[test]
+    fn scratch_body_on_same_line_as_begin_gloms() {
+        let nodes = parse_with_preamble(
+            "\\newenvironment{referee}{\\itshape}{}\n",
+            "\\begin{referee}Hello $x$\\end{referee}\n",
+        );
+        eprintln!("NODES: {:#?}", nodes.iter().map(|n| &n.kind).collect::<Vec<_>>());
+        let has_hello = fn_any_text(&nodes, "Hello");
+        assert!(has_hello, "body text 'Hello' lost after expansion");
+    }
+
+    fn fn_any_text(nodes: &[Node], needle: &str) -> bool {
+        nodes.iter().any(|n| {
+            matches!(&n.kind, NodeKind::Text(s) if s.contains(needle))
+                || fn_any_text(&n.children, needle)
+        })
+    }
+
+    #[test]
+    fn scratch_multiline_begin_shifts_body_lines() {
+        // begin code with an interior newline: body line numbers shift by +1.
+        let nodes = parse_with_preamble(
+            "\\newenvironment{wide}{\\begin{center}\n\\itshape}{\\end{center}}\n",
+            "line1\n\\begin{wide}\nBody $x$\n\\end{wide}\n",
+        );
+        for n in &nodes {
+            eprintln!("{:?} @ line {}", n.kind, n.span.start.line);
+            for c in &n.children {
+                eprintln!("  child {:?} @ line {}", c.kind, c.span.start.line);
+            }
+        }
+    }
+
     #[test]
     fn inline_math() {
         let n = parse(r"hello $x+y$ world");

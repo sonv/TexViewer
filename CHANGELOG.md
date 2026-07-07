@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.86] — 2026-07-02
+
+### Added
+
+- **Search-as-you-type: the preview highlights while you type the `/` pattern.**
+  With `'incsearch'` on (the nvim default), each keystroke in the `/` or `?`
+  cmdline streams the partial pattern to the preview (debounced ~90 ms), so
+  matches light up live — just like in the buffer. Committing (`<CR>`) keeps
+  them; aborting (`<Esc>`) reverts the preview to the previously committed
+  search; backspacing to an empty pattern does the same. Part of `sync_search`.
+
 ## [0.1.85] — 2026-07-02
 
 ### Added

@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.85"
+local PLUGIN_VERSION = "0.1.86"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -46,8 +46,10 @@ local config = {
   jump_retry_ms = 1000,
   sync = true,
   -- Mirror the editor's `/` search into the preview (hlsearch-style highlight
-  -- of every match). Requires `sync` and the 'hlsearch' option. Set false to
-  -- keep the preview search independent of the editor's.
+  -- of every match), including live search-as-you-type while the `/` cmdline is
+  -- open (mirrors 'incsearch'). Requires `sync` and the 'hlsearch' option
+  -- ('incsearch' for the as-you-type part; both are nvim defaults). Set false
+  -- to keep the preview search independent of the editor's.
   sync_search = true,
   auto_open_browser = true,
   -- Where `cargo install` drops the auto-built binary. nil → cargo's default
@@ -658,6 +660,18 @@ local function post_sync_json(url, payload, label)
   end)
 end
 
+-- Strip the word-boundary / magic atoms that `*` and friends add, so a plain
+-- word still matches the rendered text (the browser does a literal search).
+local function normalize_search_pattern(pattern)
+  return (pattern or ""):gsub("\\[<>vVcC]", ""):gsub("\\[zZ][se]", "")
+end
+
+-- True when search mirroring is enabled and there's a daemon to send to.
+local function search_sync_enabled()
+  return daemon_job and config.sync and config.sync_search ~= false
+    and config.search_url ~= nil
+end
+
 -- Mirror the editor's `/` search into the preview. Sends the search register
 -- (@/) while search highlighting is active (`v:hlsearch`, which needs the
 -- 'hlsearch' option), and an empty string to clear on `:nohlsearch`. Deduped so
@@ -665,19 +679,50 @@ end
 -- re-syncs. Called from CursorMoved (n / N / *) and CmdlineLeave (/ ? :noh).
 local last_search_sent = nil
 local function post_search()
-  if not daemon_job or not config.sync or config.sync_search == false then return end
-  if not config.search_url then return end
+  if not search_sync_enabled() then return end
   local active = vim.o.hlsearch and vim.v.hlsearch == 1
-  -- Strip the word-boundary / magic atoms that `*` and friends add, so a plain
-  -- word still matches the rendered text (the browser does a literal search).
   local pattern = ""
   if active then
-    pattern = vim.fn.getreg("/") or ""
-    pattern = pattern:gsub("\\[<>vVcC]", ""):gsub("\\[zZ][se]", "")
+    pattern = normalize_search_pattern(vim.fn.getreg("/"))
   end
   if pattern == last_search_sent then return end
   last_search_sent = pattern
   post_sync_json(config.search_url, json_encode({ query = pattern }), "search")
+end
+
+-- Incremental search-as-you-type (mirrors 'incsearch'): while the `/` or `?`
+-- cmdline is open, stream the partial pattern so the preview highlights live
+-- with each keystroke. CmdlineLeave then settles the final state from
+-- v:hlsearch / @/ — which self-corrects both the commit AND the abort (Esc)
+-- case, since it reads the truth rather than this stream. Backspacing to an
+-- empty pattern reverts the preview to the committed hlsearch state, matching
+-- nvim's own behavior.
+local function post_search_preview()
+  if not search_sync_enabled() or not vim.o.incsearch then return end
+  local t = vim.fn.getcmdtype()
+  if t ~= "/" and t ~= "?" then return end -- cmdline already left; CmdlineLeave settles it
+  local pattern = normalize_search_pattern(vim.fn.getcmdline())
+  if pattern == "" then
+    last_search_sent = nil
+    post_search()
+    return
+  end
+  if pattern == last_search_sent then return end
+  last_search_sent = pattern
+  post_sync_json(config.search_url, json_encode({ query = pattern }), "search")
+end
+
+-- Debounced wrapper for CmdlineChanged, which fires per keystroke. Short
+-- window: live-feeling but not one curl per typed character.
+local search_preview_timer = nil
+local function debounced_search_preview()
+  if not search_sync_enabled() then return end
+  if search_preview_timer then search_preview_timer:stop(); search_preview_timer:close() end
+  search_preview_timer = uv.new_timer()
+  search_preview_timer:start(90, 0, vim.schedule_wrap(function()
+    post_search_preview()
+    if search_preview_timer then search_preview_timer:close(); search_preview_timer = nil end
+  end))
 end
 
 -- Send the editor's current visual selection as a source range so the preview
@@ -1113,9 +1158,21 @@ local function attach_autocmds()
       end
     end,
   })
+  -- Search-as-you-type: stream the partial `/` / `?` pattern to the preview on
+  -- each cmdline keystroke (debounced), like 'incsearch' in the buffer.
+  vim.api.nvim_create_autocmd("CmdlineChanged", {
+    group = "mathpreview",
+    pattern = { "/", "?" },
+    callback = function(args)
+      if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
+        debounced_search_preview()
+      end
+    end,
+  })
   -- Promptly mirror `/` / `?` (new pattern) and `:noh` (clear) — those don't
   -- always move the cursor, so CursorMoved alone would lag. Deferred so @/ and
-  -- v:hlsearch reflect the command's result.
+  -- v:hlsearch reflect the command's result. Also settles whatever the
+  -- incremental preview stream left when the search was committed or aborted.
   vim.api.nvim_create_autocmd("CmdlineLeave", {
     group = "mathpreview",
     pattern = { "/", "?", ":" },
