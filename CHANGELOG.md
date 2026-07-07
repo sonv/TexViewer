@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.89] — 2026-07-07
+
+### Fixed
+
+- **The preview follows a search that wraps into the preamble.** Wrapping to a
+  match above `\begin{document}` (e.g. in a `\newcommand`) left the viewer
+  parked — nothing is rendered for those lines, so the 0.1.88 same-line fallback
+  found nothing. On a cursor *jump* (a wrap, `gg`/`G` — a move of 25+ lines) the
+  daemon now snaps to the nearest rendered element (for the preamble: the top of
+  the document) and scrolls there without flashing. Small cursor moves on
+  unrendered lines stay parked, so editing preamble macros doesn't yank the
+  view around.
+
 ## [0.1.88] — 2026-07-02
 
 ### Fixed

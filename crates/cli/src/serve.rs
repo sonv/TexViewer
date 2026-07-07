@@ -106,6 +106,11 @@ struct AppState {
     /// opened late) shows the highlight — the broadcast alone would be lost,
     /// and the plugin's dedup won't re-send an unchanged pattern.
     search_query: Arc<RwLock<String>>,
+    /// Last cursor position received on `POST /cursor`, for jump detection:
+    /// the nearest-element follow fallback (cursor on unrendered source, e.g.
+    /// the preamble) fires only on a LARGE move — a search wrap, `gg`/`G` — so
+    /// ordinary editing up there doesn't yank the preview to the top.
+    last_cursor: Arc<RwLock<Option<(PathBuf, u32)>>>,
     /// Per-render hot path: cache of `(path → content + mtime)` so
     /// override / config file reads on every render skip disk I/O
     /// when nothing changed. Invalidated by mtime on the next render
@@ -617,6 +622,7 @@ pub async fn run(
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
         search_query: Arc::new(RwLock::new(String::new())),
+        last_cursor: Arc::new(RwLock::new(None)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         debug_logging: Arc::new(AtomicBool::new(false)),
@@ -1049,6 +1055,19 @@ async fn serve_cursor(
     let file = normalize_source_path(req.file);
     let line = req.line.max(1);
     let col = req.col.unwrap_or(1).max(1);
+    // Jump detection for the nearest-element fallback below: a LARGE move (a
+    // search wrapping to a preamble match, gg/G) is a deliberate relocation the
+    // preview should follow; small moves on unrendered lines are just editing
+    // (following those would yank the view to the top while tweaking macros).
+    let is_jump = {
+        let mut last = state.last_cursor.write().await;
+        let jump = match last.as_ref() {
+            Some((f, l)) => *f != file || l.abs_diff(line) >= 25,
+            None => true,
+        };
+        *last = Some((file.clone(), line));
+        jump
+    };
     let current = state.current.read().await;
     // On a multi-row math block, track the cursor's ROW with the persistent band
     // (and per-row math) so you can see which align/gather line you're on.
@@ -1063,17 +1082,29 @@ async fn serve_cursor(
         // headings — SyncKind::Block) so they don't flash on a bare cursor
         // move. But the viewer must still FOLLOW the cursor onto them (e.g. a
         // search wrapping to a heading match), so fall back to the first
-        // element on the line and tell the client to scroll without flashing.
+        // element on the line — and, on a jump, to the NEAREST element in the
+        // file (a preamble line has nothing rendered on it at all; snap forward
+        // to the document's first element) — scrolling without the flash.
         let (element_id, scroll_only) = match element_id {
             Some(id) => (Some(id), false),
-            None => (
-                current
+            None => {
+                let hit = current
                     .sync
                     .leaves_in_range(&file, line, 1, line, u32::MAX)
                     .into_iter()
-                    .next(),
-                true,
-            ),
+                    .next()
+                    .or_else(|| {
+                        if is_jump {
+                            current
+                                .sync
+                                .lookup_by_source_position(&file, line, col)
+                                .map(|entry| entry.element_id.clone())
+                        } else {
+                            None
+                        }
+                    });
+                (hit, true)
+            }
         };
         serde_json::json!({
             "event": "source-cursor",
@@ -3713,6 +3744,7 @@ Third paragraph with $x^2$.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             search_query: Arc::new(RwLock::new(String::new())),
+            last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
@@ -4110,6 +4142,7 @@ Third paragraph with $x^2$.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             search_query: Arc::new(RwLock::new(String::new())),
+            last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
@@ -4207,6 +4240,7 @@ Third paragraph with $x^2$.
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
             search_query: Arc::new(RwLock::new(String::new())),
+            last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
