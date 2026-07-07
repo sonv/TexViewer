@@ -43,7 +43,10 @@ thread_local! {
 /// same files the macro and theorem extractors read), so a definition in an
 /// included file is honored, not just one in the root preamble.
 fn env_macros_for_project(project: &Project) -> HashMap<String, EnvMacro> {
-    let mut sources: Vec<String> = vec![project.preamble.source.clone()];
+    // Referenced files first, the ROOT PREAMBLE last — later sources win, and
+    // the root must win: the common pattern is `\usepackage{local}` followed by
+    // a `\renewenvironment` override in the document's own preamble.
+    let mut sources: Vec<String> = Vec::new();
     let base = project
         .preamble
         .file
@@ -59,19 +62,23 @@ fn env_macros_for_project(project: &Project) -> HashMap<String, EnvMacro> {
             sources.push(src);
         }
     }
+    sources.push(project.preamble.source.clone());
     let mut out = HashMap::new();
     for src in &sources {
-        // Later sources win (a `\renewenvironment` in a package overrides).
         out.extend(extract_env_macros(src));
     }
     out
 }
 
 /// Scan `\newenvironment` / `\renewenvironment` declarations out of one source
-/// into a name → definition map.
-fn extract_env_macros(src: &str) -> HashMap<String, EnvMacro> {
+/// into a name → definition map. `%` comments are stripped first (like the
+/// `\newcommand` extractor does): a trailing-`%` continued definition — the
+/// standard multi-line style — must parse, and a commented-out definition must
+/// not be honored (nor shadow a live one).
+fn extract_env_macros(raw: &str) -> HashMap<String, EnvMacro> {
     static RE: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"\\(?:re)?newenvironment\*?").unwrap());
+    let src = &crate::macros::strip_line_comments(raw);
     let mut out = HashMap::new();
     for m in RE.find_iter(src) {
         let mut p = skip_ascii_ws(src, m.end());
@@ -166,6 +173,31 @@ fn read_bracketed(src: &str, from: usize) -> Option<(String, usize)> {
         i += 1;
     }
     None
+}
+
+/// True when `s` ends in a control word — a `\` (itself unescaped) followed
+/// only by ASCII letters through the end, e.g. `…\itshape`. Used to keep a
+/// token boundary at the expansion seams in `parse_user_env`: TeX tokenizes a
+/// macro body separately, but our textual splice would glue `\itshape` onto a
+/// following `Hello` as `\itshapeHello`.
+fn ends_with_control_word(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = b.len();
+    while i > 0 && b[i - 1].is_ascii_alphabetic() {
+        i -= 1;
+    }
+    if i == b.len() || i == 0 || b[i - 1] != b'\\' {
+        return false;
+    }
+    // The backslash must itself be a command start, not the tail of an escaped
+    // `\\` pair: count the run of backslashes ending here — odd means command.
+    let mut run = 0;
+    let mut j = i;
+    while j > 0 && b[j - 1] == b'\\' {
+        run += 1;
+        j -= 1;
+    }
+    run % 2 == 1
 }
 
 /// Substitute `#1`…`#9` in a `\newenvironment` begin/end template with `args`
@@ -933,7 +965,23 @@ impl<'a> Parser<'a> {
         let body_src = &self.src[self.byte..body_end];
         let begin = substitute_env_args(&def.begin, &args);
         let end = substitute_env_args(&def.end, &args);
-        let expanded = format!("{begin}{body_src}{end}");
+        // Keep a token boundary at each seam: if the earlier piece ends in a
+        // control word and the next starts with a letter, splice a space (TeX
+        // consumes a space after a control word, so semantics are unchanged) —
+        // otherwise `\itshape` + `Hello` would re-parse as `\itshapeHello` and
+        // the body text would vanish. Only same-line columns shift by 1.
+        let starts_alpha = |s: &str| s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+        let sep1 = if ends_with_control_word(&begin) && starts_alpha(body_src) {
+            " "
+        } else {
+            ""
+        };
+        let sep2 = if ends_with_control_word(body_src) && starts_alpha(&end) {
+            " "
+        } else {
+            ""
+        };
+        let expanded = format!("{begin}{sep1}{body_src}{sep2}{end}");
         let mut children = Vec::new();
         {
             let mut sub = Parser::new_at(
@@ -1868,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn scratch_commented_newenvironment_is_ignored() {
+    fn commented_out_newenvironment_is_ignored() {
         let m = extract_env_macros("% \\newenvironment{dead}{X}{Y}\n");
         assert!(
             !m.contains_key("dead"),
@@ -1877,7 +1925,7 @@ mod tests {
     }
 
     #[test]
-    fn scratch_commented_def_shadows_live_one() {
+    fn commented_out_def_does_not_shadow_live_one() {
         let m = extract_env_macros(concat!(
             "\\newenvironment{foo}{NEW}{E}\n",
             "% old version, kept for reference:\n",
@@ -1891,52 +1939,61 @@ mod tests {
     }
 
     #[test]
-    fn scratch_percent_continuation_def_is_parsed() {
+    fn percent_continuation_newenvironment_is_parsed() {
         // Standard LaTeX style: trailing % to suppress spurious spaces.
         let m = extract_env_macros("\\newenvironment{cont}%\n  {B}%\n  {E}\n");
-        assert!(
-            m.contains_key("cont"),
-            "%%-continued \\newenvironment definition was dropped"
-        );
+        let c = m.get("cont").expect("%-continued definition parsed");
+        assert_eq!(c.begin, "B");
+        assert_eq!(c.end, "E");
     }
 
     #[test]
-    fn scratch_iffalse_block_def_is_ignored() {
-        let m = extract_env_macros("\\iffalse\n\\newenvironment{ghost}{X}{Y}\n\\fi\n");
-        assert!(!m.contains_key("ghost"), "\\iffalse-guarded def honored");
-    }
-
-    #[test]
-    fn scratch_body_on_same_line_as_begin_gloms() {
+    fn user_env_body_on_same_line_as_begin_keeps_text() {
+        // Begin code ending in a control word (\itshape) + body starting with
+        // a letter: the seam needs a token boundary or the re-parse reads one
+        // long command `\itshapeHello` and the word disappears.
         let nodes = parse_with_preamble(
             "\\newenvironment{referee}{\\itshape}{}\n",
             "\\begin{referee}Hello $x$\\end{referee}\n",
         );
-        eprintln!("NODES: {:#?}", nodes.iter().map(|n| &n.kind).collect::<Vec<_>>());
-        let has_hello = fn_any_text(&nodes, "Hello");
-        assert!(has_hello, "body text 'Hello' lost after expansion");
-    }
-
-    fn fn_any_text(nodes: &[Node], needle: &str) -> bool {
-        nodes.iter().any(|n| {
-            matches!(&n.kind, NodeKind::Text(s) if s.contains(needle))
-                || fn_any_text(&n.children, needle)
-        })
+        fn any_text(nodes: &[Node], needle: &str) -> bool {
+            nodes.iter().any(|n| {
+                matches!(&n.kind, NodeKind::Text(s) if s.contains(needle))
+                    || any_text(&n.children, needle)
+            })
+        }
+        assert!(
+            any_text(&nodes, "Hello"),
+            "body text 'Hello' lost after expansion"
+        );
     }
 
     #[test]
-    fn scratch_multiline_begin_shifts_body_lines() {
-        // begin code with an interior newline: body line numbers shift by +1.
-        let nodes = parse_with_preamble(
-            "\\newenvironment{wide}{\\begin{center}\n\\itshape}{\\end{center}}\n",
-            "line1\n\\begin{wide}\nBody $x$\n\\end{wide}\n",
-        );
-        for n in &nodes {
-            eprintln!("{:?} @ line {}", n.kind, n.span.start.line);
-            for c in &n.children {
-                eprintln!("  child {:?} @ line {}", c.kind, c.span.start.line);
-            }
-        }
+    fn root_preamble_env_def_wins_over_included_file() {
+        // \usepackage{local} then \renewenvironment in the document preamble:
+        // the ROOT definition must win over the included file's.
+        let tmp = std::env::temp_dir().join(format!("mp-envorder-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let inc = tmp.join("incmacros.tex");
+        std::fs::write(&inc, "\\newenvironment{foo}{INC}{E}\n").unwrap();
+        let root_file = tmp.join("t.tex");
+        let project = Project {
+            root: root_file.clone(),
+            preamble: Preamble {
+                source: "\\input{incmacros}\n\\renewenvironment{foo}{ROOT}{E}\n".to_string(),
+                file: root_file.clone(),
+            },
+            files: vec![ProjectFile {
+                path: root_file,
+                source: String::new(),
+                start: Pos::ZERO,
+                is_root_body: true,
+            }],
+            warnings: vec![],
+        };
+        let m = env_macros_for_project(&project);
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(m.get("foo").expect("foo defined").begin, "ROOT");
     }
 
     #[test]

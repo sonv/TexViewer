@@ -27,7 +27,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "0.1.86"
+local PLUGIN_VERSION = "0.1.87"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -662,8 +662,16 @@ end
 
 -- Strip the word-boundary / magic atoms that `*` and friends add, so a plain
 -- word still matches the rendered text (the browser does a literal search).
+-- Escape-aware: `\\v` in a vim pattern is a LITERAL backslash followed by
+-- "v", not the very-magic atom — protect escaped pairs before stripping,
+-- then restore each as the single literal backslash it matches.
 local function normalize_search_pattern(pattern)
-  return (pattern or ""):gsub("\\[<>vVcC]", ""):gsub("\\[zZ][se]", "")
+  local s = pattern or ""
+  s = s:gsub("\\\\", "\1")
+  s = s:gsub("\\[<>vVcC]", "")
+  s = s:gsub("\\[zZ][se]", "")
+  s = s:gsub("\1", "\\")
+  return s
 end
 
 -- True when search mirroring is enabled and there's a daemon to send to.

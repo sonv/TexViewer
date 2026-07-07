@@ -989,7 +989,7 @@ pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn strip_line_comments(src: &str) -> String {
+pub(crate) fn strip_line_comments(src: &str) -> String {
     // Remove `%` to end-of-line, but respect escaped `\%`.
     let mut out = String::with_capacity(src.len());
     for line in src.split_inclusive('\n') {

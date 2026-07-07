@@ -101,6 +101,11 @@ struct AppState {
     /// the *live* value lives here.
     config_paths: Arc<Vec<PathBuf>>,
     viewer_config: Arc<RwLock<mathpreview_core::ResolvedViewerConfig>>,
+    /// The editor's active `/` search pattern (last `POST /search` payload).
+    /// Replayed to each newly-connected WS client so a reloaded tab (or one
+    /// opened late) shows the highlight — the broadcast alone would be lost,
+    /// and the plugin's dedup won't re-send an unchanged pattern.
+    search_query: Arc<RwLock<String>>,
     /// Per-render hot path: cache of `(path → content + mtime)` so
     /// override / config file reads on every render skip disk I/O
     /// when nothing changed. Invalidated by mtime on the next render
@@ -611,6 +616,7 @@ pub async fn run(
         session_macros: Arc::new(RwLock::new(Vec::new())),
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
+        search_query: Arc::new(RwLock::new(String::new())),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         debug_logging: Arc::new(AtomicBool::new(false)),
@@ -1113,6 +1119,9 @@ async fn serve_search(
     } else {
         req.query.unwrap_or_default()
     };
+    // Remember it for WS-connect replay: a reloaded tab misses the broadcast,
+    // and the plugin's dedup won't re-send an unchanged pattern.
+    *state.search_query.write().await = query.clone();
     let payload = serde_json::json!({ "event": "search-sync", "query": query });
     let _ = state.tx.send(payload.to_string());
     axum::http::StatusCode::NO_CONTENT
@@ -2511,6 +2520,16 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
         let payload = serde_json::json!({ "event": "full-reload" }).to_string();
         let _ = sender.send(Message::Text(payload)).await;
     }
+    // Replay the editor's active search so a freshly-(re)loaded tab shows the
+    // highlight — it missed the original broadcast, and the plugin's dedup
+    // won't re-send an unchanged pattern.
+    {
+        let query = state.search_query.read().await.clone();
+        if !query.is_empty() {
+            let payload = serde_json::json!({ "event": "search-sync", "query": query }).to_string();
+            let _ = sender.send(Message::Text(payload)).await;
+        }
+    }
     let mut rx = state.tx.subscribe();
     loop {
         tokio::select! {
@@ -3676,6 +3695,7 @@ Third paragraph with $x^2$.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            search_query: Arc::new(RwLock::new(String::new())),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
@@ -4072,6 +4092,7 @@ Third paragraph with $x^2$.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            search_query: Arc::new(RwLock::new(String::new())),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
@@ -4168,6 +4189,7 @@ Third paragraph with $x^2$.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            search_query: Arc::new(RwLock::new(String::new())),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),

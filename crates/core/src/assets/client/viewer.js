@@ -269,15 +269,22 @@
     });
   }
 
+  // End the plain-text session (state + paint + counter). Called when a math
+  // search takes over — leaving it alive would keep stale text highlights and
+  // let restoreTextSearchHighlights clobber the math counter on re-render.
+  function clearTextSession() {
+    textSearchQuery = '';
+    textSearchResults = [];
+    textSearchIndex = -1;
+    clearTextHighlights();
+  }
+
   function clearSearchSession() {
     mathSearchQuery = '';
     mathSearchResults = [];
     mathSearchIndex = -1;
     clearMathSearchHighlights();
-    textSearchQuery = '';
-    textSearchResults = [];
-    textSearchIndex = -1;
-    clearTextHighlights();
+    clearTextSession();
     updateSearchCount(-1, 0);
     var selection = window.getSelection ? window.getSelection() : null;
     if (selection && selection.removeAllRanges) selection.removeAllRanges();
@@ -426,11 +433,12 @@
         var p = node.parentElement;
         if (p && p.closest &&
             p.closest('.math-source, .search-panel, .side-panel, .topbar, .lineno-layer, ' +
-                      '.page-guide-layer, .refkey-chip, .footnote-pop, .sidenote, ' +
-                      '.proof.folded, [aria-hidden="true"]')) {
+                      '.page-guide-layer, .refkey-chip, .eq-refkey-list, .footnote-pop, ' +
+                      '.sidenote, .proof.folded .proof-body, [aria-hidden="true"]')) {
           // Skip math LaTeX source, chrome, and content that's hidden until
           // hover/margin-mode/unfold (a match there would count but scroll to
-          // nowhere and corrupt the current/total ordering).
+          // nowhere and corrupt the current/total ordering). Scoped to the
+          // folded proof's BODY so its visible "Proof." head stays searchable.
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -445,32 +453,46 @@
     return { text: parts.join(''), nodes: nodes };
   }
 
-  // Map a flat offset to a { node, offset } DOM position. `atEnd` picks the side
-  // when the offset lands on a node boundary: for a match END keep it at the end
-  // of the previous node (`<=`); for a match START move it to the start of the
-  // next node (`<`), so the range can't anchor behind skipped/hidden DOM (inline
-  // math, an aria-hidden break) that sits between two flat-adjacent text nodes.
-  function locateFlat(nodes, pos, atEnd) {
-    for (var i = 0; i < nodes.length; i++) {
+  // Map a flat offset to a { node, offset, idx } DOM position. `atEnd` picks the
+  // side when the offset lands on a node boundary: for a match END keep it at
+  // the end of the previous node (`<=`); for a match START move it to the start
+  // of the next node (`<`), so the range can't anchor behind skipped/hidden DOM
+  // (inline math, an aria-hidden break) between two flat-adjacent text nodes.
+  // `from` is a scan-start hint: match offsets ascend monotonically, so callers
+  // resume from the previous hit's node instead of rescanning from 0 (keeps
+  // buildTextMatches linear on match-heavy docs).
+  function locateFlat(nodes, pos, atEnd, from) {
+    for (var i = from || 0; i < nodes.length; i++) {
       var n = nodes[i];
       var end = n.start + n.len;
-      if (atEnd ? pos <= end : pos < end) return { node: n.node, offset: pos - n.start };
+      if (atEnd ? pos <= end : pos < end) {
+        return { node: n.node, offset: pos - n.start, idx: i };
+      }
     }
     var last = nodes[nodes.length - 1];
-    return last ? { node: last.node, offset: last.len } : null;
+    return last ? { node: last.node, offset: last.len, idx: nodes.length - 1 } : null;
   }
 
   function buildTextMatches(query) {
-    var q = (query || '').toLowerCase();
+    var q = query || '';
     if (!q) return [];
     var flat = collectSearchText();
-    var hay = flat.text.toLowerCase();
+    // Case-insensitive regex over the ORIGINAL text (not a toLowerCase copy,
+    // whose length can differ — e.g. İ — and would shift every later offset).
+    var re;
+    try {
+      re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    } catch (e) {
+      return [];
+    }
     var results = [];
-    var idx = 0;
-    while ((idx = hay.indexOf(q, idx)) !== -1) {
-      var a = locateFlat(flat.nodes, idx, false);
-      var b = locateFlat(flat.nodes, idx + q.length, true);
+    var cursor = 0;
+    var m;
+    while ((m = re.exec(flat.text))) {
+      var a = locateFlat(flat.nodes, m.index, false, cursor);
+      var b = a && locateFlat(flat.nodes, m.index + m[0].length, true, a.idx);
       if (a && b) {
+        cursor = a.idx;
         try {
           var r = document.createRange();
           r.setStart(a.node, a.offset);
@@ -478,7 +500,9 @@
           results.push(r);
         } catch (e) {}
       }
-      idx += q.length; // non-overlapping, like a plain search
+      // Non-overlapping, like a plain search (lastIndex already sits past the
+      // match; guard against a pathological zero-length match).
+      if (m.index === re.lastIndex) re.lastIndex++;
     }
     return results;
   }
@@ -573,8 +597,10 @@
   // cursor-sync already scrolls the preview to the current match. ---
 
   function editorSearchHighlight(query) {
-    editorSearchQuery = (query || '').trim();
-    if (!editorSearchQuery || !supportsHighlightApi()) {
+    // Keep the pattern verbatim — a leading/trailing space is meaningful in a
+    // search (`/ the `); only a whitespace-ONLY pattern means clear.
+    editorSearchQuery = (query || '');
+    if (!editorSearchQuery.trim() || !supportsHighlightApi()) {
       clearEditorSearchHighlight();
       return;
     }
@@ -627,13 +653,19 @@
     // single-letter searches (e.g. `m:n` to find italic-n inside an
     // equation) get stuck cycling through body-text matches first.
     if (parsed.forceMath) {
-      if (parsed.core && runMathSearch(parsed.core, backwards)) return true;
+      if (parsed.core && runMathSearch(parsed.core, backwards)) {
+        // The math session owns the panel now; a lingering text session would
+        // keep stale paint and clobber the counter on the next re-render.
+        clearTextSession();
+        return true;
+      }
       if (mathSearchQuery) clearSearchSession();
       if (recorded) viewerJumpStack.pop();
       setStatus('dead', '○ no math match ' + parsed.core);
       return false;
     }
     if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
+      clearTextSession();
       return true;
     }
     // Fully end any prior math session (not just its highlight classes) before a
@@ -648,6 +680,7 @@
     }
     var found = runPlainSearch(query, backwards);
     if (!found && runMathSearch(query, backwards)) {
+      clearTextSession();
       return true;
     }
     if (!found && recorded) viewerJumpStack.pop();

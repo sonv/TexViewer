@@ -17,6 +17,34 @@ summary.
 
 Nothing yet.
 
+## [0.1.87] — 2026-07-02
+
+### Fixed
+
+A cross-cutting audit of the v0.1.82–0.1.86 features surfaced and fixed a batch
+of defects (each proven by test or spec before fixing):
+
+- **`\newenvironment` extraction now strips `%` comments** — a trailing-`%`
+  continued definition (the standard multi-line style) was silently dropped, and
+  a commented-out definition was honored (and could shadow the live one).
+- **Custom-environment bodies on the same line as `\begin{env}` no longer lose
+  text** — begin code ending in a font switch (`{\itshape}`) glued onto a body
+  starting with a letter (`\itshapeHello`), vanishing the word. The expansion
+  now keeps a token boundary at the seams.
+- **A root-preamble `\renewenvironment` now overrides an included file's
+  definition** (was inverted).
+- **The editor-search highlight survives a preview reload** — the daemon
+  remembers the active `/` pattern and replays it to each newly-connected tab.
+- **Patterns with escaped backslashes mirror correctly** — `/\\vec` no longer
+  reaches the preview as `\ec`.
+- **In-viewer search fixes:** switching from a text search to a math search
+  fully ends the text session (stale highlights/counter); match offsets are
+  computed on the original text (case-fold length changes could shift
+  highlights); refkey-chip labels and folded-proof *bodies* are excluded from
+  matching while a folded proof's visible "Proof." head remains searchable;
+  match-list construction is linear on match-heavy documents; a search pattern
+  with meaningful leading/trailing spaces is matched verbatim.
+
 ## [0.1.86] — 2026-07-02
 
 ### Added
