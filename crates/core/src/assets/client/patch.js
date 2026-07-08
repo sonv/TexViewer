@@ -625,11 +625,17 @@
     if (!blocks || !blocks.length) return;
     var els = pageBlocks(page);
     for (var i = 0; i < els.length && i < blocks.length; i++) {
-      els[i].id = blocks[i].id;
-      els[i].setAttribute('data-blockhash', blocks[i].hash);
-      if (blocks[i].src) els[i].setAttribute('data-src', blocks[i].src);
+      // A `0` entry means this position's metadata (id/hash/src/anchors) is
+      // unchanged from the last broadcast — skip it entirely. On a large doc
+      // that's nearly every block for a within-line edit, avoiding tens of
+      // thousands of setAttribute calls per keystroke.
+      var b = blocks[i];
+      if (!b) continue;
+      els[i].id = b.id;
+      els[i].setAttribute('data-blockhash', b.hash);
+      if (b.src) els[i].setAttribute('data-src', b.src);
       else els[i].removeAttribute('data-src');
-      syncBlockSourceAnchors(els[i], blocks[i].anchors);
+      syncBlockSourceAnchors(els[i], b.anchors);
     }
   }
 

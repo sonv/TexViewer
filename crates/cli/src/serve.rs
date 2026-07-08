@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "67";
+const WS_PROTOCOL_VERSION: &str = "68";
 
 #[derive(Clone)]
 struct AppState {
@@ -2659,16 +2659,36 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         (payload, block_count, "blocks (full)")
     } else {
         let ops_json: Vec<_> = ops.iter().map(PatchOp::to_json).collect();
+        // The client applies this list POSITIONALLY (it renumbers block ids
+        // after inserts/deletes), so it must cover every block — but shipping
+        // full metadata for all of them made every keystroke on a large
+        // document a ~400 KiB payload plus tens of thousands of client-side
+        // setAttribute calls (a 60-page doc has ~19k word anchors). Send a
+        // compact `0` for positions whose metadata is unchanged from the last
+        // broadcast; the client skips those entirely. Typing within a line
+        // then ships ONE real entry; only a line-count change (which shifts
+        // every later anchor) pays the full cost.
         let blocks_json: Vec<_> = out
             .blocks
             .iter()
-            .map(|block| {
-                serde_json::json!({
-                    "id": block.id,
-                    "hash": block.hash,
-                    "src": block.src,
-                    "anchors": block.source_anchors,
-                })
+            .enumerate()
+            .map(|(i, block)| {
+                let unchanged = last_blocks.get(i).is_some_and(|old| {
+                    old.id == block.id
+                        && old.hash == block.hash
+                        && old.src == block.src
+                        && old.source_anchors == block.source_anchors
+                });
+                if unchanged {
+                    serde_json::json!(0)
+                } else {
+                    serde_json::json!({
+                        "id": block.id,
+                        "hash": block.hash,
+                        "src": block.src,
+                        "anchors": block.source_anchors,
+                    })
+                }
             })
             .collect();
         let payload = serde_json::json!({

@@ -134,7 +134,7 @@ pub struct RenderedBlock {
     pub sub_blocks: Option<SubBody>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SourceAnchor {
     pub id: String,
     pub src: String,

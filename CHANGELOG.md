@@ -17,6 +17,22 @@ summary.
 
 Nothing yet.
 
+## [0.1.90] — 2026-07-08
+
+### Fixed
+
+- **Large documents no longer crawl while typing.** Every keystroke's patch
+  carried the full source-anchor metadata for every block — ~375 KiB and
+  ~19,000 client-side attribute writes per keystroke on a 60-page paper, plus a
+  full-document editor-search rebuild while `hlsearch` was active. Patches now
+  ship anchors only for blocks whose metadata actually changed (a within-line
+  edit ships 1 block, ~30 KiB; an untouched-layout edit ships ~0.7 KiB), the
+  editor-search highlight rebuild is coalesced off the typing path (~120 ms
+  after the last patch), and pathological short-pattern searches are capped at
+  5000 highlighted matches. Measured on a real 3564-line paper: per-keystroke
+  end-to-end went from ~120 ms / 375 KiB to ~30 ms / 32 KiB. (WS protocol
+  bumped; stale tabs reload once.)
+
 ## [0.1.89] — 2026-07-07
 
 ### Fixed

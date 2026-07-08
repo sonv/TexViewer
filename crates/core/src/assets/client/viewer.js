@@ -488,7 +488,11 @@
     var results = [];
     var cursor = 0;
     var m;
-    while ((m = re.exec(flat.text))) {
+    // Cap the match list: a 1-2 char pattern on a 60-page document would
+    // otherwise build tens of thousands of Ranges (and Highlight entries)
+    // per rebuild. 5000 highlights is already far beyond what's scannable.
+    var MAX_TEXT_MATCHES = 5000;
+    while (results.length < MAX_TEXT_MATCHES && (m = re.exec(flat.text))) {
       var a = locateFlat(flat.nodes, m.index, false, cursor);
       var b = a && locateFlat(flat.nodes, m.index + m[0].length, true, a.idx);
       if (a && b) {
@@ -618,8 +622,18 @@
   }
 
   // Rebuild after a live re-render (the old Ranges point at replaced nodes).
+  // DEFERRED off the patch path: the rebuild walks the whole document, which
+  // on a large doc would add a full-text search to every keystroke's render.
+  // Coalescing a typing burst into one rebuild ~120ms after the last patch
+  // keeps typing latency flat; dead Ranges simply don't paint in the interim.
+  var editorSearchRestoreTimer = 0;
   function restoreEditorSearchHighlights() {
-    if (editorSearchQuery) editorSearchHighlight(editorSearchQuery);
+    if (!editorSearchQuery) return;
+    if (editorSearchRestoreTimer) clearTimeout(editorSearchRestoreTimer);
+    editorSearchRestoreTimer = setTimeout(function() {
+      editorSearchRestoreTimer = 0;
+      if (editorSearchQuery) editorSearchHighlight(editorSearchQuery);
+    }, 120);
   }
 
   // Rebuild after a live re-render (the old Ranges point at replaced nodes).
