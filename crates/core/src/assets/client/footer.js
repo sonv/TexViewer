@@ -210,6 +210,7 @@
     setSideOpen(storedSideOpen === null ? window.innerWidth > 1340 : storedSideOpen === '1', false);
     setRefkeysVisible(localStorage.getItem('mathpreview.refkeys') === '1', false);
     setLineNumbers(localStorage.getItem('mathpreview.lineNumbers') === '1', false);
+    setFuzzySearch(localStorage.getItem('mathpreview.fuzzySearch') === '1', false);
     setMarginMode(localStorage.getItem('mathpreview.marginMode') === '1', false);
     setTopbarHidden(localStorage.getItem('mathpreview.topbarHidden') === '1', false);
     var storedTheme = localStorage.getItem('mathpreview.theme');

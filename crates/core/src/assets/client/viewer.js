@@ -511,6 +511,120 @@
     return results;
   }
 
+  // Bounded Damerau (optimal string alignment) distance: true when the edit
+  // distance(a, b) <= max, counting an adjacent transposition as one edit
+  // (so "gaint" ~ "giant"). Transpositions are among the most common typos.
+  // Early-exits when a whole DP row exceeds the budget, so it's cheap for the
+  // common no-match case (short strings, small max).
+  function withinEditDistance(a, b, max) {
+    var la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > max) return false;
+    if (la === 0) return lb <= max;
+    if (lb === 0) return la <= max;
+    var prevPrev = null;
+    var prev = new Array(lb + 1);
+    for (var j = 0; j <= lb; j++) prev[j] = j;
+    for (var i = 1; i <= la; i++) {
+      var cur = new Array(lb + 1);
+      cur[0] = i;
+      var rowMin = i;
+      var ca = a.charCodeAt(i - 1);
+      for (var k = 1; k <= lb; k++) {
+        var cb = b.charCodeAt(k - 1);
+        var cost = ca === cb ? 0 : 1;
+        var v = Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + cost);
+        if (i > 1 && k > 1 && prevPrev &&
+            ca === b.charCodeAt(k - 2) && a.charCodeAt(i - 2) === cb) {
+          v = Math.min(v, prevPrev[k - 2] + 1); // adjacent transposition
+        }
+        cur[k] = v;
+        if (v < rowMin) rowMin = v;
+      }
+      if (rowMin > max) return false;
+      prevPrev = prev;
+      prev = cur;
+    }
+    return prev[lb] <= max;
+  }
+
+  // A query word fuzzy-matches a document word if it's a substring (covers
+  // exact + prefix + contained) or within an adaptive edit distance (typo
+  // tolerance). Short queries (<3 chars) only match as substrings — fuzzing
+  // them would match almost everything.
+  function tokenFuzzyMatch(q, d) {
+    if (d.indexOf(q) !== -1) return true;
+    if (q.length < 3) return false;
+    return withinEditDistance(q, d, q.length <= 5 ? 1 : 2);
+  }
+
+  // Word tokens (letter/number runs) with their offsets in the flat text.
+  function tokenizeWords(text) {
+    var toks = [];
+    var re = /[\p{L}\p{N}]+/gu;
+    var m;
+    while ((m = re.exec(text))) {
+      toks.push({ start: m.index, end: m.index + m[0].length, lower: m[0].toLowerCase() });
+    }
+    return toks;
+  }
+
+  // Fuzzy counterpart of buildTextMatches: match each query word against the
+  // document's words with typo tolerance; a multi-word query matches a run of
+  // consecutive words. Returns the same kind of DOM Range array, so all the
+  // downstream highlight / cycle / counter machinery is unchanged.
+  function buildFuzzyMatches(query) {
+    var qTokens = (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!qTokens.length) return [];
+    var flat = collectSearchText();
+    var docTokens = tokenizeWords(flat.text);
+    var n = qTokens.length;
+    var results = [];
+    var cursor = 0;
+    var MAX_FUZZY_MATCHES = 3000;
+    for (var i = 0; i + n <= docTokens.length && results.length < MAX_FUZZY_MATCHES; i++) {
+      var ok = true;
+      for (var t = 0; t < n; t++) {
+        if (!tokenFuzzyMatch(qTokens[t], docTokens[i + t].lower)) { ok = false; break; }
+      }
+      if (!ok) continue;
+      var a = locateFlat(flat.nodes, docTokens[i].start, false, cursor);
+      var b = a && locateFlat(flat.nodes, docTokens[i + n - 1].end, true, a.idx);
+      if (a && b) {
+        cursor = a.idx;
+        try {
+          var r = document.createRange();
+          r.setStart(a.node, a.offset);
+          r.setEnd(b.node, b.offset);
+          results.push(r);
+        } catch (e) {}
+      }
+      if (n > 1) i += n - 1; // non-overlapping multi-word spans
+    }
+    return results;
+  }
+
+  // Which matcher the `/` panel uses, per the fuzzy toggle.
+  function buildSearchMatches(query) {
+    return fuzzySearchEnabled ? buildFuzzyMatches(query) : buildTextMatches(query);
+  }
+
+  function setFuzzySearch(on, persist) {
+    fuzzySearchEnabled = !!on;
+    var btn = document.getElementById('search-fuzzy');
+    if (btn) {
+      btn.classList.toggle('active', fuzzySearchEnabled);
+      btn.setAttribute('aria-pressed', fuzzySearchEnabled ? 'true' : 'false');
+    }
+    if (persist) {
+      try { localStorage.setItem('mathpreview.fuzzySearch', fuzzySearchEnabled ? '1' : '0'); } catch (e) {}
+    }
+    // Re-run the active search so the toggle takes effect immediately.
+    if (persist && searchPanelIsOpen() && lastSearchQuery) {
+      textSearchQuery = ''; // force a fresh result set (not a cycle)
+      runSearch(false);
+    }
+  }
+
   // First match at/after the current viewport top (so a fresh `/` lands on the
   // nearest match, then cycles from there).
   function firstTextResultIndex(results, backwards) {
@@ -580,7 +694,7 @@
 
   function runPlainSearch(query, backwards) {
     var sameQuery = textSearchQuery === query;
-    textSearchResults = buildTextMatches(query);
+    textSearchResults = buildSearchMatches(query);
     textSearchQuery = query;
     if (!textSearchResults.length) {
       textSearchIndex = -1;
@@ -648,7 +762,7 @@
   function restoreTextSearchHighlights() {
     if (!searchPanelIsOpen() || !textSearchQuery) { clearTextHighlights(); return; }
     var old = textSearchIndex;
-    textSearchResults = buildTextMatches(textSearchQuery);
+    textSearchResults = buildSearchMatches(textSearchQuery);
     if (!textSearchResults.length) {
       textSearchIndex = -1;
       clearTextHighlights();
@@ -686,7 +800,10 @@
       setStatus('dead', '○ no math match ' + parsed.core);
       return false;
     }
-    if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
+    // Fuzzy mode is text-oriented: skip the math auto-detect and fallback (an
+    // explicit `m:` sigil above still routes to math). A typo'd word shouldn't
+    // be reinterpreted as a math query.
+    if (!fuzzySearchEnabled && looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
       clearTextSession();
       return true;
     }
@@ -701,7 +818,7 @@
       clearMathSearchHighlights();
     }
     var found = runPlainSearch(query, backwards);
-    if (!found && runMathSearch(query, backwards)) {
+    if (!found && !fuzzySearchEnabled && runMathSearch(query, backwards)) {
       clearTextSession();
       return true;
     }

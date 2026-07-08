@@ -306,10 +306,10 @@ body.topbar-hidden .topbar { display: none; }
   /* Row 1: `/` label + input, full width.
      Row 2: help text, full width — so the long shortcut hint can't
      squeeze the input. */
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   grid-template-areas:
-    "label input count"
-    "help  help  help";
+    "label input fuzzy count"
+    "help  help  help  help";
   align-items: center;
   column-gap: 9px;
   row-gap: 6px;
@@ -352,6 +352,27 @@ body.theme-dark .search-panel input:focus {
   box-shadow: 0 0 0 2px rgba(179, 157, 232, 0.28);
 }
 /* Current/total match counter (vim-style), shown to the right of the input. */
+.search-fuzzy-toggle {
+  grid-area: fuzzy;
+  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+}
+.search-fuzzy-toggle:hover { border-color: var(--accent); color: var(--fg); }
+.search-fuzzy-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .search-count {
   grid-area: count;
   color: var(--muted);

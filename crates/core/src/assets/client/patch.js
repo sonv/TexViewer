@@ -461,6 +461,12 @@
       setSideTab(sideTab.getAttribute('data-side-tab'));
       return;
     }
+    if (e.target.closest('#search-fuzzy')) {
+      setFuzzySearch(!fuzzySearchEnabled, true);
+      var si = searchInputEl();
+      if (si) si.focus({ preventScroll: true });
+      return;
+    }
     var pageJump = e.target.closest('[data-page-jump]');
     if (pageJump) {
       scrollToPage(parseInt(pageJump.getAttribute('data-page-jump'), 10));

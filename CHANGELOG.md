@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.98] — 2026-07-08
+
+### Added
+
+- **Fuzzy (typo-tolerant) search in the viewer.** A `~` toggle in the `/`
+  search panel makes matching typo-tolerant: each query word matches document
+  words within a small edit distance, including transpositions ("gaint"
+  finds "giant", "coagualtion" finds "coagulation"). Multi-word queries match a
+  run of consecutive words, each fuzzily. All the usual search UX applies —
+  every match highlighted, `Enter`/`Shift+Enter` to cycle, current/total
+  counter. The toggle is remembered across sessions; leave it off for exact
+  literal search.
+
 ## [0.1.97] — 2026-07-08
 
 ### Added
