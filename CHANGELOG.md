@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.95] — 2026-07-08
+
+### Added
+
+- **Background typesetting: the rest of the document typesets quietly while
+  you work.** After the visible page renders, an idle loop typesets the
+  remaining equations block-by-block (capped batches, backing off whenever you
+  edit; it keeps working while the preview is a background tab — exactly when
+  you're typing in the editor). On a 3,300-equation paper the whole document is
+  typeset in ~1–2 minutes of background time, so scrolling rarely waits and
+  **Cmd+P usually prints instantly** with no preparation dialog at all. The
+  dialog still appears when printing before the background pass has finished.
+
 ## [0.1.94] — 2026-07-08
 
 ### Added

@@ -561,6 +561,9 @@
   });
 
   var pendingTypeset = new Set();
+  // Timestamp of the last patch/body update — the background idle typesetter
+  // backs off while the user is actively editing.
+  var lastRenderActivityAt = 0;
   var typesetTimer = 0;
   var typesetBusy = false;
   var initialTypesetQueued = false;
@@ -808,6 +811,65 @@
     if (dlg) dlg.addEventListener('cancel', function() { printFlushCancelled = true; });
   })();
 
+  // Background idle typesetting: after the visible page is settled, quietly
+  // typeset the REST of the document one block at a time during idle moments —
+  // so scrolling rarely waits and a later Cmd+P usually has nothing left to
+  // flush. Each block's containment is lifted just for its own typeset
+  // (MathJax measures pathologically slowly inside skipped subtrees), then
+  // restored, so the viewer stays lazy for layout. Backs off while the user is
+  // editing (recent patches), while a print flush runs, and in hidden tabs.
+  var idleTypesetTimer = 0;
+  function scheduleIdleTypeset(delay) {
+    if (idleTypesetTimer) return;
+    idleTypesetTimer = setTimeout(idleTypesetStep, delay);
+  }
+  async function idleTypesetStep() {
+    idleTypesetTimer = 0;
+    // NOTE: deliberately no document.hidden gate — the preview is usually a
+    // background tab while the user types in the editor, and that's exactly
+    // when spare cycles are available. Browsers throttle background-tab timers
+    // (~1/s, harder after prolonged hiding), which is pacing enough.
+    if (printFlushPromise || typesetBusy ||
+        performance.now() - lastRenderActivityAt < 1500) {
+      scheduleIdleTypeset(1500);
+      return;
+    }
+    var page = pageEl();
+    if (!page) return;
+    // Next block that still holds raw math, in document order.
+    // First genuinely-raw math node (`.math-source` spans persist after
+    // typesetting, so a child-selector shortcut would sit on block 0 forever).
+    var all = page.querySelectorAll('.math[data-hash]');
+    var rawNode = null;
+    for (var ri = 0; ri < all.length; ri++) {
+      if (isRawMathNode(all[ri])) { rawNode = all[ri]; break; }
+    }
+    if (!rawNode) return; // everything typeset — done for this session
+    var blk = rawNode.closest ? rawNode.closest('main#page > .blk') : null;
+    var nodes = blk
+      ? Array.from(blk.querySelectorAll('.math[data-hash]')).filter(isRawMathNode)
+      : [rawNode];
+    if (!nodes.length) { scheduleIdleTypeset(500); return; }
+    // Cap the batch: one huge proof block typeset in a single call would block
+    // the main thread for seconds; the next step resumes where this left off.
+    nodes = nodes.slice(0, 40);
+    typesetBusy = true;
+    var lifted = blk && blk.style.contentVisibility === '';
+    if (lifted) blk.style.contentVisibility = 'visible';
+    try {
+      nodes.forEach(syncMathSourceText);
+      await window.__mpEngine.typeset(nodes);
+    } catch (e) {
+      console.error('mathpreview idle typeset:', e);
+      typesetBusy = false;
+      return; // stop the loop on engine errors rather than spinning
+    } finally {
+      if (lifted) blk.style.contentVisibility = '';
+      typesetBusy = false;
+    }
+    scheduleIdleTypeset(200);
+  }
+
   // Resolves to true when the full flush completed, false when cancelled.
   function typesetAllForPrint(note) {
     if (printFlushPromise) return printFlushPromise;
@@ -895,6 +957,8 @@
       if (pendingTypeset.size && !typesetTimer) {
         scheduleTypesetFlush(TYPESET_IDLE_MS);
       }
+      // Visible math is settled — let the background loop work on the rest.
+      scheduleIdleTypeset(3000);
     }
   }
 
@@ -927,6 +991,7 @@
   // collisions caused by insertion-before-existing-content edits.
   async function applyPatch(ops, blocksMeta) {
     var tStart = performance.now();
+    lastRenderActivityAt = tStart;
     setStatus('updating', '↻ patching');
     var page = document.getElementById('page');
     var tpl = document.createElement('template');
