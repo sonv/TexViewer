@@ -995,7 +995,23 @@ body.refkey-visible .eq-refkey-list {
 .bib-entry em { font-style: italic; }
 .bib-doi, .bib-url { color: var(--supporting); font-size: 0.85em; word-break: break-all; }
 .bib-missing { color: var(--omitted); font-style: italic; }
-.blk { display: contents; }
+/* Top-level blocks are real boxes with content-visibility so OFF-SCREEN
+   blocks skip style/layout/paint entirely. On a 60-page document this is the
+   difference between every keystroke re-laying-out a ~23k-element page
+   (~2×200ms main-thread blocks per patch) and only the visible neighborhood
+   (measured: below the 50ms long-task threshold). The intrinsic-size `auto`
+   keeps the real height once a block has rendered, so scrollbar drift only
+   affects never-rendered regions. (Blocks were `display: contents` before —
+   invisible to layout — which also made blk-N scroll targets zero-rect.) */
+main#page .blk {
+  display: block;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}
+/* Clones of blocks inside overlays must render unconditionally. */
+.margin-card-body .blk,
+.hover-preview .blk,
+.margin-zoom-dialog .blk { content-visibility: visible; contain-intrinsic-size: none; }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
 /* `quote` / `quotation`: an indented block quotation. Body is parsed normally,
    so math, refs, and nested blocks render inside. */

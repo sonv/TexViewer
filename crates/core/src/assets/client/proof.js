@@ -99,10 +99,27 @@
     return null;
   }
 
-  function applyMode(mode) {
+  // `roots` (optional element array) scopes the re-fold to freshly patched
+  // subtrees. Without it, every keystroke's patch paid a whole-page `.proof`
+  // walk (each with sibling-walking role resolution) plus a same-value
+  // data-proof-mode write — a page-wide style invalidation on a large doc.
+  function applyMode(mode, roots) {
     currentProofMode = mode;
-    document.getElementById('page').setAttribute('data-proof-mode', mode);
-    document.querySelectorAll('.proof').forEach(function(p) {
+    var page = document.getElementById('page');
+    if (page && page.getAttribute('data-proof-mode') !== mode) {
+      page.setAttribute('data-proof-mode', mode);
+    }
+    var proofs = [];
+    if (roots && roots.length) {
+      roots.forEach(function(root) {
+        if (!root || !root.querySelectorAll) return;
+        if (root.classList && root.classList.contains('proof')) proofs.push(root);
+        root.querySelectorAll('.proof').forEach(function(p) { proofs.push(p); });
+      });
+    } else {
+      document.querySelectorAll('.proof').forEach(function(p) { proofs.push(p); });
+    }
+    proofs.forEach(function(p) {
       var role = theoremRole(p) || referencedTheoremRole(p) || precedingTheoremRole(p) || sectionProofRole(p);
       var folded;
       if (mode === 'all')        folded = false;

@@ -189,7 +189,6 @@ pub fn render(
         preamble,
         step_counter: 0,
         case_counter: 0,
-        sidenote_counter: 0,
         source_anchors: Vec::new(),
         chunk_depth: 0,
         pending_sub: None,
@@ -487,26 +486,44 @@ fn stable_block_diff_source(s: &str) -> String {
 }
 
 fn starts_generated_id_attr(rest: &str) -> bool {
-    const PREFIXES: [&str; 11] = [
+    // IdGen-produced ids are `<prefix>-g<block>-<n>` — the `g` marker (see
+    // IdGen::next) also lets this stripper match them without ever matching a
+    // label-derived id like `thm-2-1` (from `\label{thm:2.1}`), which must
+    // NOT be stripped: label ids are stable, meaningful content.
+    const IDGEN_PREFIXES: [&str; 12] = [
+        r#" id="quote-"#,
+        r#" id="callout-"#,
+        r#" id="sn-"#,
         r#" id="im-"#,
         r#" id="dm-"#,
-        r#" id="eq-"#,
         r#" id="sec-"#,
         r#" id="thm-"#,
         r#" id="proof-"#,
-        r#" id="fn-"#,
         r#" id="ref-"#,
         r#" id="cite-"#,
         r#" id="srcs-"#,
         r#" id="srcw-"#,
     ];
-    PREFIXES.iter().any(|prefix| {
-        rest.starts_with(prefix)
-            && rest
-                .as_bytes()
-                .get(prefix.len())
-                .is_some_and(u8::is_ascii_digit)
-    })
+    // Counter-based ids that stay bare-numeric: footnotes keep their visible
+    // document-order number (`fn-3` / `fnpop-3`), and `eq-` anchors predate
+    // the marker scheme.
+    const NUMERIC_PREFIXES: [&str; 3] = [r#" id="fn-"#, r#" id="fnpop-"#, r#" id="eq-"#];
+    let generated = |p: &str, g_marker: bool| -> bool {
+        if !rest.starts_with(p) {
+            return false;
+        }
+        let b = rest.as_bytes();
+        let mut i = p.len();
+        if g_marker {
+            if b.get(i) != Some(&b'g') {
+                return false;
+            }
+            i += 1;
+        }
+        b.get(i).is_some_and(u8::is_ascii_digit)
+    };
+    IDGEN_PREFIXES.iter().any(|p| generated(p, true))
+        || NUMERIC_PREFIXES.iter().any(|p| generated(p, false))
 }
 
 fn quoted_attr_end(s: &str, start: usize) -> Option<usize> {
@@ -956,7 +973,11 @@ struct IdGen {
 impl IdGen {
     fn next(&mut self, prefix: &str) -> String {
         self.counter += 1;
-        format!("{prefix}-{}-{}", self.block, self.counter)
+        // The `g` marker keeps generated ids structurally disjoint from
+        // label-derived ids: `sanitize_id("thm:2.1")` yields `thm-2-1`, which
+        // without the marker would collide with a generated theorem id and
+        // break getElementById targeting (refs, source-jump, highlights).
+        format!("{prefix}-g{}-{}", self.block, self.counter)
     }
     /// Scope subsequent ids to block `ordinal` and restart the local counter.
     /// Called by `push_block` when a block is sealed; NOT called on the
@@ -977,7 +998,6 @@ struct RenderCtx<'a> {
     preamble: &'a ExtractedPreamble,
     step_counter: usize,
     case_counter: usize,
-    sidenote_counter: usize,
     source_anchors: Vec<SourceAnchor>,
     /// Nesting depth of `write_chunked_children`; only the outermost call
     /// (depth 1) captures sub-block structure, so a theorem nested inside a
@@ -1595,9 +1615,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         .unwrap();
                     }
                 }
+                // Spacing / layout no-ops: emit nothing — and do NOT touch
+                // counters (sharing an arm with `restartsteps` used to reset
+                // the proof step counter on every `\vspace` / `\noindent`).
                 "vspace" | "hspace" | "smallskip" | "medskip" | "bigskip" | "newpage"
-                | "clearpage" | "noindent" | "indent" | "linebreak" | "pagebreak" | "thanks"
-                | "restartsteps" => {
+                | "clearpage" | "noindent" | "indent" | "linebreak" | "pagebreak" | "thanks" => {}
+                "restartsteps" => {
                     ctx.step_counter = latex_optional_usize(raw).unwrap_or(0);
                 }
                 "restartcases" => {
@@ -1614,8 +1637,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 // the content are re-parsed via `render_latex_text_with_math`.
                 "sidenote" => {
                     if let Some(call) = latex_command_call(raw, "sidenote") {
-                        ctx.sidenote_counter += 1;
-                        let id = format!("sn-{}", ctx.sidenote_counter);
+                        let id = ctx.idgen.next("sn");
                         let content = render_latex_text_with_math(&call.arg, ctx.labels);
                         record_container(ctx, &id, &n.span, None);
                         let src_attr = data_src(&n.span);
@@ -1692,8 +1714,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                     // pattern: `\SV[2025-05-18]{...}` for a dated review
                     // note). The required brace arg is the body.
                     if let Some(call) = latex_command_call(raw, name) {
-                        ctx.sidenote_counter += 1;
-                        let id = format!("sn-{}", ctx.sidenote_counter);
+                        let id = ctx.idgen.next("sn");
                         let kind = name.to_lowercase();
                         let label = match call.optional.as_deref().map(str::trim) {
                             Some(opt) if !opt.is_empty() => format!("{name} {opt}"),
@@ -2837,6 +2858,34 @@ mod tests {
         assert!(
             !text_content(&body).contains("$E=mc^2$"),
             "raw math leaked: {body}"
+        );
+    }
+
+    #[test]
+    fn generated_ids_cannot_collide_with_label_ids() {
+        // sanitize_id("thm:2.1") -> "thm-2-1"; generated theorem ids must be
+        // structurally different (the `g` marker) or getElementById targets
+        // the wrong element for refs/jumps/highlights.
+        let body = render_body(concat!(
+            "\\newtheorem{theorem}{Theorem}\n\\begin{document}\n",
+            "\\begin{theorem} unlabeled \\end{theorem}\n",
+            "\\begin{theorem}\\label{thm:0.2} labeled \\end{theorem}\n",
+            "\\end{document}\n",
+        ));
+        // The labeled theorem's id is label-derived...
+        assert!(body.contains(r#"id="thm-0-2""#), "label id missing: {body}");
+        // ...and every GENERATED id carries the g marker, so no collision.
+        let mut ids: Vec<&str> = Vec::new();
+        for part in body.split(r#" id=""#).skip(1) {
+            if let Some(end) = part.find('"') {
+                ids.push(&part[..end]);
+            }
+        }
+        let dup = ids.iter().find(|id| ids.iter().filter(|o| o == id).count() > 1);
+        assert!(dup.is_none(), "duplicate DOM id {dup:?}: {body}");
+        assert!(
+            ids.iter().any(|id| id.starts_with("thm-g")),
+            "generated theorem id should be g-marked: {ids:?}"
         );
     }
 

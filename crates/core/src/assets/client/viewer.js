@@ -559,6 +559,14 @@
   function scrollRangeIntoView(range) {
     if (!range || !range.getBoundingClientRect) return;
     var rect = range.getBoundingClientRect();
+    // Degenerate rect = the match sits in a content-visibility-skipped block;
+    // scroll the containing element instead (this forces it to render).
+    if (rect.width === 0 && rect.height === 0) {
+      var el = range.startContainer && (range.startContainer.nodeType === 1
+        ? range.startContainer : range.startContainer.parentElement);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
     if (rect.top >= topbarOffset() + 8 && rect.bottom <= window.innerHeight - 8) return;
     var y = rect.top + window.scrollY - Math.max(topbarOffset() + 16, window.innerHeight * 0.3);
     window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
@@ -820,6 +828,14 @@
   function scrollSourceIntoView(target) {
     if (!target) return;
     var rect = target.getBoundingClientRect();
+    // Inside a content-visibility-skipped (off-screen) block, geometry reads
+    // return a degenerate rect — scrollIntoView still resolves correctly and
+    // forces the block to render.
+    if (rect.width === 0 && rect.height === 0 && target.scrollIntoView) {
+      recordViewerPlace();
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
     var vh = window.innerHeight || document.documentElement.clientHeight || 800;
     var upper = vh * 0.25;
     var lower = vh * 0.75;
@@ -1131,7 +1147,12 @@
     refkeysVisible = !!visible;
     document.body.classList.toggle('refkey-visible', refkeysVisible);
     var page = pageEl();
-    if (page) page.setAttribute('data-refkeys', refkeysVisible ? 'visible' : 'hidden');
+    // Same-value setAttribute still dirties attribute-selector styles for the
+    // whole page — and this runs on every patch. Only write on a real change.
+    var want = refkeysVisible ? 'visible' : 'hidden';
+    if (page && page.getAttribute('data-refkeys') !== want) {
+      page.setAttribute('data-refkeys', want);
+    }
     var btn = document.getElementById('refkey-toggle');
     if (btn) {
       btn.classList.toggle('active', refkeysVisible);

@@ -57,10 +57,14 @@
         // /debug fetch per WS render. No-op when the panel is closed.
         if (typeof refreshLogPanelIfOpen === 'function') refreshLogPanelIfOpen();
         if (msg.event === 'patch' && Array.isArray(msg.ops)) {
-          await applyPatch(msg.ops, msg.blocks);
-          applyMode(currentProofMode);
+          // Scope the per-patch passes to the blocks the patch touched — the
+          // whole-page versions cost a full 20k-element pass + page-wide style
+          // invalidation on EVERY keystroke of a large document.
+          var touched = await applyPatch(msg.ops, msg.blocks);
+          applyMode(currentProofMode, touched || undefined);
           setRefkeysVisible(refkeysVisible, false);
-          decorateRefkeyChips(document.getElementById('page'));
+          if (touched) touched.forEach(function(root) { decorateRefkeyChips(root); });
+          else decorateRefkeyChips(document.getElementById('page'));
           restoreSourceHighlight();
           restoreSourceRange();
           restoreMathSearchHighlights();

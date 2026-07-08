@@ -677,9 +677,42 @@
     typesetTimer = setTimeout(flushTypeset, delay);
   }
 
+  // Viewport-lazy typesetting. Blocks have `content-visibility: auto`, so
+  // math inside a SKIPPED (far off-screen) block is not typeset up front —
+  // MathJax's measurements inside skipped subtrees are slow AND wasted (a
+  // 60-page paper has thousands of equations; cold-load typeset measured 170s
+  // eager vs. near-instant lazy). Each such block typesets the moment it
+  // first becomes relevant (scrolled near, focused, scrollIntoView'd), via
+  // contentvisibilityautostatechange. Browsers without the event (or
+  // checkVisibility) fall back to eager typesetting. Known tradeoff: the
+  // browser's own Cmd+P prints never-scrolled math untypeset — the toolbar
+  // print button (real latexmk) is unaffected.
+  var lazyTypesetOk = typeof ContentVisibilityAutoStateChangeEvent !== 'undefined' &&
+    Element.prototype.checkVisibility;
+  function inSkippedBlock(node) {
+    if (!lazyTypesetOk || !node.checkVisibility) return false;
+    try { return !node.checkVisibility({ contentVisibilityAuto: true }); }
+    catch (e) { return false; }
+  }
+  function deferTypesetUntilVisible(node) {
+    var blk = node.closest && node.closest('main#page > .blk');
+    if (!blk) return false;
+    if (!blk.__mpLazyTypeset) {
+      blk.__mpLazyTypeset = true;
+      blk.addEventListener('contentvisibilityautostatechange', function onState(e) {
+        if (e.skipped) return;
+        blk.__mpLazyTypeset = false;
+        blk.removeEventListener('contentvisibilityautostatechange', onState);
+        queueUntypesetMath(blk);
+      });
+    }
+    return true;
+  }
+
   function queueTypeset(nodes) {
     nodes.forEach(function(node) {
       if (!isRawMathNode(node)) return;
+      if (inSkippedBlock(node) && deferTypesetUntilVisible(node)) return;
       syncMathSourceText(node);
       pendingTypeset.add(node);
       node.classList.add('math-pending');
@@ -780,6 +813,11 @@
     var replacedBlocks = 0, insertedBlocks = 0, removedBlocks = 0;
     var reusedBlocks = 0;
     var reusedSubBlockAttr = 'data-mp-reused-subblock';
+    // Blocks this patch actually touched — callers scope their whole-page
+    // passes (proof re-fold, chip decoration) to these. Null when a rebuild
+    // op makes precise attribution impractical (rare; callers fall back to
+    // the whole page).
+    var touchedRoots = [];
     var hasRebuild = ops.some(function(op) { return op.type === 'rebuild'; });
     var detachPage = ops.length > 8 || hasRebuild;
     var pageParent = detachPage ? page.parentNode : null;
@@ -911,6 +949,7 @@
             }
           }
           if (inserted) {
+            newFragBlocks.forEach(function(b) { touchedRoots.push(b); });
             page.insertBefore(frag, anchor);
             insertedBlocks += inserted;
           }
@@ -922,9 +961,18 @@
           // MathJax in every unchanged proof paragraph stays put.
           var bsBlocks = pageBlocks(page);
           var bsBlock = bsBlocks[op.index || 0];
+          // Every chunk-capable block type's body container (must match the
+          // server's write_chunked_children callers: proof, theorem, callout,
+          // quote). Document order finds the OUTERMOST container first, which
+          // is the one the server chunked. A miss here would silently drop the
+          // edit and leave the block stale until the next full update.
           var bsBody = bsBlock && bsBlock.querySelector
-            ? bsBlock.querySelector('.proof-body, .thm-body')
+            ? bsBlock.querySelector('.proof-body, .thm-body, .callout-body, blockquote.quote')
             : null;
+          if (!bsBody && bsBlock) {
+            console.warn('mathpreview: no sub-diff container in', bsBlock.id, '- block left stale');
+          }
+          if (bsBlock) touchedRoots.push(bsBlock);
           if (bsBody) {
             var bsKids = bsBody.children;
             var bsStart = Math.max(0, Math.min(op.child_index || 0, bsKids.length));
@@ -1031,4 +1079,5 @@
       ' (' + needTypeset.length + ' math' +
       (reusedMath ? ', reused ' + reusedMath + '/' + totalMath : '') + ')' +
       memSuffix(window._lastRss));
+    return hasRebuild ? null : touchedRoots;
   }

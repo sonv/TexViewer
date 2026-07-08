@@ -17,6 +17,35 @@ summary.
 
 Nothing yet.
 
+## [0.1.92] — 2026-07-08
+
+### Fixed
+
+- **Typing latency on large documents cut ~8× further, and initial load is
+  near-instant.** Profiled in a real browser against a 7,582-line paper with
+  3,302 equations: each keystroke still paid two ~200 ms whole-page style/layout
+  passes, and the initial load typeset every equation up front (~65 s). Now:
+  top-level blocks use CSS `content-visibility: auto` (off-screen blocks skip
+  style/layout/paint entirely), the per-patch passes (proof re-fold, refkey
+  decoration, attribute writes) are scoped to the blocks a patch actually
+  touched, and **math typesets viewport-lazily** — the visible page typesets
+  immediately (~0.2 s), the rest the moment they scroll near. Measured:
+  ~57 ms main-thread per keystroke (was ~440 ms), `applyPatch` ~4 ms, all
+  unchanged math reused. Scroll targets inside not-yet-rendered regions fall
+  back to native `scrollIntoView` (which forces them to render). Known
+  tradeoff: the browser's own Cmd+P prints never-scrolled math untypeset — the
+  toolbar print button (real `latexmk`) is unaffected.
+- **Follow-ups from the block-scoped-id review (7 confirmed findings):**
+  generated ids now carry a `g` marker so they can never collide with
+  label-derived ids like `\label{thm:2.1}` → `thm-2-1` (id-targeting for refs,
+  jumps, and highlights could silently hit the wrong element); sidenote ids are
+  block-scoped too (adding a `\sidenote`/`\SV` early no longer rebuilds every
+  later note-bearing block); quote/callout/sidenote ids are stripped from the
+  diff-stability hash; the client now locates the sub-diff container for
+  quote/callout blocks (an in-place edit inside them could be silently dropped,
+  leaving the preview stale); and `\vspace`/`\noindent`/… no longer reset the
+  proof step counter.
+
 ## [0.1.91] — 2026-07-08
 
 ### Fixed
