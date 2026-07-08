@@ -146,6 +146,14 @@ pub struct ViewerConfig {
     /// aren't visible to the viewer — e.g. inside a conditional `\if…\newtheorem`
     /// block (which the viewer can't evaluate) or a package it can't resolve.
     pub theorem_numbering: Option<TheoremNumbering>,
+    /// How much of the document to typeset (render math for) at once.
+    /// `"local"` (default) typesets only the region around the viewport and
+    /// leaves the rest until you scroll to it — lowest memory/CPU on a long
+    /// paper. `"background"` typesets the visible region first, then quietly
+    /// fills in the rest while the tab is idle, so scrolling to deep sections
+    /// and printing never wait. Cmd+P always typesets the whole document on
+    /// demand regardless of this setting.
+    pub typeset_mode: Option<TypesetMode>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
 }
@@ -206,6 +214,25 @@ impl TheoremNumbering {
     }
 }
 
+/// How much of the document is typeset at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TypesetMode {
+    /// Only the region around the viewport, plus a small buffer (default).
+    Local,
+    /// The viewport first, then the rest in the background while idle.
+    Background,
+}
+
+impl TypesetMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TypesetMode::Local => "local",
+            TypesetMode::Background => "background",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SourceJumpConfig {
@@ -257,6 +284,7 @@ pub struct ResolvedViewerConfig {
     pub wrap_equations: bool,
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
+    pub typeset_mode: TypesetMode,
 }
 
 impl Default for ResolvedConfig {
@@ -271,6 +299,7 @@ impl Default for ResolvedConfig {
                 wrap_equations: true,
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
+                typeset_mode: TypesetMode::Local,
             },
             text_macros: HashMap::new(),
         }
@@ -324,6 +353,10 @@ impl Config {
                     .viewer
                     .theorem_numbering
                     .unwrap_or(defaults.viewer.theorem_numbering),
+                typeset_mode: self
+                    .viewer
+                    .typeset_mode
+                    .unwrap_or(defaults.viewer.typeset_mode),
             },
             text_macros: self.text_macros,
         }
@@ -371,6 +404,9 @@ impl ViewerConfig {
         }
         if other.theorem_numbering.is_some() {
             self.theorem_numbering = other.theorem_numbering;
+        }
+        if other.typeset_mode.is_some() {
+            self.typeset_mode = other.typeset_mode;
         }
         self.source_jump.merge(other.source_jump);
     }

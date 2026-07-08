@@ -850,6 +850,63 @@
     if (windowDrainTimer) return;
     windowDrainTimer = setTimeout(drainWindowTypeset, delay);
   }
+
+  // 'local' (default) = window only; 'background' = also fill the rest while
+  // idle. Read from the config; live-updated by applyViewerConfig / setTypesetMode.
+  function typesetMode() {
+    return (window.__mpConfig && window.__mpConfig.typesetMode) === 'background'
+      ? 'background' : 'local';
+  }
+  // Background fill: in 'background' mode, after the window is handled, march
+  // through the remaining raw blocks one at a time during idle moments —
+  // lifting each block's containment just for its typeset (as the window drain
+  // does) — so deep sections and Cmd+P never wait. Self-gates on the mode, so
+  // switching to 'local' stops it; yields to typing (typesetBusy) and prints.
+  var bgFillTimer = 0;
+  function scheduleBgFill(delay) {
+    if (bgFillTimer || typesetMode() !== 'background') return;
+    bgFillTimer = setTimeout(bgFillStep, delay);
+  }
+  async function bgFillStep() {
+    bgFillTimer = 0;
+    if (typesetMode() !== 'background') return;
+    if (printFlushPromise || typesetBusy || windowQueue.size) { scheduleBgFill(600); return; }
+    var page = pageEl();
+    if (!page) return;
+    var blocks = pageBlocks(page);
+    var target = null;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].querySelector('.math[data-hash] .math-source') &&
+          Array.prototype.some.call(
+            blocks[i].querySelectorAll('.math[data-hash]'), isRawMathNode)) {
+        target = blocks[i];
+        break;
+      }
+    }
+    if (!target) return; // whole document typeset — done until the next render
+    var nodes = Array.from(target.querySelectorAll('.math[data-hash]'))
+      .filter(isRawMathNode).slice(0, 40); // cap so one huge block can't jank
+    typesetBusy = true;
+    var lifted = target.style.contentVisibility === '';
+    if (lifted) target.style.contentVisibility = 'visible';
+    try {
+      nodes.forEach(syncMathSourceText);
+      await window.__mpEngine.typeset(nodes);
+    } catch (err) {
+      console.error('mathpreview background fill:', err);
+      typesetBusy = false;
+      return; // stop on engine error rather than spinning
+    } finally {
+      if (lifted) target.style.contentVisibility = '';
+      typesetBusy = false;
+    }
+    scheduleBgFill(120);
+  }
+  function setTypesetMode(mode) {
+    window.__mpConfig = window.__mpConfig || {};
+    window.__mpConfig.typesetMode = (mode === 'background') ? 'background' : 'local';
+    if (window.__mpConfig.typesetMode === 'background') scheduleBgFill(600);
+  }
   async function drainWindowTypeset() {
     windowDrainTimer = 0;
     if (!windowQueue.size) return;
@@ -965,8 +1022,9 @@
         scheduleTypesetFlush(TYPESET_IDLE_MS);
       }
       // Watch the rest of the document so each block typesets as it nears the
-      // viewport (the whole document only on Cmd+P).
+      // viewport; in 'background' mode also fill the rest while idle.
       observeTypesetWindow();
+      scheduleBgFill(3000);
     }
   }
 

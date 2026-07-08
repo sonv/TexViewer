@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.97] — 2026-07-08
+
+### Added
+
+- **`typeset-mode` config option: choose how much math is rendered at once.**
+  `local` (default) renders only the region around the viewport plus a buffer —
+  lowest memory/CPU on a long paper. `background` renders the visible region
+  first, then fills in the rest while the tab is idle, so scrolling to deep
+  sections and printing never wait. It's a dropdown in the **config** toolbar
+  dialog (applies live, no reload) and a `[viewer] typeset-mode` key in
+  `.mathpreview.toml`. Cmd+P still typesets the whole document on demand
+  regardless of the setting.
+
 ## [0.1.96] — 2026-07-08
 
 ### Changed

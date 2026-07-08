@@ -110,6 +110,11 @@ subtree) and restoring it after. The drain yields to the print flush and to any
 in-progress typeset batch (`typesetBusy`). Blocks are re-observed after each
 render, since a patch replaces them with new nodes.
 
+Background filling the whole document is still available as an opt-in: the
+`typeset-mode = "background"` config runs an idle loop (block-at-a-time,
+containment lifted per block, yielding to typing and prints) after the
+window settles. Default is `local` (window only).
+
 Note the raw-math predicate: `.math-source` spans persist after typesetting,
 so "has a `.math-source`" does NOT mean untypeset — `isRawMathNode` (no
 `mjx-container` child) is the only correct check.

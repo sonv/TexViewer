@@ -565,6 +565,7 @@ font-size = 18                  # body text size in CSS pixels
 wrap-equations = true           # wrap long display math (MathJax line-breaking);
                                 # set false to let it overflow + scroll instead
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
+typeset-mode = "local"          # | "background" — see below
 
 [viewer.source-jump]
 # Which click gesture sends `POST /reveal-source` to spawn `--editor`
@@ -579,6 +580,16 @@ math overflow and scroll horizontally — closer to how a non-`breqn` PDF
 typesets it on one line. It's also a checkbox in the **config** toolbar dialog.
 This affects the **preview only** — it can't change how `latexmk` breaks lines
 in the PDF.
+
+`typeset-mode` controls how much of the document is typeset (has its math
+rendered) at once — it's also a dropdown in the **config** toolbar dialog.
+Default `local` typesets only the region around the viewport plus a small
+buffer, leaving the rest until you scroll to it; this keeps memory and CPU
+low on a long paper. `background` typesets the visible region first, then
+quietly fills in the rest while the tab is idle, so scrolling to deep sections
+and printing never wait (at the cost of typesetting — and holding in memory —
+the whole document). Either way, **Cmd/Ctrl+P** typesets the whole document on
+demand before printing.
 
 **Theorem numbering.** By default (`theorem-numbering = "auto"`) theorem-likes
 are numbered from the document's `\newtheorem` declarations — continuously

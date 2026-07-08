@@ -2232,6 +2232,8 @@
     if (theme) theme.value = cfg.defaultTheme || 'system';
     var thmNum = document.getElementById('config-theorem-numbering');
     if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
+    var tsMode = document.getElementById('config-typeset-mode');
+    if (tsMode) tsMode.value = cfg.typesetMode || 'local';
     var wrap = document.getElementById('config-wrap-equations');
     // Default on when unset (matches the server default).
     if (wrap) wrap.checked = cfg.wrapEquations !== false;
@@ -2302,6 +2304,8 @@
     if (theme) payload.values['viewer.default-theme'] = theme;
     var thmNumEl = document.getElementById('config-theorem-numbering');
     if (thmNumEl && thmNumEl.value) payload.values['viewer.theorem-numbering'] = thmNumEl.value;
+    var tsModeEl = document.getElementById('config-typeset-mode');
+    if (tsModeEl && tsModeEl.value) payload.values['viewer.typeset-mode'] = tsModeEl.value;
     var wrapEl = document.getElementById('config-wrap-equations');
     if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
     var mjxEl = document.getElementById('config-mathjax-config');
@@ -2385,6 +2389,11 @@
         location.reload();
         return;
       }
+    }
+    // Typeset mode is pure client behavior (which blocks to render), so it
+    // applies live with no reload — switching to 'background' kicks the fill.
+    if (typeof cfg.typeset_mode === 'string') {
+      setTypesetMode(cfg.typeset_mode);
     }
   }
 
