@@ -2909,6 +2909,46 @@
     });
   }
 
+  // Simulate print pagination: walk the top-level blocks and place a break in
+  // the GAP before any block that would overflow the current page's printable
+  // height — the same rule as @media print's `break-inside: avoid`. Because
+  // the break lands between blocks, the guide line sits in whitespace and
+  // never crosses a line of text. Block geometry is read from
+  // offsetTop/offsetHeight; `contain-intrinsic-size: auto` makes these exact
+  // for regions that have rendered and estimated (180px) beyond, so guides are
+  // accurate where you're reading and firm up as you scroll. Returns break Y
+  // positions in the page's own (unzoomed) coordinate space.
+  function pageBreakYs(page, pageHeight) {
+    var blocks = pageBlocks(page);
+    if (!blocks.length || pageHeight <= 0) return [];
+    var breaks = [];
+    var pageStart = blocks[0].offsetTop;
+    var target = pageStart + pageHeight;
+    var lastIdx = -1;
+    for (var i = 0; i < blocks.length; i++) {
+      var top = blocks[i].offsetTop;
+      var bottom = top + blocks[i].offsetHeight;
+      while (bottom > target) {
+        var y;
+        if (i === lastIdx || i === 0) {
+          // A single block taller than a page can't avoid a break — split it
+          // at the boundary, as print does when break-inside can't be honored.
+          y = target;
+        } else {
+          var prevBottom = blocks[i - 1].offsetTop + blocks[i - 1].offsetHeight;
+          y = (prevBottom < top) ? (prevBottom + top) / 2 : top;
+          if (y <= target - pageHeight) y = target; // gap above page start: split
+        }
+        y = Math.round(y);
+        breaks.push(y);
+        target = y + pageHeight;
+        lastIdx = i;
+        if (breaks.length > 5000) return breaks; // runaway guard
+      }
+    }
+    return breaks;
+  }
+
   function rebuildPageGuides() {
     var page = pageEl();
     var pages = document.getElementById('side-pages');
@@ -2920,11 +2960,22 @@
     // would inflate both the shell and the scroll area on every refresh
     // and leave a tall dead strip past the document.
     updatePageScale(page.offsetHeight);
-    var metrics = pageGuideMetrics();
-    pageGuideLayoutHeightPx = metrics.layoutHeight;
-    pageGuideVisualHeightPx = metrics.visualHeight;
-    pageGuideCount = Math.max(1, Math.ceil(page.offsetHeight / pageGuideLayoutHeightPx));
-    var signature = currentPageMode + '|' + pageGuideCount + '|' + Math.round(pageGuideLayoutHeightPx);
+
+    var breaks;
+    if (currentPageMode === 'a4') {
+      // Printable A4 content height in the page's own px (width maps to 210mm).
+      breaks = pageBreakYs(page, A4_CSS_WIDTH * A4_PRINT_CONTENT_RATIO);
+    } else {
+      // Dynamic mode has no real paper — keep evenly-spaced viewport-height
+      // guides as a scroll aid.
+      var h = Math.max(1, pageGuideMetrics().layoutHeight);
+      breaks = [];
+      for (var gy = h; gy < page.offsetHeight - 4; gy += h) breaks.push(Math.round(gy));
+    }
+    pageBreakOffsets = breaks;
+    pageGuideCount = breaks.length + 1;
+
+    var signature = currentPageMode + '|' + Math.round(currentPageScale * 100) + '|' + breaks.join(',');
     if (signature === lastPageGuideSignature) {
       updateActivePage();
       return;
@@ -2937,15 +2988,16 @@
     var layer = document.createElement('div');
     layer.className = 'page-guide-layer';
     layer.setAttribute('aria-hidden', 'true');
-    for (var i = 1; i < pageGuideCount; i++) {
+    breaks.forEach(function(y, j) {
       var guide = document.createElement('div');
       guide.className = 'page-guide';
-      guide.style.top = Math.round(i * pageGuideLayoutHeightPx) + 'px';
+      guide.style.top = y + 'px';
       var label = document.createElement('span');
-      label.textContent = (currentPageMode === 'a4' ? 'A4 page ' : 'Page ') + (i + 1);
+      // The break before page j+2 marks the top of page j+2.
+      label.textContent = (currentPageMode === 'a4' ? 'A4 page ' : 'Page ') + (j + 2);
       guide.appendChild(label);
       layer.appendChild(guide);
-    }
+    });
     page.appendChild(layer);
 
     pages.replaceChildren();
@@ -3162,8 +3214,12 @@
   }
 
   function updateActivePage() {
-    if (!pageGuideVisualHeightPx) return;
-    var current = Math.floor((window.scrollY + topbarOffset() + 12 - pageTopY()) / pageGuideVisualHeightPx) + 1;
+    // Current scroll position in the page's own (unzoomed) coordinates.
+    var yInPage = (window.scrollY + topbarOffset() + 12 - pageTopY()) / (currentPageScale || 1);
+    var current = 1;
+    for (var i = 0; i < pageBreakOffsets.length; i++) {
+      if (yInPage >= pageBreakOffsets[i]) current = i + 2;
+    }
     current = Math.min(pageGuideCount, Math.max(1, current));
     document.querySelectorAll('.page-link').forEach(function(btn) {
       btn.classList.toggle('active', btn.getAttribute('data-page-jump') === String(current));

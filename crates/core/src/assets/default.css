@@ -1016,8 +1016,34 @@ main#page .blk {
    render every block: MathJax measures pathologically slowly inside skipped
    subtrees, and print must never rely on size estimates. */
 body.print-preparing main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
+/* Print geometry, shared with the on-screen A4 page guide so the guide marks
+   where the printout actually breaks. A4 with 17mm margins gives a 176mm text
+   column, which equals the on-screen A4 column (794px − 2×64px padding ≈
+   176mm) — so line wrapping (and therefore vertical flow and page breaks)
+   match between screen and print. `--print-page-content-mm: 263` is the
+   printable height (297 − 2×17) that pageBreakYs() paginates by. */
+:root { --print-margin-mm: 17; --print-page-content-mm: 263; }
+@page { size: A4; margin: 17mm; }
 @media print {
+  /* Hide all viewer chrome — only the paper prints. */
+  .topbar, .side-panel, details.warnings, dialog,
+  .page-guide-layer, .lineno-layer, .refkey-chip, .margin-layer { display: none !important; }
+  html, body { background: #fff; margin: 0; }
+  body { color: #000; }
+  #page-shell { width: auto; margin: 0; box-shadow: none; }
+  /* Map the content 1:1 onto the @page printable area: no outer frame, no
+     zoom, no page padding (the @page margin supplies the margins). The width
+     is the printable width so line breaks match the on-screen A4 column. */
+  body.page-mode-a4 main#page, main#page {
+    width: auto; zoom: 1; border: 0; box-shadow: none; padding: 0;
+    content-visibility: visible;
+  }
   main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
+  /* Keep atomic units whole across a page break — this is what pageBreakYs()
+     assumes when it places a guide before a block that would overflow. */
+  .blk, .thm, .proof, .float-placeholder, blockquote.quote,
+  figure, table, .math.display, mjx-container { break-inside: avoid; }
+  .sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4 { break-after: avoid; }
 }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
 /* `quote` / `quotation`: an indented block quotation. Body is parsed normally,

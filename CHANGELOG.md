@@ -17,6 +17,29 @@ summary.
 
 Nothing yet.
 
+## [0.1.96] — 2026-07-08
+
+### Changed
+
+- **Typesetting now follows a window around the viewport instead of filling the
+  whole document in the background.** Only the visible blocks plus a buffer
+  above/below are typeset; the rest waits until you scroll to it (and Cmd+P
+  still typesets everything on demand). Memory and CPU track what you actually
+  read rather than the whole paper.
+
+### Fixed
+
+- **The A4 page-break guide no longer crosses lines of text and now marks where
+  Cmd+P actually breaks.** Previously it was a fixed cosmetic line every ~1123px
+  drawn over the text, unrelated to print. Now a real `@page` rule (A4, 17mm
+  margins) makes print deterministic with the same text column as the screen,
+  and the on-screen guide is computed by simulating that pagination — each
+  break lands in the gap *before* a block that would overflow the page (like
+  print's `break-inside: avoid`), so it sits in whitespace and lines up with the
+  printout. Guides refine as you scroll regions into view.
+- **Cmd+P prints only the paper.** Print media now hides the toolbar, side
+  panel, guides, and other viewer chrome.
+
 ## [0.1.95] — 2026-07-08
 
 ### Added

@@ -561,9 +561,6 @@
   });
 
   var pendingTypeset = new Set();
-  // Timestamp of the last patch/body update — the background idle typesetter
-  // backs off while the user is actively editing.
-  var lastRenderActivityAt = 0;
   var typesetTimer = 0;
   var typesetBusy = false;
   var initialTypesetQueued = false;
@@ -811,63 +808,73 @@
     if (dlg) dlg.addEventListener('cancel', function() { printFlushCancelled = true; });
   })();
 
-  // Background idle typesetting: after the visible page is settled, quietly
-  // typeset the REST of the document one block at a time during idle moments —
-  // so scrolling rarely waits and a later Cmd+P usually has nothing left to
-  // flush. Each block's containment is lifted just for its own typeset
-  // (MathJax measures pathologically slowly inside skipped subtrees), then
-  // restored, so the viewer stays lazy for layout. Backs off while the user is
-  // editing (recent patches), while a print flush runs, and in hidden tabs.
-  var idleTypesetTimer = 0;
-  function scheduleIdleTypeset(delay) {
-    if (idleTypesetTimer) return;
-    idleTypesetTimer = setTimeout(idleTypesetStep, delay);
+  // Windowed typesetting: typeset only the region around the viewport — the
+  // visible blocks plus a buffer above and below — rather than the whole
+  // document. An IntersectionObserver with a generous rootMargin (the
+  // TYPESET_WINDOW below) reports each block as it approaches the viewport; we
+  // typeset that block then, lifting its containment just for the typeset
+  // (MathJax measures pathologically slowly inside content-visibility-skipped
+  // subtrees) and restoring it after. The rest of the document stays untypeset
+  // until you scroll to it — memory and CPU track what you actually read, and
+  // Cmd+P flushes the whole document on demand (see typesetAllForPrint).
+  var TYPESET_WINDOW = '150% 0px'; // ~1.5 viewports of buffer above and below
+  var windowQueue = new Set();
+  var windowDrainTimer = 0;
+  var typesetObserver = null;
+  function ensureTypesetObserver() {
+    if (typesetObserver || typeof IntersectionObserver === 'undefined') return;
+    typesetObserver = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        if (!e.isIntersecting) return;
+        typesetObserver.unobserve(e.target); // typeset once; re-observed if re-rendered
+        if (e.target.querySelector('.math[data-hash] .math-source')) {
+          windowQueue.add(e.target);
+        }
+      });
+      if (windowQueue.size) scheduleWindowDrain(0);
+    }, { rootMargin: TYPESET_WINDOW });
   }
-  async function idleTypesetStep() {
-    idleTypesetTimer = 0;
-    // NOTE: deliberately no document.hidden gate — the preview is usually a
-    // background tab while the user types in the editor, and that's exactly
-    // when spare cycles are available. Browsers throttle background-tab timers
-    // (~1/s, harder after prolonged hiding), which is pacing enough.
-    if (printFlushPromise || typesetBusy ||
-        performance.now() - lastRenderActivityAt < 1500) {
-      scheduleIdleTypeset(1500);
-      return;
-    }
+  // (Re)observe every top-level block that still holds raw math. Cheap and
+  // idempotent — the observer ignores already-observed elements, and blocks
+  // replaced by a patch are new nodes that get observed here.
+  function observeTypesetWindow() {
+    ensureTypesetObserver();
+    if (!typesetObserver) return;
     var page = pageEl();
     if (!page) return;
-    // Next block that still holds raw math, in document order.
-    // First genuinely-raw math node (`.math-source` spans persist after
-    // typesetting, so a child-selector shortcut would sit on block 0 forever).
-    var all = page.querySelectorAll('.math[data-hash]');
-    var rawNode = null;
-    for (var ri = 0; ri < all.length; ri++) {
-      if (isRawMathNode(all[ri])) { rawNode = all[ri]; break; }
+    pageBlocks(page).forEach(function(blk) {
+      if (blk.querySelector('.math[data-hash] .math-source')) typesetObserver.observe(blk);
+    });
+  }
+  function scheduleWindowDrain(delay) {
+    if (windowDrainTimer) return;
+    windowDrainTimer = setTimeout(drainWindowTypeset, delay);
+  }
+  async function drainWindowTypeset() {
+    windowDrainTimer = 0;
+    if (!windowQueue.size) return;
+    // Yield to the print flush and to an in-progress typeset batch.
+    if (printFlushPromise || typesetBusy) { scheduleWindowDrain(150); return; }
+    var blk = windowQueue.values().next().value;
+    windowQueue.delete(blk);
+    if (blk && blk.isConnected) {
+      var nodes = Array.from(blk.querySelectorAll('.math[data-hash]')).filter(isRawMathNode);
+      if (nodes.length) {
+        typesetBusy = true;
+        var lifted = blk.style.contentVisibility === '';
+        if (lifted) blk.style.contentVisibility = 'visible';
+        try {
+          nodes.forEach(syncMathSourceText);
+          await window.__mpEngine.typeset(nodes);
+        } catch (err) {
+          console.error('mathpreview window typeset:', err);
+        } finally {
+          if (lifted) blk.style.contentVisibility = '';
+          typesetBusy = false;
+        }
+      }
     }
-    if (!rawNode) return; // everything typeset — done for this session
-    var blk = rawNode.closest ? rawNode.closest('main#page > .blk') : null;
-    var nodes = blk
-      ? Array.from(blk.querySelectorAll('.math[data-hash]')).filter(isRawMathNode)
-      : [rawNode];
-    if (!nodes.length) { scheduleIdleTypeset(500); return; }
-    // Cap the batch: one huge proof block typeset in a single call would block
-    // the main thread for seconds; the next step resumes where this left off.
-    nodes = nodes.slice(0, 40);
-    typesetBusy = true;
-    var lifted = blk && blk.style.contentVisibility === '';
-    if (lifted) blk.style.contentVisibility = 'visible';
-    try {
-      nodes.forEach(syncMathSourceText);
-      await window.__mpEngine.typeset(nodes);
-    } catch (e) {
-      console.error('mathpreview idle typeset:', e);
-      typesetBusy = false;
-      return; // stop the loop on engine errors rather than spinning
-    } finally {
-      if (lifted) blk.style.contentVisibility = '';
-      typesetBusy = false;
-    }
-    scheduleIdleTypeset(200);
+    if (windowQueue.size) scheduleWindowDrain(0);
   }
 
   // Resolves to true when the full flush completed, false when cancelled.
@@ -957,8 +964,9 @@
       if (pendingTypeset.size && !typesetTimer) {
         scheduleTypesetFlush(TYPESET_IDLE_MS);
       }
-      // Visible math is settled — let the background loop work on the rest.
-      scheduleIdleTypeset(3000);
+      // Watch the rest of the document so each block typesets as it nears the
+      // viewport (the whole document only on Cmd+P).
+      observeTypesetWindow();
     }
   }
 
@@ -991,7 +999,6 @@
   // collisions caused by insertion-before-existing-content edits.
   async function applyPatch(ops, blocksMeta) {
     var tStart = performance.now();
-    lastRenderActivityAt = tStart;
     setStatus('updating', '↻ patching');
     var page = document.getElementById('page');
     var tpl = document.createElement('template');

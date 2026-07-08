@@ -15,8 +15,9 @@
   var topbarHidden = false;
   var navRefreshTimer = 0;
   var activePageTimer = 0;
-  var pageGuideLayoutHeightPx = 0;
-  var pageGuideVisualHeightPx = 0;
+  // Page-boundary Y offsets in the page's own (unzoomed) coordinate space,
+  // one per page break, computed by pageBreakYs() to match where print breaks.
+  var pageBreakOffsets = [];
   var pageGuideCount = 1;
   var currentPageScale = 1;
   var currentUserZoom = 1;
@@ -28,6 +29,10 @@
   var NAV_RESIZE_IDLE_MS = 120;
   var A4_CSS_WIDTH = 794;
   var A4_RATIO = 297 / 210;
+  // Printable A4 content height as a fraction of width: (297 − 2×17mm margin)
+  // / 210mm. Matches the @page margin in default.css so the on-screen page
+  // guide marks where Cmd+P actually breaks.
+  var A4_PRINT_CONTENT_RATIO = (297 - 2 * 17) / 210;
   var DYNAMIC_BASE_WIDTH = 720;
   var navNeedsIndex = true;
   var navNeedsPages = true;
@@ -94,10 +99,17 @@
     return Math.max(12, Math.round(topbar.getBoundingClientRect().height + 8));
   }
 
+  // Page N starts at offset 0 (page 1) or the (N-1)-th break. Offsets are in
+  // unzoomed page coords, so scale to viewport coords by currentPageScale.
+  function pageStartOffset(pageNo) {
+    if (pageNo <= 1) return 0;
+    var idx = Math.min(pageBreakOffsets.length, pageNo - 1) - 1;
+    return idx >= 0 ? pageBreakOffsets[idx] : 0;
+  }
   function scrollToPage(pageNo) {
-    if (!pageGuideVisualHeightPx) refreshNavigation();
+    if (!pageBreakOffsets.length && pageGuideCount <= 1) refreshNavigation();
     recordViewerPlace();
-    var y = pageTopY() + (pageNo - 1) * pageGuideVisualHeightPx - topbarOffset();
+    var y = pageTopY() + pageStartOffset(pageNo) * currentPageScale - topbarOffset();
     window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
   }
 

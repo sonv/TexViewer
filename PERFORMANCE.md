@@ -93,27 +93,47 @@ scrolled near, focused, `scrollIntoView`'d). Browsers without the event fall
 back to eager. Cold load: the visible page typesets in ~0.2 s (29 equations);
 jumping to 60% typesets its neighborhood (373 equations) in ~2.5 s once.
 
-## Layer 5 — Background idle typesetting (v0.1.95)
+## Layer 5 — Windowed typesetting (v0.1.95 → refined v0.1.96)
 
-Lazy typesetting left two costs: first scroll into deep sections waits, and
-printing paid the full flush. So after the visible flush settles, an idle loop
-typesets the rest — one block at a time, ≤40 nodes per step (a giant proof
-block must not block the main thread for seconds), **lifting that block's
-containment just for its own typeset** (layer 4's lesson) and restoring it
-after. It backs off for 1.5 s after any patch (typing always wins), pauses
-during print flushes, and stops when nothing raw remains.
+v0.1.95 typeset the whole document in the background after the visible flush.
+v0.1.96 replaced that with a **viewport window**: only the region around the
+viewport is typeset — the visible blocks plus a buffer above and below — and
+the rest stays untypeset until scrolled to. Memory and CPU then track what you
+actually read (a 3,300-equation paper keeps tens of typeset equations, not all
+3,300), and the whole document is typeset only on demand by Cmd+P (layer 6).
 
-Deliberately **no `document.hidden` gate**: the preview is usually a
-background tab while the user types in the editor — exactly when spare cycles
-exist. The browser's own background-tab timer throttling paces it. (The first
-implementation had the gate; live verification showed the loop would never run
-in the dominant workflow.) Measured: 1,733 equations in the first ~40 s of a
-hidden tab, whole document in under 2 minutes.
+Mechanism: an `IntersectionObserver` with a generous `rootMargin`
+(`TYPESET_WINDOW`, ~1.5 viewports) reports each top-level block as it nears the
+viewport; a drain worker typesets that block, **lifting its containment just
+for the typeset** (layer 4's lesson — MathJax is ~3× slower inside a skipped
+subtree) and restoring it after. The drain yields to the print flush and to any
+in-progress typeset batch (`typesetBusy`). Blocks are re-observed after each
+render, since a patch replaces them with new nodes.
 
 Note the raw-math predicate: `.math-source` spans persist after typesetting,
 so "has a `.math-source`" does NOT mean untypeset — `isRawMathNode` (no
-`mjx-container` child) is the only correct check. The first idle-loop
-implementation used the wrong predicate and silently spun on block 0 forever.
+`mjx-container` child) is the only correct check.
+
+## Page guides that match print (v0.1.96)
+
+The A4 page-break guides were a cosmetic overlay: a line every
+`794 × 297/210 ≈ 1123px`, drawn over the text, unrelated to real pagination —
+so lines crossed text and never matched Cmd+P. Now:
+
+- A real **`@page { size: A4; margin: 17mm }`** plus print CSS maps the content
+  1:1 onto the printable area (no outer frame, no zoom, `@page` margins supply
+  the margins) and adds `break-inside: avoid` to atomic blocks. The 176mm
+  printable column equals the on-screen A4 column (794px − 2×64px ≈ 176mm), so
+  line wrapping — and therefore vertical flow and breaks — agree between screen
+  and print. Print is now deterministic instead of using the browser default.
+- The guide is computed by **simulating that pagination** (`pageBreakYs`):
+  walk the top-level blocks at the printable height (263mm) and place a break
+  in the GAP before any block that would overflow — the same rule as
+  `break-inside: avoid`. The line lands in whitespace (never on a text line)
+  at positions that match where print breaks. Block geometry comes from
+  `offsetTop`/`offsetHeight`; `contain-intrinsic-size: auto` makes these exact
+  for rendered regions, so guides are accurate where you read and are
+  recomputed (signature-gated) as you scroll fresh regions into view.
 
 ## Layer 6 — Print correctness (v0.1.93–94)
 

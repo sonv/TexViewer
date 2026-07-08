@@ -259,5 +259,13 @@
     if (lineNumbersVisible) scheduleLineNumbers();
   });
   window.addEventListener('scroll', scheduleActivePageUpdate, { passive: true });
+  // As you scroll into fresh regions, content-visibility firms up real block
+  // heights (they were 180px estimates); recompute the page guides shortly
+  // after scrolling pauses so their positions match the now-real layout. The
+  // rebuild is signature-gated, so once a region's breaks stabilize this is a
+  // no-op there.
+  window.addEventListener('scroll', function() {
+    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+  }, { passive: true });
   connect();
 })();
