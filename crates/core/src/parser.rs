@@ -252,6 +252,38 @@ const MATH_ENVS: &[&str] = &[
 
 const TRANSPARENT_ENVS: &[&str] = &["center"];
 
+/// Environments whose entire body is discarded, like a `%` line comment — the
+/// `comment` package's `comment` env (and its common aliases). Matches how
+/// LaTeX drops them, rather than showing the body as a muted opaque block.
+const SKIP_ENVS: &[&str] = &["comment"];
+
+/// TeX conditional primitives that pair with `\fi`. Used to balance nested
+/// conditionals when skipping an `\iffalse … \fi` block. Deliberately excludes
+/// package macros that merely look like `\if…` but take no `\fi` (e.g.
+/// `\ifthenelse`), so they don't throw off the `\fi` matching.
+const IF_OPENERS: &[&str] = &[
+    "if",
+    "iffalse",
+    "iftrue",
+    "ifnum",
+    "ifdim",
+    "ifodd",
+    "ifx",
+    "ifcat",
+    "ifcase",
+    "ifmmode",
+    "ifvmode",
+    "ifhmode",
+    "ifinner",
+    "ifvoid",
+    "ifhbox",
+    "ifvbox",
+    "ifeof",
+    "ifdefined",
+    "ifcsname",
+    "iffontchar",
+];
+
 /// Maximum recognized-environment nesting before we stop recursing and capture
 /// the rest as an opaque block. Each recognized container (`center`, theorems,
 /// lists, proofs, …) descends with a fresh sub-`Parser` — one stack frame per
@@ -596,6 +628,15 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                // `\iffalse … \fi` — the "comment out a block" idiom. Skip the
+                // whole conditional (its body never renders), like a `%` comment.
+                if cmd == "iffalse" {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    self.advance_to(cmd_name_end);
+                    self.skip_false_conditional();
+                    continue;
+                }
+
                 if cmd == "appendix" {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     self.advance_to(cmd_name_end);
@@ -863,6 +904,15 @@ impl<'a> Parser<'a> {
         // would add a stack frame per level and eventually abort the process.
         if self.depth >= MAX_NESTING_DEPTH {
             self.capture_opaque_env(out, start, env);
+            return;
+        }
+
+        // Discarded environments (the `comment` package): consume the body and
+        // emit nothing, like a `%` comment — don't render it as an opaque block.
+        if SKIP_ENVS.contains(&env.as_str()) {
+            let body_end = self.find_matching_end(&env);
+            self.advance_to(body_end);
+            self.advance(format!("\\end{{{env}}}").len());
             return;
         }
 
@@ -1343,6 +1393,58 @@ impl<'a> Parser<'a> {
     /// Find the end byte of the matching `\end{env}` from `self.byte`,
     /// respecting nested `\begin{env}` / `\end{env}` of the same env name.
     /// Returns the byte index of `\end`. If unmatched, returns end-of-source.
+    /// Skip a `\iffalse … \fi` block (self.byte must be just past `\iffalse`).
+    /// Nested TeX conditionals are balanced so an inner `\iffalse`/`\iftrue`/…
+    /// doesn't let the wrong `\fi` close the block. A top-level `\else` switches
+    /// to the false branch, which DOES render, so we resume parsing there (the
+    /// trailing `\fi` is then an inert unknown control word). Only known
+    /// conditional primitives count as nested openers — an unknown `\newif`
+    /// conditional at worst stops the skip early (showing a little) rather than
+    /// over-skipping real content.
+    fn skip_false_conditional(&mut self) {
+        let bytes = self.bytes;
+        let mut i = self.byte;
+        let mut depth: i32 = 1;
+        let mut else_at: Option<usize> = None;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'%' {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if b == b'\\' {
+                let name_start = i + 1;
+                let mut j = name_start;
+                while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                let name = &self.src[name_start..j];
+                if IF_OPENERS.contains(&name) {
+                    depth += 1;
+                } else if name == "fi" {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Resume after `\else` (render the false branch) or past
+                        // the matching `\fi` if there was none.
+                        self.advance_to(else_at.unwrap_or(j));
+                        return;
+                    }
+                } else if name == "else" && depth == 1 && else_at.is_none() {
+                    else_at = Some(j);
+                }
+                // Advance past the control word (control symbols like `\\` have
+                // an empty alpha run — step one byte so we make progress).
+                i = if j > name_start { j } else { name_start + 1 };
+                continue;
+            }
+            i += 1;
+        }
+        // Unterminated `\iffalse` — discard to end of input.
+        self.advance_to(bytes.len());
+    }
+
     fn find_matching_end(&self, env: &str) -> usize {
         let begin_tok = format!("\\begin{{{env}}}");
         let end_tok = format!("\\end{{{env}}}");
@@ -2123,6 +2225,68 @@ mod tests {
         assert!(n.iter().any(
             |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "verbatim")
         ));
+    }
+
+    // Recursively true if any node's rendered-ish text contains `needle`.
+    fn tree_has_text(nodes: &[Node], needle: &str) -> bool {
+        nodes.iter().any(|n| {
+            let here = match &n.kind {
+                NodeKind::Text(s) => s.contains(needle),
+                NodeKind::OpaqueEnv { body, .. } => body.contains(needle),
+                NodeKind::OpaqueCmd { raw, .. } => raw.contains(needle),
+                _ => false,
+            };
+            here || tree_has_text(&n.children, needle)
+        })
+    }
+
+    #[test]
+    fn comment_env_body_discarded() {
+        // The `comment` package's env is dropped, not shown as an opaque block.
+        let n = parse("Before \\begin{comment}SECRET $x$\\end{comment} After\n");
+        assert!(tree_has_text(&n, "Before"));
+        assert!(tree_has_text(&n, "After"));
+        assert!(!tree_has_text(&n, "SECRET"), "comment body leaked: {n:#?}");
+        assert!(
+            !n.iter()
+                .any(|x| matches!(&x.kind, NodeKind::OpaqueEnv { env, .. } if env == "comment")),
+            "comment became an opaque block"
+        );
+    }
+
+    #[test]
+    fn iffalse_block_discarded() {
+        let n = parse("Keep \\iffalse HIDDEN $y$ \\fi kept\n");
+        assert!(tree_has_text(&n, "Keep"));
+        assert!(tree_has_text(&n, "kept"));
+        assert!(!tree_has_text(&n, "HIDDEN"), "iffalse body leaked: {n:#?}");
+    }
+
+    #[test]
+    fn iffalse_nested_conditionals_balanced() {
+        // The inner \iftrue…\fi must not let the wrong \fi close the block.
+        let n = parse("A \\iffalse x \\iftrue y \\fi z \\fi B\n");
+        assert!(tree_has_text(&n, "A"));
+        assert!(tree_has_text(&n, "B"));
+        for leaked in ["x", "y", "z"] {
+            assert!(!tree_has_text(&n, leaked), "leaked {leaked:?}: {n:#?}");
+        }
+    }
+
+    #[test]
+    fn iffalse_else_renders_false_branch() {
+        // `\iffalse` is false → the \else branch renders, the true branch drops.
+        let n = parse("\\iffalse TRUEBRANCH \\else FALSEBRANCH \\fi\n");
+        assert!(tree_has_text(&n, "FALSEBRANCH"), "else branch missing: {n:#?}");
+        assert!(!tree_has_text(&n, "TRUEBRANCH"), "true branch leaked");
+    }
+
+    #[test]
+    fn iftrue_content_still_renders() {
+        // Only `\iffalse` is skipped; `\iftrue` content is kept (its markers are
+        // inert unknown commands).
+        let n = parse("\\iftrue KEEPME \\fi\n");
+        assert!(tree_has_text(&n, "KEEPME"), "iftrue body dropped: {n:#?}");
     }
 
     #[test]

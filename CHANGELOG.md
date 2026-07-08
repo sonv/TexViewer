@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [0.1.100] — 2026-07-08
+
+### Fixed
+
+- **Commented-out blocks are no longer rendered.** `\begin{comment}…\end{comment}`
+  (the `comment` package) was shown as a muted box, and `\iffalse…\fi` (the
+  "comment out a block" idiom) rendered its body as normal text — only `%` line
+  comments were correctly hidden. Both are now dropped like `%`. `\iffalse`
+  balances nested TeX conditionals and honors a top-level `\else` (its false
+  branch still renders); `\iftrue…\fi` content is unaffected.
+
 ## [0.1.99] — 2026-07-08
 
 ### Changed
