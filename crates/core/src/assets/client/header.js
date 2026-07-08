@@ -57,10 +57,9 @@
   var textSearchQuery = '';
   var textSearchResults = [];
   var textSearchIndex = -1;
-  // Fuzzy (typo-tolerant) text search toggle. When on, the `/` panel matches
-  // words within a small edit distance of each query word instead of literal
-  // substrings. Persisted in localStorage.
-  var fuzzySearchEnabled = false;
+  // Word-completion suggestions shown under the `/` box as you type.
+  var searchSuggestions = [];
+  var searchSuggestIndex = -1;
   // Editor-driven search: the nvim `/` pattern, pushed by the plugin and
   // highlighted (all matches) in the preview like vim's hlsearch.
   var editorSearchQuery = '';

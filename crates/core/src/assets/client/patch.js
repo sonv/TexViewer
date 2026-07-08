@@ -461,10 +461,9 @@
       setSideTab(sideTab.getAttribute('data-side-tab'));
       return;
     }
-    if (e.target.closest('#search-fuzzy')) {
-      setFuzzySearch(!fuzzySearchEnabled, true);
-      var si = searchInputEl();
-      if (si) si.focus({ preventScroll: true });
+    var suggestBtn = e.target.closest('#search-suggest .search-suggestion');
+    if (suggestBtn) {
+      acceptSearchSuggestion(parseInt(suggestBtn.dataset.suggestIndex, 10));
       return;
     }
     var pageJump = e.target.closest('[data-page-jump]');
@@ -515,14 +514,35 @@
     }
     var searchInput = searchInputEl();
     if (e.target === searchInput) {
+      var hasSuggest = searchSuggestions.length > 0;
+      if (e.key === 'ArrowDown' && hasSuggest) {
+        e.preventDefault();
+        cycleSearchSuggestion(1);
+        return;
+      }
+      if (e.key === 'ArrowUp' && hasSuggest) {
+        e.preventDefault();
+        cycleSearchSuggestion(-1);
+        return;
+      }
+      if (e.key === 'Tab' && hasSuggest) {
+        // Accept the highlighted suggestion, or the top one if none highlighted.
+        e.preventDefault();
+        acceptSearchSuggestion(searchSuggestIndex >= 0 ? searchSuggestIndex : 0);
+        return;
+      }
       if (e.key === 'Escape') {
         e.preventDefault();
-        closeSearchPanel();
+        // First Esc dismisses the suggestion list; a second closes the panel.
+        if (hasSuggest) clearSearchSuggestions();
+        else closeSearchPanel();
         return;
       }
       if (e.key === 'Enter') {
         e.preventDefault();
-        runSearch(e.shiftKey);
+        // Enter accepts a highlighted suggestion; otherwise runs the search.
+        if (searchSuggestIndex >= 0) acceptSearchSuggestion(searchSuggestIndex);
+        else runSearch(e.shiftKey);
         return;
       }
       return;

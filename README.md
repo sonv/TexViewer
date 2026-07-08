@@ -504,11 +504,14 @@ a Rust roundtrip unless they are controlling the daemon itself.
   `$\alpha$`) to match only SVG math glyphs, skipping body text. A single
   letter or `\command` auto-widens across MathJax's style variants
   (italic, bold, script, …), so `m:n` finds the italic-`n` in `$n^2$`.
-- **Fuzzy search.** Toggle the `~` button in the `/` panel to make matching
-  typo-tolerant: each query word matches document words within a small edit
-  distance (including transpositions), so `coagualtion` finds `coagulation`
-  and `gaint clustr` finds `giant cluster`. Cycling and the current/total
-  counter work as usual; the toggle is remembered. Off = exact literal search.
+- **Fuzzy search with word suggestions.** The `/` search is typo-tolerant by
+  default — each query word matches document words within a small edit distance
+  (including transpositions), so `coagualtion` finds `coagulation` and
+  `gaint clustr` finds `giant cluster`. As you type, a strip of matching
+  document words appears above the box; `Tab` or `↑`/`↓`+`Enter` completes to
+  one (or click it). Cycling and the current/total counter work as usual.
+  Prefix `m:` or `$…$` to search math instead; use the browser's **Cmd/Ctrl+F**
+  for exact literal search.
 
 The status dot in the toolbar reports each update — e.g. `● 6ms · 1r /
 typeset 0` for a one-block patch, or a fuller `parse / diff / swap /

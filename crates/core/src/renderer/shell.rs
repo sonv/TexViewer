@@ -165,12 +165,11 @@ pub(super) fn wrap_in_shell(
 <button class="topbar-stripe" id="topbar-stripe" type="button" aria-expanded="true" aria-controls="topbar-banner" title="toggle top banner"></button>
 <button class="side-toggle" id="side-toggle" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
 <div class="search-panel" id="search-panel" hidden>
+  <div class="search-suggest" id="search-suggest" hidden></div>
   <label for="search-input">/</label>
-  <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="search">
-  <button type="button" class="search-fuzzy-toggle" id="search-fuzzy" aria-pressed="false"
-          title="fuzzy (typo-tolerant) search — match words within a small edit distance">~</button>
+  <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="fuzzy search">
   <span class="search-count" id="search-count" aria-live="polite"></span>
-  <span class="search-help">Enter next · Shift+Enter previous · Esc close · <code>~</code> fuzzy · prefix <code>m:</code> or <code>$</code> for math-only</span>
+  <span class="search-help">Typo-tolerant · Tab/↑↓ complete a suggested word · Enter next · Shift+Enter previous · Esc close · <code>m:</code>/<code>$</code> math · Cmd+F for exact</span>
 </div>
 <aside class="side-panel" id="viewer-side" aria-label="document navigation">
   <div class="side-tabs" role="tablist" aria-label="navigation mode">

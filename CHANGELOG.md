@@ -17,18 +17,28 @@ summary.
 
 Nothing yet.
 
+## [0.1.99] — 2026-07-08
+
+### Changed
+
+- **The `/` search is fuzzy by default (no toggle), and suggests words as you
+  type.** Exact literal search is the browser's own Cmd/Ctrl+F, so the viewer's
+  `/` is now purely typo-tolerant. As you type, a strip of document words that
+  complete the word you're on appears above the box — prefix, substring, and
+  typo matches ranked by closeness and frequency. `Tab` or `↑`/`↓` + `Enter`
+  completes to a suggestion (or click it); a plain `Enter` runs the fuzzy search
+  as typed. `m:`/`$` still route to math search.
+
 ## [0.1.98] — 2026-07-08
 
 ### Added
 
-- **Fuzzy (typo-tolerant) search in the viewer.** A `~` toggle in the `/`
-  search panel makes matching typo-tolerant: each query word matches document
-  words within a small edit distance, including transpositions ("gaint"
-  finds "giant", "coagualtion" finds "coagulation"). Multi-word queries match a
-  run of consecutive words, each fuzzily. All the usual search UX applies —
+- **Fuzzy (typo-tolerant) search in the viewer.** The `/` search matches
+  document words within a small edit distance — including transpositions
+  ("gaint" finds "giant", "coagualtion" finds "coagulation"); multi-word
+  queries match a run of consecutive words. All the usual search UX applies:
   every match highlighted, `Enter`/`Shift+Enter` to cycle, current/total
-  counter. The toggle is remembered across sessions; leave it off for exact
-  literal search.
+  counter. (See 0.1.99 — this is now the default, with word suggestions.)
 
 ## [0.1.97] — 2026-07-08
 

@@ -27,6 +27,7 @@
     input.value = lastSearchQuery;
     input.focus({ preventScroll: true });
     input.select();
+    clearSearchSuggestions();
   }
 
   function closeSearchPanel() {
@@ -34,7 +35,16 @@
     var input = searchInputEl();
     if (panel) panel.hidden = true;
     if (input && document.activeElement === input) input.blur();
+    clearSearchSuggestions();
     clearSearchSession();
+  }
+
+  // Wire the `/` input's live suggestion refresh (called once at startup).
+  function initSearchPanel() {
+    var input = searchInputEl();
+    if (!input || input.dataset.searchInit === '1') return;
+    input.dataset.searchInit = '1';
+    input.addEventListener('input', refreshSearchSuggestions);
   }
 
   var TEX_SYMBOL_CODEPOINTS = {
@@ -603,26 +613,119 @@
     return results;
   }
 
-  // Which matcher the `/` panel uses, per the fuzzy toggle.
+  // The `/` panel is always fuzzy (typo-tolerant). Exact literal search is the
+  // browser's own Cmd/Ctrl+F. `buildTextMatches` is still used for the
+  // editor-driven (nvim `/`) highlight, which mirrors vim's literal pattern.
   function buildSearchMatches(query) {
-    return fuzzySearchEnabled ? buildFuzzyMatches(query) : buildTextMatches(query);
+    return buildFuzzyMatches(query);
   }
 
-  function setFuzzySearch(on, persist) {
-    fuzzySearchEnabled = !!on;
-    var btn = document.getElementById('search-fuzzy');
-    if (btn) {
-      btn.classList.toggle('active', fuzzySearchEnabled);
-      btn.setAttribute('aria-pressed', fuzzySearchEnabled ? 'true' : 'false');
+  // --- Word suggestions: as you type in the `/` box, offer document words that
+  // (fuzzily) match the word you're on, so you can complete to the real term. ---
+
+  var SEARCH_MAX_SUGGESTIONS = 8;
+  var searchVocab = null;
+  var searchVocabSig = '';
+  // Unique document words (≥3 chars) with a first-seen casing and a frequency,
+  // cached until the flattened text changes.
+  function getSearchVocab() {
+    var flat = collectSearchText();
+    var sig = flat.text.length + ':' + flat.text.slice(0, 96);
+    if (searchVocab && searchVocabSig === sig) return searchVocab;
+    var byLower = new Map();
+    var re = /[\p{L}\p{N}]+/gu;
+    var m;
+    while ((m = re.exec(flat.text))) {
+      if (m[0].length < 3) continue;
+      var lw = m[0].toLowerCase();
+      var e = byLower.get(lw);
+      if (e) e.freq++;
+      else byLower.set(lw, { w: m[0], lower: lw, freq: 1 });
     }
-    if (persist) {
-      try { localStorage.setItem('mathpreview.fuzzySearch', fuzzySearchEnabled ? '1' : '0'); } catch (e) {}
+    searchVocab = Array.from(byLower.values());
+    searchVocabSig = sig;
+    return searchVocab;
+  }
+
+  // Rank vocab words as completions of the last query word: prefix > substring
+  // > typo (edit distance), with frequency and brevity as tiebreakers.
+  function suggestWords(query, limit) {
+    var qTokens = (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!qTokens.length) return [];
+    var q = qTokens[qTokens.length - 1];
+    if (q.length < 2) return [];
+    var vocab = getSearchVocab();
+    var scored = [];
+    for (var i = 0; i < vocab.length; i++) {
+      var w = vocab[i];
+      if (w.lower === q) continue; // already typed exactly — nothing to complete
+      var base;
+      if (w.lower.indexOf(q) === 0) base = 3;          // prefix
+      else if (w.lower.indexOf(q) !== -1) base = 2;    // substring
+      else if (q.length >= 3 && withinEditDistance(q, w.lower, q.length <= 5 ? 1 : 2)) base = 1; // typo
+      else continue;
+      scored.push({ w: w.w, score: base * 1000 + Math.min(w.freq, 60) - w.lower.length * 0.5 });
     }
-    // Re-run the active search so the toggle takes effect immediately.
-    if (persist && searchPanelIsOpen() && lastSearchQuery) {
-      textSearchQuery = ''; // force a fresh result set (not a cycle)
-      runSearch(false);
-    }
+    scored.sort(function(a, b) { return b.score - a.score; });
+    return scored.slice(0, limit).map(function(s) { return s.w; });
+  }
+
+  function searchSuggestEl() { return document.getElementById('search-suggest'); }
+
+  function clearSearchSuggestions() {
+    searchSuggestions = [];
+    searchSuggestIndex = -1;
+    var el = searchSuggestEl();
+    if (el) { el.hidden = true; el.replaceChildren(); }
+  }
+
+  function renderSearchSuggestions() {
+    var el = searchSuggestEl();
+    if (!el) return;
+    if (!searchSuggestions.length) { clearSearchSuggestions(); return; }
+    el.hidden = false;
+    el.replaceChildren();
+    searchSuggestions.forEach(function(word, i) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'search-suggestion';
+      if (i === searchSuggestIndex) btn.classList.add('active');
+      btn.dataset.suggestIndex = String(i);
+      btn.textContent = word;
+      el.appendChild(btn);
+    });
+  }
+
+  // Recompute suggestions from the current input (called on each keystroke).
+  // Skipped for math queries (`m:`/`$`/`\cmd`), which aren't word searches.
+  function refreshSearchSuggestions() {
+    var input = searchInputEl();
+    if (!input || !searchPanelIsOpen()) { clearSearchSuggestions(); return; }
+    var v = input.value;
+    if (!v || looksLikeMathSearch(v) || /^\s*m:/.test(v)) { clearSearchSuggestions(); return; }
+    searchSuggestions = suggestWords(v, SEARCH_MAX_SUGGESTIONS);
+    searchSuggestIndex = -1;
+    renderSearchSuggestions();
+  }
+
+  function cycleSearchSuggestion(delta) {
+    if (!searchSuggestions.length) return false;
+    var n = searchSuggestions.length;
+    if (searchSuggestIndex < 0) searchSuggestIndex = delta > 0 ? 0 : n - 1;
+    else searchSuggestIndex = ((searchSuggestIndex + delta) % n + n) % n;
+    renderSearchSuggestions();
+    return true;
+  }
+
+  // Replace the last word of the query with the chosen suggestion, then search.
+  function acceptSearchSuggestion(i) {
+    var input = searchInputEl();
+    if (!input || i < 0 || i >= searchSuggestions.length) return false;
+    input.value = input.value.replace(/\S*$/, searchSuggestions[i]);
+    clearSearchSuggestions();
+    input.focus({ preventScroll: true });
+    runSearch(false);
+    return true;
   }
 
   // First match at/after the current viewport top (so a fresh `/` lands on the
@@ -781,6 +884,7 @@
       openSearchPanel();
       return false;
     }
+    clearSearchSuggestions();
     lastSearchQuery = query;
     if (input && document.activeElement === input) input.blur();
     var recorded = recordViewerPlace();
@@ -800,10 +904,10 @@
       setStatus('dead', '○ no math match ' + parsed.core);
       return false;
     }
-    // Fuzzy mode is text-oriented: skip the math auto-detect and fallback (an
-    // explicit `m:` sigil above still routes to math). A typo'd word shouldn't
-    // be reinterpreted as a math query.
-    if (!fuzzySearchEnabled && looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
+    // Math-looking queries (`\cmd`, `_`, `^`, `{}`, `$`) still route to math
+    // search — those special characters aren't word searches, so fuzzy text
+    // matching wouldn't apply anyway. Plain words go to the fuzzy text search.
+    if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
       clearTextSession();
       return true;
     }
@@ -818,7 +922,7 @@
       clearMathSearchHighlights();
     }
     var found = runPlainSearch(query, backwards);
-    if (!found && !fuzzySearchEnabled && runMathSearch(query, backwards)) {
+    if (!found && runMathSearch(query, backwards)) {
       clearTextSession();
       return true;
     }
