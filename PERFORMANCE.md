@@ -93,31 +93,105 @@ scrolled near, focused, `scrollIntoView`'d). Browsers without the event fall
 back to eager. Cold load: the visible page typesets in ~0.2 s (29 equations);
 jumping to 60% typesets its neighborhood (373 equations) in ~2.5 s once.
 
-## Layer 5 — Windowed typesetting (v0.1.95 → refined v0.1.96)
+## Layer 5 — Local window vs. background fill (v0.1.95–0.1.97)
 
-v0.1.95 typeset the whole document in the background after the visible flush.
-v0.1.96 replaced that with a **viewport window**: only the region around the
-viewport is typeset — the visible blocks plus a buffer above and below — and
-the rest stays untypeset until scrolled to. Memory and CPU then track what you
-actually read (a 3,300-equation paper keeps tens of typeset equations, not all
-3,300), and the whole document is typeset only on demand by Cmd+P (layer 6).
+This is the mechanism behind the `typeset-mode` config. All of it lives in
+[`patch.js`](crates/core/src/assets/client/patch.js).
 
-Mechanism: an `IntersectionObserver` with a generous `rootMargin`
-(`TYPESET_WINDOW`, ~1.5 viewports) reports each top-level block as it nears the
-viewport; a drain worker typesets that block, **lifting its containment just
-for the typeset** (layer 4's lesson — MathJax is ~3× slower inside a skipped
-subtree) and restoring it after. The drain yields to the print flush and to any
-in-progress typeset batch (`typesetBusy`). Blocks are re-observed after each
-render, since a patch replaces them with new nodes.
+### The starting point: everything is "raw" until typeset
 
-Background filling the whole document is still available as an opt-in: the
-`typeset-mode = "background"` config runs an idle loop (block-at-a-time,
-containment lifted per block, yielding to typing and prints) after the
-window settles. Default is `local` (window only).
+Each equation is rendered by the server as a `<span class="math" data-hash>`
+containing its LaTeX source in a `.math-source` span. MathJax replaces that with
+an `<mjx-container>` SVG when the math is *typeset*. So the one true test for
+"is this math still raw?" is **`isRawMathNode`** — a `.math[data-hash]` with **no
+`mjx-container` child**. (Do NOT test for a `.math-source` span: those persist
+after typesetting, so "has a `.math-source`" does not mean untypeset. An early
+background loop used that wrong predicate and spun on block 0 forever.)
 
-Note the raw-math predicate: `.math-source` spans persist after typesetting,
-so "has a `.math-source`" does NOT mean untypeset — `isRawMathNode` (no
-`mjx-container` child) is the only correct check.
+Typesetting a raw node is expensive, and — because blocks carry
+`content-visibility: auto` (layer 3) — typesetting one inside a **skipped**
+(off-screen) block is *pathologically* expensive: MathJax measures inside a
+subtree the browser is trying not to lay out (65 s eager → 170 s eager-under-
+containment for 3,300 equations). So every code path that typesets a
+possibly-skipped block does the same dance: set `blk.style.contentVisibility =
+'visible'` just for the typeset, then restore it to `''` (back to `auto`)
+afterwards. This "lift-for-typeset" is the recurring trick below.
+
+### The two modes
+
+`typeset-mode` (config; default `local`) chooses how much gets typeset:
+
+- **`local`** — only the region around the viewport, plus a buffer. The rest
+  stays raw until you scroll to it. A 3,300-equation paper keeps *tens* of
+  typeset equations in the DOM, not thousands — memory and CPU track what you
+  actually read.
+- **`background`** — the window first, then the rest is filled in while the tab
+  is idle, so scrolling deep and printing never wait (at the cost of typesetting
+  and holding the whole document in memory).
+
+Either way, **Cmd+P typesets the whole document on demand** first (layer 6), so
+a printout is never missing math regardless of mode.
+
+### The paths that typeset math, and how they interlock
+
+There are up to four producers of "typeset this block" work. They all funnel
+through the engine and are serialized by one flag, **`typesetBusy`** (only one
+MathJax batch runs at a time; each path sets it, awaits, clears it).
+
+1. **The visible flush (every render).** `queueTypeset(nodes)` is called at load
+   and after every patch with all raw math. For each node it checks
+   `inSkippedBlock` (`checkVisibility({contentVisibilityAuto: true})`):
+   - **not skipped** (on/near screen) → added to `pendingTypeset` and typeset by
+     `flushTypeset` after a short debounce. This is the fast path — no lift
+     needed, the block is already being laid out.
+   - **skipped** → *deferred*: `deferTypesetUntilVisible` registers a one-shot
+     `contentvisibilityautostatechange` listener on the block, so it typesets
+     the instant the browser un-skips it. Nothing is typeset eagerly off-screen.
+
+2. **The viewport window (always on).** At the end of `flushTypeset`,
+   `observeTypesetWindow` (re-)observes every block that still holds raw math
+   with an `IntersectionObserver` whose `rootMargin` is `TYPESET_WINDOW`
+   (`'150% 0px'` — ~1.5 viewports of lookahead above and below). When a block
+   enters that expanded band the observer unobserves it and adds it to
+   `windowQueue`; `drainWindowTypeset` pops one block at a time, lifts
+   containment, typesets its raw math, restores. This is what makes scrolling
+   smooth — blocks are typeset a screen or two *before* you reach them. Blocks
+   are re-observed after each render because a patch replaces them with new DOM
+   nodes.
+
+   (Paths 1-defer and 2 overlap on purpose — the observer fires ahead of the
+   viewport with a bigger margin; the state-change listener is the backstop that
+   also catches `focus`/`scrollIntoView` jumps. Whichever runs first typesets
+   the block; the other finds no raw math (`isRawMathNode` is false) and no-ops.
+   `typesetBusy` keeps them from running MathJax concurrently.)
+
+3. **Background fill (background mode only).** `flushTypeset` also calls
+   `scheduleBgFill`, which is a no-op unless `typesetMode() === 'background'`.
+   When enabled, `bgFillStep` walks the blocks in document order, finds the
+   first one still holding raw math, and typesets it (≤ 40 nodes per step so a
+   giant proof can't jank the main thread), then reschedules itself ~120 ms
+   later — marching to the end of the document. It **yields**: each step bails
+   and retries later if a print flush is running, a typeset batch is in flight
+   (`typesetBusy`), or the window queue is non-empty (`windowQueue.size` — your
+   viewport always wins over the background march). It **self-gates**: the first
+   line of `bgFillStep` returns if the mode is no longer `background`, so
+   flipping the toggle to `local` stops it after the current block.
+
+4. **The print flush (Cmd+P).** `typesetAllForPrint` (layer 6) batch-typesets
+   *everything* before opening the print dialog. It sets `typesetBusy`, so paths
+   2 and 3 yield to it while it runs.
+
+### Switching modes live
+
+`typeset-mode` is pure client behavior, so it applies with no reload:
+
+- Server: `config.rs` `TypesetMode` enum → `window.__mpConfig.typesetMode` in the
+  page head, and broadcast in every render's `viewer_config` JSON.
+- Client: `applyViewerConfig` calls `setTypesetMode(mode)`, which updates
+  `window.__mpConfig.typesetMode` and — if the new mode is `background` —
+  kicks `scheduleBgFill`. `typesetMode()` reads that value everywhere, so paths
+  3's gate flips immediately. The config dialog's "Math rendering" dropdown
+  and the `.mathpreview.toml` file both route through the same broadcast.
 
 ## Page guides that match print (v0.1.96)
 
