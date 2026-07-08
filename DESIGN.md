@@ -1132,3 +1132,11 @@ based on user feedback once the basic mode lands.
 4. Speaker notes in Beamer can also be a `\note{...}` *outside* the
    frame block (between two frames). Parse those as attached to the
    *previous* frame, or require `\note` inside?
+
+## 15. Large-document performance (v0.1.90–0.1.95 addendum)
+
+A 60-page paper exposed every "whole document per keystroke" assumption in the
+pipeline. The layered architecture that fixed it — patch metadata deltas,
+block-scoped element ids, CSS containment with real block boxes,
+viewport-lazy + background typesetting, and print-time flushing — is
+documented with measurements and invariants in [PERFORMANCE.md](PERFORMANCE.md).

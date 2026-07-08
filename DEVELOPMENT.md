@@ -110,6 +110,12 @@ Patterns that have proven out, with the traps that motivated them:
 
 ## Architecture notes that keep biting
 
+The large-document performance architecture (patch deltas, block-scoped ids,
+containment, lazy/background typesetting, print flushing) has its own document
+with measurements and invariants: **[PERFORMANCE.md](PERFORMANCE.md)**. Read it
+before touching `broadcast_render`, `IdGen`, the typeset queue, or anything in
+the per-patch client path.
+
 - **Positions are absolute `file:line:col`** in `data-src`/sync anchors. Any
   edit that changes the line *count* legitimately shifts every later anchor;
   within-line edits shift only their own block. The patch protocol deltas

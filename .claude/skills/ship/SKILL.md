@@ -107,6 +107,12 @@ Only on explicit user request. `dev → main` is always a fast-forward.
 
 ## Invariants worth re-reading before touching them
 
+The performance-critical ones (patch `blocks` deltas, the `<prefix>-g<block>-<n>`
+id scheme, containment/lazy-typeset rules, `isRawMathNode`) live with their
+measurements in [PERFORMANCE.md](../../../PERFORMANCE.md) — read it before
+touching `broadcast_render`, `IdGen`, the typeset queue, or per-patch client
+passes.
+
 - Patch `blocks` metadata is **positional and full-length** (`blk-N` ids
   renumber on insert/delete); unchanged positions ship as `0` — keep the delta
   when editing `broadcast_render` / `syncPatchBlockMetadata`.
