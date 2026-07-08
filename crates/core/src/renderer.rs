@@ -464,6 +464,8 @@ fn push_block(
         html,
         sub_blocks,
     });
+    // Ids for the NEXT block start a fresh per-block sequence (see IdGen).
+    ctx.idgen.begin_block(blocks.len() as u32);
 }
 
 fn stable_block_diff_source(s: &str) -> String {
@@ -938,13 +940,31 @@ fn span_for_text_range(span: &Span, text: &str, start: usize, end: usize) -> Spa
 }
 
 #[derive(Default)]
+/// Generated-element id source. Ids are scoped PER BLOCK
+/// (`<prefix>-<block>-<n>`), not document-globally: with one global sequence,
+/// inserting a single word early in the document renumbered every later
+/// element, which invalidated every later block's anchor metadata — turning
+/// each keystroke on a large document into a megabyte-scale patch and ~20k
+/// client-side attribute writes. Block-scoped ids keep untouched blocks
+/// byte-identical across renders, so the patch metadata delta ships only the
+/// edited block. (Footnote ids are NOT from here — their visible numbering
+/// must stay document-ordered.)
 struct IdGen {
     counter: u32,
+    block: u32,
 }
 impl IdGen {
     fn next(&mut self, prefix: &str) -> String {
         self.counter += 1;
-        format!("{prefix}-{}", self.counter)
+        format!("{prefix}-{}-{}", self.block, self.counter)
+    }
+    /// Scope subsequent ids to block `ordinal` and restart the local counter.
+    /// Called by `push_block` when a block is sealed; NOT called on the
+    /// skipped-empty-block path, so discarded ids (already recorded in the
+    /// sync index) can't collide with the next block's.
+    fn begin_block(&mut self, ordinal: u32) {
+        self.block = ordinal;
+        self.counter = 0;
     }
 }
 

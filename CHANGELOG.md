@@ -17,6 +17,22 @@ summary.
 
 Nothing yet.
 
+## [0.1.91] — 2026-07-08
+
+### Fixed
+
+- **Typing in a large document is now fast at every position (and after save).**
+  Generated element ids were numbered globally across the document, so inserting
+  a single word renumbered every later element — invalidating every later
+  block's anchor metadata and turning each keystroke into a megabyte-scale
+  patch with ~20k client-side attribute writes (save paid it twice: watcher
+  render + buffer push). Ids are now scoped per block, so an edit renumbers
+  only its own block. Measured on a real 7582-line paper: worst positions went
+  from ~500 ms / 1.65 MiB per keystroke to ~110 ms / 16–113 KiB, uniform
+  across the document. Visible numbering (theorems, sections, equations,
+  footnotes, citations, `\ref` texts) is byte-identical — ids are internal
+  plumbing only.
+
 ## [0.1.90] — 2026-07-08
 
 ### Fixed
