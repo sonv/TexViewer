@@ -152,8 +152,14 @@
     var page = pageEl();
     var raw = page ? Array.from(page.querySelectorAll('.math[data-hash]')).filter(isRawMathNode) : [];
     if (raw.length) {
-      typesetAllForPrint().then(function() {
-        setStatus('live', '● live — math finished typesetting; print again for a complete printout');
+      typesetAllForPrint(
+        'This print may be missing equations: they typeset on demand while you '
+        + 'read, and the print dialog opened before the whole document was '
+        + 'typeset. When this finishes, print again for a complete printout.'
+      ).then(function(completed) {
+        if (completed) {
+          setStatus('live', '● live — math finished typesetting; print again for a complete printout');
+        }
       });
     }
   });
@@ -496,7 +502,9 @@
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
         (e.key === 'p' || e.key === 'P')) {
       e.preventDefault();
-      typesetAllForPrint().then(function() { window.print(); });
+      typesetAllForPrint().then(function(completed) {
+        if (completed) window.print();
+      });
       return;
     }
     var searchInput = searchInputEl();
@@ -762,15 +770,57 @@
   // measuring inside skipped subtrees is pathologically slow. One-time per
   // session: typeset SVGs persist, so subsequent prints start instantly.
   var printFlushPromise = null;
-  function typesetAllForPrint() {
+  var printFlushCancelled = false;
+  // The progress dialog: tells the user WHY the print dialog hasn't opened yet
+  // (lazy typesetting means the whole document must typeset once), shows live
+  // progress, and offers Cancel. `note` swaps the message for the File > Print
+  // path, where the browser's dialog can't be delayed.
+  function printPrepDialog() { return document.getElementById('print-prep-dialog'); }
+  function openPrintPrepDialog(total, note) {
+    var dlg = printPrepDialog();
+    if (!dlg || typeof dlg.showModal !== 'function') return;
+    var noteEl = document.getElementById('print-prep-note');
+    if (noteEl && note) noteEl.textContent = note;
+    var bar = document.getElementById('print-prep-progress');
+    if (bar) { bar.max = total; bar.value = 0; }
+    updatePrintPrepProgress(0, total);
+    if (!dlg.open) dlg.showModal();
+  }
+  function updatePrintPrepProgress(done, total) {
+    var bar = document.getElementById('print-prep-progress');
+    if (bar) bar.value = done;
+    var count = document.getElementById('print-prep-count');
+    if (count) count.textContent = done + ' / ' + total + ' equations';
+  }
+  function closePrintPrepDialog() {
+    var dlg = printPrepDialog();
+    if (dlg && dlg.open) dlg.close();
+  }
+  // Cancel button and Esc (the dialog's native `cancel` event) both abort the
+  // flush between batches; already-typeset math stays (it's pure win).
+  (function wirePrintPrepCancel() {
+    var btn = document.getElementById('print-prep-cancel');
+    if (btn) btn.addEventListener('click', function() {
+      printFlushCancelled = true;
+      closePrintPrepDialog();
+    });
+    var dlg = printPrepDialog();
+    if (dlg) dlg.addEventListener('cancel', function() { printFlushCancelled = true; });
+  })();
+
+  // Resolves to true when the full flush completed, false when cancelled.
+  function typesetAllForPrint(note) {
     if (printFlushPromise) return printFlushPromise;
     var page = pageEl();
     var nodes = page
       ? Array.from(page.querySelectorAll('.math[data-hash]')).filter(isRawMathNode)
       : [];
-    if (!nodes.length) return Promise.resolve();
+    if (!nodes.length) return Promise.resolve(true);
+    printFlushCancelled = false;
     printFlushPromise = (async function() {
       document.body.classList.add('print-preparing');
+      openPrintPrepDialog(nodes.length, note);
+      var completed = false;
       try {
         while (typesetBusy) {
           await new Promise(function(r) { setTimeout(r, 120); });
@@ -778,22 +828,28 @@
         typesetBusy = true;
         var BATCH = 200;
         for (var i = 0; i < nodes.length; i += BATCH) {
+          if (printFlushCancelled) break;
           var batch = nodes.slice(i, i + BATCH).filter(isUntypesetMathNode);
-          if (!batch.length) continue;
-          batch.forEach(syncMathSourceText);
-          setStatus('updating',
-            '↻ preparing print: typeset ' + Math.min(i + BATCH, nodes.length) + '/' + nodes.length);
-          await window.__mpEngine.typeset(batch);
+          if (batch.length) {
+            batch.forEach(syncMathSourceText);
+            setStatus('updating',
+              '↻ preparing print: typeset ' + Math.min(i + BATCH, nodes.length) + '/' + nodes.length);
+            await window.__mpEngine.typeset(batch);
+          }
+          updatePrintPrepProgress(Math.min(i + BATCH, nodes.length), nodes.length);
         }
-        setStatus('live', '● live (print ready)');
+        completed = !printFlushCancelled;
+        setStatus('live', completed ? '● live (print ready)' : '● live (print prep cancelled)');
       } catch (e) {
         console.error('mathpreview print typeset:', e);
         setStatus('dead', '○ print typeset error');
       } finally {
         typesetBusy = false;
         document.body.classList.remove('print-preparing');
+        closePrintPrepDialog();
         printFlushPromise = null;
       }
+      return completed;
     })();
     return printFlushPromise;
   }

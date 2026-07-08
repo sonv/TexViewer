@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [0.1.94] — 2026-07-08
+
+### Added
+
+- **A "Preparing to print…" dialog explains the Cmd+P typeset flush.** It says
+  why the print dialog hasn't opened yet (equations typeset on demand while
+  reading; printing needs the whole document typeset once — instant on later
+  prints), shows a live progress bar with an equation count, and offers
+  **Cancel** (Esc works too) — cancelling aborts the flush and skips the print;
+  already-typeset math is kept. `File → Print` shows the same dialog with a
+  note that printing again after it finishes gives the complete output.
+
 ## [0.1.93] — 2026-07-08
 
 ### Fixed

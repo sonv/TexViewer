@@ -1885,6 +1885,28 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 /* Magnified margin note (#4): the card's magnify button opens its content
    centered on screen, enlarged, over a dimmed backdrop. Esc, a backdrop
    click, or the × close it (the <dialog> centers itself via showModal). */
+/* "Preparing to print" progress dialog (Cmd+P under lazy typesetting). */
+.print-prep-dialog {
+  width: min(440px, calc(100vw - 48px));
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 18px 20px 16px;
+  background: var(--paper);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+.print-prep-dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+.print-prep-title { margin: 0 0 8px; font-size: 16px; }
+.print-prep-note { margin: 0 0 12px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.print-prep-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.print-prep-count {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.print-prep-actions { margin-top: 12px; text-align: right; }
+
 .margin-zoom-dialog {
   border: none;
   border-radius: 8px;

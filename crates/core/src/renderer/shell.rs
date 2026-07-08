@@ -193,6 +193,17 @@ pub(super) fn wrap_in_shell(
   <button type="button" class="margin-zoom-close" id="margin-zoom-close" aria-label="close" title="close (Esc)">×</button>
   <div class="margin-zoom-body" id="margin-zoom-body"></div>
 </dialog>
+<dialog class="print-prep-dialog" id="print-prep-dialog" aria-label="preparing to print">
+  <h2 class="print-prep-title">Preparing to print&#8230;</h2>
+  <p class="print-prep-note" id="print-prep-note">Equations are typeset on demand while you read. Printing
+    needs the whole document typeset once &#8212; on a long paper this can take a minute
+    (instant on later prints). The print dialog opens automatically when it finishes.</p>
+  <progress class="print-prep-progress" id="print-prep-progress" max="1" value="0"></progress>
+  <div class="print-prep-count" id="print-prep-count"></div>
+  <div class="print-prep-actions">
+    <button type="button" class="macros-dialog-cancel" id="print-prep-cancel">Cancel</button>
+  </div>
+</dialog>
 <dialog class="macros-dialog" id="macros-dialog">
   <form method="dialog" class="macros-dialog-form" id="macros-dialog-form">
     <h2 class="macros-dialog-title">Add a macro</h2>
