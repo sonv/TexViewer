@@ -1012,6 +1012,13 @@ main#page .blk {
 .margin-card-body .blk,
 .hover-preview .blk,
 .margin-zoom-dialog .blk { content-visibility: visible; contain-intrinsic-size: none; }
+/* While preparing a print (full typeset flush) and in print media itself,
+   render every block: MathJax measures pathologically slowly inside skipped
+   subtrees, and print must never rely on size estimates. */
+body.print-preparing main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
+@media print {
+  main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
+}
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
 /* `quote` / `quotation`: an indented block quotation. Body is parsed normally,
    so math, refs, and nested blocks render inside. */

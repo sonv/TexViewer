@@ -144,6 +144,20 @@
     selection.addRange(range);
   }
 
+  // File > Print (no keystroke to intercept): the dialog can't be delayed, so
+  // this print may show off-screen math untypeset — start the full flush and
+  // tell the user a re-print will be complete.
+  window.addEventListener('beforeprint', function() {
+    if (document.body.classList.contains('print-preparing')) return;
+    var page = pageEl();
+    var raw = page ? Array.from(page.querySelectorAll('.math[data-hash]')).filter(isRawMathNode) : [];
+    if (raw.length) {
+      typesetAllForPrint().then(function() {
+        setStatus('live', '● live — math finished typesetting; print again for a complete printout');
+      });
+    }
+  });
+
   // Event delegation survives `#page` innerHTML replacement.
   document.addEventListener('copy', copySelectionAsLatex);
   document.addEventListener('mousedown', function(e) {
@@ -476,6 +490,15 @@
     }
   });
   document.addEventListener('keydown', function(e) {
+    // Browser print: typeset the whole document first (viewport-lazy leaves
+    // off-screen math as raw source, which would print as LaTeX), then open
+    // the dialog. Instant when everything is already typeset.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
+        (e.key === 'p' || e.key === 'P')) {
+      e.preventDefault();
+      typesetAllForPrint().then(function() { window.print(); });
+      return;
+    }
     var searchInput = searchInputEl();
     if (e.target === searchInput) {
       if (e.key === 'Escape') {
@@ -730,6 +753,49 @@
     if (!page) return;
     initialTypesetQueued = true;
     queueUntypesetMath(page);
+  }
+
+  // Cmd/Ctrl+P support under viewport-lazy typesetting: typeset EVERYTHING
+  // (batched, with progress in the status pill) before opening the print
+  // dialog, so the printout is complete while normal viewing stays lazy.
+  // `print-preparing` lifts content-visibility during the flush — MathJax
+  // measuring inside skipped subtrees is pathologically slow. One-time per
+  // session: typeset SVGs persist, so subsequent prints start instantly.
+  var printFlushPromise = null;
+  function typesetAllForPrint() {
+    if (printFlushPromise) return printFlushPromise;
+    var page = pageEl();
+    var nodes = page
+      ? Array.from(page.querySelectorAll('.math[data-hash]')).filter(isRawMathNode)
+      : [];
+    if (!nodes.length) return Promise.resolve();
+    printFlushPromise = (async function() {
+      document.body.classList.add('print-preparing');
+      try {
+        while (typesetBusy) {
+          await new Promise(function(r) { setTimeout(r, 120); });
+        }
+        typesetBusy = true;
+        var BATCH = 200;
+        for (var i = 0; i < nodes.length; i += BATCH) {
+          var batch = nodes.slice(i, i + BATCH).filter(isUntypesetMathNode);
+          if (!batch.length) continue;
+          batch.forEach(syncMathSourceText);
+          setStatus('updating',
+            '↻ preparing print: typeset ' + Math.min(i + BATCH, nodes.length) + '/' + nodes.length);
+          await window.__mpEngine.typeset(batch);
+        }
+        setStatus('live', '● live (print ready)');
+      } catch (e) {
+        console.error('mathpreview print typeset:', e);
+        setStatus('dead', '○ print typeset error');
+      } finally {
+        typesetBusy = false;
+        document.body.classList.remove('print-preparing');
+        printFlushPromise = null;
+      }
+    })();
+    return printFlushPromise;
   }
 
   async function flushTypeset() {

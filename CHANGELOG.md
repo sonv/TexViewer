@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.93] — 2026-07-08
+
+### Fixed
+
+- **Browser print (Cmd/Ctrl+P) works with viewport-lazy typesetting** — this
+  removes 0.1.92's known tradeoff. Cmd+P is intercepted: the viewer typesets
+  the whole document first (batched, with live progress in the status pill —
+  one-time per session; instant thereafter), then opens the print dialog, so
+  the printout is complete. `File → Print` can't be delayed by the browser, so
+  it starts the same flush and notes that printing again gives the complete
+  output. Containment is lifted during the flush (MathJax measures slowly in
+  skipped subtrees) and print media always renders every block. Editing stays
+  just as fast after the flush.
+
 ## [0.1.92] — 2026-07-08
 
 ### Fixed
