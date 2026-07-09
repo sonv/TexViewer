@@ -158,6 +158,25 @@ cargo install --path crates/cli --force   # → ~/.cargo/bin/mathpreview-cli (on
 > daemon spawn prints the binary path plus the daemon's stderr — check those
 > first if you ever see the "old version."
 
+### Native window (no browser tab)
+
+By default the preview opens in your browser. To view it in a **dedicated
+native window** instead — powered by the OS webview (WebKit on macOS, WebView2
+on Windows, WebKitGTK on Linux), the same rendering the browser uses — build
+with the opt-in `gui` feature and run the `view` subcommand:
+
+```sh
+cargo install --path crates/cli --features gui --force
+mathpreview-cli view paper.tex          # opens a native window; live-reloads on edit
+```
+
+`view` starts its own daemon on a free port, so it works standalone from the
+terminal. It's the same HTML/MathJax the browser gets — live-reload, search,
+source-jump, and everything else work unchanged. The `gui` feature is off by
+default (so the normal build stays a pure daemon with no webview system deps);
+on Linux it needs the WebKitGTK development package (`libwebkit2gtk-4.1-dev`)
+to build.
+
 ### 2. The nvim plugin
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`

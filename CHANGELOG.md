@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [0.1.101] — 2026-07-09
+
+### Added
+
+- **Native window viewer (no browser tab).** `mathpreview-cli view <file>` opens
+  the live preview in a dedicated OS window (WebKit / WebView2 / WebKitGTK) via
+  the same daemon and the same HTML/CSS/MathJax the browser gets — so
+  live-reload, search, source-jump, and every other feature work unchanged; only
+  the shell differs. Starts its own daemon on a free port, so it runs standalone.
+  Opt-in at build time behind the `gui` cargo feature
+  (`cargo install --path crates/cli --features gui`); the default build and the
+  released binaries are unchanged (still a pure daemon, no webview system deps).
+
 ## [0.1.100] — 2026-07-08
 
 ### Fixed

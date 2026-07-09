@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.100"
+version = "0.1.101"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/sonv/TexViewer"
@@ -40,4 +40,9 @@ futures-util = "0.3"
 memory-stats = "1"
 libc = "0.2"
 include_dir = "0.7"
+# Native webview window (the `gui` feature of mathpreview-cli). wry 0.55 pairs
+# with tao 0.35 — the Tauri project's cross-platform windowing/webview crates
+# (WebKit on macOS, WebView2 on Windows, WebKitGTK on Linux).
+wry = "0.55"
+tao = "0.35"
 mathpreview-core = { path = "crates/core" }

@@ -11,6 +11,8 @@ use clap::{Parser, Subcommand};
 use mathpreview_core::{render_project, Engine, HtmlOptions, MathJaxEngine};
 
 mod serve;
+#[cfg(feature = "gui")]
+mod view;
 
 #[derive(Parser, Debug)]
 #[command(name = "mathpreview-cli", version, about = "LaTeX preview renderer")]
@@ -90,6 +92,71 @@ enum Cmd {
         #[arg(long = "config", value_name = "FILE")]
         config: Vec<PathBuf>,
     },
+    /// Open the live preview in a native window (WebKit/WebView2/WebKitGTK)
+    /// instead of a browser tab. Starts the same daemon internally, so it works
+    /// standalone (`mathpreview-cli view paper.tex`). Requires the `gui`
+    /// feature at build time.
+    #[cfg(feature = "gui")]
+    View {
+        /// Input file. Project root is auto-detected.
+        input: PathBuf,
+        /// Port for the internal daemon. Defaults to a free ephemeral port so
+        /// it never clashes with an nvim-managed daemon.
+        #[arg(long)]
+        port: Option<u16>,
+        /// URL or path for MathJax. Same flag as `serve`.
+        #[arg(long)]
+        mathjax_url: Option<String>,
+        /// Shell command for Cmd/Ctrl-click "reveal source" (same as `serve`).
+        #[arg(long, default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
+        editor: String,
+        /// Extra macro override file(s), same cascade as `serve`.
+        #[arg(long = "macros", value_name = "FILE")]
+        macros: Vec<PathBuf>,
+        /// Extra TOML config file(s), same cascade as `serve`.
+        #[arg(long = "config", value_name = "FILE")]
+        config: Vec<PathBuf>,
+    },
+}
+
+/// Build the serve-mode `HtmlOptions` and resolved config-file list shared by
+/// the `serve` and `view` subcommands.
+fn build_serve_opts(
+    input: &std::path::Path,
+    mathjax_url: Option<String>,
+    extra_macros: &[PathBuf],
+    extra_configs: &[PathBuf],
+) -> (HtmlOptions, Vec<PathBuf>) {
+    // serve-mode default: use the vendored bundle so the page works offline.
+    let url = mathjax_url.unwrap_or_else(|| "/vendor/mathjax/tex-svg.js".to_string());
+    let input_dir = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let macro_overrides = mathpreview_core::discover_macro_overrides(input_dir, extra_macros);
+    let config_files = mathpreview_core::discover_config_files(input_dir, extra_configs);
+    let (viewer_config, text_macros, applied_configs) =
+        match mathpreview_core::load_and_merge_config(&config_files) {
+            Ok((resolved, applied)) => (resolved.viewer, resolved.text_macros, applied),
+            Err(e) => {
+                eprintln!("mathpreview: config load failed, using defaults — {e:#}");
+                let d = mathpreview_core::ResolvedConfig::default();
+                (d.viewer, d.text_macros, Vec::new())
+            }
+        };
+    for p in &applied_configs {
+        eprintln!("mathpreview: applied config {}", p.display());
+    }
+    let opts = HtmlOptions {
+        title: input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("mathpreview")
+            .to_string(),
+        engine: Engine::MathJax(MathJaxEngine::new(url)),
+        macro_overrides,
+        viewer_config,
+        text_macros,
+        ..HtmlOptions::default()
+    };
+    (opts, config_files)
 }
 
 fn main() -> Result<()> {
@@ -104,46 +171,8 @@ fn main() -> Result<()> {
             macros: extra_macros,
             config: extra_configs,
         } => {
-            // serve-mode default: use the vendored bundle so the page works offline.
-            // Render-mode keeps the CDN default since its output is a standalone file.
-            let url = mathjax_url.unwrap_or_else(|| "/vendor/mathjax/tex-svg.js".to_string());
-            let input_dir = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-            // Resolve the macro-override cascade once at startup. The
-            // discovery walks upward from the input file looking for a
-            // project-local `.mathpreview-macros.tex`, then prepends the
-            // global file (if it exists) and appends any `--macros`
-            // flags. Result is in cascade order (lowest → highest
-            // priority); HtmlOptions hands it to the extractor on every
-            // render.
-            let macro_overrides =
-                mathpreview_core::discover_macro_overrides(input_dir, &extra_macros);
-            // Same cascade for TOML config: global → project → --config.
-            let config_files =
-                mathpreview_core::discover_config_files(input_dir, &extra_configs);
-            let (viewer_config, text_macros, applied_configs) =
-                match mathpreview_core::load_and_merge_config(&config_files) {
-                    Ok((resolved, applied)) => (resolved.viewer, resolved.text_macros, applied),
-                    Err(e) => {
-                        eprintln!("mathpreview: config load failed, using defaults — {e:#}");
-                        let d = mathpreview_core::ResolvedConfig::default();
-                        (d.viewer, d.text_macros, Vec::new())
-                    }
-                };
-            for p in &applied_configs {
-                eprintln!("mathpreview: applied config {}", p.display());
-            }
-            let opts = HtmlOptions {
-                title: input
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("mathpreview")
-                    .to_string(),
-                engine: Engine::MathJax(MathJaxEngine::new(url)),
-                macro_overrides,
-                viewer_config,
-                text_macros,
-                ..HtmlOptions::default()
-            };
+            let (opts, config_files) =
+                build_serve_opts(&input, mathjax_url, &extra_macros, &extra_configs);
             if let Ok(ms) = std::env::var("MATHPREVIEW_RESTART_DELAY_MS") {
                 if let Ok(ms) = ms.parse::<u64>() {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -151,6 +180,46 @@ fn main() -> Result<()> {
             }
             let rt = tokio::runtime::Runtime::new()?;
             return rt.block_on(serve::run(input, host, port, opts, editor, config_files));
+        }
+        #[cfg(feature = "gui")]
+        Cmd::View {
+            input,
+            port,
+            mathjax_url,
+            editor,
+            macros: extra_macros,
+            config: extra_configs,
+        } => {
+            let (opts, config_files) =
+                build_serve_opts(&input, mathjax_url, &extra_macros, &extra_configs);
+            let title = opts.title.clone();
+            let port = port.unwrap_or_else(view::free_port);
+            // The webview event loop must own the main thread (required on
+            // macOS), so run the daemon on a background thread and point the
+            // window at it once it's listening. When the window closes, main
+            // returns and the process (and its server thread) exit.
+            let server_input = input.clone();
+            std::thread::spawn(move || {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("mathpreview: tokio init failed: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = rt.block_on(serve::run(
+                    server_input,
+                    "127.0.0.1".to_string(),
+                    port,
+                    opts,
+                    editor,
+                    config_files,
+                )) {
+                    eprintln!("mathpreview: server error: {e:#}");
+                }
+            });
+            view::wait_for_listen(port, std::time::Duration::from_secs(10));
+            return view::run_window(&format!("http://127.0.0.1:{port}/"), &title);
         }
         Cmd::Render {
             input,

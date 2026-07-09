@@ -31,3 +31,14 @@ memory-stats.workspace = true
 libc.workspace = true
 include_dir.workspace = true
 toml_edit.workspace = true
+
+# Native webview window — opt-in via `--features gui`, so the default build
+# (and the release cross-build for 4 targets) stays a pure daemon with no
+# webview system deps. `mathpreview-cli view <file>` then opens the preview in
+# a native window instead of a browser tab.
+wry = { workspace = true, optional = true }
+tao = { workspace = true, optional = true }
+
+[features]
+default = []
+gui = ["dep:wry", "dep:tao"]
