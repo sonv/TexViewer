@@ -4064,6 +4064,12 @@ mod tests {
         assert!(out.html.contains(r#"id="page-shell""#));
         assert!(out.html.contains("--page-scale"));
         assert!(out.html.contains("updatePageScale"));
+        // Page-break guides (config `page_guides`, default off): the client code
+        // ships regardless; the `pageGuides` flag in __mpConfig gates it.
+        assert!(out.html.contains("pageGuides:"));
+        assert!(out.html.contains(r#"id="config-page-guides""#));
+        assert!(out.html.contains("rebuildPageGuides"));
+        assert!(out.html.contains("page-guide-layer"));
         assert!(out.html.contains("copySelectionAsLatex"));
         assert!(out.html.contains("selectionIsExactNode"));
         assert!(out.html.contains("math-selected"));

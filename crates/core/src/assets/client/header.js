@@ -13,6 +13,27 @@
   var hoverPreviewSource = null;
   var topbarHidden = false;
   var navRefreshTimer = 0;
+  // === PAGE-BREAK GUIDES (optional; config `page_guides`) ====================
+  // A removable feature. To delete it entirely, remove: this block, the
+  // matching "PAGE-BREAK GUIDES" blocks in viewer.js and footer.js, the
+  // `.page-guide*` rules in default.css, the `config-page-guides` checkbox in
+  // shell.rs, and the `page_guides` field in config.rs + serve.rs. See
+  // PERFORMANCE.md ("Page-break guides").
+  var pageGuidesEnabled = false;
+  // An IntersectionObserver + a set of the blocks it has seen enter the
+  // viewport. A "seen" block has been rendered at least once, so its measured
+  // height is real — not a content-visibility estimate. Guides are drawn only
+  // across the contiguous run of seen, typeset blocks from the top, where the
+  // cumulative layout is trustworthy. See rebuildPageGuides in viewer.js.
+  var guideObserver = null;
+  var guideSeen = null;
+  var lastPageGuideSignature = '';
+  var guideRebuildScheduled = false;
+  // Printable A4 content height as a fraction of page width: (297 − 2×17mm) /
+  // 210mm. Matches the @page margin in default.css so a guide marks where
+  // Cmd+P actually breaks.
+  var A4_PRINT_CONTENT_RATIO = (297 - 2 * 17) / 210;
+  // === END PAGE-BREAK GUIDES ================================================
   var currentUserZoom = 1;
   var ZOOM_MIN = 0.5;
   var ZOOM_MAX = 3;

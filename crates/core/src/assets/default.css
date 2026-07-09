@@ -547,6 +547,38 @@ body.page-mode-dynamic main#page {
   width: var(--page-natural-width, 100%);
   zoom: var(--page-scale);
 }
+/* === PAGE-BREAK GUIDES (optional; config `page_guides`) ====================
+   Dashed lines marking where Cmd+P breaks between A4 pages. The layer is an
+   absolutely-positioned child of main#page (so it scales with the page zoom);
+   JS sets each line's `top`. Removable — see the note in header.js. */
+.page-guide-layer {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 5;
+  /* Keep the "Page N" labels out of text selection / copy (like .lineno-num). */
+  user-select: none;
+  -webkit-user-select: none;
+}
+.page-guide {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  border-top: 1px dashed rgba(91, 62, 162, 0.42);
+}
+.page-guide span {
+  position: absolute;
+  right: 10px;
+  top: -10px;
+  padding: 1px 6px;
+  background: var(--paper);
+  color: var(--accent);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1.4;
+}
+/* === END PAGE-BREAK GUIDES ================================================= */
 /* Typeset line numbers (lineno-style): one number per wrapped visual line,
    right-aligned in the page's left padding so they sit just outside the
    text column. Positions are computed in JS from each line's client rect. */
@@ -587,10 +619,17 @@ body.page-mode-dynamic main#page {
   :root { --topbar-height: 110px; }
   .topbar-row-actions { gap: 6px; }
   main#page {
-    --page-pad-x: 24px;
     --refkey-gutter: 52px;
     padding-top: 34px;
     padding-bottom: 46px;
+  }
+  /* Narrow the side padding only in dynamic mode. In A4 mode the on-screen
+     content column must stay 794 − 2×64px ≈ 176mm to match the printable
+     column (see "Print fidelity"), or the page-break guides — which measure
+     the on-screen flow — would diverge from Cmd+P. The A4 sheet is zoomed to
+     fit the viewport anyway, so the wider padding costs no usable width. */
+  body.page-mode-dynamic main#page {
+    --page-pad-x: 24px;
   }
   #page-shell {
     width: calc(100vw - 16px);
@@ -1013,9 +1052,10 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
 :root { --print-margin-mm: 17; --print-page-content-mm: 263; }
 @page { size: A4; margin: 17mm; }
 @media print {
-  /* Hide all viewer chrome — only the paper prints. */
+  /* Hide all viewer chrome — only the paper prints. The on-screen page-break
+     guides are hidden too: print makes the real breaks. */
   .topbar, .side-panel, details.warnings, dialog,
-  .lineno-layer, .refkey-chip, .margin-layer { display: none !important; }
+  .page-guide-layer, .lineno-layer, .refkey-chip, .margin-layer { display: none !important; }
   html, body { background: #fff; margin: 0; }
   body { color: #000; }
   #page-shell { width: auto; margin: 0; box-shadow: none; }
@@ -2099,6 +2139,7 @@ body.theme-dark .status.live { color: #74c074; }
 body.theme-dark .status.dead { color: #e08080; }
 body.theme-dark .cmdline-feedback.error { color: #e08080; }
 body.theme-dark .cite.missing { color: #6a6a6a; }
+body.theme-dark .page-guide { border-top-color: rgba(179, 157, 232, 0.40); }
 body.theme-dark .math.math-selected,
 body.theme-dark .math:focus,
 body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }

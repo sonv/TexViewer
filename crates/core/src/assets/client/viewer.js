@@ -443,7 +443,7 @@
         var p = node.parentElement;
         if (p && p.closest &&
             p.closest('.math-source, .search-panel, .side-panel, .topbar, .lineno-layer, ' +
-                      '.refkey-chip, .eq-refkey-list, .footnote-pop, ' +
+                      '.page-guide-layer, .refkey-chip, .eq-refkey-list, .footnote-pop, ' +
                       '.sidenote, .proof.folded .proof-body, [aria-hidden="true"]')) {
           // Skip math LaTeX source, chrome, and content that's hidden until
           // hover/margin-mode/unfold (a match there would count but scroll to
@@ -2458,6 +2458,9 @@
     var wrap = document.getElementById('config-wrap-equations');
     // Default on when unset (matches the server default).
     if (wrap) wrap.checked = cfg.wrapEquations !== false;
+    var pg = document.getElementById('config-page-guides');
+    // Default off when unset (matches the server default).
+    if (pg) pg.checked = cfg.pageGuides === true;
     var mjx = document.getElementById('config-mathjax-config');
     if (mjx) {
       mjx.value = cfg.mathjaxConfig || '';
@@ -2529,6 +2532,8 @@
     if (tsModeEl && tsModeEl.value) payload.values['viewer.typeset-mode'] = tsModeEl.value;
     var wrapEl = document.getElementById('config-wrap-equations');
     if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
+    var pgEl = document.getElementById('config-page-guides');
+    if (pgEl) payload.values['viewer.page-guides'] = !!pgEl.checked;
     var mjxEl = document.getElementById('config-mathjax-config');
     // Only write it when changed, so an unrelated config save doesn't add an
     // empty `mathjax-config` key (but clearing it is still honored).
@@ -2615,6 +2620,10 @@
     // applies live with no reload — switching to 'background' kicks the fill.
     if (typeof cfg.typeset_mode === 'string') {
       setTypesetMode(cfg.typeset_mode);
+    }
+    // Page-break guides are pure client rendering too — toggle live, no reload.
+    if (typeof cfg.page_guides === 'boolean') {
+      setPageGuides(cfg.page_guides);
     }
   }
 
@@ -3110,9 +3119,197 @@
     navRefreshTimer = 0;
     if (navNeedsIndex) rebuildIndex(false);
     navNeedsIndex = false;
+    if (pageGuidesEnabled) rebuildPageGuides(); // PAGE-BREAK GUIDES hook (remove with the feature)
     scheduleSidenoteLayout();
     if (lineNumbersVisible) scheduleLineNumbers();
   }
+
+  // === PAGE-BREAK GUIDES (optional; config `page_guides`) ====================
+  // Thin dashed lines marking where the printout (Cmd+P) breaks between A4
+  // pages. `pageBreakYs` simulates print pagination (walk top-level blocks,
+  // break in the GAP before any block that would overflow the printable A4
+  // height — the same rule as @media print's `break-inside: avoid`, so a line
+  // always lands in whitespace, never across text).
+  //
+  // The *smart* part is the reliability gate. The old guide drew lines across
+  // the whole document using content-visibility height ESTIMATES (unrendered
+  // blocks report a placeholder ~180px), so the cumulative offsets — and thus
+  // most break positions — didn't match Cmd+P. Here we only emit lines across
+  // the contiguous prefix of blocks that are genuinely measured: each has been
+  // scrolled into view at least once (tracked by an IntersectionObserver, so
+  // its height is real) AND its math is typeset (raw source has a different
+  // height than the rendered SVG). We stop at the first block failing either
+  // test, so every line drawn matches a real print break and nothing is drawn
+  // past what we've measured. Scrolling extends coverage; `background` typeset
+  // mode fills the document so the whole thing eventually qualifies.
+  //
+  // Removable: see the note at the top of header.js's PAGE-BREAK GUIDES block.
+  function blockHasRawMath(block) {
+    var maths = block.querySelectorAll('.math[data-hash]');
+    for (var i = 0; i < maths.length; i++) {
+      if (isRawMathNode(maths[i])) return true;
+    }
+    return false;
+  }
+
+  // Section headings carry `break-after: avoid` in the print CSS (the same
+  // `.sec-h0..h4` list), so a heading can't be the last thing before a page
+  // break — print pushes it onto the next page WITH the block it introduces.
+  var HEADING_BREAK_AFTER_SEL = '.sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4';
+  function isStickyHeadingBlock(block) {
+    return !!block.querySelector(HEADING_BREAK_AFTER_SEL);
+  }
+
+  // Break Y positions in the page's own layout coords. `isReliable(block)`
+  // gates the walk: the reliable region is a contiguous prefix from the top,
+  // so the first unreliable block ends it.
+  function pageBreakYs(page, pageHeight, isReliable) {
+    var blocks = pageBlocks(page);
+    if (!blocks.length || pageHeight <= 0) return [];
+    var breaks = [];
+    var pageStart = blocks[0].offsetTop;
+    var target = pageStart + pageHeight;
+    var lastIdx = -1;
+    for (var i = 0; i < blocks.length; i++) {
+      if (!isReliable(blocks[i])) break;
+      var top = blocks[i].offsetTop;
+      var bottom = top + blocks[i].offsetHeight;
+      while (bottom > target) {
+        var y;
+        if (i === lastIdx || i === 0) {
+          // A single block taller than a page can't avoid a break — split it
+          // at the boundary, as print does when break-inside can't be honored.
+          y = target;
+        } else {
+          // `break-after: avoid` glues a heading to the block after it, so if
+          // the overflowing block is preceded by heading block(s) that started
+          // on this page, the break moves BEFORE the heading(s) (they go to the
+          // next page too), not into the gap right after them.
+          var bi = i;
+          while (bi > 0 && isStickyHeadingBlock(blocks[bi - 1]) &&
+                 blocks[bi - 1].offsetTop > target - pageHeight) {
+            bi--;
+          }
+          var topB = blocks[bi].offsetTop;
+          var prevBottom = blocks[bi - 1].offsetTop + blocks[bi - 1].offsetHeight;
+          y = (prevBottom < topB) ? (prevBottom + topB) / 2 : topB;
+          if (y <= target - pageHeight) y = target; // gap above page start: split
+        }
+        y = Math.round(y);
+        breaks.push(y);
+        target = y + pageHeight;
+        lastIdx = i;
+        if (breaks.length > 5000) return breaks; // runaway guard
+      }
+    }
+    return breaks;
+  }
+
+  function rebuildPageGuides() {
+    var page = pageEl();
+    if (!page) return;
+    // A4 page mode only — dynamic mode has no fixed paper, so an on-screen
+    // break can't correspond to a print page. Off → clear any lingering layer.
+    if (!pageGuidesEnabled || currentPageMode !== 'a4') {
+      removePageGuides();
+      return;
+    }
+    observeGuideBlocks(); // pick up any blocks added since the last rebuild
+
+    var breaks = pageBreakYs(page, A4_CSS_WIDTH * A4_PRINT_CONTENT_RATIO, function(block) {
+      return guideSeen && guideSeen.has(block) && !blockHasRawMath(block);
+    });
+
+    // `scale` (rendered px per layout px) only affects the visual signature so
+    // a zoom change forces a redraw even if the break list is unchanged.
+    var rect = page.getBoundingClientRect();
+    var scale = page.offsetHeight ? (rect.height / page.offsetHeight) : 1;
+    var signature = Math.round(scale * 1000) + '|' + breaks.join(',');
+    var existing = page.querySelector('.page-guide-layer');
+    if (signature === lastPageGuideSignature && existing) return;
+    lastPageGuideSignature = signature;
+    if (existing) existing.remove();
+    if (!breaks.length) return;
+
+    var layer = document.createElement('div');
+    layer.className = 'page-guide-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    breaks.forEach(function(y, j) {
+      var guide = document.createElement('div');
+      guide.className = 'page-guide';
+      guide.style.top = y + 'px';
+      var label = document.createElement('span');
+      // The break before page j+2 marks the top of page j+2.
+      label.textContent = 'Page ' + (j + 2);
+      guide.appendChild(label);
+      layer.appendChild(guide);
+    });
+    page.appendChild(layer);
+  }
+
+  function removePageGuides() {
+    var page = pageEl();
+    var layer = page && page.querySelector('.page-guide-layer');
+    if (layer) layer.remove();
+    lastPageGuideSignature = '';
+  }
+
+  // Observe every top-level block so we learn which have actually rendered.
+  // A block is added to `guideSeen` the first time any part enters the
+  // viewport; that is exactly when content-visibility has laid it out, so its
+  // height stops being an estimate. `observe` is idempotent per element, and
+  // reused block nodes keep their membership across patches.
+  function ensureGuideObserver() {
+    if (guideObserver) return;
+    guideSeen = new WeakSet();
+    guideObserver = new IntersectionObserver(function(entries) {
+      var grew = false;
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting && !guideSeen.has(entries[i].target)) {
+          guideSeen.add(entries[i].target);
+          grew = true;
+        }
+      }
+      // Keep `guideSeen` growing even while disabled (so re-enabling has full
+      // history), but only redraw when the feature is on.
+      if (grew && pageGuidesEnabled) scheduleGuideRebuild();
+    }, { root: null, rootMargin: '0px', threshold: 0 });
+  }
+
+  function observeGuideBlocks() {
+    if (!guideObserver) return;
+    var page = pageEl();
+    if (!page) return;
+    pageBlocks(page).forEach(function(block) {
+      if (!block.__mpGuideObserved) {
+        block.__mpGuideObserved = true;
+        guideObserver.observe(block);
+      }
+    });
+  }
+
+  function scheduleGuideRebuild() {
+    if (guideRebuildScheduled) return;
+    guideRebuildScheduled = true;
+    requestAnimationFrame(function() {
+      guideRebuildScheduled = false;
+      rebuildPageGuides();
+    });
+  }
+
+  function setPageGuides(on) {
+    pageGuidesEnabled = !!on;
+    window.__mpConfig = window.__mpConfig || {};
+    window.__mpConfig.pageGuides = pageGuidesEnabled;
+    if (pageGuidesEnabled) {
+      ensureGuideObserver();
+      observeGuideBlocks();
+      scheduleGuideRebuild();
+    } else {
+      removePageGuides();
+    }
+  }
+  // === END PAGE-BREAK GUIDES ================================================
 
   function clearSidenoteLayout() {
     var chips = document.querySelectorAll('main#page .sidenote');
@@ -3186,7 +3383,7 @@
   /// layers, the absolutely-positioned margin column / sidenotes / refkey
   /// chips, and folded proof bodies all sit off the main text flow, so their
   /// client rects would land at misleading y-coordinates.
-  var LINENO_SKIP = '.lineno-layer, .sidenote, .margin-col,' +
+  var LINENO_SKIP = '.lineno-layer, .page-guide-layer, .sidenote, .margin-col,' +
     ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded,' +
     ' .para-indent-marker';
   function linenoSkip(node, page) {

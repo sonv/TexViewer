@@ -193,7 +193,7 @@ MathJax batch runs at a time; each path sets it, awaits, clears it).
   3's gate flips immediately. The config dialog's "Math rendering" dropdown
   and the `.mathpreview.toml` file both route through the same broadcast.
 
-## Print fidelity, no on-screen guide (v0.1.96 → v1.0.0)
+## Print fidelity (v0.1.96)
 
 A real **`@page { size: A4; margin: 17mm }`** plus print CSS maps the content
 1:1 onto the printable area (no outer frame, no zoom, `@page` margins supply
@@ -202,14 +202,77 @@ printable column equals the on-screen A4 column (794px − 2×64px ≈ 176mm), s
 line wrapping — and therefore vertical flow and breaks — agree between screen
 and print. Cmd+P is deterministic instead of using the browser default.
 
-An earlier build also drew on-screen page-break guides by simulating that
-pagination in JS (`pageBreakYs`). With viewport-lazy typesetting, off-screen
-block heights are `contain-intrinsic-size` **estimates** (180px), so the guide
-positions were only accurate near where you were reading and jumped as regions
-firmed up on scroll — misleading for most of a long document. The overlay (and
-its "Pages" side-panel tab and page-jump) was **removed in v1.0.0**: Cmd+P's
-real print preview is the single source of truth for where pages break. The
-`@page`/`break-inside` print CSS above is what makes that preview faithful.
+## Page-break guides (removable; config `page_guides`, default off)
+
+Optional dashed lines marking where Cmd+P breaks between A4 pages. Off by
+default; enable with `page-guides = true` (or the config dialog's "Show
+page-break guides" checkbox). Guides show only in A4 page mode.
+
+The break geometry is a JS simulation of print pagination (`pageBreakYs` in
+`viewer.js`): walk the top-level blocks and place a break in the GAP before any
+block that would overflow the printable A4 height — the same rule as
+`break-inside: avoid`, so a line always lands in whitespace, never across text.
+A block taller than a page is split at the boundary, as print does when
+`break-inside` can't be honored. This part is unchanged from the first
+(v0.1.96) attempt.
+
+The **hard part is that this can't be accurate everywhere at once.** A break's
+position depends on the cumulative height of *all* preceding blocks, but with
+viewport-lazy typesetting most of the document isn't rendered: off-screen
+blocks report a `contain-intrinsic-size` placeholder (~180px), not their real
+height. The first guide drew lines across the whole document from those
+estimates, so the cumulative offsets — and thus most break positions — didn't
+match Cmd+P and jumped as you scrolled. That version was removed; this one is
+gated.
+
+**The reliability gate** (the "smart" part): draw lines only across the
+contiguous prefix of blocks from the top that are *genuinely measured*. A block
+qualifies when both hold:
+
+1. It has been **rendered at least once** — tracked by an `IntersectionObserver`
+   that adds a block to `guideSeen` the first time any part enters the viewport,
+   which is exactly when content-visibility lays it out and its height stops
+   being an estimate. (Current skip state is the wrong signal: a scrolled-past
+   block is re-skipped but keeps its real cached size, so we want *ever-seen*,
+   which an observer gives and `checkVisibility` does not.)
+2. Its **math is typeset** — `blockHasRawMath` is false. Raw `\…` source has a
+   different height than the rendered SVG, so an un-typeset block's height is
+   also untrustworthy.
+
+The walk stops at the first block failing either test. So every line drawn sits
+at a real print break, and nothing is drawn past what we've measured. Coverage
+grows as you scroll — the observer sees more blocks. (Note `background` typeset
+mode does *not* extend the guides on its own: it typesets off-screen math but
+never scrolls those blocks into the viewport, so they never become "seen"; only
+scrolling does.) `refreshNavigation` and the observer both schedule an
+rAF-coalesced `rebuildPageGuides`, which is signature-gated (page scale + break
+list) to skip redundant DOM work.
+
+`pageBreakYs` mirrors the print break rules so the guide and `@media print`
+stay in lockstep: `break-inside: avoid` (break in the gap *before* an
+overflowing block; split a block taller than a page) and `break-after: avoid`
+on `.sec-h0..h4` headings (a heading can't be the last thing on a page, so the
+break moves *before* the heading it introduces, not into the gap after it).
+
+**Known limitations.** (1) Guides only span the region you've actually scrolled
+through / rendered — jump to the middle via the index and the top isn't
+measured, so few or no lines appear there until you scroll. (2) On-screen/print
+agreement needs the A4 content column to equal the printable column, so the
+narrow-viewport `--page-pad-x` override is scoped to dynamic mode (see the
+`@media (max-width: 720px)` block in default.css). Cmd+P remains the ground
+truth; the guide is a live approximation of it.
+
+**To remove the feature entirely:** the bulk is the delimited `PAGE-BREAK
+GUIDES` blocks in `header.js`, `viewer.js`, and `default.css`. But several
+integration points live outside those blocks, so the reliable recipe is to
+`grep -ri 'page.guide\|pageGuide\|page_guides'` across `crates/` and delete
+every hit — that catches the `refreshNavigation` hook (marked with a
+`PAGE-BREAK GUIDES hook` comment), the `.page-guide-layer` entries in
+`viewer.js`'s search-skip + `LINENO_SKIP` and `patch.js`'s copy-skip, the
+dark-theme `.page-guide` rule and the `@media print` hide, the
+`config-page-guides` checkbox + `pageGuides`/`page_guides` fields in `shell.rs`
+/ `config.rs` / `serve.rs`, the config-dialog + `applyViewerConfig` lines in
+`viewer.js`, and the `setPageGuides` init in `footer.js`.
 
 ## Layer 6 — Print correctness (v0.1.93–94)
 

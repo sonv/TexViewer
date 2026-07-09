@@ -39,16 +39,21 @@ ways, and search mirrored from the editor.
   - A dedicated **`locus`** command: `locus <file>` opens the native window
     directly (`cargo install --features gui` installs it alongside
     `mathpreview-cli`; it's `mathpreview-cli view` under a shorter name).
+- **Optional page-break guides — now accurate.** `page-guides = true` (or the
+  config dialog's "Show page-break guides" checkbox) draws thin dashed lines in
+  A4 mode where Cmd+P breaks between pages. Default off. Unlike the earlier
+  guide — which estimated off-screen block heights and so mostly disagreed with
+  Cmd+P — this one only draws lines across the part of the document it has
+  actually measured (blocks you've scrolled through, with typeset math), so
+  every line matches a real print break. Coverage grows as you scroll further
+  down the document. See PERFORMANCE.md ("Page-break guides").
 
 ### Removed
 
-- **On-screen page-break guides** (and the side-panel "Pages" tab / page-jump).
-  With viewport-lazy typesetting, off-screen block heights are estimates, so
-  the guide lines were only accurate near where you were reading and shifted as
-  you scrolled — misleading across a long document. Cmd+P's real print preview
-  is now the single source of truth for page breaks; the `@page`/`break-inside`
-  print CSS that makes that preview faithful is unchanged. The side panel keeps
-  the document **Index** (now a plain header instead of a tab).
+- **The side-panel "Pages" tab and page-jump.** The old estimate-based on-screen
+  page divider was removed and rebuilt accurately (see *Added* above); the
+  page-jump list it fed went with it. The side panel keeps the document
+  **Index** (now a plain header instead of a tab).
 
 ### Notes
 

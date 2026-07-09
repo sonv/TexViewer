@@ -2647,6 +2647,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "wrap_equations": viewer_config.wrap_equations,
         "mathjax_config": viewer_config.mathjax_config,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
+        "page_guides": viewer_config.page_guides,
     });
 
     let (payload, op_count, kind) = if fallback_full {
