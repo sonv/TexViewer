@@ -6,3 +6,15 @@
   overflow-y: hidden;
   vertical-align: middle;
 }
+/* Full-width displays — multline, and equations MathJax line-breaks to the
+   column — lay out their last line flush against the full line width (multline
+   right-aligns it). MathJax marks these containers `width="full"` and sizes
+   them to the line width. The shrink-to-fit `inline-block` above collapses them
+   to the widest single line, so the right-aligned last line spills past the box
+   and is clipped (an SVG with no viewBox clips to its own width). Give them the
+   whole block instead, so the last line has the full width to sit within. */
+.math.display mjx-container[display="true"][width="full"] {
+  display: block !important;
+  width: 100%;
+  min-width: 0 !important;
+}

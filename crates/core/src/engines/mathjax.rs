@@ -240,3 +240,26 @@ fn escape_attr(s: &str) -> String {
 
 const ADAPTER_JS: &str = include_str!("assets/mathjax.js");
 const EXTRA_CSS: &str = include_str!("assets/mathjax.css");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_width_displays_are_block_level() {
+        // `multline` (and equations MathJax line-breaks to the column) get
+        // marked `width="full"` and right-align their last line to the full
+        // line width. The base rule shrink-wraps displays to `inline-block`,
+        // which clips that last line — so full-width containers must override
+        // to block-level. Guard the fix against regressions.
+        assert!(
+            EXTRA_CSS.contains(r#"mjx-container[display="true"][width="full"]"#),
+            "mathjax.css must special-case full-width displays"
+        );
+        let full_rule = EXTRA_CSS.split(r#"[width="full"]"#).nth(1).unwrap_or("");
+        assert!(
+            full_rule.contains("display: block"),
+            "full-width displays must be block-level, not shrink-wrapped"
+        );
+    }
+}

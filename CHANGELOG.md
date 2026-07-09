@@ -55,6 +55,17 @@ ways, and search mirrored from the editor.
   page-jump list it fed went with it. The side panel keeps the document
   **Index** (now a plain header instead of a tab).
 
+### Fixed
+
+- **`multline` (and other full-width displays) no longer clip their last line.**
+  MathJax lays a `multline` out as a full-width block and right-aligns the last
+  line to the line width, but the viewer's display-math CSS shrink-wrapped every
+  equation to `inline-block` (for horizontal-scroll on overflow), collapsing the
+  box to the widest single line — so a right-aligned continuation line (e.g. the
+  `\left.\\\left.` split trick) spilled past the box and was clipped. Full-width
+  containers (`mjx-container[width="full"]`) are now block-level, so the last
+  line has the whole column to sit in. Single equations are unchanged.
+
 ### Notes
 
 - 1.0 consolidates the 0.1.x line. Highlights since the project's public
