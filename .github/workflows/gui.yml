@@ -1,0 +1,115 @@
+# GUI (native-window) build workflow.
+#
+# The native-window viewer (`mathpreview-cli view`, the `gui` cargo feature)
+# links a system webview — WebKit on macOS, WebKitGTK on Linux — so it can't be
+# cross-compiled the way the pure-daemon release binaries are. This workflow
+# builds it NATIVELY on macOS and Linux runners, installs the Linux WebKitGTK
+# dev packages, smoke-tests the binary, and uploads a tarball per platform.
+#
+# Run it from the Actions tab ("Run workflow") to produce GUI binaries and to
+# verify both platforms build. It's kept separate from `release.yml` so the
+# default daemon release (which cross-builds 4 targets from one runner) stays
+# webview-free.
+
+name: gui-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Label used in the artifact filenames."
+        required: false
+        default: "gui-dev"
+
+# See release.yml for why this is pinned.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions: {}
+
+jobs:
+  build:
+    name: gui (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            linux: false
+            native: true
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            linux: true
+            native: true
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            linux: true
+            native: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (pinned 2026-06-25)
+        with:
+          targets: ${{ matrix.target }}
+
+      # WebKitGTK + GTK dev headers wry 0.55 links against on Linux. This is the
+      # Tauri-v2 Ubuntu prerequisite set; webkit2gtk-4.1 is the current API.
+      - name: Install Linux webview deps
+        if: matrix.linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gui-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            gui-cargo-${{ matrix.target }}-
+
+      - name: Build (gui feature)
+        run: cargo build --locked --release --target ${{ matrix.target }} -p mathpreview-cli --features gui
+
+      # `view --help` opens no window, so it runs headlessly and proves the
+      # binary linked the webview and the subcommand is wired.
+      - name: Smoke test
+        if: matrix.native
+        run: ./target/${{ matrix.target }}/release/mathpreview-cli view --help
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || 'gui-dev' }}"
+          NAME="mathpreview-cli-gui-${TAG}-${{ matrix.target }}"
+          mkdir -p staging dist
+          cp "target/${{ matrix.target }}/release/mathpreview-cli" staging/
+          strip staging/mathpreview-cli || true
+          (cd staging && tar czf "../dist/${NAME}.tar.gz" mathpreview-cli)
+          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gui-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
