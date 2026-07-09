@@ -205,7 +205,6 @@
     if (isFinite(storedZoom) && storedZoom > 0) setUserZoom(storedZoom, false);
     var storedMode = localStorage.getItem('mathpreview.pageMode');
     setPageMode(storedMode || cfg.defaultPageMode || 'a4');
-    setSideTab(localStorage.getItem('mathpreview.sideTab') || 'index');
     var storedSideOpen = localStorage.getItem('mathpreview.sideOpen');
     setSideOpen(storedSideOpen === null ? window.innerWidth > 1340 : storedSideOpen === '1', false);
     setRefkeysVisible(localStorage.getItem('mathpreview.refkeys') === '1', false);
@@ -227,7 +226,6 @@
     }
   } catch (e) {
     setPageMode('a4');
-    setSideTab('index');
     setSideOpen(window.innerWidth > 1340, false);
     setRefkeysVisible(false, false);
     setLineNumbers(false, false);
@@ -259,14 +257,5 @@
     // re-measured (rAF-coalesced; only when the gutter is shown).
     if (lineNumbersVisible) scheduleLineNumbers();
   });
-  window.addEventListener('scroll', scheduleActivePageUpdate, { passive: true });
-  // As you scroll into fresh regions, content-visibility firms up real block
-  // heights (they were 180px estimates); recompute the page guides shortly
-  // after scrolling pauses so their positions match the now-real layout. The
-  // rebuild is signature-gated, so once a region's breaks stabilize this is a
-  // no-op there.
-  window.addEventListener('scroll', function() {
-    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
-  }, { passive: true });
   connect();
 })();

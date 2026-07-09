@@ -443,7 +443,7 @@
         var p = node.parentElement;
         if (p && p.closest &&
             p.closest('.math-source, .search-panel, .side-panel, .topbar, .lineno-layer, ' +
-                      '.page-guide-layer, .refkey-chip, .eq-refkey-list, .footnote-pop, ' +
+                      '.refkey-chip, .eq-refkey-list, .footnote-pop, ' +
                       '.sidenote, .proof.folded .proof-body, [aria-hidden="true"]')) {
           // Skip math LaTeX source, chrome, and content that's hidden until
           // hover/margin-mode/unfold (a match there would count but scroll to
@@ -1072,7 +1072,7 @@
   function visibleSyncElement(el) {
     if (!el) return null;
     if (el.classList && el.classList.contains('blk')) {
-      return el.querySelector(':scope > :not(.page-guide-layer)') || el;
+      return el.querySelector(':scope > *') || el;
     }
     return el;
   }
@@ -2998,7 +2998,6 @@
     var toggle = document.querySelector('.page-mode-toggle');
     if (toggle) toggle.setAttribute('data-page-mode', currentPageMode);
     try { localStorage.setItem('mathpreview.pageMode', currentPageMode); } catch (e) {}
-    lastPageGuideSignature = '';
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
@@ -3016,13 +3015,11 @@
     // around the scaled content rather than the unscaled column.
     if (currentPageMode === 'a4') {
       var fit = Math.min(1, available / A4_CSS_WIDTH);
-      currentPageScale = fit;
       var combined = fit * currentUserZoom;
       document.documentElement.style.setProperty('--page-scale', combined.toFixed(4));
       shell.style.width = Math.round(A4_CSS_WIDTH * combined) + 'px';
       shell.style.height = '';
     } else {
-      currentPageScale = 1;
       // Dynamic mode: the page's natural width is the smaller of
       // DYNAMIC_BASE_WIDTH and the viewport room available *before*
       // applying the user's zoom — that way zooming in scales the
@@ -3077,36 +3074,6 @@
     setUserZoom(available / base, true);
   }
 
-  function pageGuideMetrics() {
-    if (currentPageMode === 'a4') {
-      var layoutHeight = A4_CSS_WIDTH * A4_RATIO;
-      return {
-        layoutHeight: layoutHeight,
-        visualHeight: layoutHeight * currentPageScale
-      };
-    }
-    var dynamicHeight = Math.max(560, Math.min(1100, window.innerHeight - 84));
-    return {
-      layoutHeight: dynamicHeight,
-      visualHeight: dynamicHeight
-    };
-  }
-
-  function setSideTab(tab) {
-    currentSideTab = tab === 'pages' ? 'pages' : 'index';
-    document.querySelectorAll('.side-tab').forEach(function(btn) {
-      var active = btn.getAttribute('data-side-tab') === currentSideTab;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-    var index = document.getElementById('side-index');
-    var pages = document.getElementById('side-pages');
-    if (index) index.hidden = currentSideTab !== 'index';
-    if (pages) pages.hidden = currentSideTab !== 'pages';
-    try { localStorage.setItem('mathpreview.sideTab', currentSideTab); } catch (e) {}
-    updateActivePage();
-  }
-
   function headingSignature(headings) {
     return headings.map(function(heading) {
       return heading.id + '|' + headingLevel(heading) + '|' + cleanNavText(heading.textContent);
@@ -3139,115 +3106,10 @@
     });
   }
 
-  // Simulate print pagination: walk the top-level blocks and place a break in
-  // the GAP before any block that would overflow the current page's printable
-  // height — the same rule as @media print's `break-inside: avoid`. Because
-  // the break lands between blocks, the guide line sits in whitespace and
-  // never crosses a line of text. Block geometry is read from
-  // offsetTop/offsetHeight; `contain-intrinsic-size: auto` makes these exact
-  // for regions that have rendered and estimated (180px) beyond, so guides are
-  // accurate where you're reading and firm up as you scroll. Returns break Y
-  // positions in the page's own (unzoomed) coordinate space.
-  function pageBreakYs(page, pageHeight) {
-    var blocks = pageBlocks(page);
-    if (!blocks.length || pageHeight <= 0) return [];
-    var breaks = [];
-    var pageStart = blocks[0].offsetTop;
-    var target = pageStart + pageHeight;
-    var lastIdx = -1;
-    for (var i = 0; i < blocks.length; i++) {
-      var top = blocks[i].offsetTop;
-      var bottom = top + blocks[i].offsetHeight;
-      while (bottom > target) {
-        var y;
-        if (i === lastIdx || i === 0) {
-          // A single block taller than a page can't avoid a break — split it
-          // at the boundary, as print does when break-inside can't be honored.
-          y = target;
-        } else {
-          var prevBottom = blocks[i - 1].offsetTop + blocks[i - 1].offsetHeight;
-          y = (prevBottom < top) ? (prevBottom + top) / 2 : top;
-          if (y <= target - pageHeight) y = target; // gap above page start: split
-        }
-        y = Math.round(y);
-        breaks.push(y);
-        target = y + pageHeight;
-        lastIdx = i;
-        if (breaks.length > 5000) return breaks; // runaway guard
-      }
-    }
-    return breaks;
-  }
-
-  function rebuildPageGuides() {
-    var page = pageEl();
-    var pages = document.getElementById('side-pages');
-    if (!page || !pages) return;
-    pages.setAttribute('aria-label', currentPageMode === 'a4' ? 'A4 pages' : 'dynamic pages');
-
-    // `offsetHeight` is the page's visible CSS height; `scrollHeight`
-    // would include the absolutely-positioned guides themselves, which
-    // would inflate both the shell and the scroll area on every refresh
-    // and leave a tall dead strip past the document.
-    updatePageScale(page.offsetHeight);
-
-    var breaks;
-    if (currentPageMode === 'a4') {
-      // Printable A4 content height in the page's own px (width maps to 210mm).
-      breaks = pageBreakYs(page, A4_CSS_WIDTH * A4_PRINT_CONTENT_RATIO);
-    } else {
-      // Dynamic mode has no real paper — keep evenly-spaced viewport-height
-      // guides as a scroll aid.
-      var h = Math.max(1, pageGuideMetrics().layoutHeight);
-      breaks = [];
-      for (var gy = h; gy < page.offsetHeight - 4; gy += h) breaks.push(Math.round(gy));
-    }
-    pageBreakOffsets = breaks;
-    pageGuideCount = breaks.length + 1;
-
-    var signature = currentPageMode + '|' + Math.round(currentPageScale * 100) + '|' + breaks.join(',');
-    if (signature === lastPageGuideSignature) {
-      updateActivePage();
-      return;
-    }
-    lastPageGuideSignature = signature;
-
-    var oldLayer = page.querySelector('.page-guide-layer');
-    if (oldLayer) oldLayer.remove();
-
-    var layer = document.createElement('div');
-    layer.className = 'page-guide-layer';
-    layer.setAttribute('aria-hidden', 'true');
-    breaks.forEach(function(y, j) {
-      var guide = document.createElement('div');
-      guide.className = 'page-guide';
-      guide.style.top = y + 'px';
-      var label = document.createElement('span');
-      // The break before page j+2 marks the top of page j+2.
-      label.textContent = (currentPageMode === 'a4' ? 'A4 page ' : 'Page ') + (j + 2);
-      guide.appendChild(label);
-      layer.appendChild(guide);
-    });
-    page.appendChild(layer);
-
-    pages.replaceChildren();
-    for (var p = 1; p <= pageGuideCount; p++) {
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'side-link page-link';
-      btn.setAttribute('data-page-jump', String(p));
-      btn.textContent = (currentPageMode === 'a4' ? 'A4 ' : 'Page ') + p;
-      pages.appendChild(btn);
-    }
-    updateActivePage();
-  }
-
   function refreshNavigation() {
     navRefreshTimer = 0;
     if (navNeedsIndex) rebuildIndex(false);
-    if (navNeedsPages) rebuildPageGuides();
     navNeedsIndex = false;
-    navNeedsPages = false;
     scheduleSidenoteLayout();
     if (lineNumbersVisible) scheduleLineNumbers();
   }
@@ -3324,7 +3186,7 @@
   /// layers, the absolutely-positioned margin column / sidenotes / refkey
   /// chips, and folded proof bodies all sit off the main text flow, so their
   /// client rects would land at misleading y-coordinates.
-  var LINENO_SKIP = '.lineno-layer, .page-guide-layer, .sidenote, .margin-col,' +
+  var LINENO_SKIP = '.lineno-layer, .sidenote, .margin-col,' +
     ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded,' +
     ' .para-indent-marker';
   function linenoSkip(node, page) {
@@ -3437,30 +3299,8 @@
   }
 
   function scheduleNavigationRefresh(delay, includeIndex) {
-    navNeedsPages = true;
     if (includeIndex !== false) navNeedsIndex = true;
     if (navRefreshTimer) clearTimeout(navRefreshTimer);
     navRefreshTimer = setTimeout(refreshNavigation, typeof delay === 'number' ? delay : NAV_IDLE_MS);
-  }
-
-  function updateActivePage() {
-    // Current scroll position in the page's own (unzoomed) coordinates.
-    var yInPage = (window.scrollY + topbarOffset() + 12 - pageTopY()) / (currentPageScale || 1);
-    var current = 1;
-    for (var i = 0; i < pageBreakOffsets.length; i++) {
-      if (yInPage >= pageBreakOffsets[i]) current = i + 2;
-    }
-    current = Math.min(pageGuideCount, Math.max(1, current));
-    document.querySelectorAll('.page-link').forEach(function(btn) {
-      btn.classList.toggle('active', btn.getAttribute('data-page-jump') === String(current));
-    });
-  }
-
-  function scheduleActivePageUpdate() {
-    if (activePageTimer) return;
-    activePageTimer = requestAnimationFrame(function() {
-      activePageTimer = 0;
-      updateActivePage();
-    });
   }
 

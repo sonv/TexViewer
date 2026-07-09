@@ -172,12 +172,8 @@ pub(super) fn wrap_in_shell(
   <span class="search-help">Typo-tolerant · Tab/↑↓ complete a suggested word · Enter next · Shift+Enter previous · Esc close · <code>m:</code>/<code>$</code> math · Cmd+F for exact</span>
 </div>
 <aside class="side-panel" id="viewer-side" aria-label="document navigation">
-  <div class="side-tabs" role="tablist" aria-label="navigation mode">
-    <button class="side-tab active" type="button" data-side-tab="index" role="tab" aria-selected="true">Index</button>
-    <button class="side-tab" type="button" data-side-tab="pages" role="tab" aria-selected="false">Pages</button>
-  </div>
+  <div class="side-title">Index</div>
   <nav class="side-list" id="side-index" aria-label="document index"></nav>
-  <nav class="side-list" id="side-pages" aria-label="A4 pages" hidden></nav>
 </aside>
 <div id="page-shell">
   <main id="page" data-proof-mode="all" data-refkeys="hidden">

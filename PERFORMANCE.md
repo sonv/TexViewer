@@ -193,26 +193,23 @@ MathJax batch runs at a time; each path sets it, awaits, clears it).
   3's gate flips immediately. The config dialog's "Math rendering" dropdown
   and the `.mathpreview.toml` file both route through the same broadcast.
 
-## Page guides that match print (v0.1.96)
+## Print fidelity, no on-screen guide (v0.1.96 → v1.0.0)
 
-The A4 page-break guides were a cosmetic overlay: a line every
-`794 × 297/210 ≈ 1123px`, drawn over the text, unrelated to real pagination —
-so lines crossed text and never matched Cmd+P. Now:
+A real **`@page { size: A4; margin: 17mm }`** plus print CSS maps the content
+1:1 onto the printable area (no outer frame, no zoom, `@page` margins supply
+the margins) and adds `break-inside: avoid` to atomic blocks. The 176mm
+printable column equals the on-screen A4 column (794px − 2×64px ≈ 176mm), so
+line wrapping — and therefore vertical flow and breaks — agree between screen
+and print. Cmd+P is deterministic instead of using the browser default.
 
-- A real **`@page { size: A4; margin: 17mm }`** plus print CSS maps the content
-  1:1 onto the printable area (no outer frame, no zoom, `@page` margins supply
-  the margins) and adds `break-inside: avoid` to atomic blocks. The 176mm
-  printable column equals the on-screen A4 column (794px − 2×64px ≈ 176mm), so
-  line wrapping — and therefore vertical flow and breaks — agree between screen
-  and print. Print is now deterministic instead of using the browser default.
-- The guide is computed by **simulating that pagination** (`pageBreakYs`):
-  walk the top-level blocks at the printable height (263mm) and place a break
-  in the GAP before any block that would overflow — the same rule as
-  `break-inside: avoid`. The line lands in whitespace (never on a text line)
-  at positions that match where print breaks. Block geometry comes from
-  `offsetTop`/`offsetHeight`; `contain-intrinsic-size: auto` makes these exact
-  for rendered regions, so guides are accurate where you read and are
-  recomputed (signature-gated) as you scroll fresh regions into view.
+An earlier build also drew on-screen page-break guides by simulating that
+pagination in JS (`pageBreakYs`). With viewport-lazy typesetting, off-screen
+block heights are `contain-intrinsic-size` **estimates** (180px), so the guide
+positions were only accurate near where you were reading and jumped as regions
+firmed up on scroll — misleading for most of a long document. The overlay (and
+its "Pages" side-panel tab and page-jump) was **removed in v1.0.0**: Cmd+P's
+real print preview is the single source of truth for where pages break. The
+`@page`/`break-inside` print CSS above is what makes that preview faithful.
 
 ## Layer 6 — Print correctness (v0.1.93–94)
 

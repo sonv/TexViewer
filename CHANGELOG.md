@@ -40,11 +40,21 @@ ways, and search mirrored from the editor.
     directly (`cargo install --features gui` installs it alongside
     `mathpreview-cli`; it's `mathpreview-cli view` under a shorter name).
 
+### Removed
+
+- **On-screen page-break guides** (and the side-panel "Pages" tab / page-jump).
+  With viewport-lazy typesetting, off-screen block heights are estimates, so
+  the guide lines were only accurate near where you were reading and shifted as
+  you scrolled — misleading across a long document. Cmd+P's real print preview
+  is now the single source of truth for page breaks; the `@page`/`break-inside`
+  print CSS that makes that preview faithful is unchanged. The side panel keeps
+  the document **Index** (now a plain header instead of a tab).
+
 ### Notes
 
 - 1.0 consolidates the 0.1.x line. Highlights since the project's public
   releases: large-document performance (fast typing and near-instant load on
-  60-page papers), print-faithful A4 page guides, `typeset-mode`
+  60-page papers), print-faithful Cmd+P page breaks, `typeset-mode`
   (local/background), fuzzy in-viewer search with word suggestions, custom
   `\newenvironment` expansion, and comment/`\iffalse` suppression. See the
   entries below for the full history.

@@ -3984,7 +3984,7 @@ mod tests {
     }
 
     #[test]
-    fn viewer_shell_contains_index_pages_and_a4_guides() {
+    fn viewer_shell_contains_index_and_page_modes() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
             "\\begin{document}\n\\section{Intro}\nText.\n\\end{document}\n".to_string(),
@@ -3994,8 +3994,7 @@ mod tests {
 
         assert!(out.html.contains(r#"id="viewer-side""#));
         assert!(out.html.contains(r#"id="side-toggle""#));
-        assert!(out.html.contains(r#"data-side-tab="index""#));
-        assert!(out.html.contains(r#"data-side-tab="pages""#));
+        assert!(out.html.contains(r#"id="side-index""#));
         assert!(out.html.contains(r#"data-page-mode="a4""#));
         assert!(out.html.contains(r#"data-page-mode="dynamic""#));
         assert!(out.html.contains(r#"id="refkey-toggle""#));
@@ -4065,8 +4064,6 @@ mod tests {
         assert!(out.html.contains(r#"id="page-shell""#));
         assert!(out.html.contains("--page-scale"));
         assert!(out.html.contains("updatePageScale"));
-        assert!(out.html.contains("A4_RATIO"));
-        assert!(out.html.contains("page-guide-layer"));
         assert!(out.html.contains("copySelectionAsLatex"));
         assert!(out.html.contains("selectionIsExactNode"));
         assert!(out.html.contains("math-selected"));

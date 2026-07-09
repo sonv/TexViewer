@@ -1,6 +1,5 @@
 (function() {
   var currentProofMode = 'all';
-  var currentSideTab = 'index';
   var currentPageMode = 'a4';
   var currentSideOpen = false;
   var refkeysVisible = false;
@@ -14,12 +13,6 @@
   var hoverPreviewSource = null;
   var topbarHidden = false;
   var navRefreshTimer = 0;
-  var activePageTimer = 0;
-  // Page-boundary Y offsets in the page's own (unzoomed) coordinate space,
-  // one per page break, computed by pageBreakYs() to match where print breaks.
-  var pageBreakOffsets = [];
-  var pageGuideCount = 1;
-  var currentPageScale = 1;
   var currentUserZoom = 1;
   var ZOOM_MIN = 0.5;
   var ZOOM_MAX = 3;
@@ -28,16 +21,9 @@
   var NAV_RENDER_IDLE_MS = 900;
   var NAV_RESIZE_IDLE_MS = 120;
   var A4_CSS_WIDTH = 794;
-  var A4_RATIO = 297 / 210;
-  // Printable A4 content height as a fraction of width: (297 − 2×17mm margin)
-  // / 210mm. Matches the @page margin in default.css so the on-screen page
-  // guide marks where Cmd+P actually breaks.
-  var A4_PRINT_CONTENT_RATIO = (297 - 2 * 17) / 210;
   var DYNAMIC_BASE_WIDTH = 720;
   var navNeedsIndex = true;
-  var navNeedsPages = true;
   var lastHeadingSignature = '';
-  var lastPageGuideSignature = '';
   var selectedMath = null;
   var activeSourceId = null;
   var sourceFlashTimer = 0;
@@ -89,31 +75,11 @@
     return '.sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4, .sec-h5, .sec-h6';
   }
 
-  function pageTopY() {
-    var page = pageEl();
-    if (!page) return 0;
-    return page.getBoundingClientRect().top + window.scrollY;
-  }
-
   function topbarOffset() {
     if (topbarHidden || document.body.classList.contains('topbar-hidden')) return 12;
     var topbar = document.querySelector('.topbar');
     if (!topbar) return 58;
     return Math.max(12, Math.round(topbar.getBoundingClientRect().height + 8));
-  }
-
-  // Page N starts at offset 0 (page 1) or the (N-1)-th break. Offsets are in
-  // unzoomed page coords, so scale to viewport coords by currentPageScale.
-  function pageStartOffset(pageNo) {
-    if (pageNo <= 1) return 0;
-    var idx = Math.min(pageBreakOffsets.length, pageNo - 1) - 1;
-    return idx >= 0 ? pageBreakOffsets[idx] : 0;
-  }
-  function scrollToPage(pageNo) {
-    if (!pageBreakOffsets.length && pageGuideCount <= 1) refreshNavigation();
-    recordViewerPlace();
-    var y = pageTopY() + pageStartOffset(pageNo) * currentPageScale - topbarOffset();
-    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
   }
 
   function scrollToTarget(target) {

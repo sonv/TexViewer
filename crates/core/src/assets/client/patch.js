@@ -51,7 +51,7 @@
         var tex = mathCopyTex(node);
         return node.classList.contains('display') ? '\n' + tex + '\n' : tex;
       }
-      if (node.matches && node.matches('.para-indent-marker, .page-guide-layer, .fold-marker')) {
+      if (node.matches && node.matches('.para-indent-marker, .fold-marker')) {
         return '';
       }
       if (node.hidden) return '';
@@ -456,19 +456,9 @@
       focusMathNode(clickedMath);
       return;
     }
-    var sideTab = e.target.closest('.side-tab');
-    if (sideTab) {
-      setSideTab(sideTab.getAttribute('data-side-tab'));
-      return;
-    }
     var suggestBtn = e.target.closest('#search-suggest .search-suggestion');
     if (suggestBtn) {
       acceptSearchSuggestion(parseInt(suggestBtn.dataset.suggestIndex, 10));
-      return;
-    }
-    var pageJump = e.target.closest('[data-page-jump]');
-    if (pageJump) {
-      scrollToPage(parseInt(pageJump.getAttribute('data-page-jump'), 10));
       return;
     }
     var indexLink = e.target.closest('#side-index a');
@@ -1101,8 +1091,6 @@
     var pageParent = detachPage ? page.parentNode : null;
     var pageNextSibling = detachPage ? page.nextSibling : null;
     if (pageParent) pageParent.removeChild(page);
-    var oldGuideLayer = page.querySelector('.page-guide-layer');
-    if (oldGuideLayer) oldGuideLayer.remove();
 
     // PRE-SCAN: index math from every block that any op will drop, into a
     // single shared pool. This lets math that "moves" between distant

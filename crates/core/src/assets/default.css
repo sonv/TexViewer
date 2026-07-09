@@ -472,23 +472,12 @@ body.theme-dark .search-help code { background: rgba(255, 255, 255, 0.07); }
   transition: transform 0.16s ease;
 }
 body.side-panel-closed .side-panel { transform: translateX(calc(-100% - 24px)); }
-.side-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.side-title {
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
-}
-.side-tab {
-  border: 0;
-  border-right: 1px solid var(--border);
-  background: #fff;
-  padding: 7px 8px;
-  font: inherit;
-  cursor: pointer;
-}
-.side-tab:last-child { border-right: 0; }
-.side-tab.active {
-  background: var(--accent);
-  color: #fff;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
 }
 .side-list {
   overflow: auto;
@@ -557,30 +546,6 @@ body.page-mode-a4 main#page {
 body.page-mode-dynamic main#page {
   width: var(--page-natural-width, 100%);
   zoom: var(--page-scale);
-}
-.page-guide-layer {
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 0;
-  pointer-events: none;
-  z-index: 5;
-}
-.page-guide {
-  position: absolute;
-  left: -1px;
-  right: -1px;
-  border-top: 1px dashed rgba(91, 62, 162, 0.42);
-}
-.page-guide span {
-  position: absolute;
-  right: 10px;
-  top: -10px;
-  padding: 1px 6px;
-  background: var(--paper);
-  color: var(--accent);
-  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 10px;
-  line-height: 1.4;
 }
 /* Typeset line numbers (lineno-style): one number per wrapped visual line,
    right-aligned in the page's left padding so they sit just outside the
@@ -1041,18 +1006,16 @@ main#page .blk {
    render every block: MathJax measures pathologically slowly inside skipped
    subtrees, and print must never rely on size estimates. */
 body.print-preparing main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
-/* Print geometry, shared with the on-screen A4 page guide so the guide marks
-   where the printout actually breaks. A4 with 17mm margins gives a 176mm text
-   column, which equals the on-screen A4 column (794px − 2×64px padding ≈
-   176mm) — so line wrapping (and therefore vertical flow and page breaks)
-   match between screen and print. `--print-page-content-mm: 263` is the
-   printable height (297 − 2×17) that pageBreakYs() paginates by. */
+/* Print geometry. A4 with 17mm margins gives a 176mm text column, which equals
+   the on-screen A4 column (794px − 2×64px padding ≈ 176mm) — so line wrapping
+   (and therefore vertical flow and page breaks) match between screen and
+   print. */
 :root { --print-margin-mm: 17; --print-page-content-mm: 263; }
 @page { size: A4; margin: 17mm; }
 @media print {
   /* Hide all viewer chrome — only the paper prints. */
   .topbar, .side-panel, details.warnings, dialog,
-  .page-guide-layer, .lineno-layer, .refkey-chip, .margin-layer { display: none !important; }
+  .lineno-layer, .refkey-chip, .margin-layer { display: none !important; }
   html, body { background: #fff; margin: 0; }
   body { color: #000; }
   #page-shell { width: auto; margin: 0; box-shadow: none; }
@@ -1064,8 +1027,7 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
     content-visibility: visible;
   }
   main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
-  /* Keep atomic units whole across a page break — this is what pageBreakYs()
-     assumes when it places a guide before a block that would overflow. */
+  /* Keep atomic units whole across a page break when printing (Cmd+P). */
   .blk, .thm, .proof, .float-placeholder, blockquote.quote,
   figure, table, .math.display, mjx-container { break-inside: avoid; }
   .sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4 { break-after: avoid; }
@@ -2087,7 +2049,7 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 body.theme-dark .topbar { background: #23262c; border-bottom-color: #353941; }
 body.theme-dark .search-panel { background: rgba(35, 38, 44, 0.96); }
 body.theme-dark .side-panel { background: rgba(35, 38, 44, 0.96); border-color: #353941; }
-body.theme-dark .side-tab { background: #2a2d34; color: var(--fg); }
+body.theme-dark .side-title { border-bottom-color: #353941; }
 body.theme-dark .side-link:hover,
 body.theme-dark .side-link.active { background: #2f333b; }
 body.theme-dark main#page { border-color: #353941; }
@@ -2137,7 +2099,6 @@ body.theme-dark .status.live { color: #74c074; }
 body.theme-dark .status.dead { color: #e08080; }
 body.theme-dark .cmdline-feedback.error { color: #e08080; }
 body.theme-dark .cite.missing { color: #6a6a6a; }
-body.theme-dark .page-guide { border-top-color: rgba(179, 157, 232, 0.40); }
 body.theme-dark .math.math-selected,
 body.theme-dark .math:focus,
 body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
