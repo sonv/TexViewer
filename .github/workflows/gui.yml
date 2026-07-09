@@ -14,6 +14,17 @@
 name: gui-build
 
 on:
+  # Runs whenever GUI-relevant files change on any branch — verifies the native
+  # window still builds on macOS + Linux. (workflow_dispatch only becomes
+  # available once this file reaches the default branch, so the push trigger is
+  # what exercises it from `dev`.)
+  push:
+    paths:
+      - ".github/workflows/gui.yml"
+      - "crates/cli/src/view.rs"
+      - "crates/cli/src/main.rs"
+      - "crates/cli/Cargo.toml"
+      - "Cargo.lock"
   workflow_dispatch:
     inputs:
       tag:
