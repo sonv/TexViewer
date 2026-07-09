@@ -3152,55 +3152,92 @@
     return false;
   }
 
-  // Section headings carry `break-after: avoid` in the print CSS (the same
-  // `.sec-h0..h4` list), so a heading can't be the last thing before a page
-  // break — print pushes it onto the next page WITH the block it introduces.
+  // Section headings carry `break-after: avoid` in the print CSS, so a heading
+  // can't be the last thing on a page.
   var HEADING_BREAK_AFTER_SEL = '.sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4';
   function isStickyHeadingBlock(block) {
     return !!block.querySelector(HEADING_BREAK_AFTER_SEL);
   }
+  // Elements a page break must not fall inside — the `break-inside: avoid` list
+  // from @media print. (`.math.display` wraps `mjx-container`, so listing it
+  // alone covers the equation.) Everything else — prose, proofs, theorem
+  // bodies — flows freely across pages, so the guide must too.
+  var NOBREAK_SEL = 'figure, table, .math.display';
 
-  // Break Y positions in the page's own layout coords. `isReliable(block)`
-  // gates the walk: the reliable region is a contiguous prefix from the top,
-  // so the first unreliable block ends it.
+  // Nested no-break elements aren't direct `#page` children, so their
+  // `offsetTop` is relative to the nearest positioned ancestor. Sum up the
+  // offsetParent chain to get the position in the page's own coordinates,
+  // matching the top-level blocks' `offsetTop`.
+  function topInPage(el, page) {
+    var y = 0;
+    while (el && el !== page) { y += el.offsetTop; el = el.offsetParent; }
+    return y;
+  }
+
+  // Break Y positions in the page's own layout coords. Pages fill top to
+  // bottom; a break lands at each page boundary UNLESS that boundary falls
+  // inside a no-break zone — an atomic unit (equation/figure/table) or the span
+  // from a heading to the content it introduces (`break-after: avoid`) — in
+  // which case it moves up to the zone's top, which then begins the next page.
+  // This mirrors @media print exactly. `isReliable(block)` gates the walk to
+  // the contiguous measured prefix of top-level blocks.
   function pageBreakYs(page, pageHeight, isReliable) {
     var blocks = pageBlocks(page);
     if (!blocks.length || pageHeight <= 0) return [];
-    var breaks = [];
     var pageStart = blocks[0].offsetTop;
-    var target = pageStart + pageHeight;
-    var lastIdx = -1;
+
+    // Reliable frontier: bottom of the last contiguous measured top-level block.
+    var reliableBottom = pageStart;
     for (var i = 0; i < blocks.length; i++) {
       if (!isReliable(blocks[i])) break;
-      var top = blocks[i].offsetTop;
-      var bottom = top + blocks[i].offsetHeight;
-      while (bottom > target) {
-        var y;
-        if (i === lastIdx || i === 0) {
-          // A single block taller than a page can't avoid a break — split it
-          // at the boundary, as print does when break-inside can't be honored.
-          y = target;
-        } else {
-          // `break-after: avoid` glues a heading to the block after it, so if
-          // the overflowing block is preceded by heading block(s) that started
-          // on this page, the break moves BEFORE the heading(s) (they go to the
-          // next page too), not into the gap right after them.
-          var bi = i;
-          while (bi > 0 && isStickyHeadingBlock(blocks[bi - 1]) &&
-                 blocks[bi - 1].offsetTop > target - pageHeight) {
-            bi--;
-          }
-          var topB = blocks[bi].offsetTop;
-          var prevBottom = blocks[bi - 1].offsetTop + blocks[bi - 1].offsetHeight;
-          y = (prevBottom < topB) ? (prevBottom + topB) / 2 : topB;
-          if (y <= target - pageHeight) y = target; // gap above page start: split
-        }
-        y = Math.round(y);
-        breaks.push(y);
-        target = y + pageHeight;
-        lastIdx = i;
-        if (breaks.length > 5000) return breaks; // runaway guard
+      reliableBottom = blocks[i].offsetTop + blocks[i].offsetHeight;
+      // Heading → keep it with the content it introduces: the whole span up to
+      // the next block can't hold a break.
+      if (isStickyHeadingBlock(blocks[i])) {
+        var nextTop = (i + 1 < blocks.length)
+          ? blocks[i + 1].offsetTop
+          : blocks[i].offsetTop + blocks[i].offsetHeight;
+        blocks[i].__mpHeadingZone = [blocks[i].offsetTop, nextTop];
       }
+    }
+    if (reliableBottom <= pageStart + pageHeight) return []; // < 1 page to break
+
+    // Collect no-break zones [top, bottom] within the measured region.
+    var zones = [];
+    var atoms = page.querySelectorAll(NOBREAK_SEL);
+    for (var a = 0; a < atoms.length; a++) {
+      var t = topInPage(atoms[a], page);
+      if (t >= reliableBottom) continue;
+      var h = atoms[a].offsetHeight;
+      if (h > 0) zones.push([t, t + h]);
+    }
+    for (var j = 0; j < blocks.length && blocks[j].offsetTop < reliableBottom; j++) {
+      if (blocks[j].__mpHeadingZone) {
+        zones.push(blocks[j].__mpHeadingZone);
+        blocks[j].__mpHeadingZone = null;
+      }
+    }
+    zones.sort(function(p, q) { return p[0] - q[0]; });
+
+    var breaks = [];
+    var target = pageStart + pageHeight;
+    var guard = 0;
+    while (target < reliableBottom && guard++ < 5000) {
+      var pageTop = target - pageHeight;
+      var y = target;
+      for (var k = 0; k < zones.length; k++) {
+        if (zones[k][1] <= y) continue;          // zone ends above the boundary
+        if (zones[k][0] >= y) break;             // zones sorted; rest start below
+        // Boundary falls inside this zone. Move before it — unless the zone
+        // started on a previous page (spans a full page), which can't be
+        // avoided, so split at the boundary.
+        if (zones[k][0] > pageTop) y = zones[k][0];
+        break;
+      }
+      y = Math.round(y);
+      if (breaks.length && y <= breaks[breaks.length - 1]) break; // no progress
+      breaks.push(y);
+      target = y + pageHeight;
     }
     return breaks;
   }

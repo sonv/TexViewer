@@ -80,7 +80,10 @@ ways, and search mirrored from the editor.
   keep `break-inside: avoid` now; proofs, theorem statements, quotations, and
   the generic block wrapper flow across pages like LaTeX. Boxed theorems/proofs
   that do split get `box-decoration-break: clone` so their border repeats on
-  each fragment.
+  each fragment. The on-screen page-break guides were re-synced to this rule:
+  they now fill each page and break inside proofs too, moving a line up only
+  when a page boundary would land inside an equation/figure/table or just after
+  a heading — instead of drawing a line before a whole proof.
 
 ### Notes
 

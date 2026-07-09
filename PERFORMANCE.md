@@ -249,10 +249,17 @@ rAF-coalesced `rebuildPageGuides`, which is signature-gated (page scale + break
 list) to skip redundant DOM work.
 
 `pageBreakYs` mirrors the print break rules so the guide and `@media print`
-stay in lockstep: `break-inside: avoid` (break in the gap *before* an
-overflowing block; split a block taller than a page) and `break-after: avoid`
-on `.sec-h0..h4` headings (a heading can't be the last thing on a page, so the
-break moves *before* the heading it introduces, not into the gap after it).
+stay in lockstep. Print fills each page top to bottom and breaks freely inside
+prose, proofs, and theorem bodies — so the guide does too: it places a break at
+each page boundary. The only exceptions are the `break-inside: avoid` list
+(`figure, table, .math.display`) and `break-after: avoid` on `.sec-h0..h4`
+headings. Those become **no-break zones**: if a page boundary lands inside an
+equation/figure/table, or in the span from a heading to the content it
+introduces, the break moves up to the zone's top (pushing it to the next page).
+A zone taller than a page can't be avoided, so the break splits it, as print
+does. (Earlier this treated *every* block as unbreakable, which pushed a whole
+long proof to the next page and left a blank gap — diverging from print once
+`.proof`/`.thm`/`.blk` lost `break-inside: avoid`.)
 
 **Known limitations.** (1) Guides only span the region you've actually scrolled
 through / rendered — jump to the middle via the index and the top isn't
