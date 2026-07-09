@@ -51,7 +51,7 @@
         var tex = mathCopyTex(node);
         return node.classList.contains('display') ? '\n' + tex + '\n' : tex;
       }
-      if (node.matches && node.matches('.para-indent-marker, .fold-marker, .page-guide-layer')) {
+      if (node.matches && node.matches('.para-indent-marker, .fold-marker')) {
         return '';
       }
       if (node.hidden) return '';

@@ -66,14 +66,13 @@ pub(super) fn wrap_in_shell(
     let mathjax_config_js = serde_json::to_string(&opts.viewer_config.mathjax_config)
         .unwrap_or_else(|_| "\"\"".to_string());
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", pageGuides: {guides}, mathjaxConfig: {mjx} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
         wrap = opts.viewer_config.wrap_equations,
         thm = opts.viewer_config.theorem_numbering.as_str(),
         tsm = opts.viewer_config.typeset_mode.as_str(),
-        guides = opts.viewer_config.page_guides,
         mjx = mathjax_config_js,
     );
 
@@ -325,8 +324,6 @@ pub(super) fn wrap_in_shell(
       </label>
       <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
         Wrap long equations (off = scroll horizontally)</label>
-      <label class="config-checkbox"><input type="checkbox" id="config-page-guides">
-        Show page-break guides (A4 mode; marks where Cmd+P breaks)</label>
     </fieldset>
     <fieldset class="macros-dialog-scope config-fields">
       <legend>MathJax config (advanced)</legend>

@@ -39,20 +39,13 @@ ways, and search mirrored from the editor.
   - A dedicated **`locus`** command: `locus <file>` opens the native window
     directly (`cargo install --features gui` installs it alongside
     `mathpreview-cli`; it's `mathpreview-cli view` under a shorter name).
-- **Optional page-break guides — now accurate.** `page-guides = true` (or the
-  config dialog's "Show page-break guides" checkbox) draws thin dashed lines in
-  A4 mode where Cmd+P breaks between pages. Default off. Unlike the earlier
-  guide — which estimated off-screen block heights and so mostly disagreed with
-  Cmd+P — this one only draws lines across the part of the document it has
-  actually measured (blocks you've scrolled through, with typeset math), so
-  every line matches a real print break. Coverage grows as you scroll further
-  down the document. See PERFORMANCE.md ("Page-break guides").
 
 ### Removed
 
-- **The side-panel "Pages" tab and page-jump.** The old estimate-based on-screen
-  page divider was removed and rebuilt accurately (see *Added* above); the
-  page-jump list it fed went with it. The side panel keeps the document
+- **The on-screen page divider and the side-panel "Pages" tab / page-jump.** The
+  estimate-based page-break markers couldn't stay accurate under lazy
+  typesetting, so they were dropped — Cmd+P's real print preview is the single
+  source of truth for where pages break. The side panel keeps the document
   **Index** (now a plain header instead of a tab).
 
 ### Fixed
@@ -80,10 +73,7 @@ ways, and search mirrored from the editor.
   keep `break-inside: avoid` now; proofs, theorem statements, quotations, and
   the generic block wrapper flow across pages like LaTeX. Boxed theorems/proofs
   that do split get `box-decoration-break: clone` so their border repeats on
-  each fragment. The on-screen page-break guides were re-synced to this rule:
-  they now fill each page and break inside proofs too, moving a line up only
-  when a page boundary would land inside an equation/figure/table or just after
-  a heading — instead of drawing a line before a whole proof.
+  each fragment.
 
 ### Notes
 

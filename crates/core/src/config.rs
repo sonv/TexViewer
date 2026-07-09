@@ -154,13 +154,6 @@ pub struct ViewerConfig {
     /// and printing never wait. Cmd+P always typesets the whole document on
     /// demand regardless of this setting.
     pub typeset_mode: Option<TypesetMode>,
-    /// Show the on-screen A4 page-break guides: thin dashed lines marking where
-    /// the printout (Cmd+P) breaks between pages. Default `false`. Guides only
-    /// appear in A4 page mode, and only span the region you've actually
-    /// scrolled through (whose layout is really measured), so every line shown
-    /// matches a real print break; they extend as you scroll further. See
-    /// PERFORMANCE.md ("Page-break guides") for the design and how to remove it.
-    pub page_guides: Option<bool>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
 }
@@ -292,7 +285,6 @@ pub struct ResolvedViewerConfig {
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
     pub typeset_mode: TypesetMode,
-    pub page_guides: bool,
 }
 
 impl Default for ResolvedConfig {
@@ -308,7 +300,6 @@ impl Default for ResolvedConfig {
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
                 typeset_mode: TypesetMode::Local,
-                page_guides: false,
             },
             text_macros: HashMap::new(),
         }
@@ -366,10 +357,6 @@ impl Config {
                     .viewer
                     .typeset_mode
                     .unwrap_or(defaults.viewer.typeset_mode),
-                page_guides: self
-                    .viewer
-                    .page_guides
-                    .unwrap_or(defaults.viewer.page_guides),
             },
             text_macros: self.text_macros,
         }
@@ -420,9 +407,6 @@ impl ViewerConfig {
         }
         if other.typeset_mode.is_some() {
             self.typeset_mode = other.typeset_mode;
-        }
-        if other.page_guides.is_some() {
-            self.page_guides = other.page_guides;
         }
         self.source_jump.merge(other.source_jump);
     }
@@ -562,14 +546,6 @@ trigger = "double-click"
             resolved.viewer.source_jump_trigger,
             SourceJumpTrigger::DoubleClick
         );
-    }
-
-    #[test]
-    fn page_guides_defaults_off_and_parses() {
-        // Unset → off (matches the viewer default; the guide is opt-in).
-        assert!(!Config::default().resolve().viewer.page_guides);
-        let cfg = Config::parse("[viewer]\npage-guides = true\n", Path::new("t.toml")).unwrap();
-        assert!(cfg.resolve().viewer.page_guides);
     }
 
     #[test]

@@ -609,7 +609,6 @@ wrap-equations = true           # wrap long display math (MathJax line-breaking)
                                 # set false to let it overflow + scroll instead
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
 typeset-mode = "local"          # | "background" — see below
-page-guides = false             # dashed A4 page-break guides (see below)
 
 [viewer.source-jump]
 # Which click gesture sends `POST /reveal-source` to spawn `--editor`
@@ -634,16 +633,6 @@ quietly fills in the rest while the tab is idle, so scrolling to deep sections
 and printing never wait (at the cost of typesetting — and holding in memory —
 the whole document). Either way, **Cmd/Ctrl+P** typesets the whole document on
 demand before printing.
-
-`page-guides` draws thin dashed lines in **A4 page mode** marking where
-**Cmd/Ctrl+P** breaks between pages — a live preview of the printed pagination.
-Default `false`; it's also a checkbox in the **config** toolbar dialog. To stay
-faithful under lazy typesetting, guides are only drawn across the part of the
-document that has actually been measured — blocks you've scrolled through, with
-their math typeset — so every line matches a real print break. Coverage extends
-as you scroll further down. (Jump straight to a deep section and the top isn't
-measured yet, so lines there appear only once you scroll to them; `background`
-typeset mode does not extend the guides on its own.)
 
 **Theorem numbering.** By default (`theorem-numbering = "auto"`) theorem-likes
 are numbered from the document's `\newtheorem` declarations — continuously
