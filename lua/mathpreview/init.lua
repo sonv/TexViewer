@@ -1595,6 +1595,17 @@ end
 
 function M.start(opts)
   opts = opts or {}
+  -- Optional per-command viewer choice (`:MathPreview window|browser`). It sets
+  -- the session default (sticky) so the reuse/open/install paths — which all
+  -- read config.viewer — agree for this and later previews until changed again.
+  if opts.viewer and opts.viewer ~= "" then
+    if opts.viewer ~= "browser" and opts.viewer ~= "window" then
+      vim.notify("mathpreview: viewer must be 'browser' or 'window' (got '"
+        .. tostring(opts.viewer) .. "')", vim.log.levels.ERROR)
+      return
+    end
+    config.viewer = opts.viewer
+  end
   local root, err = opts.root, nil
   if not root then root, err = current_root() end
   if not root then

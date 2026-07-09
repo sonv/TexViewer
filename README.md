@@ -178,7 +178,8 @@ on Linux it needs the WebKitGTK development package (`libwebkit2gtk-4.1-dev`)
 to build.
 
 **From nvim**, set `viewer = "window"` in `setup()` to open the native window
-instead of a browser tab:
+instead of a browser tab — or pick per invocation with `:MathPreview window`
+(or `:MathPreview browser`, tab-completed):
 
 ```lua
 require("mathpreview").setup({ viewer = "window" })   -- default is "browser"

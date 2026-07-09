@@ -33,6 +33,9 @@ ways, and search mirrored from the editor.
   Linux — instead of a browser tab. Same rendering, same features; the plugin
   builds the `gui`-featured binary for you on demand. The default stays
   `"browser"`, so nothing changes unless you opt in.
+  - `:MathPreview` now takes an optional viewer argument — `:MathPreview window`
+    or `:MathPreview browser` — to pick per invocation (with tab completion),
+    without editing `setup()`.
 
 ### Notes
 
