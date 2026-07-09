@@ -17,6 +17,20 @@ summary.
 
 Nothing yet.
 
+## [0.1.102] — 2026-07-09
+
+### Added
+
+- **Choose your viewer: browser tab or native window.** The nvim plugin gains a
+  `viewer` option — `"browser"` (default, unchanged) or `"window"` for the
+  standalone native window. In window mode the plugin runs its daemon as usual
+  and opens a native OS-webview window against it (a new `mathpreview-cli view
+  --attach <url>` mode — no second daemon); the window is tied to the session
+  (closed on `:MathPreviewStop`, re-opened on restart, reused rather than
+  duplicated). `"window"` needs the `gui` cargo feature; on a source checkout
+  the plugin detects a binary that lacks it and reinstalls with `--features gui`
+  automatically. The default `"browser"` install stays webview-free.
+
 ## [0.1.101] — 2026-07-09
 
 ### Added

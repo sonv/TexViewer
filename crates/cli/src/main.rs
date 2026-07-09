@@ -98,8 +98,17 @@ enum Cmd {
     /// feature at build time.
     #[cfg(feature = "gui")]
     View {
-        /// Input file. Project root is auto-detected.
-        input: PathBuf,
+        /// Input file (standalone mode: starts its own daemon). Omit when
+        /// using --attach.
+        input: Option<PathBuf>,
+        /// Attach to an ALREADY-running daemon at this URL and just open the
+        /// window — no new daemon. This is what the nvim plugin uses (it
+        /// manages its own daemon). Mutually exclusive with <input>.
+        #[arg(long, value_name = "URL", conflicts_with = "input")]
+        attach: Option<String>,
+        /// Window title. Defaults to the input file stem (or "mathpreview").
+        #[arg(long)]
+        title: Option<String>,
         /// Port for the internal daemon. Defaults to a free ephemeral port so
         /// it never clashes with an nvim-managed daemon.
         #[arg(long)]
@@ -108,7 +117,10 @@ enum Cmd {
         #[arg(long)]
         mathjax_url: Option<String>,
         /// Shell command for Cmd/Ctrl-click "reveal source" (same as `serve`).
-        #[arg(long, default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
+        #[arg(
+            long,
+            default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#
+        )]
         editor: String,
         /// Extra macro override file(s), same cascade as `serve`.
         #[arg(long = "macros", value_name = "FILE")]
@@ -184,15 +196,25 @@ fn main() -> Result<()> {
         #[cfg(feature = "gui")]
         Cmd::View {
             input,
+            attach,
+            title,
             port,
             mathjax_url,
             editor,
             macros: extra_macros,
             config: extra_configs,
         } => {
+            // Attach mode: just open a window at an existing daemon (no daemon
+            // of our own). This is the plugin's path — it runs the daemon.
+            if let Some(url) = attach {
+                let title = title.unwrap_or_else(|| "mathpreview".to_string());
+                return view::run_window(&url, &title);
+            }
+            let input =
+                input.context("provide an input file, or --attach <url> to a running daemon")?;
             let (opts, config_files) =
                 build_serve_opts(&input, mathjax_url, &extra_macros, &extra_configs);
-            let title = opts.title.clone();
+            let title = title.unwrap_or_else(|| opts.title.clone());
             let port = port.unwrap_or_else(view::free_port);
             // The webview event loop must own the main thread (required on
             // macOS), so run the daemon on a background thread and point the

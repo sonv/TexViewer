@@ -177,6 +177,19 @@ default (so the normal build stays a pure daemon with no webview system deps);
 on Linux it needs the WebKitGTK development package (`libwebkit2gtk-4.1-dev`)
 to build.
 
+**From nvim**, set `viewer = "window"` in `setup()` to open the native window
+instead of a browser tab:
+
+```lua
+require("mathpreview").setup({ viewer = "window" })   -- default is "browser"
+```
+
+The plugin manages the daemon as usual and attaches the window to it. On a
+source checkout it builds the `gui`-featured binary for you the first time (and
+detects and upgrades a binary that lacks the feature); on Linux, install
+`libwebkit2gtk-4.1-dev` first. The window closes with `:MathPreviewStop` and is
+tied to the editing session.
+
 ### 2. The nvim plugin
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`
