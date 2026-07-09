@@ -65,6 +65,13 @@ ways, and search mirrored from the editor.
   `\left.\\\left.` split trick) spilled past the box and was clipped. Full-width
   containers (`mjx-container[width="full"]`) are now block-level, so the last
   line has the whole column to sit in. Single equations are unchanged.
+- **Full-width displays (multline, line-broken equations) render at the
+  document font size.** MathJax typesets each equation standalone at its own
+  default em; a normal equation then rescales into the page through its
+  ex-based `width`/`height`, but a full-width display uses `width:100%` with no
+  `viewBox` and skips that rescale — so a `multline` came out ~1.5× too big
+  (e.g. 18px in a 12px document). The engine adapter now passes the page's real
+  `em`/`ex` to `tex2svg`, so every equation matches the surrounding text.
 - **Cmd+P no longer leaves a big blank space before a long proof.** The print
   CSS gave `break-inside: avoid` to `.blk` (every block), `.thm`, `.proof`, and
   `blockquote.quote`, so any block taller than the space left on the page was

@@ -75,6 +75,31 @@
     }
     return 0;
   }
+  // Context font metrics (em = font size, ex = x-height, in unzoomed px).
+  // tex2svg renders each equation standalone at MathJax's own default em; a
+  // normal equation then rescales into the page through its ex-based
+  // width/height, but a full-width display (multline, or one MathJax
+  // line-breaks) uses width:100% with NO viewBox and skips that rescale — so it
+  // would render at ~18px regardless of the document font. Passing the real
+  // em/ex makes every equation, full-width included, match the surrounding
+  // text. `offsetHeight` is unzoomed layout px (matches getComputedStyle),
+  // measured over 10ex for sub-pixel accuracy; cached per distinct font size.
+  var exByEm = {};
+  function contextEmEx(el) {
+    var em = parseFloat(getComputedStyle(el).fontSize);
+    if (!(em > 0)) em = 16;
+    var ex = exByEm[em];
+    if (ex == null) {
+      var probe = document.createElement('div');
+      probe.style.cssText =
+        'display:inline-block;width:0;height:10ex;visibility:hidden;padding:0;border:0;';
+      el.appendChild(probe);
+      ex = (probe.offsetHeight || em * 4.3) / 10;
+      el.removeChild(probe);
+      exByEm[em] = ex;
+    }
+    return { em: em, ex: ex };
+  }
   function typeset(nodes) {
     var sources = mathSourceNodes(nodes);
     if (window.MathJax.tex2svgPromise) {
@@ -84,7 +109,8 @@
       return sources.reduce(function(chain, source) {
         return chain.then(function() {
         if (source.querySelector('mjx-container')) return Promise.resolve();
-        var opts = { display: sourceDisplay(source) };
+        var mm = contextEmEx(source);
+        var opts = { display: sourceDisplay(source), em: mm.em, ex: mm.ex };
         if (wrap) {
           var cw = availWidth(source);
           if (cw) opts.containerWidth = cw;
