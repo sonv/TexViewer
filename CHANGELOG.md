@@ -65,6 +65,15 @@ ways, and search mirrored from the editor.
   `\left.\\\left.` split trick) spilled past the box and was clipped. Full-width
   containers (`mjx-container[width="full"]`) are now block-level, so the last
   line has the whole column to sit in. Single equations are unchanged.
+- **Cmd+P no longer leaves a big blank space before a long proof.** The print
+  CSS gave `break-inside: avoid` to `.blk` (every block), `.thm`, `.proof`, and
+  `blockquote.quote`, so any block taller than the space left on the page was
+  pushed whole to the next page — a 1½-page proof after a lemma left most of a
+  page blank. Only genuinely atomic units (display equations, figures, tables)
+  keep `break-inside: avoid` now; proofs, theorem statements, quotations, and
+  the generic block wrapper flow across pages like LaTeX. Boxed theorems/proofs
+  that do split get `box-decoration-break: clone` so their border repeats on
+  each fragment.
 
 ### Notes
 

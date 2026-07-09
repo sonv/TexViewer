@@ -1067,10 +1067,21 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
     content-visibility: visible;
   }
   main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
-  /* Keep atomic units whole across a page break when printing (Cmd+P). */
-  .blk, .thm, .proof, .float-placeholder, blockquote.quote,
+  /* Keep only genuinely atomic units whole across a page break (Cmd+P): a
+     display equation, a figure, a table. Long-form blocks — proofs, theorem
+     statements, quotations, and the generic `.blk` wrapper — must be free to
+     break across pages. If they can't, a block taller than the space left on
+     the page is pushed whole to the next page, leaving the rest of the current
+     page blank (a long proof after a lemma is the classic case). Letting them
+     flow matches how LaTeX paginates. */
   figure, table, .math.display, mjx-container { break-inside: avoid; }
   .sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4 { break-after: avoid; }
+  /* When a boxed theorem/proof does split across a page, repeat its border and
+     padding on each fragment instead of dropping them at the break. */
+  .thm, .proof, blockquote.quote {
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
 }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
 /* `quote` / `quotation`: an indented block quotation. Body is parsed normally,
