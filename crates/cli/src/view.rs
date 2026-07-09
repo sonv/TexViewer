@@ -36,12 +36,24 @@ pub fn wait_for_listen(port: u16, timeout: Duration) {
     }
 }
 
+/// Product name for the native window (the app layer — the CLI and the nvim
+/// plugin keep their own names). Shown in the window title and, eventually, a
+/// macOS `.app` bundle.
+pub const APP_NAME: &str = "Locus";
+
 /// Open the window and run its event loop. Blocks until the window is closed
-/// (the event loop exits the process), so this never returns `Ok`.
-pub fn run_window(url: &str, title: &str) -> Result<()> {
+/// (the event loop exits the process), so this never returns `Ok`. `doc` is the
+/// document label (usually the file name); the title is branded as
+/// `"<doc> — Locus"`, or just "Locus" when `doc` is empty.
+pub fn run_window(url: &str, doc: &str) -> Result<()> {
+    let title = if doc.is_empty() {
+        APP_NAME.to_string()
+    } else {
+        format!("{doc} — {APP_NAME}")
+    };
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title(title)
+        .with_title(&title)
         .with_inner_size(LogicalSize::new(1100.0, 900.0))
         .build(&event_loop)
         .context("creating the preview window")?;

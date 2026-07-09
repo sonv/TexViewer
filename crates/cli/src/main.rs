@@ -207,14 +207,16 @@ fn main() -> Result<()> {
             // Attach mode: just open a window at an existing daemon (no daemon
             // of our own). This is the plugin's path — it runs the daemon.
             if let Some(url) = attach {
-                let title = title.unwrap_or_else(|| "mathpreview".to_string());
-                return view::run_window(&url, &title);
+                // `run_window` brands the title as "<doc> — Locus"; an empty
+                // doc label shows just "Locus".
+                let doc = title.unwrap_or_default();
+                return view::run_window(&url, &doc);
             }
             let input =
                 input.context("provide an input file, or --attach <url> to a running daemon")?;
             let (opts, config_files) =
                 build_serve_opts(&input, mathjax_url, &extra_macros, &extra_configs);
-            let title = title.unwrap_or_else(|| opts.title.clone());
+            let doc = title.unwrap_or_else(|| opts.title.clone());
             let port = port.unwrap_or_else(view::free_port);
             // The webview event loop must own the main thread (required on
             // macOS), so run the daemon on a background thread and point the
@@ -241,7 +243,7 @@ fn main() -> Result<()> {
                 }
             });
             view::wait_for_listen(port, std::time::Duration::from_secs(10));
-            return view::run_window(&format!("http://127.0.0.1:{port}/"), &title);
+            return view::run_window(&format!("http://127.0.0.1:{port}/"), &doc);
         }
         Cmd::Render {
             input,

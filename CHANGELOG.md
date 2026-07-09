@@ -17,6 +17,14 @@ summary.
 
 Nothing yet.
 
+## [0.1.103] — 2026-07-09
+
+### Changed
+
+- **The native window is now named Locus.** Its title bar reads
+  `"<file> — Locus"`. This names the app layer only — the CLI stays
+  `mathpreview-cli view` and the nvim plugin stays `mathpreview.nvim`.
+
 ## [0.1.102] — 2026-07-09
 
 ### Added

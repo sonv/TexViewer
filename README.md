@@ -158,12 +158,12 @@ cargo install --path crates/cli --force   # → ~/.cargo/bin/mathpreview-cli (on
 > daemon spawn prints the binary path plus the daemon's stderr — check those
 > first if you ever see the "old version."
 
-### Native window (no browser tab)
+### Locus — the native window (no browser tab)
 
-By default the preview opens in your browser. To view it in a **dedicated
-native window** instead — powered by the OS webview (WebKit on macOS, WebView2
-on Windows, WebKitGTK on Linux), the same rendering the browser uses — build
-with the opt-in `gui` feature and run the `view` subcommand:
+By default the preview opens in your browser. **Locus** is the standalone
+native window instead — powered by the OS webview (WebKit on macOS, WebView2 on
+Windows, WebKitGTK on Linux), the same rendering the browser uses. Build with
+the opt-in `gui` feature and run the `view` subcommand:
 
 ```sh
 cargo install --path crates/cli --features gui --force
