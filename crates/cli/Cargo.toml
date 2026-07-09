@@ -12,9 +12,21 @@ description = "Live-rendering LaTeX preview daemon for nvim/vimtex (the companio
 keywords = ["latex", "preview", "mathjax", "neovim", "vimtex"]
 categories = ["command-line-utilities", "rendering", "web-programming::http-server"]
 
+[lib]
+name = "mathpreview_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mathpreview-cli"
 path = "src/main.rs"
+
+# `locus` — the native-window viewer as its own command (`locus <file>`).
+# Only built/installed with `--features gui`, so a default install is just the
+# `mathpreview-cli` daemon.
+[[bin]]
+name = "locus"
+path = "src/bin/locus.rs"
+required-features = ["gui"]
 
 [dependencies]
 mathpreview-core.workspace = true

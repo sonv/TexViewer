@@ -166,12 +166,14 @@ Windows, WebKitGTK on Linux), the same rendering the browser uses. Build with
 the opt-in `gui` feature and run the `view` subcommand:
 
 ```sh
-cargo install --path crates/cli --features gui --force
-mathpreview-cli view paper.tex          # opens a native window; live-reloads on edit
+cargo install --path crates/cli --features gui --force   # installs `mathpreview-cli` AND `locus`
+locus paper.tex                          # opens a native window; live-reloads on edit
 ```
 
-`view` starts its own daemon on a free port, so it works standalone from the
-terminal. It's the same HTML/MathJax the browser gets — live-reload, search,
+The `gui` feature installs a dedicated **`locus`** command (shown above);
+`mathpreview-cli view paper.tex` is the exact same thing under the daemon
+binary. Either starts its own daemon on a free port, so it works standalone
+from the terminal. It's the same HTML/MathJax the browser gets — live-reload, search,
 source-jump, and everything else work unchanged. The `gui` feature is off by
 default (so the normal build stays a pure daemon with no webview system deps);
 on Linux it needs the WebKitGTK development package (`libwebkit2gtk-4.1-dev`)

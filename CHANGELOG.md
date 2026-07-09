@@ -36,6 +36,9 @@ ways, and search mirrored from the editor.
   - `:MathPreview` now takes an optional viewer argument — `:MathPreview window`
     or `:MathPreview browser` — to pick per invocation (with tab completion),
     without editing `setup()`.
+  - A dedicated **`locus`** command: `locus <file>` opens the native window
+    directly (`cargo install --features gui` installs it alongside
+    `mathpreview-cli`; it's `mathpreview-cli view` under a shorter name).
 
 ### Notes
 
