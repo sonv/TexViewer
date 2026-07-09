@@ -4,9 +4,9 @@ All notable changes to mathpreview are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project versions itself with [Semantic Versioning](https://semver.org/).
-Pre-1.0 means the public surface (CLI flags, plugin commands, HTTP routes,
-WebSocket protocol) may still shift between minor versions; breakages will
-be called out under **Changed** / **Removed** when they happen.
+As of 1.0 the public surface (CLI flags, plugin commands, HTTP routes, the
+WebSocket protocol) is considered stable; breaking changes bump the major
+version and are called out under **Changed** / **Removed**.
 
 Per-session implementation notes — what was tried, what failed, what got
 reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
@@ -16,6 +16,33 @@ summary.
 ## [Unreleased]
 
 Nothing yet.
+
+## [1.0.0] — 2026-07-09
+
+First stable release. mathpreview is a live LaTeX preview for Neovim (and the
+terminal): a Rust daemon renders your document to HTML with MathJax and pushes
+per-keystroke deltas over WebSocket to a viewer that stays in sync with your
+cursor — clickable cross-references, pinned-margin proofs, source-jump both
+ways, and search mirrored from the editor.
+
+### Added
+
+- **Locus — a native window viewer, no browser required.** `viewer = "window"`
+  in the nvim plugin (or `mathpreview-cli view <file>` standalone) opens the
+  preview in a dedicated OS-webview window — WebKit on macOS, WebKitGTK on
+  Linux — instead of a browser tab. Same rendering, same features; the plugin
+  builds the `gui`-featured binary for you on demand. The default stays
+  `"browser"`, so nothing changes unless you opt in.
+
+### Notes
+
+- 1.0 consolidates the 0.1.x line. Highlights since the project's public
+  releases: large-document performance (fast typing and near-instant load on
+  60-page papers), print-faithful A4 page guides, `typeset-mode`
+  (local/background), fuzzy in-viewer search with word suggestions, custom
+  `\newenvironment` expansion, and comment/`\iffalse` suppression. See the
+  entries below for the full history.
+- The public surface is now stable under semver (see the note at the top).
 
 ## [0.1.103] — 2026-07-09
 
