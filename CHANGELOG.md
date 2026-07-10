@@ -39,6 +39,12 @@ ways, and search mirrored from the editor.
   - A dedicated **`locus`** command: `locus <file>` opens the native window
     directly (`cargo install --features gui` installs it alongside
     `mathpreview-cli`; it's `mathpreview-cli view` under a shorter name).
+  - **A real dock icon.** Locus brands the macOS dock with its own icon — a
+    bold points-condensing-onto-a-curve "L" on the viewer's deep-violet tile
+    (a locus is a set of points, after all) — instead of the generic
+    executable icon. X11/Windows get the same art as the window/taskbar icon.
+    The SVG master, a 1024px PNG, and `Locus.icns` (for an eventual `.app`
+    bundle) live in `crates/cli/assets/`.
 - **`close_on_exit` plugin option** (default `true`): quitting nvim tears the
   preview down — stops the daemon and closes the native Locus window. Set
   `false` to let the preview outlive nvim instead: the daemon and window are

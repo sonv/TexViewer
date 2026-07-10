@@ -51,6 +51,19 @@ toml_edit.workspace = true
 wry = { workspace = true, optional = true }
 tao = { workspace = true, optional = true }
 
+# Dock icon for the Locus window: a bare binary (no .app bundle) shows the
+# generic executable icon, so view.rs sets NSApp.applicationIconImage at
+# runtime. Both crates are already in the gui dependency tree via tao — these
+# direct deps pin the same locked versions and only add feature flags.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSApplication",
+    "NSImage",
+    "NSResponder",
+] }
+objc2-foundation = { version = "0.3", optional = true, features = ["NSData"] }
+
 [features]
 default = []
-gui = ["dep:wry", "dep:tao"]
+gui = ["dep:wry", "dep:tao", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]

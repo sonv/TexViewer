@@ -48,6 +48,35 @@ pub fn wait_for_listen(port: u16, timeout: Duration) {
 /// macOS `.app` bundle.
 pub const APP_NAME: &str = "Locus";
 
+/// Brand the dock. A bare binary (not an `.app` bundle) shows the generic
+/// executable icon, so set `NSApp.applicationIconImage` at runtime from the
+/// embedded PNG (rendered from `assets/locus-icon.svg`; `assets/Locus.icns`
+/// is the same art for an eventual bundle). Main thread only, after the event
+/// loop's build has initialized NSApplication.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../assets/locus-icon-1024.png"));
+    if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&icon)) };
+    }
+}
+
+/// Window/taskbar icon for platforms that take one per-window (X11, Windows;
+/// Wayland uses the .desktop entry instead). The blob is straight RGBA8 baked
+/// from `assets/locus-icon.svg` at 128×128 — raw bytes so the gui feature
+/// doesn't need a PNG decoder.
+#[cfg(not(target_os = "macos"))]
+fn window_icon() -> Option<tao::window::Icon> {
+    let rgba = include_bytes!("../assets/locus-icon-128.rgba").to_vec();
+    tao::window::Icon::from_rgba(rgba, 128, 128).ok()
+}
+
 /// Open the window and run its event loop. Blocks until the window is closed
 /// (the event loop exits the process), so this never returns `Ok`. `doc` is the
 /// document label (usually the file name); the title is branded as
@@ -59,9 +88,14 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
         format!("{doc} — {APP_NAME}")
     };
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    let window = WindowBuilder::new()
+    #[cfg(target_os = "macos")]
+    set_dock_icon();
+    let builder = WindowBuilder::new()
         .with_title(&title)
-        .with_inner_size(LogicalSize::new(1100.0, 900.0))
+        .with_inner_size(LogicalSize::new(1100.0, 900.0));
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_window_icon(window_icon());
+    let window = builder
         .build(&event_loop)
         .context("creating the preview window")?;
     // `window.ipc.postMessage('close')` from the page closes the window — this
