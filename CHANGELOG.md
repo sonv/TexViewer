@@ -48,6 +48,14 @@ ways, and search mirrored from the editor.
   its daemon stops. The daemon's stderr logging now tolerates a closed pipe, so
   an outliving preview's Print / panel saves don't fail once nvim (the pipe's
   owner) is gone.
+- **`:q` in the viewer closes it.** The vim-style command line (`:`) gains
+  `:q` / `:quit`: in the native Locus window it closes the window (via a new
+  webview IPC channel); in a browser tab — which scripts are forbidden to
+  close — it shows the ⌘W/Ctrl+W hint instead.
+- **`:bd` on the previewed document closes its preview.** Deleting the root
+  buffer (`:bd` / `:bw`) stops that file's daemon and closes its Locus window,
+  like a per-file `:MathPreviewStop`. Deleting an `\input`'d child buffer of a
+  multi-file project leaves the preview (which renders the root) alone.
 
 ### Removed
 

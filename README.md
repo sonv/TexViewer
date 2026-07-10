@@ -384,7 +384,7 @@ background, opens your default browser at `http://127.0.0.1:<port>/`,
 and starts pushing the buffer on every `TextChanged`. The browser tab
 shows the rendered document with the toolbar described in
 [Viewer controls](#viewer-controls); `:` opens a vim-style command line
-for `:pin`/`:unpin`/`:clear`.
+for `:pin`/`:unpin`/`:clear`/`:q`.
 
 Other commands:
 
@@ -493,7 +493,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   or the `×` to unpin, drag the `⋮⋮` grip to reorder. Hovering a
   `\ref`/`\cite` shows a quick, proof-less preview regardless of mode. You
   can also pin from a left-margin refkey chip (needs `keys` on) or the `:`
-  command line (`:pin`/`:unpin`/`:clear`, with Tab fuzzy-completion).
+  command line (`:pin`/`:unpin`/`:clear`, with Tab fuzzy-completion; `:q`
+  closes the Locus window — browser tabs can't close themselves, so there
+  it shows the ⌘W/Ctrl+W hint).
 - `☾` / `☀` toggles dark mode. The choice is persisted in
   `localStorage["mathpreview.theme"]`; on first load the viewer follows
   your OS `prefers-color-scheme`. The toggle re-skins the topbar, side

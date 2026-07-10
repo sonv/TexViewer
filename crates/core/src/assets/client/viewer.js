@@ -1846,6 +1846,8 @@
   ///   :pin <key>     pin <key>'s target as a margin card
   ///   :unpin <key>   remove the matching card (no-op if not pinned)
   ///   :clear         remove all pinned cards
+  ///   :q / :quit     close the viewer (Locus window; browser tabs can't
+  ///                  close themselves — shows the ⌘W/Ctrl+W hint instead)
   /// Enter executes, Esc closes, empty-Backspace also closes.
   var cmdlineFeedbackTimer = 0;
   var cmdlineSuggestions = [];
@@ -2802,6 +2804,27 @@
     if (cmd === 'clear') {
       closeAllMarginCards();
       closeCmdline();
+      return;
+    }
+    if (cmd === 'q' || cmd === 'quit') {
+      // Locus (native window): wry injects `window.ipc` only when the window
+      // installed its IPC handler, so its presence *is* the "am I in Locus?"
+      // test; the message exits the window process.
+      if (window.ipc && typeof window.ipc.postMessage === 'function') {
+        window.ipc.postMessage('close');
+        return;
+      }
+      // Browser tab: scripts may only close windows they opened, so this is
+      // best-effort. If we're still here a beat later, say how to really quit.
+      window.close();
+      setTimeout(function() {
+        var mac = /Mac/.test(navigator.platform || '');
+        setCmdlineFeedback(
+          'the browser blocks tabs from closing themselves — press ' +
+            (mac ? '⌘W' : 'Ctrl+W'),
+          true
+        );
+      }, 150);
       return;
     }
     setCmdlineFeedback('unknown command: ' + cmd, true);

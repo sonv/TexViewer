@@ -10,9 +10,16 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop};
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
+
+/// Events the webview's JS can send to the window's event loop.
+#[derive(Debug, Clone, Copy)]
+enum UserEvent {
+    /// The page asked to close the window (the viewer's `:q` command).
+    CloseWindow,
+}
 
 /// Pick a free loopback port for a standalone `view` daemon, so it never
 /// clashes with an nvim-managed daemon on the default port.
@@ -51,24 +58,37 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
     } else {
         format!("{doc} — {APP_NAME}")
     };
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title(&title)
         .with_inner_size(LogicalSize::new(1100.0, 900.0))
         .build(&event_loop)
         .context("creating the preview window")?;
+    // `window.ipc.postMessage('close')` from the page closes the window — this
+    // is what the viewer's `:q` command uses. wry only injects `window.ipc`
+    // when a handler is installed, so the same JS detects "am I in Locus?" by
+    // its presence and falls back to `window.close()` in a browser tab.
+    let proxy = event_loop.create_proxy();
     let _webview = WebViewBuilder::new()
         .with_url(url)
+        .with_ipc_handler(move |req| {
+            if req.body() == "close" {
+                let _ = proxy.send_event(UserEvent::CloseWindow);
+            }
+        })
         .build(&window)
         .context("creating the webview")?;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
-        if let Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            *control_flow = ControlFlow::Exit;
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+            | Event::UserEvent(UserEvent::CloseWindow) => {
+                *control_flow = ControlFlow::Exit;
+            }
+            _ => {}
         }
     });
 }

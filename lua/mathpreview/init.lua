@@ -1257,6 +1257,10 @@ local function stop_all()
   pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
 end
 
+-- Forward declaration: the BufDelete autocmd below closes over it, but its
+-- body needs detach_autocmds, which is defined after attach_autocmds.
+local stop_entry
+
 -- Attach the TextChanged / CursorMoved autocmds. The push/cursor/selection
 -- callbacks route to whichever daemon is active (kept in sync with the current
 -- buffer by the BufEnter handler below); the per-daemon jump poll is started by
@@ -1343,6 +1347,27 @@ local function attach_autocmds()
     pattern = "*",
     callback = function() activate_for_current_buffer() end,
   })
+  -- `:bd` / `:bw` on the previewed document closes its preview (daemon +
+  -- native window) — deleting the buffer is an explicit "done with this file".
+  -- ROOT buffers only: deleting an \input'd child of a multi-file project
+  -- keeps the preview, which renders the root document, alive. This is
+  -- deliberate regardless of `close_on_exit` (that option is about nvim
+  -- exiting; this is an in-session action on the document itself).
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = "mathpreview",
+    pattern = "*",
+    callback = function(args)
+      local file = vim.api.nvim_buf_get_name(args.buf)
+      if file == "" then return end
+      local c = canon(file)
+      for root, d in pairs(daemons) do
+        if canon(root) == c then
+          stop_entry(d)
+          return
+        end
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = "mathpreview",
     callback = function() stop_all() end,
@@ -1351,6 +1376,32 @@ end
 
 local function detach_autocmds()
   pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
+end
+
+-- Stop ONE preview session — its daemon and (if any) its native window.
+-- Shared by :MathPreviewStop (M.stop) and the :bd autocmd. Declared as a
+-- forward local above attach_autocmds.
+function stop_entry(entry)
+  if not entry or not daemons[entry.root] then return end
+  stopping[entry.root] = true
+  daemons[entry.root] = nil
+  if daemon_root == entry.root then
+    stop_jump_poll()
+    daemon_job = nil
+    daemon_port = nil
+    daemon_root = nil
+  end
+  pcall(vim.fn.jobstop, entry.job)  -- its on_exit is now a no-op (already deregistered)
+  -- Close the native window too — it's tied to this preview session. Flag the
+  -- deliberate kill so its on_exit doesn't misreport the SIGTERM exit as a
+  -- crash (WebKitGTK writes stderr noise that would otherwise trip the warning
+  -- on every stop/restart on Linux).
+  if entry.window_job then
+    entry.window_stopping = true
+    pcall(vim.fn.jobstop, entry.window_job)
+    entry.window_job = nil
+  end
+  if daemon_count() == 0 then detach_autocmds() end
 end
 
 -- Spawn the daemon for the current buffer using an already-resolved binary
@@ -1674,27 +1725,7 @@ local function target_entry()
 end
 
 function M.stop()
-  local entry = target_entry()
-  if not entry then return end
-  stopping[entry.root] = true
-  daemons[entry.root] = nil
-  if daemon_root == entry.root then
-    stop_jump_poll()
-    daemon_job = nil
-    daemon_port = nil
-    daemon_root = nil
-  end
-  pcall(vim.fn.jobstop, entry.job)  -- its on_exit is now a no-op (already deregistered)
-  -- Close the native window too (if any) — it's tied to this preview session.
-  -- Flag the deliberate kill so its on_exit doesn't misreport the SIGTERM
-  -- exit as a crash (WebKitGTK writes stderr noise that would otherwise trip
-  -- the warning on every :MathStop / restart on Linux).
-  if entry.window_job then
-    entry.window_stopping = true
-    pcall(vim.fn.jobstop, entry.window_job)
-    entry.window_job = nil
-  end
-  if daemon_count() == 0 then detach_autocmds() end
+  stop_entry(target_entry())
 end
 
 function M.restart()
