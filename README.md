@@ -208,6 +208,18 @@ with no argument does the same). When the bundle is installed, the nvim plugin
 automatically launches the window through it, so `viewer = "window"` gets the
 bundle's icon and app name too.
 
+**Linux desktop entry.** Wayland has no per-window icons — the compositor
+shows the icon of the desktop entry matching the window's app id. Install it
+(per-user, no sudo):
+
+```sh
+scripts/install-locus-desktop.sh    # icon + .desktop into ~/.local/share
+```
+
+That also puts Locus in your app launcher and makes it pinnable to the
+dock/taskbar. On X11 the window icon works without this; the entry still adds
+launcher presence. Log out/in if the icon doesn't appear immediately.
+
 ### 2. The nvim plugin
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`

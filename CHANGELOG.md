@@ -17,6 +17,19 @@ summary.
 
 Nothing yet.
 
+## [1.0.3] — 2026-07-10
+
+### Fixed
+
+- **The Locus icon shows on Linux.** Wayland has no per-window icons (tao's
+  `set_window_icon` is a silent no-op there) — the compositor takes the icon
+  from the desktop entry matching the window's app id. The window now pins its
+  app id to `io.github.sonv.locus`, and a new
+  `scripts/install-locus-desktop.sh` installs the matching desktop entry +
+  hicolor icon per-user (also adding Locus to app launchers, pinnable to the
+  dock). On X11 the plugin now launches the window through the `locus` binary
+  so the WM_CLASS matches the entry's `StartupWMClass` too.
+
 ## [1.0.2] — 2026-07-10
 
 ### Changed

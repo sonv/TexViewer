@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.2"
+local PLUGIN_VERSION = "1.0.3"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -600,6 +600,20 @@ local function open_window(entry)
     }) do
       if vim.fn.executable(app_bin) == 1 then
         argv = { app_bin, "--attach", url, "--title", title }
+        break
+      end
+    end
+  else
+    -- Linux/BSD: prefer the `locus` binary (a sibling of the daemon binary —
+    -- `cargo install --features gui` installs both) so the window's X11
+    -- WM_CLASS, which GTK derives from the program name, is "locus" and
+    -- matches the desktop entry's StartupWMClass (see
+    -- scripts/install-locus-desktop.sh). The Wayland app_id is pinned in
+    -- view.rs regardless of binary; this aligns the X11 side.
+    local sibling = vim.fn.fnamemodify(cmd, ":h") .. "/locus"
+    for _, locus_bin in ipairs({ sibling, "locus" }) do
+      if vim.fn.executable(locus_bin) == 1 then
+        argv = { locus_bin, "--attach", url, "--title", title }
         break
       end
     end

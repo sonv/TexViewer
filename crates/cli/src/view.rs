@@ -113,7 +113,20 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
     } else {
         format!("{doc} — {APP_NAME}")
     };
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
+    // Pin the Wayland app_id (and the GApplication id) so the compositor can
+    // match the window to the desktop entry `io.github.sonv.locus.desktop` —
+    // Wayland has no per-window icons; the icon comes from that association
+    // (scripts/install-locus-desktop.sh installs it). Same id as the macOS
+    // bundle. Without this the app_id would be whichever binary spawned the
+    // window (locus vs mathpreview-cli).
+    #[cfg(target_os = "linux")]
+    {
+        use tao::platform::unix::EventLoopBuilderExtUnix;
+        loop_builder.with_app_id("io.github.sonv.locus");
+    }
+    let event_loop = loop_builder.build();
     let builder = WindowBuilder::new()
         .with_title(&title)
         .with_inner_size(LogicalSize::new(1100.0, 900.0));
