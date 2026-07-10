@@ -4,15 +4,16 @@
 -- this repo. The user-facing commands are registered by plugin/mathpreview.lua;
 -- this file holds the implementation that those commands lazy-require:
 --
---     :MathPreview         start the daemon for the current .tex buffer
---                          and open the browser tab
+--     :MathPreview         start the daemon for the current .tex buffer and
+--                          open the viewer — the native Locus window by
+--                          default; `:MathPreview browser` for a browser tab
 --     :MathPreviewStop     kill the daemon
 --     :MathPreviewRestart  stop + start
 --     :MathPreviewStatus   echo PID, port, push counters, version handshake
 --     :MathPreviewDebug    echo resolved settings + config/macro paths
 --
 -- The plugin spawns the daemon as a background job, finds the first free
--- port starting at 23636, opens the browser, then debounces buffer pushes
+-- port starting at 23636, opens the viewer, then debounces buffer pushes
 -- on TextChanged. By default VimLeavePre kills the spawned daemon (and closes
 -- the native window) so quitting nvim doesn't leave a stray server bound to
 -- the port; set `close_on_exit = false` to deliberately let the preview
@@ -55,19 +56,22 @@ local config = {
   sync_search = true,
   auto_open_browser = true,
   -- Which viewer to open the preview in:
-  --   "browser" (default) — your default web browser, in a new tab.
-  --   "window"            — a standalone native window (the OS webview:
-  --                         WebKit on macOS, WebKitGTK on Linux). No browser
-  --                         tab. It shows the exact same preview, so every
-  --                         feature works identically.
+  --   "window" (default) — Locus, the standalone native window (the OS
+  --                        webview: WebKit on macOS, WebKitGTK on Linux).
+  --                        No browser tab.
+  --   "browser"          — your default web browser, in a new tab. It shows
+  --                        the exact same preview, so every feature works
+  --                        identically.
+  -- Switch per invocation with `:MathPreview browser` / `:MathPreview window`
+  -- (tab-completed), or permanently with `setup({ viewer = "browser" })`.
   -- "window" needs a binary built with the `gui` cargo feature. The plugin's
   -- own auto-install handles this: when viewer="window" it adds `--features
   -- gui`, and on `:MathPreview` it detects a binary that lacks the feature and
   -- reinstalls once (so switching browser→window just works on a source
   -- checkout). The gui build pulls in webview deps — on Linux you need
-  -- `libwebkit2gtk-4.1-dev` installed first. `auto_open_browser = false` opens
-  -- neither.
-  viewer = "browser",
+  -- `libwebkit2gtk-4.1-dev` installed first (or set viewer = "browser" to skip
+  -- webviews entirely). `auto_open_browser = false` opens neither.
+  viewer = "window",
   -- What happens to the preview when you quit nvim.
   --   true  (default) — tear it down: stop the daemon and CLOSE the native
   --                     window. This is what peek.nvim does — but it only works
@@ -225,9 +229,9 @@ end
 -- The `cargo install` command used to (re)install the binary.
 local function cargo_install_args()
   local args = { "cargo", "install", "--path", "crates/cli", "--force" }
-  -- The native window needs the `gui` feature (wry/tao). Only pull it in when
-  -- the user actually asked for the window, so a default "browser" install
-  -- stays webview-free (no WebKitGTK build deps on Linux).
+  -- The native window (the default viewer) needs the `gui` feature (wry/tao).
+  -- Only pull it in when the window is in play, so a `viewer = "browser"`
+  -- install stays webview-free (no WebKitGTK build deps on Linux).
   if config.viewer == "window" then
     table.insert(args, "--features")
     table.insert(args, "gui")
@@ -629,7 +633,8 @@ local function open_window(entry)
             if tail:match("unrecognized subcommand") then
               vim.notify(
                 "mathpreview: this binary lacks the native window (built without the "
-                  .. "`gui` feature). Reinstall with it, or set viewer='browser'.\n"
+                  .. "`gui` feature). Reinstall with it, or use the browser viewer\n"
+                  .. "(:MathPreview browser, or setup{ viewer = 'browser' }).\n"
                   .. "  cargo install --path crates/cli --features gui --force",
                 vim.log.levels.ERROR)
             elseif tail ~= "" then

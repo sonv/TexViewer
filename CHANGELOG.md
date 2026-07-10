@@ -27,13 +27,14 @@ ways, and search mirrored from the editor.
 
 ### Added
 
-- **Locus — a native window viewer, no browser required.** `viewer = "window"`
-  in the nvim plugin (or `mathpreview-cli view <file>` standalone) opens the
-  preview in a dedicated OS-webview window — WebKit on macOS, WebKitGTK on
-  Linux — instead of a browser tab. Same rendering, same features; the plugin
-  builds the `gui`-featured binary for you on demand. The default stays
-  `"browser"`, so nothing changes unless you opt in.
-  - `:MathPreview` now takes an optional viewer argument — `:MathPreview window`
+- **Locus — the native window viewer, now the default.** `:MathPreview` opens
+  the preview in a dedicated OS-webview window — WebKit on macOS, WebKitGTK on
+  Linux — instead of a browser tab (`mathpreview-cli view <file>` standalone).
+  Same rendering, same features; the plugin builds the `gui`-featured binary
+  for you on demand. Prefer a browser tab? `:MathPreview browser` for one
+  invocation, or `setup({ viewer = "browser" })` permanently (on Linux that
+  also skips the WebKitGTK build dependency).
+  - `:MathPreview` takes an optional viewer argument — `:MathPreview window`
     or `:MathPreview browser` — to pick per invocation (with tab completion),
     without editing `setup()`.
   - A dedicated **`locus`** command: `locus <file>` opens the native window

@@ -20,7 +20,8 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 - **nvim integration** via the bundled `mathpreview.nvim` plugin
   (`lua/mathpreview/`, `plugin/mathpreview.lua`): `:MathPreview` in a
   `.tex` buffer spawns the daemon on a free port (default 23636,
-  scanning up to 23651), opens the browser tab, and pushes the buffer
+  scanning up to 23651), opens the viewer (the native Locus window by
+  default; `:MathPreview browser` for a tab), and pushes the buffer
   on every `TextChanged`. No disk writes, no git pollution. `VimLeavePre`
   reaps the daemon so quitting nvim doesn't leave it bound.
 - **nvim ↔ HTML source sync**: cursor movement in nvim can scroll and
@@ -160,10 +161,10 @@ cargo install --path crates/cli --force   # → ~/.cargo/bin/mathpreview-cli (on
 
 ### Locus — the native window (no browser tab)
 
-By default the preview opens in your browser. **Locus** is the standalone
-native window instead — powered by the OS webview (WebKit on macOS, WebView2 on
-Windows, WebKitGTK on Linux), the same rendering the browser uses. Build with
-the opt-in `gui` feature and run the `view` subcommand:
+**Locus** is the preview's own window — and the default viewer. It's a
+standalone native window powered by the OS webview (WebKit on macOS, WebView2
+on Windows, WebKitGTK on Linux), the same rendering a browser tab would use.
+Build with the `gui` feature and run the `view` subcommand:
 
 ```sh
 cargo install --path crates/cli --features gui --force   # installs `mathpreview-cli` AND `locus`
@@ -179,12 +180,13 @@ default (so the normal build stays a pure daemon with no webview system deps);
 on Linux it needs the WebKitGTK development package (`libwebkit2gtk-4.1-dev`)
 to build.
 
-**From nvim**, set `viewer = "window"` in `setup()` to open the native window
-instead of a browser tab — or pick per invocation with `:MathPreview window`
-(or `:MathPreview browser`, tab-completed):
+**From nvim**, `:MathPreview` opens the Locus window by default. To use a
+browser tab instead, pick per invocation with `:MathPreview browser` (or back
+with `:MathPreview window`, both tab-completed), or set it permanently in
+`setup()`:
 
 ```lua
-require("mathpreview").setup({ viewer = "window" })   -- default is "browser"
+require("mathpreview").setup({ viewer = "browser" })  -- default is "window"
 ```
 
 The plugin manages the daemon as usual and attaches the window to it. On a
@@ -257,7 +259,11 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
     -- "~/.local/bin/mathpreview-cli" (passed to `cargo install --root`).
     -- install_root = nil,
 
-    -- Set to false if you don't want :MathPreview to also open a browser tab.
+    -- Which viewer :MathPreview opens: the native Locus window (default) or
+    -- a browser tab. Also switchable per invocation: :MathPreview browser.
+    -- viewer = "window",             -- | "browser"
+
+    -- Set to false if you don't want :MathPreview to open any viewer at all.
     -- auto_open_browser = true,
 
     -- Use a CDN-hosted MathJax instead of the embedded bundle. nil = embedded.
@@ -392,9 +398,11 @@ Open any `.tex` file and run:
 ```
 
 The plugin spawns `mathpreview-cli serve <buffer> --port <free>` in the
-background, opens your default browser at `http://127.0.0.1:<port>/`,
-and starts pushing the buffer on every `TextChanged`. The browser tab
-shows the rendered document with the toolbar described in
+background, opens the viewer at `http://127.0.0.1:<port>/` — the native
+Locus window by default; `:MathPreview browser` (or
+`setup({ viewer = "browser" })`) uses a browser tab instead — and starts
+pushing the buffer on every `TextChanged`. The viewer shows the rendered
+document with the toolbar described in
 [Viewer controls](#viewer-controls); `:` opens a vim-style command line
 for `:pin`/`:unpin`/`:clear`/`:q`.
 
@@ -894,7 +902,7 @@ The four commands `plugin/mathpreview.lua` registers on startup:
 
 | Command | What it does |
 | --- | --- |
-| `:MathPreview` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the browser tab. Attach `TextChanged` / `CursorMoved` / `ModeChanged` autocmds and start the `/jump` poll. If the daemon is already running, just reopen the browser tab. |
+| `:MathPreview [window\|browser]` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the viewer — the native Locus window by default, a browser tab with `:MathPreview browser` (the choice sticks for the session). Attach `TextChanged` / `CursorMoved` / `ModeChanged` autocmds and start the `/jump` poll. If the daemon is already running, just refocus/reopen its viewer. |
 | `:MathPreviewStop` | Kill the daemon, detach autocmds, stop the poll. Also fires from `VimLeavePre`. |
 | `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after preamble changes the daemon's macro cache misses. |
 | `:MathPreviewStatus` | `print(vim.inspect(...))` of the runtime state: PID/port, root file, push and cursor counts, last error, resolved binary path, nvim version. |
