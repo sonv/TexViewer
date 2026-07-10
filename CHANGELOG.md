@@ -46,7 +46,10 @@ ways, and search mirrored from the editor.
   estimate-based page-break markers couldn't stay accurate under lazy
   typesetting, so they were dropped — Cmd+P's real print preview is the single
   source of truth for where pages break. The side panel keeps the document
-  **Index** (now a plain header instead of a tab).
+  **Index** (now a plain header instead of a tab). A `.mathpreview.toml` that
+  still sets the removed `page-guides` key is accepted and ignored, rather than
+  rejected outright (which — with `deny_unknown_fields` — would have dropped the
+  whole config to defaults).
 
 ### Fixed
 

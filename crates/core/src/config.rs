@@ -156,6 +156,14 @@ pub struct ViewerConfig {
     pub typeset_mode: Option<TypesetMode>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
+    /// Removed: the on-screen page-break guides were dropped. Accepted but
+    /// ignored so a config that still sets `page-guides` (written while the
+    /// feature existed) doesn't fail to parse — `deny_unknown_fields` would
+    /// otherwise reject the WHOLE file and silently drop every setting to its
+    /// default. Not serialized back out, so it fades from files on the next
+    /// save. Remove this shim once no live configs carry the key.
+    #[serde(default, rename = "page-guides", skip_serializing)]
+    pub _removed_page_guides: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -587,6 +595,21 @@ weird-extra-field = "oops"
             Path::new("test.toml"),
         );
         assert!(res.is_err(), "unknown field should be a parse error");
+    }
+
+    #[test]
+    fn removed_page_guides_key_is_accepted_and_ignored() {
+        // The page-guides feature was removed, but configs written while it
+        // existed still carry the key. With `deny_unknown_fields` it would
+        // reject the whole file and silently drop every other setting to
+        // defaults; the shim field keeps such a config parsing.
+        let cfg = Config::parse(
+            "[viewer]\nwrap-equations = false\npage-guides = true\n",
+            Path::new("t.toml"),
+        )
+        .expect("a leftover page-guides key must not fail the whole config");
+        // The real settings alongside it are honored, not lost to defaults.
+        assert!(!cfg.resolve().viewer.wrap_equations);
     }
 
     #[test]
