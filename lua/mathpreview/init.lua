@@ -5,8 +5,8 @@
 -- this file holds the implementation that those commands lazy-require:
 --
 --     :MathPreview         start the daemon for the current .tex buffer and
---                          open the viewer — the native Locus window by
---                          default; `:MathPreview browser` for a browser tab
+--                          open the viewer — a browser tab by default;
+--                          `:MathPreview window` for the native Locus window
 --     :MathPreviewStop     kill the daemon
 --     :MathPreviewRestart  stop + start
 --     :MathPreviewStatus   echo PID, port, push counters, version handshake
@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.1"
+local PLUGIN_VERSION = "1.0.2"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -56,37 +56,38 @@ local config = {
   sync_search = true,
   auto_open_browser = true,
   -- Which viewer to open the preview in:
-  --   "window" (default) — Locus, the standalone native window (the OS
-  --                        webview: WebKit on macOS, WebKitGTK on Linux).
-  --                        No browser tab.
-  --   "browser"          — your default web browser, in a new tab. It shows
-  --                        the exact same preview, so every feature works
-  --                        identically.
-  -- Switch per invocation with `:MathPreview browser` / `:MathPreview window`
-  -- (tab-completed), or permanently with `setup({ viewer = "browser" })`.
+  --   "browser" (default) — your default web browser, in a new tab. Works
+  --                         everywhere with zero extra dependencies.
+  --   "window"            — Locus, the standalone native window (the OS
+  --                         webview: WebKit on macOS, WebKitGTK on Linux).
+  --                         No browser tab. Same preview, every feature
+  --                         identical.
+  -- Switch per invocation with `:MathPreview window` / `:MathPreview browser`
+  -- (tab-completed), or permanently with `setup({ viewer = "window" })`.
   -- "window" needs a binary built with the `gui` cargo feature. The plugin's
   -- own auto-install handles this: when viewer="window" it adds `--features
   -- gui`, and on `:MathPreview` it detects a binary that lacks the feature and
   -- reinstalls once (so switching browser→window just works on a source
   -- checkout). The gui build pulls in webview deps — on Linux you need
-  -- `libwebkit2gtk-4.1-dev` installed first (or set viewer = "browser" to skip
-  -- webviews entirely). `auto_open_browser = false` opens neither.
-  viewer = "window",
+  -- `libwebkit2gtk-4.1-dev` installed first. `auto_open_browser = false` opens
+  -- neither.
+  viewer = "browser",
   -- What happens to the preview when you quit nvim.
-  --   true  (default) — tear it down: stop the daemon and CLOSE the native
-  --                     window. This is what peek.nvim does — but it only works
-  --                     for the native `viewer = "window"`. A *browser tab*
-  --                     can't be closed by the plugin (browsers forbid scripts
-  --                     from closing tabs they didn't open), so the tab just
-  --                     goes inert when the daemon stops; close it yourself.
+  --   true  (default) — tear it down, peek.nvim-style: stop the daemon, close
+  --                     the native window, and close the browser tab too. The
+  --                     dying daemon broadcasts a "bye" WS event and the page
+  --                     closes itself — browsers allow window.close() for a
+  --                     tab whose session history has a single entry, which a
+  --                     freshly opened preview tab has. (If you navigated in
+  --                     that tab, the browser refuses and the tab just shows
+  --                     "preview ended".)
   --   false           — leave the preview RUNNING so it outlives nvim: the
   --                     daemon and window/tab stay live and fully usable until
   --                     you close them or run `:MathPreviewStop`. Use this to
-  --                     keep reading the rendered doc after quitting the editor
-  --                     (the one thing you can do with a browser tab that you
-  --                     can't do by closing it). Implemented by spawning the
-  --                     daemon and window detached so nvim's exit doesn't kill
-  --                     them; `:MathPreviewStop` still stops them explicitly.
+  --                     keep reading the rendered doc after quitting the
+  --                     editor. Implemented by spawning the daemon and window
+  --                     detached so nvim's exit doesn't kill them;
+  --                     `:MathPreviewStop` still stops them explicitly.
   close_on_exit = true,
   -- Where `cargo install` drops the auto-built binary. nil → cargo's default
   -- (`$CARGO_HOME/bin`, usually `~/.cargo/bin`, which rustup puts on $PATH).
@@ -229,9 +230,9 @@ end
 -- The `cargo install` command used to (re)install the binary.
 local function cargo_install_args()
   local args = { "cargo", "install", "--path", "crates/cli", "--force" }
-  -- The native window (the default viewer) needs the `gui` feature (wry/tao).
-  -- Only pull it in when the window is in play, so a `viewer = "browser"`
-  -- install stays webview-free (no WebKitGTK build deps on Linux).
+  -- The native window needs the `gui` feature (wry/tao). Only pull it in when
+  -- the window is in play, so the default "browser" install stays webview-free
+  -- (no WebKitGTK build deps on Linux).
   if config.viewer == "window" then
     table.insert(args, "--features")
     table.insert(args, "gui")

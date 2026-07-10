@@ -11,7 +11,7 @@
   // MUST match WS_PROTOCOL_VERSION in crates/cli/src/serve.rs — a mismatch makes
   // the server full-reload every connect (an infinite reload loop). The
   // `client_ws_protocol_matches_server` test guards this.
-  var WS_PROTOCOL_VERSION = '68';
+  var WS_PROTOCOL_VERSION = '69';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -21,6 +21,9 @@
   // Set once we've had a live connection. A *second* onopen means the
   // server went away and came back — almost always a `:MathPreviewRestart`.
   var everConnected = false;
+  // The daemon said goodbye (deliberate editor-driven teardown: quitting nvim,
+  // :MathPreviewStop, :bd). Close the viewer and don't try to reconnect.
+  var serverSaidBye = false;
   function connect() {
     if (!window.WebSocket) return;
     var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
@@ -40,6 +43,10 @@
       setStatus('live', '● live');
     };
     ws.onclose = function() {
+      if (serverSaidBye) {
+        setStatus('dead', '○ preview ended');
+        return;
+      }
       if (manualStopRequested) {
         setStatus('dead', '○ stopped');
         return;
@@ -51,6 +58,23 @@
     ws.onmessage = async function(ev) {
       try {
         var msg = JSON.parse(ev.data);
+        // Deliberate teardown (quit nvim / :MathPreviewStop / :bd): close the
+        // viewer like peek.nvim does. The Locus window closes via its IPC
+        // channel; a browser tab closes itself with window.close(), which the
+        // HTML spec allows for a tab whose session history has a single entry
+        // — true for a freshly opened preview tab. If the browser refuses
+        // (user navigated in this tab), fall through to a terminal status.
+        // Crashes don't send bye, so the reconnect path still handles them.
+        if (msg.event === 'bye') {
+          serverSaidBye = true;
+          if (window.ipc && typeof window.ipc.postMessage === 'function') {
+            window.ipc.postMessage('close');
+          } else {
+            window.close();
+          }
+          setTimeout(function() { setStatus('dead', '○ preview ended'); }, 250);
+          return;
+        }
         if (typeof msg.rss_mib === 'number') window._lastRss = msg.rss_mib;
         if (msg.viewer_config) applyViewerConfig(msg.viewer_config);
         // Keep the log panel current as long as it's open. Cheap — one

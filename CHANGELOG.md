@@ -17,6 +17,30 @@ summary.
 
 Nothing yet.
 
+## [1.0.2] — 2026-07-10
+
+### Changed
+
+- **The browser tab is the default viewer again.** Locus stays one command
+  away (`:MathPreview window`, or `setup({ viewer = "window" })` permanently),
+  but the out-of-the-box experience shouldn't depend on webview packages —
+  the window default made the first `:MathPreview` fail on any Linux box
+  without `libwebkit2gtk-4.1-dev`. The browser works everywhere.
+
+### Added
+
+- **Quitting nvim closes the browser tab** (peek.nvim behavior). On a
+  deliberate teardown — quitting nvim with `close_on_exit = true` (the
+  default), `:MathPreviewStop`, or `:bd` on the previewed document — the
+  daemon now broadcasts a goodbye event before exiting, and the page closes
+  itself. Browsers allow `window.close()` for a tab whose session history has
+  a single entry, which a freshly opened preview tab has; if you navigated in
+  the tab the browser refuses and the tab shows "preview ended" instead (no
+  reconnect spinner). Crashes don't send the goodbye, so the reconnect UX
+  still covers them. Ctrl-C on a terminal-run daemon counts as deliberate too.
+  WS protocol bumped (68 → 69) so already-open tabs hard-reload onto the
+  goodbye-aware client.
+
 ## [1.0.1] — 2026-07-10
 
 ### Fixed

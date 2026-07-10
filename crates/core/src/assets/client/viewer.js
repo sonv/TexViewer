@@ -1846,8 +1846,9 @@
   ///   :pin <key>     pin <key>'s target as a margin card
   ///   :unpin <key>   remove the matching card (no-op if not pinned)
   ///   :clear         remove all pinned cards
-  ///   :q / :quit     close the viewer (Locus window; browser tabs can't
-  ///                  close themselves — shows the ⌘W/Ctrl+W hint instead)
+  ///   :q / :quit     close the viewer (the Locus window via IPC; a browser
+  ///                  tab via window.close(), allowed for a single-history
+  ///                  tab — otherwise it shows the ⌘W/Ctrl+W hint)
   /// Enter executes, Esc closes, empty-Backspace also closes.
   var cmdlineFeedbackTimer = 0;
   var cmdlineSuggestions = [];

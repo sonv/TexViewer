@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "68";
+const WS_PROTOCOL_VERSION: &str = "69";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -703,6 +703,37 @@ pub async fn run(
         );
         elog!("mathpreview: WARNING: {warn}");
         log_event(&state, "warn", warn);
+    }
+
+    // Deliberate teardown (the nvim plugin's jobstop sends SIGTERM on
+    // :MathPreviewStop / :bd / quitting nvim; SIGHUP covers a dying parent
+    // session; SIGINT covers Ctrl-C on a terminal-run daemon): tell every
+    // connected viewer goodbye BEFORE exiting, so a browser tab can close
+    // itself (peek.nvim-style — window.close() is allowed for a tab whose
+    // session history has one entry) and the Locus window can quit. A short
+    // grace lets the WS forwarding tasks flush over loopback. Crashes skip
+    // this path, so the client's reconnect UX still covers them.
+    #[cfg(unix)]
+    {
+        let tx = state.tx.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::hangup()),
+                signal(SignalKind::interrupt()),
+            ) else {
+                return;
+            };
+            tokio::select! {
+                _ = term.recv() => {},
+                _ = hup.recv() => {},
+                _ = int.recv() => {},
+            }
+            let _ = tx.send(r#"{"event":"bye"}"#.to_string());
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            std::process::exit(0);
+        });
     }
 
     let addr = format!("{host}:{port}");
