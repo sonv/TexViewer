@@ -17,6 +17,17 @@ summary.
 
 Nothing yet.
 
+## [1.0.1] — 2026-07-10
+
+### Fixed
+
+- **Locus opens on Wayland Linux.** Creating the native window failed with
+  "the window handle kind is not supported" on Wayland sessions (the GNOME
+  default on Debian/Fedora/Ubuntu): wry's raw-window-handle path on Linux only
+  accepts X11 handles. The webview is now built through the window's GTK
+  widget (`build_gtk`, the pattern wry's own examples use), which works on
+  both X11 and Wayland. macOS/Windows are unchanged.
+
 ## [1.0.0] — 2026-07-10
 
 First stable release. mathpreview is a live LaTeX preview for Neovim (and the

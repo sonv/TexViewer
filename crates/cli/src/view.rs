@@ -127,15 +127,29 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
     // when a handler is installed, so the same JS detects "am I in Locus?" by
     // its presence and falls back to `window.close()` in a browser tab.
     let proxy = event_loop.create_proxy();
-    let _webview = WebViewBuilder::new()
+    let builder = WebViewBuilder::new()
         .with_url(url)
         .with_ipc_handler(move |req| {
             if req.body() == "close" {
                 let _ = proxy.send_event(UserEvent::CloseWindow);
             }
-        })
-        .build(&window)
-        .context("creating the webview")?;
+        });
+    #[cfg(not(target_os = "linux"))]
+    let _webview = builder.build(&window).context("creating the webview")?;
+    // On Linux, wry's raw-window-handle path supports only X11 (Xlib) handles;
+    // under Wayland (the GNOME default on Debian/Fedora/Ubuntu) it fails with
+    // "the window handle kind is not supported". Build through the window's
+    // GTK widget instead — the pattern wry's own examples use — which works on
+    // both X11 and Wayland.
+    #[cfg(target_os = "linux")]
+    let _webview = {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        let vbox = window
+            .default_vbox()
+            .context("tao window has no default GTK vbox")?;
+        builder.build_gtk(vbox).context("creating the webview")?
+    };
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
