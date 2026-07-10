@@ -4064,6 +4064,10 @@ mod tests {
         assert!(out.html.contains(r#"id="page-shell""#));
         assert!(out.html.contains("--page-scale"));
         assert!(out.html.contains("updatePageScale"));
+        // Tab favicon: the Locus icon inlined as a data URI in the head.
+        assert!(out
+            .html
+            .contains(r#"<link rel="icon" type="image/png" href="data:image/png;base64,"#));
         assert!(out.html.contains("copySelectionAsLatex"));
         assert!(out.html.contains("selectionIsExactNode"));
         assert!(out.html.contains("math-selected"));
