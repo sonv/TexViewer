@@ -13,8 +13,10 @@
 --
 -- The plugin spawns the daemon as a background job, finds the first free
 -- port starting at 23636, opens the browser, then debounces buffer pushes
--- on TextChanged. VimLeavePre kills the spawned daemon so quitting nvim
--- doesn't leave a stray server bound to the port.
+-- on TextChanged. By default VimLeavePre kills the spawned daemon (and closes
+-- the native window) so quitting nvim doesn't leave a stray server bound to
+-- the port; set `close_on_exit = false` to deliberately let the preview
+-- outlive nvim instead (see the config comment).
 
 local M = {}
 
@@ -66,6 +68,22 @@ local config = {
   -- `libwebkit2gtk-4.1-dev` installed first. `auto_open_browser = false` opens
   -- neither.
   viewer = "browser",
+  -- What happens to the preview when you quit nvim.
+  --   true  (default) — tear it down: stop the daemon and CLOSE the native
+  --                     window. This is what peek.nvim does — but it only works
+  --                     for the native `viewer = "window"`. A *browser tab*
+  --                     can't be closed by the plugin (browsers forbid scripts
+  --                     from closing tabs they didn't open), so the tab just
+  --                     goes inert when the daemon stops; close it yourself.
+  --   false           — leave the preview RUNNING so it outlives nvim: the
+  --                     daemon and window/tab stay live and fully usable until
+  --                     you close them or run `:MathPreviewStop`. Use this to
+  --                     keep reading the rendered doc after quitting the editor
+  --                     (the one thing you can do with a browser tab that you
+  --                     can't do by closing it). Implemented by spawning the
+  --                     daemon and window detached so nvim's exit doesn't kill
+  --                     them; `:MathPreviewStop` still stops them explicitly.
+  close_on_exit = true,
   -- Where `cargo install` drops the auto-built binary. nil → cargo's default
   -- (`$CARGO_HOME/bin`, usually `~/.cargo/bin`, which rustup puts on $PATH).
   -- Set to a prefix like "~/.local" to install to "~/.local/bin/mathpreview-cli"
@@ -568,6 +586,10 @@ local function open_window(entry)
   jid = vim.fn.jobstart(
     { cmd, "view", "--attach", url, "--title", title },
     {
+      -- Match the daemon: detached only when the preview should outlive nvim
+      -- (close_on_exit=off), so quitting nvim leaves the window up. With
+      -- close_on_exit on, it stays a child and stop_all closes it on exit.
+      detach = not config.close_on_exit,
       on_stderr = function(_, data)
         if data then vim.list_extend(stderr_lines, data) end
       end,
@@ -1212,10 +1234,22 @@ local function activate_for_current_buffer()
   if entry then activate(entry) end
 end
 
--- Kill every daemon (VimLeavePre / full teardown).
+-- Tear down on nvim exit (VimLeavePre): stop every daemon AND close its native
+-- window. With `close_on_exit = false` we do nothing — the daemon and window
+-- were spawned detached, so they outlive nvim and the preview stays live
+-- (`:MathPreviewStop` still stops them explicitly). A browser tab can't be
+-- closed either way; `close_on_exit = false` just keeps its daemon alive so the
+-- tab keeps working.
 local function stop_all()
+  if not config.close_on_exit then return end
   for root, d in pairs(daemons) do
     stopping[root] = true
+    if d.window_job then
+      -- Suppress the SIGTERM-as-crash notification (mirrors M.stop).
+      d.window_stopping = true
+      pcall(vim.fn.jobstop, d.window_job)
+      d.window_job = nil
+    end
     pcall(vim.fn.jobstop, d.job)
     daemons[root] = nil
   end
@@ -1390,6 +1424,10 @@ local function start_with(cmd, opts)
   local job = vim.fn.jobstart(
     spawn_args,
     {
+      -- Detached only when the preview should outlive nvim (close_on_exit=off),
+      -- so nvim's exit doesn't take the daemon with it. jobstop still reaches a
+      -- detached process, so `:MathPreviewStop`/restart work regardless.
+      detach = not config.close_on_exit,
       on_stderr = function(_, data)
         if data then vim.list_extend(stderr_lines, data) end
       end,

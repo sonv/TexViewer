@@ -39,6 +39,15 @@ ways, and search mirrored from the editor.
   - A dedicated **`locus`** command: `locus <file>` opens the native window
     directly (`cargo install --features gui` installs it alongside
     `mathpreview-cli`; it's `mathpreview-cli view` under a shorter name).
+- **`close_on_exit` plugin option** (default `true`): quitting nvim tears the
+  preview down — stops the daemon and closes the native Locus window. Set
+  `false` to let the preview outlive nvim instead: the daemon and window are
+  spawned detached and stay fully usable (keep reading, print, save config)
+  until you close them or run `:MathPreviewStop`. A browser *tab* can never be
+  auto-closed (browsers forbid it); with the default it simply goes inert when
+  its daemon stops. The daemon's stderr logging now tolerates a closed pipe, so
+  an outliving preview's Print / panel saves don't fail once nvim (the pipe's
+  owner) is gone.
 
 ### Removed
 

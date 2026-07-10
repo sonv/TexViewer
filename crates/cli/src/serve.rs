@@ -53,6 +53,20 @@ use mathpreview_core::{
 
 const WS_PROTOCOL_VERSION: &str = "68";
 
+/// stderr logging that survives a closed pipe. The nvim plugin can spawn the
+/// daemon detached (`close_on_exit = false`) so the preview outlives the
+/// editor — but the daemon keeps nvim's stderr pipe, whose read end closes
+/// when nvim exits. From then on `eprintln!` gets EPIPE (Rust ignores SIGPIPE)
+/// and PANICS, unwinding whatever request task was logging — Print, panel
+/// saves, reveal-source would silently fail. Ignore the write error instead:
+/// losing a log line beats losing the request.
+macro_rules! elog {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 #[derive(Clone)]
 struct AppState {
     opts: HtmlOptions,
@@ -255,7 +269,7 @@ fn log_event_verbose(state: &AppState, level: &'static str, message: String) {
 /// the viewer's "log" panel. Sync (std `Mutex`) so the file-watcher
 /// thread can call it too.
 fn log_event(state: &AppState, level: &'static str, message: String) {
-    eprintln!("mathpreview: {message}");
+    elog!("mathpreview: {message}");
     let ts_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -687,7 +701,7 @@ pub async fn run(
              network and disables the Host-header guard — only use on a \
              trusted network",
         );
-        eprintln!("mathpreview: WARNING: {warn}");
+        elog!("mathpreview: WARNING: {warn}");
         log_event(&state, "warn", warn);
     }
 
@@ -695,7 +709,7 @@ pub async fn run(
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
-    eprintln!("mathpreview serving on http://{addr}");
+    elog!("mathpreview serving on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -2034,7 +2048,7 @@ async fn trigger_rerender(state: &AppState, root_file: &Path) -> anyhow::Result<
 /// with a custom output directory works the same as a default layout.
 async fn serve_print(State(state): State<AppState>) -> Response {
     let root_file = state.current.read().await.root_file.clone();
-    eprintln!("mathpreview: print latexmk ({})", root_file.display());
+    elog!("mathpreview: print latexmk ({})", root_file.display());
     match compile_pdf_via_latexmk(&root_file).await {
         Ok(bytes) => {
             let filename = root_file
@@ -2056,7 +2070,7 @@ async fn serve_print(State(state): State<AppState>) -> Response {
             response
         }
         Err(msg) => {
-            eprintln!("mathpreview: print compile failed: {msg}");
+            elog!("mathpreview: print compile failed: {msg}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": msg })),
@@ -2331,7 +2345,7 @@ async fn serve_buffer_push(
         pushed_path == current_root || watched.contains(&pushed_path)
     };
     if !is_known_project_file {
-        eprintln!(
+        elog!(
             "mathpreview: rejected buffer-push for {}; server root is {}",
             pushed_path.display(),
             current_root.display(),
@@ -2343,7 +2357,7 @@ async fn serve_buffer_push(
     let body_len = body.len();
     let seq = begin_render_attempt(&state);
     if !is_buffer_renderable(&body) {
-        eprintln!(
+        elog!(
             "mathpreview: buffer-push #{seq} {} bytes — incomplete, deferring",
             body_len
         );
@@ -2358,7 +2372,7 @@ async fn serve_buffer_push(
     match render_cached(&state, &current_root).await {
         Ok((out, timing)) => {
             if !is_latest_render_attempt(&state, seq) {
-                eprintln!("mathpreview: buffer-push #{seq} {body_len}b → stale render discarded");
+                elog!("mathpreview: buffer-push #{seq} {body_len}b → stale render discarded");
                 return axum::http::StatusCode::NO_CONTENT;
             }
             update_watched(&state, &out).await;
