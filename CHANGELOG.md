@@ -17,7 +17,7 @@ summary.
 
 Nothing yet.
 
-## [1.0.0] — 2026-07-09
+## [1.0.0] — 2026-07-10
 
 First stable release. mathpreview is a live LaTeX preview for Neovim (and the
 terminal): a Rust daemon renders your document to HTML with MathJax and pushes
