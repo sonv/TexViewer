@@ -160,8 +160,10 @@ pub struct ViewerConfig {
     /// ignored so a config that still sets `page-guides` (written while the
     /// feature existed) doesn't fail to parse — `deny_unknown_fields` would
     /// otherwise reject the WHOLE file and silently drop every setting to its
-    /// default. Not serialized back out, so it fades from files on the next
-    /// save. Remove this shim once no live configs carry the key.
+    /// default. The dialog saves via `toml_edit`, which preserves the key in
+    /// place, so it lingers harmlessly until hand-removed; `skip_serializing`
+    /// only drops it from a wholesale serde re-serialize. Remove this shim once
+    /// no live configs carry the key.
     #[serde(default, rename = "page-guides", skip_serializing)]
     pub _removed_page_guides: Option<bool>,
 }
