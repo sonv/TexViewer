@@ -193,6 +193,18 @@ detects and upgrades a binary that lacks the feature); on Linux, install
 `libwebkit2gtk-4.1-dev` first. The window closes with `:MathPreviewStop` and is
 tied to the editing session.
 
+**Locus.app (macOS).** For a first-class dock presence — the Locus icon shows
+before launch, the app is pinnable and Spotlight-visible — assemble the bundle:
+
+```sh
+scripts/make-locus-app.sh --install    # builds and copies Locus.app to /Applications
+```
+
+Double-clicking Locus.app opens a native "choose a .tex file" panel (`locus`
+with no argument does the same). When the bundle is installed, the nvim plugin
+automatically launches the window through it, so `viewer = "window"` gets the
+bundle's icon and app name too.
+
 ### 2. The nvim plugin
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`

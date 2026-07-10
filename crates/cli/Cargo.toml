@@ -61,8 +61,18 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSApplication",
     "NSImage",
     "NSResponder",
+    # NSOpenPanel and its superclass chain, for the no-args file picker.
+    "NSOpenPanel",
+    "NSSavePanel",
+    "NSPanel",
+    "NSWindow",
 ] }
-objc2-foundation = { version = "0.3", optional = true, features = ["NSData"] }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSData",
+    "NSArray",
+    "NSString",
+    "NSURL",
+] }
 
 [features]
 default = []

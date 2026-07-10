@@ -43,8 +43,17 @@ ways, and search mirrored from the editor.
     bold points-condensing-onto-a-curve "L" on the viewer's deep-violet tile
     (a locus is a set of points, after all) — instead of the generic
     executable icon. X11/Windows get the same art as the window/taskbar icon.
-    The SVG master, a 1024px PNG, and `Locus.icns` (for an eventual `.app`
-    bundle) live in `crates/cli/assets/`.
+    The SVG master, a 1024px PNG, and `Locus.icns` live in `crates/cli/assets/`.
+  - **`Locus.app` (macOS).** `scripts/make-locus-app.sh --install` assembles a
+    proper app bundle (Info.plist + `Locus.icns`, ad-hoc signed) into
+    `/Applications` — the icon shows in the dock before launch, and Locus is
+    pinnable and Spotlight-visible. Launching with no file (dock double-click,
+    or plain `locus`) opens a native "choose a .tex file" panel. When the
+    bundle is installed, the nvim plugin launches `viewer = "window"` through
+    it, so the window carries the bundle's identity.
+  - **The browser tab has a favicon now** — the same Locus icon, inlined as a
+    data URI in the page head, so preview tabs are recognizable in a crowded
+    tab bar.
 - **`close_on_exit` plugin option** (default `true`): quitting nvim tears the
   preview down — stops the daemon and closes the native Locus window. Set
   `false` to let the preview outlive nvim instead: the daemon and window are

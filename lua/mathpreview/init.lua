@@ -581,10 +581,28 @@ local function open_window(entry)
   local cmd = entry.cmd or resolve_cmd()
   local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
   local title = vim.fn.fnamemodify(entry.root, ":t")
+  -- On macOS, prefer the installed Locus.app bundle's binary: a process run
+  -- from inside a bundle carries the bundle identity, so the window gets the
+  -- Locus dock icon and app name from the .icns — no runtime branding needed.
+  -- The attach window is a pure webview client (the daemon serves the whole
+  -- page), so version skew between the .app and the daemon is harmless. Build
+  -- it with scripts/make-locus-app.sh --install.
+  local argv = { cmd, "view", "--attach", url, "--title", title }
+  if vim.fn.has("mac") == 1 then
+    for _, app_bin in ipairs({
+      "/Applications/Locus.app/Contents/MacOS/locus",
+      vim.fn.expand("~/Applications/Locus.app/Contents/MacOS/locus"),
+    }) do
+      if vim.fn.executable(app_bin) == 1 then
+        argv = { app_bin, "--attach", url, "--title", title }
+        break
+      end
+    end
+  end
   local stderr_lines = {}
   local jid
   jid = vim.fn.jobstart(
-    { cmd, "view", "--attach", url, "--title", title },
+    argv,
     {
       -- Match the daemon: detached only when the preview should outlive nvim
       -- (close_on_exit=off), so quitting nvim leaves the window up. With

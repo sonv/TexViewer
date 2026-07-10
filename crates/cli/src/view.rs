@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tao::dpi::LogicalSize;
-use tao::event::{Event, WindowEvent};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
@@ -77,6 +77,32 @@ fn window_icon() -> Option<tao::window::Icon> {
     tao::window::Icon::from_rgba(rgba, 128, 128).ok()
 }
 
+/// Native "choose a .tex file" dialog, for launching Locus with no argument —
+/// double-clicking the dock-pinned `Locus.app` passes no argv, and erroring
+/// out would make the pinned icon useless. Returns `None` if the user cancels.
+/// Must run on the main thread, before the event loop takes it over.
+#[cfg(target_os = "macos")]
+pub fn pick_tex_file() -> Option<std::path::PathBuf> {
+    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{ns_string, MainThreadMarker, NSArray};
+    let mtm = MainThreadMarker::new()?;
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setTitle(Some(ns_string!("Open a LaTeX document")));
+    panel.setMessage(Some(ns_string!("Choose the .tex file to preview")));
+    // `allowedContentTypes` needs the UTType crate; the deprecated
+    // extension-based filter does the same job for one extension.
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&NSArray::from_slice(&[ns_string!("tex")])));
+    if panel.runModal() != NSModalResponseOK {
+        return None;
+    }
+    let path = panel.URL()?.path()?;
+    Some(std::path::PathBuf::from(path.to_string()))
+}
+
 /// Open the window and run its event loop. Blocks until the window is closed
 /// (the event loop exits the process), so this never returns `Ok`. `doc` is the
 /// document label (usually the file name); the title is branded as
@@ -88,8 +114,6 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
         format!("{doc} — {APP_NAME}")
     };
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    #[cfg(target_os = "macos")]
-    set_dock_icon();
     let builder = WindowBuilder::new()
         .with_title(&title)
         .with_inner_size(LogicalSize::new(1100.0, 900.0));
@@ -115,6 +139,14 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
+            // Set the dock icon on the FIRST event, not before `run`: tao
+            // finishes launching NSApplication (and materializes the dock
+            // tile) inside `run`, and an applicationIconImage set before that
+            // is dropped with the generic executable icon shown instead.
+            Event::NewEvents(StartCause::Init) => {
+                #[cfg(target_os = "macos")]
+                set_dock_icon();
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..

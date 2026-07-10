@@ -99,6 +99,10 @@ pub fn run_view(args: ViewArgs) -> Result<()> {
         return view::run_window(&url, &doc);
     }
 
+    // No input on macOS (e.g. Locus.app double-clicked from the dock — Finder
+    // passes no argv): ask with a native open panel instead of erroring.
+    #[cfg(target_os = "macos")]
+    let input = input.or_else(view::pick_tex_file);
     let input = input.context("provide an input file, or --attach <url> to a running daemon")?;
     let (opts, config_files) = build_serve_opts(&input, mathjax_url, &macros, &config);
     let doc = title.unwrap_or_else(|| opts.title.clone());
