@@ -723,10 +723,11 @@ pub async fn run(
         let tx = state.tx.clone();
         tokio::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
-            let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+            let (Ok(mut term), Ok(mut hup), Ok(mut int), Ok(mut usr1)) = (
                 signal(SignalKind::terminate()),
                 signal(SignalKind::hangup()),
                 signal(SignalKind::interrupt()),
+                signal(SignalKind::user_defined1()),
             ) else {
                 return;
             };
@@ -734,6 +735,13 @@ pub async fn run(
                 _ = term.recv() => {},
                 _ = hup.recv() => {},
                 _ = int.recv() => {},
+                // SIGUSR1 = SILENT exit, for :MathPreviewRestart. No goodbye:
+                // the viewer must SURVIVE a restart (reconnect to the rebound
+                // port and hard-reload) — the restart path deliberately skips
+                // re-opening a tab because it counts on the old one living.
+                // Exiting immediately also frees the port inside the plugin's
+                // rebind grace.
+                _ = usr1.recv() => std::process::exit(0),
             }
             let _ = tx.send(r#"{"event":"bye"}"#.to_string());
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;

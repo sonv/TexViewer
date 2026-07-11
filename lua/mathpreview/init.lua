@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.4"
+local PLUGIN_VERSION = "1.0.5"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -171,6 +171,23 @@ local daemon_root = nil  -- active daemon's root .tex path
 -- Roots we're deliberately stopping (M.stop/M.restart), so the daemon's on_exit
 -- doesn't mistake the SIGTERM for a port-bind race and auto-restart it.
 local stopping = {}
+-- Native Locus windows, keyed by daemon ROOT — deliberately NOT stored on the
+-- registry entry: a restart replaces the entry while the window survives and
+-- reconnects, so its handle must outlive the entry. Keeping it here lets a
+-- post-restart crash/stop still close the window, and lets open_window's
+-- idempotence guard suppress a duplicate even when the reopen check races the
+-- window's own hard-reload. Each value: { job = jobid, stopping = bool }.
+local windows = {}
+
+-- Close the tracked native window for `root` (no-op without one). `stopping`
+-- suppresses the on_exit crash notification for this deliberate kill.
+local function close_window(root)
+  local w = windows[root]
+  if not w then return end
+  windows[root] = nil
+  w.stopping = true
+  if w.job then pcall(vim.fn.jobstop, w.job) end
+end
 
 -- Push state (carried across pushes for :MathPreviewStatus).
 local timer = nil
@@ -574,15 +591,16 @@ end
 
 -- Launch the standalone native window (`mathpreview-cli view --attach <url>`),
 -- which just opens a webview against this entry's already-running daemon — no
--- second daemon. Tracked in `entry.window_job` and killed on stop/restart, so
--- the window is tied to the preview session (it also closes when nvim exits).
--- On a binary without the `gui` feature the `view` subcommand is missing; we
--- detect the quick non-zero exit and point the user at the fix.
+-- second daemon. Tracked in `windows[root]` (surviving entry replacement on
+-- restart) and killed on stop/:bd/quit, so the window is tied to the preview
+-- session. On a binary without the `gui` feature the `view` subcommand is
+-- missing; we detect the quick non-zero exit and point the user at the fix.
 local function open_window(entry)
-  -- Idempotent: a live tracked job means a window is already open (or opening,
-  -- before its WebSocket has connected), so a second reuse-or-open landing in
+  -- Idempotent: a tracked window for this root means one is already open (or
+  -- opening, or surviving a restart), so a second reuse-or-open landing in
   -- that gap is a no-op instead of launching — and orphaning — a duplicate.
-  if entry.window_job then return end
+  if windows[entry.root] then return end
+  local root = entry.root
   local cmd = entry.cmd or resolve_cmd()
   local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
   local title = vim.fn.fnamemodify(entry.root, ":t")
@@ -619,6 +637,10 @@ local function open_window(entry)
     end
   end
   local stderr_lines = {}
+  -- The tracker table is captured by on_exit directly (not looked up), so a
+  -- deliberate close_window — which may already have deregistered it — can
+  -- still flag `stopping` and be honored when the exit lands.
+  local w = { job = nil, stopping = false }
   local jid
   jid = vim.fn.jobstart(
     argv,
@@ -631,16 +653,13 @@ local function open_window(entry)
         if data then vim.list_extend(stderr_lines, data) end
       end,
       on_exit = function(_, code)
-        -- Only clear the tracker if it still points at THIS job (a later exit
-        -- from a job we've already replaced must not nil out the new one).
-        if entry.window_job == jid then entry.window_job = nil end
-        -- Deliberate kill (:MathStop / restart / daemon-crash teardown): the
-        -- SIGTERM exit code is non-zero but expected — don't cry crash. Mirrors
-        -- the daemon's `stopping` guard.
-        if entry.window_stopping then
-          entry.window_stopping = nil
-          return
-        end
+        -- Deregister only if the root still tracks THIS window (a later exit
+        -- from a window we've already replaced must not nil out the new one).
+        if windows[root] == w then windows[root] = nil end
+        -- Deliberate kill (:MathStop / :bd / daemon-crash teardown): the
+        -- SIGTERM exit code is non-zero but expected — don't cry crash.
+        -- Mirrors the daemon's `stopping` guard.
+        if w.stopping then return end
         if code ~= 0 then
           local tail = vim.trim(table.concat(stderr_lines, "\n"))
           vim.schedule(function()
@@ -664,7 +683,8 @@ local function open_window(entry)
     vim.notify("mathpreview: failed to launch native window", vim.log.levels.ERROR)
     return
   end
-  entry.window_job = jid
+  w.job = jid
+  windows[root] = w
 end
 
 -- Open the configured viewer (browser tab or native window) for this daemon.
@@ -1297,14 +1317,13 @@ local function stop_all()
   if not config.close_on_exit then return end
   for root, d in pairs(daemons) do
     stopping[root] = true
-    if d.window_job then
-      -- Suppress the SIGTERM-as-crash notification (mirrors M.stop).
-      d.window_stopping = true
-      pcall(vim.fn.jobstop, d.window_job)
-      d.window_job = nil
-    end
+    close_window(root)
     pcall(vim.fn.jobstop, d.job)
     daemons[root] = nil
+  end
+  -- Windows can outlive their entry (post-crash leftovers): sweep those too.
+  for root in pairs(windows) do
+    close_window(root)
   end
   deactivate()
   pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
@@ -1434,7 +1453,8 @@ end
 -- Stop ONE preview session — its daemon and (if any) its native window.
 -- Shared by :MathPreviewStop (M.stop) and the :bd autocmd. Declared as a
 -- forward local above attach_autocmds.
-function stop_entry(entry)
+function stop_entry(entry, opts)
+  opts = opts or {}
   if not entry or not daemons[entry.root] then return end
   stopping[entry.root] = true
   daemons[entry.root] = nil
@@ -1444,15 +1464,33 @@ function stop_entry(entry)
     daemon_port = nil
     daemon_root = nil
   end
-  pcall(vim.fn.jobstop, entry.job)  -- its on_exit is now a no-op (already deregistered)
-  -- Close the native window too — it's tied to this preview session. Flag the
-  -- deliberate kill so its on_exit doesn't misreport the SIGTERM exit as a
-  -- crash (WebKitGTK writes stderr noise that would otherwise trip the warning
-  -- on every stop/restart on Linux).
-  if entry.window_job then
-    entry.window_stopping = true
-    pcall(vim.fn.jobstop, entry.window_job)
-    entry.window_job = nil
+  -- How the daemon dies decides what the VIEWER does. jobstop's SIGTERM makes
+  -- the daemon broadcast a goodbye — tabs and windows close themselves (the
+  -- teardown routes: :MathPreviewStop, :bd, quitting nvim). A RESTART must
+  -- keep the viewer alive instead: SIGUSR1 exits silently, the tab/window sits
+  -- on its 1s reconnect loop, finds the new daemon on the rebound port, and
+  -- hard-reloads in place (which is why the restart path skips re-opening).
+  local killed
+  if opts.restart then
+    local ok, pid = pcall(vim.fn.jobpid, entry.job)
+    if ok and type(pid) == "number" and pid > 0 and uv.kill then
+      -- luv reports failure as a soft (nil, err) return, not an error — check
+      -- the result, or a failed usr1 would skip the jobstop fallback and leave
+      -- the daemon running.
+      local ok2, res = pcall(uv.kill, pid, "sigusr1")
+      killed = ok2 and res ~= nil
+    end
+  end
+  if not killed then
+    pcall(vim.fn.jobstop, entry.job)  -- its on_exit is now a no-op (already deregistered)
+  end
+  -- Close the native window too — it's tied to this preview session
+  -- (close_window flags the deliberate kill so its on_exit doesn't misreport
+  -- the SIGTERM as a crash). On restart the window stays: it's a WS client
+  -- like the tab and reconnects to the new daemon the same way — and because
+  -- it's tracked per ROOT in `windows`, the restarted session keeps its handle.
+  if not opts.restart then
+    close_window(entry.root)
   end
   if daemon_count() == 0 then detach_autocmds() end
 end
@@ -1547,12 +1585,10 @@ local function start_with(cmd, opts)
         -- Daemon died on its own (crash/OOM/external kill): close its native
         -- window too, so it doesn't linger as a frozen ghost retrying a dead
         -- port and outlive the plugin's reach (M.stop already handles the
-        -- deliberate path, hence the `not was_stopping` guard). Use `cur`, not
-        -- the yet-to-be-declared `entry` local.
-        if not was_stopping and cur and cur.window_job then
-          cur.window_stopping = true
-          pcall(vim.fn.jobstop, cur.window_job)
-          cur.window_job = nil
+        -- deliberate path, hence the `not was_stopping` guard). Windows are
+        -- tracked per ROOT, so this reaches a window that survived a restart.
+        if not was_stopping then
+          close_window(root)
         end
         daemons[root] = nil
         if daemon_root == root then
@@ -1600,7 +1636,7 @@ local function start_with(cmd, opts)
   -- global (push routing) — only needed once, when the first daemon starts.
   local first = daemon_count() == 0
   local entry =
-    { job = job, port = port, root = root, cmd = cmd, opened = false, jump_seq = 0, window_job = nil }
+    { job = job, port = port, root = root, cmd = cmd, opened = false, jump_seq = 0 }
   stopping[root] = nil
   daemons[root] = entry
   if first then attach_autocmds() end
@@ -1618,12 +1654,15 @@ local function start_with(cmd, opts)
   vim.defer_fn(function()
     if daemons[root] == entry then fetch_watched(entry) end
   end, 700)
-  -- Skip the open on a restart that rebound the same port: the existing tab
-  -- reconnects on its own (opening another would pile up duplicates). The
-  -- native window, unlike a browser tab, is killed on restart (it's tied to
-  -- the session), so it must be re-opened — don't take this shortcut for it.
+  -- Skip the open on a restart that rebound the same port: the existing
+  -- viewer survives the restart (the daemon dies silently, no goodbye) and
+  -- reconnects on its own — opening another would pile up duplicates. For the
+  -- native window, take the shortcut only while one is actually tracked
+  -- (windows[root] survives entry replacement); if the user closed it before
+  -- restarting, the wait-and-check path below opens a fresh one. Either way
+  -- open_window's per-root guard suppresses a race-driven duplicate.
   local reused_tab = opts.prev_port ~= nil and port == opts.prev_port
-    and config.viewer ~= "window"
+    and (config.viewer ~= "window" or windows[root] ~= nil)
   if config.auto_open_browser then
     if reused_tab then
       entry.opened = true
@@ -1787,7 +1826,9 @@ function M.restart()
   -- Remember the port so the restart can rebind it and let the open tab
   -- reconnect, instead of opening a fresh one each time.
   local prev_port, root = entry.port, entry.root
-  M.stop()
+  -- restart=true kills the daemon SILENTLY (no goodbye), so the tab/window
+  -- survive and reconnect to the rebound port — M.stop() would close them.
+  stop_entry(entry, { restart = true })
   -- Give the OS a moment to release the port before re-binding.
   vim.defer_fn(function() M.start({ prev_port = prev_port, root = root }) end, 200)
 end

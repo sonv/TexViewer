@@ -1040,6 +1040,10 @@
         clearVimPending();
         setTopbarHidden(!topbarHidden, true);
         return true;
+      case 'c':
+        clearVimPending();
+        setPageCrop(!pageCropped, true);
+        return true;
       default:
         clearVimPending();
         return false;
@@ -3027,6 +3031,22 @@
     if (lineNumbersVisible) scheduleLineNumbers();
   }
 
+  // Crop-to-content ("c", TeXpresso-style): trim the paper margins around the
+  // text column so the reading area is all text. The column width — and thus
+  // line wrapping — is unchanged: CSS shrinks the padding and updatePageScale
+  // shrinks the page by the same amount (CROP_DX).
+  function setPageCrop(on, persist) {
+    pageCropped = !!on;
+    document.body.classList.toggle('page-crop', pageCropped);
+    if (persist) {
+      try { localStorage.setItem('mathpreview.crop', pageCropped ? '1' : '0'); } catch (e) {}
+    }
+    updatePageScale();
+    syncTopbarHeight();
+    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    if (lineNumbersVisible) scheduleLineNumbers();
+  }
+
   function updatePageScale(_contentHeight) {
     var page = pageEl();
     var shell = pageShellEl();
@@ -3037,11 +3057,16 @@
     // required, CSS auto-sizes the shell to the zoomed content. We
     // still set the shell's *width* so margin: auto centers the page
     // around the scaled content rather than the unscaled column.
+    // Crop narrows the paper by the padding it removes (CSS drops --page-pad-x
+    // to 12px), keeping the text column — and its wrapping — identical. See
+    // cropDxNow for the media-query mirroring.
+    var cropDx = cropDxNow();
     if (currentPageMode === 'a4') {
-      var fit = Math.min(1, available / A4_CSS_WIDTH);
+      var baseW = A4_CSS_WIDTH - cropDx;
+      var fit = Math.min(1, available / baseW);
       var combined = fit * currentUserZoom;
       document.documentElement.style.setProperty('--page-scale', combined.toFixed(4));
-      shell.style.width = Math.round(A4_CSS_WIDTH * combined) + 'px';
+      shell.style.width = Math.round(baseW * combined) + 'px';
       shell.style.height = '';
     } else {
       // Dynamic mode: the page's natural width is the smaller of
@@ -3052,11 +3077,12 @@
         DYNAMIC_BASE_WIDTH,
         available / Math.max(currentUserZoom, 1e-6)
       );
+      var pageW = naturalWidth - cropDx;
       document.documentElement.style.setProperty(
-        '--page-natural-width', Math.round(naturalWidth) + 'px'
+        '--page-natural-width', Math.round(pageW) + 'px'
       );
       document.documentElement.style.setProperty('--page-scale', currentUserZoom.toFixed(4));
-      shell.style.width = Math.round(naturalWidth * currentUserZoom) + 'px';
+      shell.style.width = Math.round(pageW * currentUserZoom) + 'px';
       shell.style.height = '';
     }
     // Gutter beside the centered page — the default width of each margin column,
@@ -3092,10 +3118,22 @@
     setUserZoom(1, true);
   }
 
+  // Width the crop removes from the page, or 0 when not cropped. The uncropped
+  // pad is 64px, EXCEPT dynamic mode on narrow viewports where the
+  // max-width:720px media query already uses 24px. The breakpoint check uses
+  // window.innerWidth because CSS media queries measure the viewport INCLUDING
+  // the scrollbar — clientWidth (which excludes it) would disagree with the
+  // media query for a scrollbar's width around 720px and reflow the column.
+  function cropDxNow() {
+    if (!pageCropped) return 0;
+    var basePadX = (currentPageMode !== 'a4' && window.innerWidth <= 720) ? 24 : 64;
+    return 2 * (basePadX - CROP_PAD);
+  }
+
   function fitToWidth() {
     var available = Math.max(320, document.documentElement.clientWidth - 32);
     var base = (currentPageMode === 'a4') ? A4_CSS_WIDTH : DYNAMIC_BASE_WIDTH;
-    setUserZoom(available / base, true);
+    setUserZoom(available / (base - cropDxNow()), true);
   }
 
   function headingSignature(headings) {

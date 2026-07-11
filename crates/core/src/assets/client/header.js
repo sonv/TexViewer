@@ -22,6 +22,13 @@
   var NAV_RESIZE_IDLE_MS = 120;
   var A4_CSS_WIDTH = 794;
   var DYNAMIC_BASE_WIDTH = 720;
+  // Crop-to-content ("c"): trim the paper margins around the text column.
+  // The page narrows by exactly the horizontal padding saved, so the column
+  // keeps its width and nothing reflows. CROP_PAD is the cropped --page-pad-x
+  // — MUST match default.css's `body.page-crop` rules (12px pad; the A4 width
+  // rule's 104px = 2×(64−12)).
+  var CROP_PAD = 12;
+  var pageCropped = false;
   var navNeedsIndex = true;
   var lastHeadingSignature = '';
   var selectedMath = null;

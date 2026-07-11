@@ -604,6 +604,36 @@ body.page-mode-dynamic main#page {
     margin-top: 12px;
   }
 }
+/* Crop-to-content (the viewer's "c" key, TeXpresso-style): trim the paper
+   margins so the reading area is essentially all text. The page narrows by
+   exactly the horizontal padding removed — 104px = 2×(64−12) for the A4 rule
+   below — so the text column and its line wrapping are UNCHANGED
+   (viewer.js's cropDxNow computes the same delta for the shell / dynamic
+   natural width; keep the 12px pad = CROP_PAD in sync). Placed after the
+   max-width media query so the 12px padding also wins on narrow viewports.
+   Scoped to screen: the A4 width rule out-specifies @media print's
+   `width: auto` reset, so letting it exist in print would shrink the printed
+   column — crop must never affect Cmd+P. */
+@media screen {
+  body.page-crop main#page {
+    --page-pad-x: 12px;
+    padding-top: 14px;
+    padding-bottom: 18px;
+  }
+  body.page-crop.page-mode-a4 main#page {
+    width: calc(var(--a4-width) - 104px);
+  }
+  /* The margins are gone, so the overlays that LIVE in the margins go too —
+     refkey chips and the line-number gutter would otherwise overlap the text
+     (the gutter's width derives from --page-pad-x and collapses to 0).
+     !important: the keys/lines toggles set display elsewhere with equal
+     specificity; crop must win regardless of rule order. */
+  body.page-crop .lineno-layer,
+  body.page-crop .refkey-chip,
+  body.page-crop .eq-refkey-list {
+    display: none !important;
+  }
+}
 .sec-h0,
 .sec-h1,
 .sec-h2,

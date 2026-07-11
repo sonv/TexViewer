@@ -17,6 +17,27 @@ summary.
 
 Nothing yet.
 
+## [1.0.5] — 2026-07-11
+
+### Added
+
+- **Crop to content — the viewer's `c` key** (inspired by TeXpresso). Trims
+  the paper margins so the reading area is essentially all text. Line
+  wrapping is untouched: the page narrows by exactly the padding it sheds.
+  Works in both A4 and dynamic modes, persists per browser, and never
+  affects Cmd+P. Margin overlays (line numbers, ref-key chips) hide while
+  cropped — there's no margin left to hold them.
+
+### Fixed
+
+- **`:MathPreviewRestart` no longer closes the viewer — and no longer
+  strands you without one.** The v1.0.2 goodbye event fired on restart's
+  stop phase too, closing the tab; the restart path then skipped opening a
+  new one because it (correctly, pre-1.0.2) assumed the tab had survived to
+  reconnect. Restart now kills the daemon silently (SIGUSR1, no goodbye):
+  the tab — and the Locus window — survive, reconnect to the rebound port,
+  and hard-reload in place. Stop/quit/`:bd` still close the viewer.
+
 ## [1.0.4] — 2026-07-11
 
 ### Added

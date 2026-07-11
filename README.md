@@ -558,7 +558,11 @@ a Rust roundtrip unless they are controlling the daemon itself.
   `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
   between search matches, `:` opens the command line (see `margin`
   above), `t` toggles the index/pages side panel, `B` toggles the top
-  banner (keyboard counterpart to the thin stripe), and `Ctrl-o` jumps
+  banner (keyboard counterpart to the thin stripe), `c` crops the page
+  to the text (trims the paper margins, TeXpresso-style — wrapping is
+  unchanged; margin overlays like line numbers and ref-key chips hide
+  while cropped since there is no margin to hold them; persisted per
+  browser), and `Ctrl-o` jumps
   back and forth between the current place and the previous one
   (pressing it repeatedly ping-pongs between the two). These bindings
   are ignored while typing in editable controls.
