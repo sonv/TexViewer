@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.3"
+local PLUGIN_VERSION = "1.0.4"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -703,7 +703,22 @@ local function reuse_or_open_browser(entry)
       local clients
       if res and res.code == 0 and res.stdout and res.stdout ~= "" then
         local ok, data = pcall(vim.json.decode, res.stdout)
-        if ok and type(data) == "table" then clients = data.clients end
+        if ok and type(data) == "table" then
+          clients = data.clients
+          -- Stale-daemon nag. Reuse deliberately skips the reinstall path, so
+          -- a long-lived daemon silently survives plugin/binary upgrades and
+          -- lacks newer features (e.g. a tab that won't close on quit). The
+          -- daemon reports its version in /debug since 1.0.4; an older daemon
+          -- has no field at all, which is itself a skew signal.
+          local dver = data.version and ("v" .. data.version) or "older than v1.0.4"
+          if dver ~= ("v" .. PLUGIN_VERSION) and not entry.version_nagged then
+            entry.version_nagged = true
+            vim.notify(
+              ("mathpreview: the RUNNING preview daemon is %s but the plugin is v%s — "
+                .. "run :MathPreviewRestart to upgrade it"):format(dver, PLUGIN_VERSION),
+              vim.log.levels.WARN)
+          end
+        end
       end
       if type(clients) == "number" then
         -- Authoritative: the daemon knows how many tabs are connected. Reuse if

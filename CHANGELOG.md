@@ -17,6 +17,18 @@ summary.
 
 Nothing yet.
 
+## [1.0.4] — 2026-07-11
+
+### Added
+
+- **Stale-daemon detection.** A long-lived preview daemon survives plugin and
+  binary upgrades (a repeat `:MathPreview` reuses it without any version
+  check), silently missing newer features — e.g. a tab that no longer closes
+  on quit because the running daemon predates the goodbye event. The daemon
+  now reports its version in `/debug`, and the plugin warns on reuse when the
+  RUNNING daemon is older than the plugin: "run :MathPreviewRestart to
+  upgrade it."
+
 ## [1.0.3] — 2026-07-10
 
 ### Fixed

@@ -348,6 +348,11 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
 
     Json(serde_json::json!({
         "ws_protocol": WS_PROTOCOL_VERSION,
+        // The RUNNING daemon's version. The plugin compares this on daemon
+        // reuse: a long-lived daemon survives plugin/binary upgrades (reuse
+        // skips the reinstall path), silently lacking newer features — the
+        // "stale daemon" trap. The nag it enables says: :MathPreviewRestart.
+        "version": env!("CARGO_PKG_VERSION"),
         "root": root_file,
         "watched": watched,
         // Number of connected browser tabs (live WebSocket subscribers). The
