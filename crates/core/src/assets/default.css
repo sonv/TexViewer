@@ -637,15 +637,32 @@ body.page-mode-dynamic main#page {
   }
   /* The line-number gutter lives INSIDE the page padding, whose width
      derives from --page-pad-x — under crop it collapses to 12px and the
-     numbers would sit on the text, so hide it. Refkey chips are different:
-     they hang LEFTWARD off the page edge (right: calc(100% + gap)), so
-     under crop they float in the empty space beside the narrowed page —
-     an explicit `keys` toggle still works while cropped. !important: the
-     lines toggle sets display elsewhere with equal specificity; crop must
-     win regardless of rule order. */
+     numbers would sit on the text, so hide it. !important: the lines
+     toggle sets display elsewhere with equal specificity; crop must win
+     regardless of rule order. */
   body.page-crop .lineno-layer {
     display: none !important;
   }
+  /* Refkey chips normally hang LEFTWARD off the page edge — but crop
+     exists to fill the window with text, so "beside the page" usually
+     means off-screen. While cropped, the chips flip to overlay the page's
+     left edge ON TOP of the content instead: slightly translucent so the
+     covered line stays guessable, fully opaque on hover. */
+  body.page-crop .refkey-chip {
+    right: auto;
+    left: -6px;
+    opacity: 0.88;
+    z-index: 6;
+  }
+  body.page-crop .refkey-chip:hover { opacity: 1; }
+  body.page-crop .eq-refkey-list {
+    right: auto;
+    left: -6px;
+    align-items: flex-start;
+    z-index: 6;
+  }
+  body.page-crop .eq-refkey-list .eq-refkey-chip { opacity: 0.88; }
+  body.page-crop .eq-refkey-list .eq-refkey-chip:hover { opacity: 1; }
 }
 .sec-h0,
 .sec-h1,

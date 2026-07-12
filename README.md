@@ -578,7 +578,8 @@ a Rust roundtrip unless they are controlling the daemon itself.
   banner (keyboard counterpart to the thin stripe), `c` crops the page
   to the text (trims the paper margins, TeXpresso-style — wrapping is
   unchanged; line numbers hide while cropped since their gutter is gone,
-  but the `keys` chips still work — they float beside the narrowed page;
+  but the `keys` chips still work — they overlay the page's left edge,
+  translucent until hovered;
   persisted per browser), `q` closes the viewer (same as `:q` — the Locus window
   exits; a browser tab closes itself where the browser allows it, and
   otherwise the status pill names the key that will), and `Ctrl-o` jumps

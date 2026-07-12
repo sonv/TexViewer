@@ -44,10 +44,12 @@ summary.
   block's bottom margin instead; the visual gap is identical.
 - **The `keys` overlay works while cropped.** v1.0.5's crop hid all margin
   overlays, so pressing `keys` on a cropped page showed nothing — an
-  explicit toggle losing to a passive layout state. The ref-key chips hang
-  off the page's left edge, so under crop they simply float in the empty
-  space beside the narrowed page; only the line-number gutter (which
-  really does collapse with the margin) stays hidden while cropped.
+  explicit toggle losing to a passive layout state. And since crop exists
+  to fill the window with text, "beside the page" would usually mean
+  off-screen — so while cropped the chips overlay the page's left edge ON
+  TOP of the content, slightly translucent (opaque on hover). Only the
+  line-number gutter (which really does collapse with the margin) stays
+  hidden while cropped.
 
 ## [1.0.6] — 2026-07-12
 
