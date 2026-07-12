@@ -418,7 +418,10 @@ The plugin spawns `mathpreview-cli serve <buffer> --port <free>` in the
 background, opens the viewer at `http://127.0.0.1:<port>/` — a browser tab
 by default; `:MathPreview window` (or `setup({ viewer = "window" })`) uses
 the native Locus window instead — and starts
-pushing the buffer on every `TextChanged`. The viewer shows the rendered
+pushing the buffer on every `TextChanged`. This works even on a buffer
+that has never been `:write`n: the daemon serves a placeholder for the
+missing file and the plugin pushes your buffer right away, so a brand-new
+`.tex` previews before its first save. The viewer shows the rendered
 document with the toolbar described in
 [Viewer controls](#viewer-controls); `:` opens a vim-style command line
 for `:pin`/`:unpin`/`:clear`/`:q`.
@@ -990,6 +993,15 @@ require("mathpreview").setup({
   debounce_ms = 40,
   cursor_debounce_ms = 80,
   sync = true,                            -- false to disable cursor/jump roundtrip
+  -- close_on_exit (default true): quitting nvim tears the preview down —
+  -- daemon, browser tab, native window. Set false to deliberately let the
+  -- preview outlive nvim (`:MathPreviewStop` still stops it explicitly).
+  close_on_exit = true,
+  -- stale_check (default true): on the first :MathPreview of a session,
+  -- scan the preview port range for abandoned daemons (no editor attached,
+  -- no viewer tab open — crashed sessions, old leftovers) and ask before
+  -- stopping them. `:MathPreviewClean` runs the same sweep on demand.
+  stale_check = true,
   -- Browser → editor source-jumps use a long-poll (one parked request),
   -- so an idle preview costs ~no CPU. These tune that loop; defaults are fine.
   jump_wait_ms = 25000,                   -- how long the daemon holds an idle /jump

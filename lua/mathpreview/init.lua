@@ -9,6 +9,7 @@
 --                          `:MathPreview window` for the native Locus window
 --     :MathPreviewStop     kill the daemon
 --     :MathPreviewRestart  stop + start
+--     :MathPreviewClean    find + stop abandoned daemons (no editor/viewer)
 --     :MathPreviewStatus   echo PID, port, push counters, version handshake
 --     :MathPreviewDebug    echo resolved settings + config/macro paths
 --
