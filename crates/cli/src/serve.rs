@@ -45,7 +45,7 @@ use tokio::sync::{broadcast, Notify, RwLock};
 use mathpreview_core::{
     bibtex::{self, BibEntry, BibStyle},
     macros::{self, ExtractedPreamble},
-    numbering, parser, project, render_project, renderer,
+    numbering, parser, project, render_project, render_project_from_source, renderer,
     sync::SyncIndex,
     theorems::TheoremRegistry,
     HtmlOptions, RenderOutput, RenderedBlock,
@@ -598,8 +598,23 @@ pub async fn run(
     editor_cmd: String,
     config_paths: Vec<PathBuf>,
 ) -> Result<()> {
-    let initial = render_project(&input, &opts)
-        .with_context(|| format!("initial render of {}", input.display()))?;
+    let initial = if input.exists() {
+        render_project(&input, &opts)
+            .with_context(|| format!("initial render of {}", input.display()))?
+    } else {
+        // A root that isn't on disk yet — an editor buffer that's never been
+        // saved. Serve a placeholder render of the empty document instead of
+        // dying: the plugin pushes the buffer content right after startup,
+        // and the first save lands the file on the watcher's dir watch.
+        // (Dying here used to be misread by the plugin as a port-bind race,
+        // which retried the doomed spawn across the whole port scan range.)
+        elog!(
+            "mathpreview: {} is not on disk yet — serving a placeholder until the editor pushes the buffer",
+            input.display()
+        );
+        render_project_from_source(&input, String::new(), &opts)
+            .with_context(|| format!("initial render of empty {}", input.display()))?
+    };
     let mut watched: HashSet<PathBuf> = HashSet::new();
     watched.insert(initial.root_file.clone());
     for f in &initial.included_files {
@@ -766,9 +781,18 @@ pub async fn run(
     }
 
     let addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            // Exit code 12 = "port bind failed", the ONLY failure the plugin
+            // retries on the next port. Before this code existed the plugin
+            // treated ANY fast nonzero exit as a lost bind race and re-spawned
+            // a doomed daemon across the whole scan range (e.g. 17 spawns for
+            // a root file that didn't exist).
+            elog!("mathpreview: binding {addr}: {e}");
+            std::process::exit(12);
+        }
+    };
     elog!("mathpreview serving on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())

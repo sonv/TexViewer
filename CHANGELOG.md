@@ -17,6 +17,16 @@ summary.
 
 ### Fixed
 
+- **`:MathPreview` works on files that were never saved.** A root file
+  missing from disk killed the daemon, and the plugin misread that quick
+  death as a lost port-bind race — respawning the doomed daemon across the
+  whole port scan range (17 "serving …" messages, then a cryptic failure).
+  The daemon now serves an empty placeholder for a not-yet-saved root and
+  the plugin pushes the buffer right after startup, so the preview simply
+  works before the first `:write`. Port-bind failures got a dedicated exit
+  code, so the retry-on-next-port logic no longer fires for unrelated
+  startup errors.
+
 - **Typing no longer flashes the under-cursor box.** The point highlight —
   the box around the word or equation under the editor cursor — is designed
   to flash and fade, which is right for navigation but strobing while

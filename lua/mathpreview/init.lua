@@ -1623,11 +1623,13 @@ local function start_with(cmd, opts)
         -- A deliberate stop/restart: don't treat the SIGTERM as a crash.
         if was_stopping then return end
         if code ~= 0 then
-          -- A near-immediate non-zero exit is almost always a port-bind race:
-          -- another process grabbed the probed port between our free-port
-          -- check and the daemon's own bind. Retry on the next port a bounded
-          -- number of times before surfacing the error.
-          if retries_left > 0 and (uv.now() - started_at) < 2000 then
+          -- Exit code 12 is the daemon's dedicated "port bind failed" code —
+          -- a lost race: another process grabbed the probed port between our
+          -- free-port check and the daemon's own bind. That's the ONLY exit
+          -- worth retrying on the next port; anything else (unreadable root,
+          -- bad config, missing feature) would fail identically on every
+          -- port in the scan range.
+          if code == 12 and retries_left > 0 and (uv.now() - started_at) < 2000 then
             local retry_opts = vim.tbl_extend("force", opts, {
               port_retries = retries_left - 1,
               scan_from = port + 1,
@@ -1674,6 +1676,20 @@ local function start_with(cmd, opts)
   vim.defer_fn(function()
     if daemons[root] == entry then fetch_watched(entry) end
   end, 700)
+  -- A root that isn't on disk yet (a never-saved buffer): the daemon came up
+  -- serving an empty placeholder — push the buffer so its content renders
+  -- without waiting for the first edit. Two attempts: the first can race the
+  -- daemon's bind on a cold start, and a repeat push of identical content is
+  -- a cheap server-side no-op when the first one landed.
+  if vim.fn.filereadable(root) == 0 then
+    local function push_if_current()
+      if daemons[root] == entry and vim.api.nvim_buf_get_name(0) == root then
+        push_buffer()
+      end
+    end
+    vim.defer_fn(push_if_current, 400)
+    vim.defer_fn(push_if_current, 1600)
+  end
   -- Skip the open on a restart that rebound the same port: the existing
   -- viewer survives the restart (the daemon dies silently, no goodbye) and
   -- reconnects on its own — opening another would pile up duplicates. For the
