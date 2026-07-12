@@ -945,6 +945,10 @@ body.refkey-visible .eq-refkey-list {
    as a fill tint. The box is drawn once around the whole block (below) rather
    than per row, so the outline never clips against a row's glyph bounds. */
 .mp-row-hl { fill: rgba(91, 62, 162, 0.16); }
+/* Row selected for COPY (plain click on a row of a multi-row block, see
+   patch.js selectMathRow): the copy counterpart of the cursor band above,
+   tinted stronger so "what will ⌘C grab" is unambiguous. */
+.mp-row-select { fill: rgba(91, 62, 162, 0.30); }
 /* Box around the whole equation when any of its rows is highlighted — an HTML
    outline on the math SVG (clean, unclipped edges), paired with the row fills. */
 .math.display.mp-math-active svg {
@@ -2176,6 +2180,7 @@ body.theme-dark .math:focus,
 body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .source-range { background: rgba(179, 157, 232, 0.20); }
 body.theme-dark .mp-row-hl { fill: rgba(179, 157, 232, 0.22); }
+body.theme-dark .mp-row-select { fill: rgba(179, 157, 232, 0.34); }
 body.theme-dark .math.display.mp-math-active svg { outline-color: rgba(179, 157, 232, 0.55); }
 body.theme-dark .source-space.source-active::after { border-left-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .math.math-search-hit { background: rgba(216, 151, 0, 0.16); }

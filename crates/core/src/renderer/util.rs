@@ -22,7 +22,12 @@ pub(super) fn escape_html(s: &str) -> String {
 }
 
 pub(super) fn escape_attr(s: &str) -> String {
-    escape_html(s)
+    // Also escape CR: the HTML input preprocessor rewrites CRLF/CR to LF
+    // BEFORE tokenization, so a literal \r in an attribute silently vanishes
+    // client-side. That would desynchronize `data-row-tex-spans` byte offsets
+    // from `data-tex` for CRLF (dos-format) sources — and lose byte fidelity
+    // of copied LaTeX generally. `&#13;` round-trips exactly.
+    escape_html(s).replace('\r', "&#13;")
 }
 
 /// Allow-list URL schemes for `href`s built from document content (e.g. a

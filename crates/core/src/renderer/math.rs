@@ -288,40 +288,11 @@ pub(super) fn math_row_spans(body: &str, start_line: u32) -> Vec<MathRow> {
             None => 0,
         }
     };
-    // A row slice can begin at a `%` comment: split_math_rows skips comments
-    // only while SCANNING for `\\`, so a trailing `% …` after the previous
-    // row's separator (or a full comment line between rows) stays at the head
-    // of the next slice. The rendered row's first token is the first
-    // non-whitespace char outside any comment — that's where a backward jump
-    // must land, not on the comment (which can even be the PREVIOUS row's
-    // line). A leading literal `\%` starts at the backslash, so it's safe.
-    let content_at = |off: usize, end: usize| -> usize {
-        let mut i = off;
-        loop {
-            while i < end && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            if i < end && bytes[i] == b'%' {
-                while i < end && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            } else {
-                break;
-            }
-        }
-        // A row that is nothing but comments renders as an empty table row;
-        // pointing at the comment is the best position it has.
-        if i >= end {
-            off
-        } else {
-            i
-        }
-    };
     rows.iter()
         .map(|r| {
             let off = (r.as_ptr() as usize).saturating_sub(base).min(bytes.len());
             let end = (off + r.len()).min(bytes.len());
-            let content = content_at(off, end);
+            let content = row_content_offset(bytes, off, end);
             MathRow {
                 start_line: line_at(content),
                 end_line: line_at(end),
@@ -329,6 +300,69 @@ pub(super) fn math_row_spans(body: &str, start_line: u32) -> Vec<MathRow> {
             }
         })
         .collect()
+}
+
+/// Where a row slice's REAL content starts. A slice can begin at a `%`
+/// comment: split_math_rows skips comments only while SCANNING for `\\`, so a
+/// trailing `% …` after the previous row's separator (or a full comment line
+/// between rows) stays at the head of the next slice. The rendered row's
+/// first token is the first non-whitespace char outside any comment — that's
+/// where a backward jump must land and where a row copy must start, not the
+/// comment (which can even be the PREVIOUS row's line). A leading literal
+/// `\%` starts at the backslash, so it's safe. A row that is nothing but
+/// comments renders as an empty table row; its own start is the best offset
+/// it has.
+fn row_content_offset(bytes: &[u8], off: usize, end: usize) -> usize {
+    let mut i = off;
+    loop {
+        while i < end && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i < end && bytes[i] == b'%' {
+            while i < end && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    if i >= end {
+        off
+    } else {
+        i
+    }
+}
+
+/// Byte spans — into the `\begin{env}…\end{env}` copy string, hence
+/// `prefix_len` — of each rendered row's trimmed source, serialized as
+/// `"s0:e0,s1:e1,…"` for the `data-row-tex-spans` attribute. Rows are the
+/// same `\\`-split slices as `math_row_spans` (trailing empty row dropped),
+/// so index i matches the i-th rendered `mtr` — letting a click on a row
+/// copy exactly that row's LaTeX. Empty for single-row bodies. Offsets are
+/// bytes into the RAW string (the client slices via TextEncoder, since the
+/// attribute value unescapes back to the raw string).
+pub(super) fn math_row_tex_spans(body: &str, prefix_len: usize) -> String {
+    let mut rows = split_math_rows(body);
+    if rows.last().is_some_and(|r| r.is_empty()) {
+        rows.pop();
+    }
+    if rows.len() < 2 {
+        return String::new();
+    }
+    let base = body.as_ptr() as usize;
+    let bytes = body.as_bytes();
+    rows.iter()
+        .map(|r| {
+            let off = (r.as_ptr() as usize).saturating_sub(base).min(body.len());
+            let end = (off + r.len()).min(body.len());
+            // Skip a leading comment left over from the previous row's tail —
+            // copying "% done\n  c &= d" for a click on the "c &= d" row
+            // would be junk on paste.
+            let content = row_content_offset(bytes, off, end);
+            format!("{}:{}", prefix_len + content, prefix_len + end)
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub(super) fn split_math_rows(src: &str) -> Vec<&str> {
@@ -799,6 +833,25 @@ mod tests {
         // both, start_col still lands on the first token.
         let body = "\na &= b\n  + c \\\\\nd &= e\n";
         assert_eq!(math_row_spans(body, 3), vec![row(4, 5, 1), row(6, 6, 1)]);
+    }
+
+    #[test]
+    fn math_row_tex_spans_are_trimmed_row_slices_with_prefix() {
+        // \begin{align} is 13 bytes; "a &= b" sits at body bytes 1..7 and
+        // "c &= d" at 11..17.
+        let body = "\na &= b \\\\\nc &= d\n";
+        assert_eq!(math_row_tex_spans(body, 13), "14:20,24:30");
+        // Single-row bodies get no spans (no row selection to offer).
+        assert_eq!(math_row_tex_spans(" a = b ", 13), "");
+    }
+
+    #[test]
+    fn math_row_tex_spans_skip_leading_comment_from_previous_row() {
+        // "% done" belongs to row 0's line; row 1's copy must start at "c".
+        let body = "\na &= b \\\\ % done\nc &= d\n";
+        // row 0: "a &= b" at body 1..7 → 14:20; row 1 slice starts at the
+        // comment (body 11) but content "c &= d" is at 18..24 → 31:37.
+        assert_eq!(math_row_tex_spans(body, 13), "14:20,31:37");
     }
 
     #[test]

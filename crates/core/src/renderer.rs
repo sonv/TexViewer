@@ -27,8 +27,8 @@ mod util;
 use bib::format_bib_entry;
 use math::{
     equation_number_html, equation_row_refkey_html, label_alias_anchors, math_row_spans,
-    render_latex_text_with_math, resolve_math_refs, strip_labels, write_float_placeholder,
-    write_flow_marker, write_inline_math_span,
+    math_row_tex_spans, render_latex_text_with_math, resolve_math_refs, strip_labels,
+    write_float_placeholder, write_flow_marker, write_inline_math_span,
 };
 use shell::wrap_in_shell;
 use util::{
@@ -1271,9 +1271,24 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 label_fingerprint,
                 math,
             ));
+            // Byte spans of each row's source inside copy_tex, so a click on
+            // a rendered row can copy exactly that row's LaTeX (empty attr
+            // suppressed for single-row blocks).
+            let row_tex_spans = {
+                let prefix_len = match env {
+                    Some(e) => format!(r"\begin{{{e}}}").len(),
+                    None => r"\[".len(),
+                };
+                let spans = math_row_tex_spans(body, prefix_len);
+                if spans.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#" data-row-tex-spans="{spans}""#)
+                }
+            };
             writeln!(
                 out,
-                r#"<div class="math display" id="{id}" data-src="{src}"{refkey} data-hash="{hash}" data-tex="{copy_tex}" data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX">{aliases}{row_refkeys}<span class="math-source">{math}</span>{num_html}</div>"#,
+                r#"<div class="math display" id="{id}" data-src="{src}"{refkey} data-hash="{hash}" data-tex="{copy_tex}"{row_spans} data-mathjax-tex="{mathjax_tex}" tabindex="0" title="Copy as LaTeX">{aliases}{row_refkeys}<span class="math-source">{math}</span>{num_html}</div>"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
                 refkey = if row_numbers.is_empty() { refkey_attr(label.as_deref()) } else { String::new() },
@@ -1282,6 +1297,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 math = escape_math(&math),
                 hash = hash,
                 copy_tex = escape_attr(&copy_tex),
+                row_spans = row_tex_spans,
                 mathjax_tex = escape_attr(&math),
             ).unwrap();
         }

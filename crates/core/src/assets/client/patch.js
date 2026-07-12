@@ -40,6 +40,60 @@
     catch (e) { math.focus(); }
   }
 
+  // Row-level copy selection inside a multi-row display block: set by a plain
+  // click on a rendered row, cleared by clicking the same row again (widening
+  // back to the whole environment), clicking elsewhere, or the block being
+  // replaced by a re-render. While set, ⌘C copies just that row's source,
+  // sliced out of data-tex via the renderer's data-row-tex-spans offsets.
+  var selectedMathRow = null; // { block, row }
+
+  function clearSelectedMathRow() {
+    document.querySelectorAll('rect.mp-row-select').forEach(function(r) {
+      if (r.parentNode) r.parentNode.removeChild(r);
+    });
+    selectedMathRow = null;
+  }
+
+  // The row's source: data-row-tex-spans holds BYTE offsets into the raw
+  // data-tex string (computed in Rust) — JS strings are UTF-16, so slice
+  // through a UTF-8 round-trip.
+  function mathRowTex(block, row) {
+    var spans = (block.getAttribute('data-row-tex-spans') || '').split(',');
+    var m = /^(\d+):(\d+)$/.exec(spans[row] || '');
+    if (!m) return '';
+    var bytes = new TextEncoder().encode(block.getAttribute('data-tex') || '');
+    return new TextDecoder().decode(bytes.subarray(+m[1], +m[2]));
+  }
+
+  // Mark `row` of `block` as the copy target: a selection-tinted band on the
+  // row (same geometry as the cursor band) plus the block's focus outline.
+  function selectMathRow(block, row) {
+    clearSelectedMath();
+    clearSelectedMathRow();
+    var groups = mathRowGroups(block);
+    var g = groups[row];
+    if (!g || !g.getBBox) return false;
+    var bb;
+    try { bb = g.getBBox(); } catch (e) { return false; }
+    if (!bb || !isFinite(bb.width) || bb.width <= 0 || bb.height <= 0) return false;
+    var padY = bb.height * 0.12;
+    var padX = bb.height * 0.1;
+    var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('class', 'mp-row-select');
+    rect.setAttribute('x', bb.x - padX);
+    rect.setAttribute('y', bb.y - padY);
+    rect.setAttribute('width', bb.width + padX * 2);
+    rect.setAttribute('height', bb.height + padY * 2);
+    g.insertBefore(rect, g.firstChild);
+    selectedMathRow = { block: block, row: row };
+    focusMathNode(block);
+    // Collapse any text selection so the copy handler takes the focused-math
+    // path (which prefers the row) instead of the range path.
+    var sel = window.getSelection();
+    if (sel) sel.removeAllRanges();
+    return true;
+  }
+
   function fragmentLatexText(node) {
     if (!node) return '';
     if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
@@ -93,6 +147,27 @@
 
   function copySelectionAsLatex(e) {
     var selection = window.getSelection ? window.getSelection() : null;
+    // A replaced block orphans its row selection (the band may linger inside
+    // the stale-typeset placeholder): drop the state so ⌘C falls through to
+    // the normal paths instead of silently doing nothing.
+    if (selectedMathRow && !selectedMathRow.block.isConnected) clearSelectedMathRow();
+    // A row selected for copy (its band is showing) wins — the band is the
+    // visual contract for what ⌘C grabs, focus or not. Two exceptions: a
+    // real dragged text selection, and focus in an editable control (the
+    // search box / cmdline select their text INSIDE the input, invisible to
+    // getSelection — the row must not hijack that copy). This runs BEFORE
+    // the rangeCount guard: selectMathRow clears all ranges, so rangeCount
+    // is legitimately 0 while a row is selected.
+    var noRealSelection = !selection || !selection.rangeCount || selection.isCollapsed;
+    if (noRealSelection && selectedMathRow &&
+        !isEditableTarget(document.activeElement)) {
+      var rowTex = mathRowTex(selectedMathRow.block, selectedMathRow.row);
+      if (rowTex) {
+        e.clipboardData.setData('text/plain', rowTex);
+        e.preventDefault();
+        return;
+      }
+    }
     if (!selection || !selection.rangeCount) return;
 
     var activeMath = closestMath(document.activeElement);
@@ -134,6 +209,9 @@
   function selectMathNode(math) {
     if (!math) return;
     clearSelectedMath();
+    // Whole-node selection supersedes a row selection — the row band must
+    // not keep promising a row copy that ⌘C won't deliver.
+    clearSelectedMathRow();
     selectedMath = math;
     math.classList.add('math-selected');
     focusMathNode(math);
@@ -251,6 +329,12 @@
   });
   document.addEventListener('scroll', hideHoverPreview, { passive: true });
   document.addEventListener('click', function(e) {
+    // Any click outside the row-selected block drops the row selection and
+    // its band — whichever branch below ends up handling the click.
+    if (selectedMathRow &&
+        !(selectedMathRow.block.isConnected && selectedMathRow.block.contains(e.target))) {
+      clearSelectedMathRow();
+    }
     // Refkey chip in the left margin → pin its target as a margin card.
     // Same path as the typed-refkey input; works for theorems, sections,
     // floats, equations, and the per-row .eq-refkey-chip in multi-row
@@ -453,6 +537,24 @@
         selectMathNode(clickedMath);
         return;
       }
+      // Multi-row block: a plain click selects the CLICKED ROW for copy;
+      // clicking the same row again widens back to the whole environment.
+      // Only the FIRST click of a burst toggles (e.detail ≤ 1): the second
+      // click of a double-click would immediately undo the first — and with
+      // the double-click source-jump trigger, leave on/off depending on
+      // what was selected before the jump.
+      var rowInfo = (e.detail <= 1 && clickedMath.hasAttribute('data-row-tex-spans'))
+        ? mathRowFromClick(clickedMath, e.target) : null;
+      if (rowInfo) {
+        if (selectedMathRow && selectedMathRow.block === clickedMath &&
+            selectedMathRow.row === rowInfo.row) {
+          clearSelectedMathRow();
+          focusMathNode(clickedMath);
+        } else if (!selectMathRow(clickedMath, rowInfo.row)) {
+          focusMathNode(clickedMath);
+        }
+        return;
+      }
       focusMathNode(clickedMath);
       return;
     }
@@ -623,6 +725,12 @@
     copyAttr(oldEl, newEl, 'data-src');
     copyAttr(oldEl, newEl, 'data-refkey');
     copyAttr(oldEl, newEl, 'data-tex');
+    // The row-copy offsets index into data-tex, which can drift under an
+    // equal hash (the hash covers the RENDERED math — a \ref key rename that
+    // resolves to the same number changes the raw source only). Stale
+    // offsets against a fresh data-tex would slice garbage, so they travel
+    // together.
+    copyAttr(oldEl, newEl, 'data-row-tex-spans');
     copyAttr(oldEl, newEl, 'data-mathjax-tex');
     copyAttr(oldEl, newEl, 'title');
     copyAttr(oldEl, newEl, 'tabindex');
@@ -758,6 +866,12 @@
       var container = donor.querySelector('mjx-container');
       if (!source || !container) return;
       donorById.delete(r.id);
+      // A row-copy selection band inside the donor must not ride along: the
+      // selection state points at the (now replaced) old block, so a band in
+      // the placeholder would promise a row copy that ⌘C can't deliver.
+      container.querySelectorAll('rect.mp-row-select').forEach(function(sel) {
+        if (sel.parentNode) sel.parentNode.removeChild(sel);
+      });
       source.replaceChildren(container);
       r.setAttribute('data-mp-stale', '1');
     });
