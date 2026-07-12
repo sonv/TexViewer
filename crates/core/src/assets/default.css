@@ -652,26 +652,6 @@ body.page-mode-dynamic main#page {
   body.page-crop .lineno-layer {
     display: none !important;
   }
-  /* Refkey chips normally hang LEFTWARD off the page edge — but crop
-     exists to fill the window with text, so "beside the page" usually
-     means off-screen. While cropped, the chips flip to overlay the page's
-     left edge ON TOP of the content instead: slightly translucent so the
-     covered line stays guessable, fully opaque on hover. */
-  body.page-crop .refkey-chip {
-    right: auto;
-    left: 0;
-    opacity: 0.88;
-    z-index: 6;
-  }
-  body.page-crop .refkey-chip:hover { opacity: 1; }
-  body.page-crop .eq-refkey-list {
-    right: auto;
-    left: 0;
-    align-items: flex-start;
-    z-index: 6;
-  }
-  body.page-crop .eq-refkey-list .eq-refkey-chip { opacity: 0.88; }
-  body.page-crop .eq-refkey-list .eq-refkey-chip:hover { opacity: 1; }
 }
 .sec-h0,
 .sec-h1,
@@ -822,17 +802,19 @@ body.page-mode-dynamic main#page {
 }
 .eq-refkey-list {
   position: absolute;
-  right: calc(100% + var(--refkey-gap));
+  /* Overlays the block's left edge (see .refkey-chip: paint containment
+     clips anything hanging outside the block into the margin). */
+  left: 0;
   top: 0;
   bottom: 0;
   display: flex;
   flex-direction: column;
   justify-content: space-around;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 0;
   pointer-events: none;
   visibility: hidden;
-  z-index: 2;
+  z-index: 6;
 }
 body.refkey-visible .eq-refkey-list {
   visibility: visible;
@@ -862,11 +844,13 @@ body.refkey-visible .eq-refkey-list {
      glyphs behind it. The chips themselves still need to receive
      clicks (now that they pin to margin), so re-enable on the chip. */
   pointer-events: auto;
+  opacity: 0.88;
 }
 .eq-refkey-chip:hover {
   background: #fff;
   border-color: var(--accent, #b04b00);
   color: var(--accent, #b04b00);
+  opacity: 1;
 }
 .eq-refkey-chip:focus-visible {
   outline: 2px solid var(--accent, #b04b00);
@@ -1163,17 +1147,24 @@ blockquote.quote > :last-child { margin-bottom: 0; }
 .label-anchor { position: relative; top: -4.5rem; }
 /* Refkey chips. Each [data-refkey] that's NOT a label-anchor gets a child
    `<button class="refkey-chip">` injected by `decorateRefkeyChips()` after
-   every render. The chip lives in the left margin (position absolute on
-   the relatively-positioned parent) and clicking it pins the parent's
-   target as a margin card. Visibility is gated by `body.refkey-visible`,
-   the same toggle that used to drive the `::after` pseudo-element. */
+   every render; clicking it pins the parent's target as a margin card.
+   Visibility is gated by `body.refkey-visible`, the same toggle that used
+   to drive the `::after` pseudo-element.
+
+   Placement: the chip OVERLAYS its anchor's top-left, slightly translucent
+   (opaque on hover), rather than hanging into the left margin. Chips used
+   to sit at `right: calc(100% + gap)` — but every render block has paint
+   containment (content-visibility), which CLIPS ink outside the block's
+   box: margin-dwelling chips rendered as sliver stubs at the block edge.
+   Overlaying keeps them inside the box, whole in every state — cropped or
+   not, any page margin, any window width. */
 [data-refkey]:not(.label-anchor) {
   position: relative;
 }
 .refkey-chip {
   display: none;
   position: absolute;
-  right: calc(100% + var(--refkey-gap));
+  left: 0;
   top: 0.05em;
   margin: 0;
   padding: 1px 5px;
@@ -1191,13 +1182,15 @@ blockquote.quote > :last-child { margin-bottom: 0; }
   text-transform: none;
   white-space: nowrap;
   cursor: pointer;
-  z-index: 2;
+  opacity: 0.88;
+  z-index: 6;
 }
 body.refkey-visible .refkey-chip { display: block; }
 .refkey-chip:hover {
   background: #fff;
   border-color: var(--accent, #b04b00);
   color: var(--accent, #b04b00);
+  opacity: 1;
 }
 .refkey-chip:focus-visible {
   outline: 2px solid var(--accent, #b04b00);

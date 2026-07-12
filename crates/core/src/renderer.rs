@@ -4184,7 +4184,10 @@ mod tests {
         assert!(out.html.contains("math-search-glyph-active"));
         assert!(out.html.contains(r#"[data-refkey]:not(.label-anchor)"#));
         assert!(out.html.contains(r#"body.refkey-visible .refkey-chip"#));
-        assert!(out
+        // Chips OVERLAY their anchor (left: 0) — hanging them into the margin
+        // (right: calc(100% + gap)) gets them clipped by the render blocks'
+        // paint containment. Guard the overlay placement.
+        assert!(!out
             .html
             .contains(r#"right: calc(100% + var(--refkey-gap));"#));
         assert!(out.html.contains(r#".eq-refkey-list"#));

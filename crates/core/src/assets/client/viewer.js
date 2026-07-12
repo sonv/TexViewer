@@ -2551,6 +2551,19 @@
     if (!isFinite(uiFontSize) || uiFontSize <= 0) uiFontSize = 12;
     var uifs = document.getElementById('config-ui-font-size');
     if (uifs) uifs.value = String(uiFontSize);
+    // Page margin: the input stays EMPTY unless the user pins a value —
+    // typing a number writes viewer.page-margin; empty leaves the config
+    // untouched so the document's geometry (or the default) keeps deciding.
+    // The placeholder shows what's currently in effect.
+    var pm = document.getElementById('config-page-margin');
+    if (pm) {
+      pm.value = '';
+      var eff = cfg.pageMarginMm;
+      pm.placeholder = (typeof eff === 'number')
+        ? 'auto (now ' + eff + 'mm)'
+        : 'auto (default ~17mm)';
+      pm.dataset.effective = (typeof eff === 'number') ? String(eff) : '';
+    }
     var trig = document.getElementById('config-source-jump-trigger');
     if (trig) trig.value = cfg.sourceJumpTrigger || 'cmd-click';
     var mode = document.getElementById('config-default-page-mode');
@@ -2623,6 +2636,18 @@
     if (isFinite(fontSize) && fontSize > 0) payload.values['viewer.font-size'] = fontSize;
     var uiFontSize = parseInt(document.getElementById('config-ui-font-size').value, 10);
     if (isFinite(uiFontSize) && uiFontSize > 0) payload.values['viewer.ui-font-size'] = uiFontSize;
+    // Only written when the user typed a value — empty means "keep following
+    // the document's geometry / the default" (see prefillConfigDialog).
+    var pmEl = document.getElementById('config-page-margin');
+    if (pmEl && pmEl.value.trim() !== '') {
+      var pmVal = parseInt(pmEl.value, 10);
+      if (isFinite(pmVal) && pmVal >= 5 && pmVal <= 60) {
+        payload.values['viewer.page-margin'] = pmVal;
+      } else {
+        setConfigFeedback('Page margin must be 5–60 mm (or empty for auto).', false);
+        return;
+      }
+    }
     var trig = document.getElementById('config-source-jump-trigger').value;
     if (trig) payload.values['viewer.source-jump.trigger'] = trig;
     var mode = document.getElementById('config-default-page-mode').value;

@@ -577,9 +577,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   above), `t` toggles the index/pages side panel, `B` toggles the top
   banner (keyboard counterpart to the thin stripe), `c` crops the page
   to the text (trims the paper margins, TeXpresso-style — wrapping is
-  unchanged; line numbers hide while cropped since their gutter is gone,
-  but the `keys` chips still work — they overlay the page's left edge,
-  translucent until hovered;
+  unchanged; line numbers hide while cropped since their gutter is gone;
+  the `keys` chips always overlay the page's left edge — translucent
+  until hovered — so they render whole in every state;
   persisted per browser), `q` closes the viewer (same as `:q` — the Locus window
   exits; a browser tab closes itself where the browser allows it, and
   otherwise the status pill names the key that will), and `Ctrl-o` jumps
@@ -701,7 +701,9 @@ and printing never wait (at the cost of typesetting — and holding in memory �
 the whole document). Either way, **Cmd/Ctrl+P** typesets the whole document on
 demand before printing.
 
-`page-margin` sets the A4 page's horizontal margin, in millimetres. Omit it
+`page-margin` sets the A4 page's horizontal margin, in millimetres — also
+available as a field in the **config** toolbar dialog (leave it empty to
+keep following the document). Omit it
 and the viewer follows the document's own
 `\usepackage[margin=…]{geometry}` (parsing `margin` / `hmargin` /
 `left`+`right` / `textwidth`); with no geometry either, it uses the built-in

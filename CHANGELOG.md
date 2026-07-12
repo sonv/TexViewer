@@ -25,7 +25,8 @@ summary.
   document; with neither, the built-in default stands. The margin drives the
   on-screen padding and the Cmd+P print margin from one value, so the screen
   column keeps matching the printed column — wrapping and pagination stay in
-  sync.
+  sync. Also settable from the viewer's **config** dialog (leave the field
+  empty to keep following the document).
 - **Click a row of a multiline equation to copy just that row.** In an
   `align`/`gather`/`multline`, a plain click now selects the clicked row —
   a thin underline shows exactly what ⌘C will grab, and the copy is that
@@ -51,14 +52,16 @@ summary.
   (`content-visibility`) clipped everything outside, leaving amputated
   glyphs ("missing strokes"). The spacing now comes from the title
   block's bottom margin instead; the visual gap is identical.
-- **The `keys` overlay works while cropped.** v1.0.5's crop hid all margin
-  overlays, so pressing `keys` on a cropped page showed nothing — an
-  explicit toggle losing to a passive layout state. And since crop exists
-  to fill the window with text, "beside the page" would usually mean
-  off-screen — so while cropped the chips overlay the page's left edge ON
-  TOP of the content, slightly translucent (opaque on hover). Only the
-  line-number gutter (which really does collapse with the margin) stays
-  hidden while cropped.
+- **The `keys` overlay renders whole, in every state.** Two compounding
+  bugs: v1.0.5's crop hid all margin overlays (an explicit toggle losing
+  to a passive layout state), and — worse — margin-dwelling chips were
+  CLIPPED to sliver stubs by the render blocks' paint containment
+  (`content-visibility` clips ink outside a block's box) even uncropped.
+  Chips now overlay their anchor's left edge on top of the content in all
+  states — slightly translucent, opaque on hover — which keeps them inside
+  the containment box, whole at any margin, crop state, or window width.
+  Only the line-number gutter (which really does collapse with the
+  margin) stays hidden while cropped.
 
 ## [1.0.6] — 2026-07-12
 

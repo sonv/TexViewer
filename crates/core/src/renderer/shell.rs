@@ -320,6 +320,10 @@ pub(super) fn wrap_in_shell(
       <label>UI font size (px)
         <input type="number" id="config-ui-font-size" min="9" max="20" step="1">
       </label>
+      <label>Page margin (mm)
+        <input type="number" id="config-page-margin" min="5" max="60" step="1"
+               title="A4 page margin. Leave empty to follow the document's \usepackage[margin=…]{{geometry}} (or the built-in default). Also sets the Cmd+P print margin, keeping screen and print in sync.">
+      </label>
       <label>Source-jump trigger
         <select id="config-source-jump-trigger">
           <option value="cmd-click">Cmd-click (Ctrl on Linux)</option>
