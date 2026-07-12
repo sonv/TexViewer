@@ -577,9 +577,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   above), `t` toggles the index/pages side panel, `B` toggles the top
   banner (keyboard counterpart to the thin stripe), `c` crops the page
   to the text (trims the paper margins, TeXpresso-style — wrapping is
-  unchanged; margin overlays like line numbers and ref-key chips hide
-  while cropped since there is no margin to hold them; persisted per
-  browser), `q` closes the viewer (same as `:q` — the Locus window
+  unchanged; line numbers hide while cropped since their gutter is gone,
+  but the `keys` chips still work — they float beside the narrowed page;
+  persisted per browser), `q` closes the viewer (same as `:q` — the Locus window
   exits; a browser tab closes itself where the browser allows it, and
   otherwise the status pill names the key that will), and `Ctrl-o` jumps
   back and forth between the current place and the previous one

@@ -635,14 +635,15 @@ body.page-mode-dynamic main#page {
   body.page-crop.page-mode-a4 main#page {
     width: calc(var(--a4-width) - 104px);
   }
-  /* The margins are gone, so the overlays that LIVE in the margins go too —
-     refkey chips and the line-number gutter would otherwise overlap the text
-     (the gutter's width derives from --page-pad-x and collapses to 0).
-     !important: the keys/lines toggles set display elsewhere with equal
-     specificity; crop must win regardless of rule order. */
-  body.page-crop .lineno-layer,
-  body.page-crop .refkey-chip,
-  body.page-crop .eq-refkey-list {
+  /* The line-number gutter lives INSIDE the page padding, whose width
+     derives from --page-pad-x — under crop it collapses to 12px and the
+     numbers would sit on the text, so hide it. Refkey chips are different:
+     they hang LEFTWARD off the page edge (right: calc(100% + gap)), so
+     under crop they float in the empty space beside the narrowed page —
+     an explicit `keys` toggle still works while cropped. !important: the
+     lines toggle sets display elsewhere with equal specificity; crop must
+     win regardless of rule order. */
+  body.page-crop .lineno-layer {
     display: none !important;
   }
 }
