@@ -15,15 +15,7 @@ summary.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Upgrades no longer strip the native window out of the binary.** The
-  auto-reinstall on version skew rebuilt with only the current viewer's
-  features, so with `viewer = "browser"` it dropped the `gui` feature from a
-  binary that had been installed with it — the next `:MathPreview window`
-  failed with "unrecognized subcommand". The reinstall now probes the
-  outgoing binary for the `view` subcommand and keeps `--features gui` when
-  it was there.
+Nothing yet.
 
 ## [1.0.5] — 2026-07-12
 
@@ -46,6 +38,13 @@ summary.
 
 ### Fixed
 
+- **Upgrades no longer strip the native window out of the binary.** The
+  auto-reinstall on version skew rebuilt with only the current viewer's
+  features, so with `viewer = "browser"` it dropped the `gui` feature from a
+  binary that had been installed with it — the next `:MathPreview window`
+  failed with "unrecognized subcommand". The reinstall now probes the
+  outgoing binary for the `view` subcommand and keeps `--features gui` when
+  it was there.
 - **Mouse horizontal scrolling on a zoomed page.** A page zoomed wider than
   the window could only be panned with `h`/`l` — the trackpad/wheel did
   nothing (the body's overflow clip reaches the viewport as "hidden", which
