@@ -68,7 +68,9 @@ local config = {
   -- own auto-install handles this: when viewer="window" it adds `--features
   -- gui`, and on `:MathPreview` it detects a binary that lacks the feature and
   -- reinstalls once (so switching browser→window just works on a source
-  -- checkout). The gui build pulls in webview deps — on Linux you need
+  -- checkout). Upgrades keep the feature: the version-skew reinstall probes
+  -- the old binary and rebuilds with gui when it had it, whatever the current
+  -- viewer. The gui build pulls in webview deps — on Linux you need
   -- `libwebkit2gtk-4.1-dev` installed first. `auto_open_browser = false` opens
   -- neither.
   viewer = "browser",
@@ -244,13 +246,16 @@ local function bundled_binary_path()
   return plugin_root() .. "/target/release/" .. exe_name()
 end
 
--- The `cargo install` command used to (re)install the binary.
-local function cargo_install_args()
+-- The `cargo install` command used to (re)install the binary. `with_gui`
+-- forces the `gui` feature in regardless of the current viewer — the skew
+-- reinstall passes it when the binary being replaced already had the feature,
+-- so an upgrade can't silently strip the native window.
+local function cargo_install_args(with_gui)
   local args = { "cargo", "install", "--path", "crates/cli", "--force" }
   -- The native window needs the `gui` feature (wry/tao). Only pull it in when
   -- the window is in play, so the default "browser" install stays webview-free
   -- (no WebKitGTK build deps on Linux).
-  if config.viewer == "window" then
+  if with_gui or config.viewer == "window" then
     table.insert(args, "--features")
     table.insert(args, "gui")
   end
@@ -463,7 +468,8 @@ local INSTALL_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 -- later callers' `starting[root]` guard would stay stuck true forever.
 local install_waiters = {}
 
-local function auto_install(on_done)
+-- opts.gui forces `--features gui` into the build (see cargo_install_args).
+local function auto_install(on_done, opts)
   if installing then
     -- One build is already running; ride its result instead of dropping ours.
     if on_done then install_waiters[#install_waiters + 1] = on_done end
@@ -510,7 +516,7 @@ local function auto_install(on_done)
     end
   end
   run_system(
-    cargo_install_args(),
+    cargo_install_args(opts and opts.gui),
     { cwd = plugin_root(), on_stderr_line = on_stderr_line },
     function(res)
       installing = false
@@ -1762,7 +1768,14 @@ local function ensure_binary(root, on_ready)
           ("mathpreview: binary %s is older than plugin %s — reinstalling…")
             :format(ver, PLUGIN_VERSION),
           vim.log.levels.INFO)
-        auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
+        -- Probe the outgoing binary for the gui feature (`view --help` exits 0
+        -- only when it's compiled in) and carry the feature into the rebuild.
+        -- Without this, upgrading while viewer="browser" would rebuild without
+        -- --features gui and silently drop a native window the user installed.
+        run_system({ cmd, "view", "--help" }, {}, function(vres)
+          auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end,
+            { gui = vres and vres.code == 0 })
+        end)
       else
         proceed_if_gui_ok()
       end
