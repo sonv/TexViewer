@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "69";
+const WS_PROTOCOL_VERSION: &str = "70";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -490,6 +490,11 @@ struct SourceRequest {
     math_row: Option<usize>,
     #[serde(default)]
     row_count: Option<usize>,
+    /// POST /cursor only: this cursor move was caused by an edit (the plugin
+    /// saw a TextChanged within the last half second). The viewer follows the
+    /// cursor but skips the flash box — typing shouldn't strobe.
+    #[serde(default)]
+    typing: Option<bool>,
 }
 
 /// Body for `POST /search` — the editor's active `/` search pattern, mirrored
@@ -1182,6 +1187,11 @@ async fn serve_cursor(
             "col": col,
             "element_id": element_id,
             "scroll_only": scroll_only,
+            // The editor tags cursor moves caused by edits: the client then
+            // follows the cursor WITHOUT the flash box (and without tearing
+            // down a math row band that the mid-edit stale index may have
+            // momentarily failed to resolve).
+            "typing": req.typing.unwrap_or(false),
         })
     } else {
         let (element_ids, math_rows) =
@@ -1191,6 +1201,7 @@ async fn serve_cursor(
             "file": file,
             "element_ids": element_ids,
             "math_rows": math_rows,
+            "typing": req.typing.unwrap_or(false),
         })
     };
     drop(current);

@@ -1094,6 +1094,12 @@
     if (sourceFlashTimer) clearTimeout(sourceFlashTimer);
     sourceFlashTimer = setTimeout(function() {
       if (el && el.classList) el.classList.remove('source-active');
+      // The flash is over — forget it, or restoreSourceHighlight would
+      // resurrect a long-faded box on the next re-render (visible as a
+      // one-beat blink when a patch lands just before the first
+      // typing-tagged cursor event clears things).
+      activeSourceId = null;
+      sourceFlashTimer = 0;
     }, 1800);
     if (shouldScroll) scrollSourceIntoView(el);
   }

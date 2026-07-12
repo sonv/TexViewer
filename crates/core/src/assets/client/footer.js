@@ -11,7 +11,7 @@
   // MUST match WS_PROTOCOL_VERSION in crates/cli/src/serve.rs — a mismatch makes
   // the server full-reload every connect (an infinite reload loop). The
   // `client_ws_protocol_matches_server` test guards this.
-  var WS_PROTOCOL_VERSION = '69';
+  var WS_PROTOCOL_VERSION = '70';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -205,12 +205,20 @@
           restoreEditorSearchHighlights();
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'source-cursor') {
-          // Cursor moved off a math row back to prose → drop the row band, then
-          // flash the element under the cursor (the original behavior). A
-          // scroll_only event targets a block-level element (section heading):
-          // follow it without the flash.
+          // Cursor moved off a math row back to prose → drop the row band
+          // (also when typing: restoreSourceRange re-applies the client's
+          // CACHED band on every render, so a band kept here would be
+          // resurrected forever — the server never re-resolves the cursor
+          // after a render). Typing (the editor tags cursor moves caused by
+          // edits) differs in one way only: no flash box — re-triggering it
+          // on every keystroke reads as strobing — just follow the cursor.
           clearSourceRangeHighlights();
-          if (msg.element_id) {
+          if (msg.typing) {
+            clearSourceActive();
+            if (msg.element_id) scrollSourceElementOnly(msg.element_id);
+          } else if (msg.element_id) {
+            // A scroll_only event targets a block-level element (section
+            // heading): follow it without the flash.
             if (msg.scroll_only) scrollSourceElementOnly(msg.element_id);
             else revealSourceElement(msg.element_id, true);
           }

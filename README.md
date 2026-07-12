@@ -945,7 +945,11 @@ versions fall back to `jobstart` + `vim.loop`.
 
 `CursorMoved` / `CursorMovedI` POST the current source position to
 `/cursor`. The browser scrolls to and flashes the nearest rendered
-word/math/ref element. It does not scroll while that element is between
+word/math/ref element. Cursor moves caused by *edits* are tagged
+`typing` (a `TextChanged` fired in the same buffer within the last half
+second): for those the viewer follows the cursor without the flash, so
+typing doesn't strobe the highlight. It does not
+scroll while that element is between
 25% and 75% of the viewport; once it leaves that band, it lands the
 element at the 25% line. To jump the other direction, double-click or
 Alt/Cmd-click rendered content in the browser; the plugin polls `/jump`

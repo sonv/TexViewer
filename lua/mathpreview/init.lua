@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.5"
+local PLUGIN_VERSION = "1.0.6"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -196,6 +196,14 @@ local timer = nil
 local cursor_timer = nil
 local selection_timer = nil
 local last_jump_seq = 0
+-- When each buffer last changed (ms, keyed by bufnr). Cursor posts within
+-- TYPING_WINDOW_MS of an edit IN THE SAME BUFFER are tagged `typing: true`
+-- so the viewer stays calm — it follows the cursor but doesn't flash the
+-- under-cursor box on every keystroke. Cursor moves without a nearby edit
+-- are navigation, which keeps the flash. Per-buffer so editing one split
+-- doesn't mis-tag a navigation made in another buffer right after.
+local last_text_change = {}
+local TYPING_WINDOW_MS = 500
 local last_status = {
   pushes = 0,
   last_push_ms = 0,
@@ -805,7 +813,12 @@ local function post_cursor()
   local path = vim.api.nvim_buf_get_name(buf)
   if path == "" then return end
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local payload = json_encode({ file = path, line = cursor[1], col = cursor[2] + 1 })
+  -- `or nil` drops the key entirely when false — older daemons never see it.
+  local changed = last_text_change[buf]
+  local typing = (changed and (uv.now() - changed) < TYPING_WINDOW_MS) or nil
+  local payload = json_encode({
+    file = path, line = cursor[1], col = cursor[2] + 1, typing = typing,
+  })
   local args = {
     "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "2",
     "--header", "content-type: application/json",
@@ -1350,6 +1363,7 @@ local function attach_autocmds()
     pattern = "*",
     callback = function(args)
       if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
+        last_text_change[args.buf] = uv.now()
         debounced_push()
       end
     end,

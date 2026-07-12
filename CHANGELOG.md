@@ -13,9 +13,21 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
-## [Unreleased]
+## [1.0.6] — 2026-07-12
 
-Nothing yet.
+### Fixed
+
+- **Typing no longer flashes the under-cursor box.** The point highlight —
+  the box around the word or equation under the editor cursor — is designed
+  to flash and fade, which is right for navigation but strobing while
+  typing: every keystroke re-armed it and every pause faded it. Cursor
+  moves caused by edits (a `TextChanged` in the same buffer within the last
+  half second) are now tagged by the plugin, and the viewer stays calm for
+  them: it follows the cursor without drawing the flash box. Typing inside
+  a multi-row `align`/`gather` keeps its steady row band; deliberate
+  navigation (moving without editing) keeps the flash. A long-faded flash
+  is also no longer resurrected by a re-render. WS protocol 69 → 70; open
+  tabs hard-reload once onto the new client after `:MathPreviewRestart`.
 
 ## [1.0.5] — 2026-07-12
 
