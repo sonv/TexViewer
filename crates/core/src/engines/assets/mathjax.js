@@ -100,6 +100,18 @@
     }
     return { em: em, ex: ex };
   }
+  // A STALE source (wrapper carries data-mp-stale) holds the PREVIOUS
+  // render's <mjx-container> as an anti-flash placeholder while its new TeX
+  // waits to typeset (see patch.js seedStaleMath) — so "already has a
+  // container" must not skip it, and a successful typeset clears the marker.
+  function sourceIsStale(source) {
+    var wrapper = sourceWrapper(source);
+    return !!(wrapper && wrapper.hasAttribute('data-mp-stale'));
+  }
+  function clearStale(source) {
+    var wrapper = sourceWrapper(source);
+    if (wrapper) wrapper.removeAttribute('data-mp-stale');
+  }
   function typeset(nodes) {
     var sources = mathSourceNodes(nodes);
     if (window.MathJax.tex2svgPromise) {
@@ -108,7 +120,9 @@
       var wrap = !(window.__mpConfig && window.__mpConfig.wrapEquations === false);
       return sources.reduce(function(chain, source) {
         return chain.then(function() {
-        if (source.querySelector('mjx-container')) return Promise.resolve();
+        if (source.querySelector('mjx-container') && !sourceIsStale(source)) {
+          return Promise.resolve();
+        }
         var mm = contextEmEx(source);
         var opts = { display: sourceDisplay(source), em: mm.em, ex: mm.ex };
         if (wrap) {
@@ -116,13 +130,27 @@
           if (cw) opts.containerWidth = cw;
         }
         return window.MathJax.tex2svgPromise(sourceTex(source), opts)
-          .then(function(svg) { source.replaceChildren(svg); })
+          .then(function(svg) {
+            source.replaceChildren(svg);
+            clearStale(source);
+          })
           .catch(function(e) {
+            // Keep the stale marker on failure: the node still counts as raw
+            // (isRawMathNode), so a later queue pass retries it — the same
+            // retry semantics an untypeset raw node gets.
             console.warn('mathpreview engine item:', e);
           });
         });
       }, Promise.resolve());
     }
+    // typesetPromise reads the TeX from the element's content — restore the
+    // raw source over any stale placeholder before handing the nodes over.
+    sources.forEach(function(source) {
+      if (!sourceIsStale(source)) return;
+      var wrapper = sourceWrapper(source);
+      source.textContent = (wrapper && wrapper.getAttribute('data-mathjax-tex')) || '';
+      clearStale(source);
+    });
     return window.MathJax.typesetPromise(sources);
   }
   window.__mpEngine = {

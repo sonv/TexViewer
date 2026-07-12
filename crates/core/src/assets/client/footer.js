@@ -159,7 +159,15 @@
             }
           });
           var tDiff = performance.now();
+          // Anti-flash (see patch.js seedStaleMath): keep the outgoing render
+          // of a changed equation visible until its re-typeset lands. Small
+          // documents take this full-body path on every keystroke (the server
+          // falls back to `body-updated` when the patch would cost more than
+          // half the block count), so it needs the same seeding as applyPatch.
+          // Clear BEFORE seeding: typesetClear must see the donor's container
+          // still inside it.
           clearRemovedMath(leftoverMath(oldByHash));
+          seedStaleMath(leftoverMath(oldByHash), needTypeset);
 
           page.replaceChildren(buf);
 

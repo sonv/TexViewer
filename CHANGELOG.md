@@ -35,9 +35,29 @@ Nothing yet.
   Works in both A4 and dynamic modes, persists per browser, and never
   affects Cmd+P. Margin overlays (line numbers, ref-key chips) hide while
   cropped — there's no margin left to hold them.
+- **mathtools `showonlyrefs` is honored.** With
+  `\usepackage[showonlyrefs]{mathtools}` (or `\mathtoolsset{showonlyrefs}`,
+  last setting wins, `showonlyrefs=false` switches back off), only equations
+  that are actually referenced somewhere get numbers — matching the PDF's
+  numbering instead of numbering every row. The preview counts any
+  `\ref`-family reference (`\eqref`, `\ref`, `\refeq`, `\cref`, …), slightly
+  more generous than mathtools itself, so a referenced equation never loses
+  its number.
 
 ### Fixed
 
+- **Typing inside an equation no longer flashes its raw LaTeX.** Every
+  keystroke inside an equation re-renders it, and the fresh node used to show
+  the raw source text (with the page reflowing around it) until MathJax
+  caught up — on a long `align` that was a distracting flash per keystroke.
+  The viewer now keeps the previous render on screen as a placeholder and
+  swaps it for the new one in a single step when the re-typeset lands, on
+  both the incremental-patch path and the full-body path small documents
+  take.
+- **`\eqref` to a label on a later `align` row resolves to that row's
+  number.** A label placed on (say) the second row of an `align` was recorded
+  against the environment's first numbered row, so `\eqref` pointed at row
+  1's number. Labels now bind to the row they sit on.
 - **No phantom equation number after a trailing `\\`.** A multi-row math
   environment ending with `\\` (e.g. a 2-row `align` with a separator after
   the last row) showed an extra gutter number — (1)(2)(3) for two rendered

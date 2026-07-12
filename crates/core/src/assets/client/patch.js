@@ -687,30 +687,80 @@
   }
 
   function indexMathByHash(root, oldByHash) {
-    root.querySelectorAll('.math[data-hash]').forEach(function(oldEl) {
+    function add(oldEl) {
       var arr = oldByHash.get(oldEl.dataset.hash);
       if (!arr) { arr = []; oldByHash.set(oldEl.dataset.hash, arr); }
       arr.push(oldEl);
-    });
+    }
+    // The root can BE a math node: display math inside a chunked body
+    // (proof/theorem/callout/quote) is emitted as a direct sibling of the
+    // proof-para chunks, so a blocksub op's removed child is sometimes the
+    // math element itself — querySelectorAll alone would skip it, losing it
+    // as a reuse/stale donor (cf. collectRawMath, which handles root-self
+    // the same way).
+    if (root.matches && root.matches('.math[data-hash]')) add(root);
+    root.querySelectorAll('.math[data-hash]').forEach(add);
   }
 
   function isUntypesetMathNode(node) {
-    return !!(node && node.isConnected && node.matches &&
-      node.matches('.math[data-hash]') && !node.querySelector('mjx-container'));
+    return !!(node && node.isConnected && isRawMathNode(node));
   }
 
+  // A STALE node (data-mp-stale, see seedStaleMath) holds the previous
+  // render's <mjx-container> as a placeholder while its new TeX waits in the
+  // typeset queue — it still needs a typeset, so it counts as raw here even
+  // though it contains a container.
   function isRawMathNode(node) {
     return !!(node && node.matches &&
-      node.matches('.math[data-hash]') && !node.querySelector('mjx-container'));
+      node.matches('.math[data-hash]') &&
+      (node.hasAttribute('data-mp-stale') || !node.querySelector('mjx-container')));
   }
 
   function syncMathSourceText(node) {
     if (!isRawMathNode(node)) return;
+    // A stale node's .math-source holds the previous render, not source
+    // text — leave it visible; the engine reads the TeX to typeset from
+    // data-mathjax-tex, not from the content.
+    if (node.hasAttribute('data-mp-stale')) return;
     var tex = node.getAttribute('data-mathjax-tex');
     var source = node.querySelector('.math-source');
     if (source && tex !== null && source.textContent !== tex) {
       source.textContent = tex;
     }
+  }
+
+  // Anti-flash for live typing: when an edited equation's hash changes, the
+  // fresh server node arrives raw and would show its LaTeX source text until
+  // the (debounced) typeset queue re-renders it — a visible flash on every
+  // keystroke inside a long equation. Instead, move the outgoing node's
+  // <mjx-container> into the incoming node as a placeholder and mark it
+  // data-mp-stale: the previous render stays visible and is swapped for the
+  // new one in a single replaceChildren when the typeset lands.
+  // Pairing is by element id (label-derived ids are stable; positional
+  // `<prefix>-g<block>-<n>` ids are stable for a within-equation edit) with
+  // matching display-ness, so a ghost of a DIFFERENT equation can't show —
+  // unpaired receivers just fall back to today's raw-source behavior.
+  function seedStaleMath(donors, receivers) {
+    if (!receivers.length) return;
+    var donorById = new Map();
+    donors.forEach(function(d) {
+      if (d.id && !donorById.has(d.id) && d.querySelector('mjx-container')) {
+        donorById.set(d.id, d);
+      }
+    });
+    if (!donorById.size) return;
+    receivers.forEach(function(r) {
+      if (!r.id || !isRawMathNode(r) || r.querySelector('mjx-container')) return;
+      var donor = donorById.get(r.id);
+      if (!donor) return;
+      if (donor.classList.contains('display') !== r.classList.contains('display')) return;
+      var source = r.querySelector('.math-source');
+      var container = donor.querySelector('mjx-container');
+      if (!source || !container) return;
+      donorById.delete(r.id);
+      source.replaceChildren(container);
+      r.setAttribute('data-mp-stale', '1');
+    });
   }
 
   function queueUntypesetMath(root) {
@@ -765,6 +815,19 @@
       node.classList.add('math-pending');
     });
     if (!pendingTypeset.size) {
+      // Everything this round was deferred. For a node in a genuinely
+      // content-visibility-skipped block that's correct — the block's
+      // state-change listener will queue it on un-skip. But checkVisibility
+      // is also false for nodes hidden by display:none inside a RENDERED
+      // block (folded proof bodies, footnote popovers), and for those the
+      // state-change event never fires. With no flush, nothing would re-arm
+      // the viewport window observer either, so a raw — or worse, stale
+      // (data-mp-stale, showing the pre-edit equation) — node could wait
+      // forever. Re-arm the observer here: drainWindowTypeset ignores
+      // display state and typesets hidden nodes correctly, and for far-away
+      // skipped blocks the observer only fires when they near the viewport,
+      // so lazy loading is preserved.
+      observeTypesetWindow();
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
       return;
     }
@@ -1256,6 +1319,7 @@
 
             tpl.innerHTML = op.html || '';
             var bsFrag = tpl.content;
+            var bsTypesetFrom = needTypeset.length;
             bsFrag.querySelectorAll('.math[data-hash]').forEach(function(newEl) {
               totalMath++;
               var pool = bsPool.get(newEl.dataset.hash);
@@ -1268,6 +1332,11 @@
                 needTypeset.push(newEl);
               }
             });
+            // Clear BEFORE seeding: typesetClear must see the donor's
+            // container still inside it, or (in the typesetPromise engine
+            // path) the moved container's MathItem stays registered forever.
+            clearRemovedMath(leftoverMath(bsPool));
+            seedStaleMath(leftoverMath(bsPool), needTypeset.slice(bsTypesetFrom));
 
             // Remove old nodes in [bsBefore, bsAfter), carrying whitespace
             // text nodes between elements along with them.
@@ -1323,7 +1392,10 @@
           });
         }
       }
+      // Clear BEFORE seeding (see the blocksub site): typesetClear must see
+      // the donor's container still inside it.
       clearRemovedMath(leftoverMath(sharedOldByHash));
+      seedStaleMath(leftoverMath(sharedOldByHash), needTypeset);
       syncPatchBlockMetadata(page, blocksMeta);
     } finally {
       if (pageParent) {
