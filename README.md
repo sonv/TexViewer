@@ -49,7 +49,11 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   (shared vs independent), reset level, and titles, including custom and
   `.sty`-declared environments — plus sections, equation envs, multi-row
   `align`/`gather`, and `subequations` (alphabetic child suffixes). Falls
-  back to the AMS-modern default when nothing is declared.
+  back to the AMS-modern default when nothing is declared. mathtools'
+  `showonlyrefs` is honored: with
+  `\usepackage[showonlyrefs]{mathtools}` (or `\mathtoolsset{showonlyrefs}`)
+  only equations that are actually `\ref`'d/`\eqref`'d anywhere get
+  numbers, matching the PDF.
 - **Cross-references** resolve to their friendly form: `\cref{thm:main}`
   becomes "Theorem 2.1", `\eqref{eq:foo}` becomes "(3.1)".
 - **`\title` / `\author` / `\date` / `\maketitle`** produce a centered
