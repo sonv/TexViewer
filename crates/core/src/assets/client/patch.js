@@ -402,6 +402,11 @@
       setPageMode(pageMode.getAttribute('data-page-mode'));
       return;
     }
+    var cropToggle = e.target.closest('#crop-toggle');
+    if (cropToggle) {
+      setPageCrop(!pageCropped, true);
+      return;
+    }
     var refkeyToggle = e.target.closest('#refkey-toggle');
     if (refkeyToggle) {
       setRefkeysVisible(!refkeysVisible, true);

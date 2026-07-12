@@ -1070,13 +1070,29 @@
         clearVimPending();
         closeViewer(function(msg) { setStatus('dead', '○ ' + msg); });
         return true;
+      case '4':
+        clearVimPending();
+        setPageMode('a4');
+        return true;
+      case 'd':
+        clearVimPending();
+        setPageMode('dynamic');
+        return true;
       default:
         clearVimPending();
         return false;
     }
   }
 
-  function scrollSourceIntoView(target) {
+  // `typing` marks a follow caused by an edit (the plugin tags those cursor
+  // moves). Typing must not restart a scroll animation on every keystroke:
+  // near the end of the document the 25%-anchor target is unreachable (the
+  // page can't scroll that far) and the mid-typeset placeholder makes the
+  // element's rect oscillate, so an eager scroll re-fires forever and the
+  // whole viewport swims while you type. While typing, scroll only when the
+  // element is truly out of view — and never launch a scroll the page can't
+  // actually perform.
+  function scrollSourceIntoView(target, typing) {
     if (!target) return;
     var rect = target.getBoundingClientRect();
     // Inside a content-visibility-skipped (off-screen) block, geometry reads
@@ -1088,15 +1104,27 @@
       return;
     }
     var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-    var upper = vh * 0.25;
-    var lower = vh * 0.75;
+    var upper = typing ? 8 : vh * 0.25;
+    var lower = typing ? vh - 8 : vh * 0.75;
     var y = rect.top + Math.min(rect.height / 2, 12);
     if (y >= upper && y <= lower) return;
+    var maxScroll = Math.max(0, document.documentElement.scrollHeight - vh);
+    var top = Math.min(maxScroll, Math.max(0, window.scrollY + rect.top - vh * 0.25));
+    if (Math.abs(top - window.scrollY) < 4) return;
     recordViewerPlace();
-    window.scrollTo({
-      top: Math.max(0, window.scrollY + rect.top - upper),
-      behavior: 'smooth'
-    });
+    window.scrollTo({ top: top, behavior: 'smooth' });
+  }
+
+  // While a burst of typing stays inside one element, follow it at most once:
+  // the first keystroke may scroll it into view, the rest hold still. Every
+  // event refreshes the window, so re-following needs a pause in typing.
+  var typingFollow = { key: null, at: 0 };
+  function typingFollowAllowed(key) {
+    var now = Date.now();
+    var same = typingFollow.key === key && now - typingFollow.at < 1500;
+    typingFollow.key = key;
+    typingFollow.at = now;
+    return !same;
   }
 
   function visibleSyncElement(el) {
@@ -1137,10 +1165,11 @@
   // Scroll a sync element into view WITHOUT the flash — the cursor sits on a
   // block-level element (a section heading) that deliberately doesn't flash,
   // but the viewer must still follow it (e.g. a search wrapping to the top).
-  function scrollSourceElementOnly(id) {
+  function scrollSourceElementOnly(id, typing) {
     if (!id) return;
+    if (typing && !typingFollowAllowed('el:' + id)) return;
     var el = visibleSyncElement(document.getElementById(id));
-    if (el) scrollSourceIntoView(el);
+    if (el) scrollSourceIntoView(el, typing);
   }
 
   // Highlight every element of the editor's visual selection. Unlike the cursor
@@ -1166,7 +1195,7 @@
     activeMathRows = [];
   }
 
-  function highlightSourceRange(ids, shouldScroll, mathRows) {
+  function highlightSourceRange(ids, shouldScroll, mathRows, typing) {
     // Cursor moved onto a math row → drop any lingering prose flash.
     clearSourceActive();
     document.querySelectorAll('.source-range').forEach(function(el) {
@@ -1186,7 +1215,14 @@
       var mb = document.getElementById(activeMathRows[0].id);
       if (mb) first = mb;
     }
-    if (shouldScroll && first) scrollSourceIntoView(first);
+    if (shouldScroll && first) {
+      // Typing inside a multi-row env updates the band on every keystroke;
+      // gate the scroll the same way as the prose path (once per burst, and
+      // only when out of view) or the row band strobes the viewport.
+      if (!typing || typingFollowAllowed('rng:' + (first.id || activeSourceRangeIds[0] || ''))) {
+        scrollSourceIntoView(first, typing);
+      }
+    }
   }
 
   // Remove all per-row math highlight rectangles and the whole-block box.
@@ -3039,20 +3075,42 @@
     if (l) l.remove();
   }
 
-  var refkeysScheduled = false;
-  function scheduleRefkeys() {
-    if (refkeysScheduled) return;
-    refkeysScheduled = true;
+  // -1 = nothing pending, 0 = immediate (pre-paint) pending, 180 = trailing.
+  var refkeysPending = -1;
+  var refkeysTimer = 0;
+  function scheduleRefkeys(delayMs) {
+    // Two cadences. Render-path callers (patch apply, typeset landing,
+    // nav refresh) take a trailing timer: one layout pass costs ~80ms of
+    // forced layout on a long paper and every keystroke schedules twice
+    // (patch, then its typeset ~40-80ms later) — the delay coalesces those
+    // into ONE pass, where rAF would run at the next frame and do both.
+    // Interactive geometry changes (crop/mode/zoom) pass 0: they snap the
+    // page at the next paint, so the chips must move in the same frame
+    // (rAF, pre-paint) or they sit visibly misplaced for the trailing
+    // delay. An immediate request upgrades a pending trailing one.
+    var delay = delayMs === 0 ? 0 : 180;
+    if (refkeysPending === 0) return;
+    if (refkeysPending > 0) {
+      if (delay > 0) return;
+      clearTimeout(refkeysTimer);
+    }
+    refkeysPending = delay;
     var run = function() {
-      if (!refkeysScheduled) return;
-      refkeysScheduled = false;
+      if (refkeysPending === -1) return;
+      refkeysPending = -1;
+      clearTimeout(refkeysTimer);
+      refkeysTimer = 0;
       layoutRefkeys();
     };
-    // rAF for the common case; the timer covers background/hidden pages,
-    // where rAF freezes but layout still matters (e.g. a Locus window
-    // behind other windows getting a keys toggle via live config).
-    requestAnimationFrame(run);
-    setTimeout(run, 250);
+    if (delay === 0) {
+      // The timer covers background/hidden pages, where rAF freezes but
+      // layout still matters (e.g. a Locus window behind other windows
+      // getting a keys toggle via live config).
+      requestAnimationFrame(run);
+      refkeysTimer = setTimeout(run, 250);
+    } else {
+      refkeysTimer = setTimeout(run, 180);
+    }
   }
 
   function layoutRefkeys() {
@@ -3256,7 +3314,7 @@
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
-    if (refkeysVisible) scheduleRefkeys();
+    if (refkeysVisible) scheduleRefkeys(0);
   }
 
   // Crop-to-content ("c", TeXpresso-style): trim the paper margins around the
@@ -3266,6 +3324,11 @@
   function setPageCrop(on, persist) {
     pageCropped = !!on;
     document.body.classList.toggle('page-crop', pageCropped);
+    var cropBtn = document.getElementById('crop-toggle');
+    if (cropBtn) {
+      cropBtn.classList.toggle('active', pageCropped);
+      cropBtn.setAttribute('aria-pressed', pageCropped ? 'true' : 'false');
+    }
     if (persist) {
       try { localStorage.setItem('mathpreview.crop', pageCropped ? '1' : '0'); } catch (e) {}
     }
@@ -3273,7 +3336,7 @@
     syncTopbarHeight();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
-    if (refkeysVisible) scheduleRefkeys();
+    if (refkeysVisible) scheduleRefkeys(0);
   }
 
   function updatePageScale(_contentHeight) {
@@ -3339,7 +3402,7 @@
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
-    if (refkeysVisible) scheduleRefkeys();
+    if (refkeysVisible) scheduleRefkeys(0);
     if (persist) {
       try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
     }
@@ -3354,20 +3417,16 @@
     setUserZoom(1, true);
   }
 
-  // Width the crop removes from the page, or 0 when not cropped. The uncropped
-  // pad is 64px, EXCEPT dynamic mode on narrow viewports where the
-  // max-width:720px media query already uses 24px. The breakpoint check uses
-  // window.innerWidth because CSS media queries measure the viewport INCLUDING
-  // the scrollbar — clientWidth (which excludes it) would disagree with the
-  // media query for a scrollbar's width around 720px and reflow the column.
+  // Width the crop removes from the page, or 0 when not cropped.
   function cropDxNow() {
     if (!pageCropped) return 0;
-    // Read the REAL uncropped margin (--page-pad-x-base, which the daemon may
-    // have overridden from page-margin config / the document's geometry)
-    // rather than assuming 64. Crop drops --page-pad-x to --crop-pad, so the
-    // page narrows by 2×(base − crop) — mirror that exactly. --page-pad-x-base
-    // survives the crop (only --page-pad-x is overridden), and the dynamic
-    // ≤720 media query lowers the base to 24, so this covers that case too.
+    // Read the REAL uncropped margin (--page-pad-x-base: the daemon may have
+    // overridden it from page-margin config / the document's geometry, and
+    // dynamic mode pins it to 37.8px at element level) rather than assuming
+    // 64. Crop drops --page-pad-x to --crop-pad, so the page narrows by
+    // 2×(base − crop) — mirror that exactly. Reading the base off main#page's
+    // computed style sees whichever override applies: it survives the crop
+    // (only --page-pad-x is overridden) and tracks the current page mode.
     var page = pageEl();
     var cs = page ? getComputedStyle(page) : null;
     var basePadX = cs ? parseFloat(cs.getPropertyValue('--page-pad-x-base')) : NaN;

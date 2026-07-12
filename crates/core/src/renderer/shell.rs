@@ -168,9 +168,10 @@ pub(super) fn wrap_in_shell(
        each pair stays grouped because segmented controls share a wrapper. -->
   <div class="topbar-row topbar-row-actions">
     <span class="page-mode-toggle" data-page-mode="a4">
-      <button data-page-mode="a4" class="active" type="button">A4</button>
-      <button data-page-mode="dynamic" type="button">dynamic</button>
+      <button data-page-mode="a4" class="active" type="button" title="A4 page mode (keyboard: 4)">A4</button>
+      <button data-page-mode="dynamic" type="button" title="dynamic page mode (keyboard: d)">dynamic</button>
     </span>
+    <button class="crop-toggle" id="crop-toggle" type="button" aria-pressed="false" title="crop to content — trim the page margins (keyboard: c)">crop</button>
     <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
     <button class="lineno-toggle" id="lineno-toggle" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
     <button class="macros-toggle" id="macros-toggle" type="button" title="add a \\newcommand override for the viewer">macros</button>

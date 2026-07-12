@@ -171,6 +171,7 @@ body.page-overwide { overflow-x: auto; }
   min-width: 0;
 }
 body.topbar-hidden .topbar { display: none; }
+.crop-toggle,
 .refkey-toggle,
 .lineno-toggle,
 .macros-toggle,
@@ -192,6 +193,7 @@ body.topbar-hidden .topbar { display: none; }
   color: var(--fg);
   transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
 }
+.crop-toggle:hover,
 .refkey-toggle:hover,
 .lineno-toggle:hover,
 .macros-toggle:hover,
@@ -433,6 +435,7 @@ body.theme-dark ::highlight(mp-editor-search) { background-color: rgba(120, 200,
 }
 body.theme-dark .search-help code { background: rgba(255, 255, 255, 0.07); }
 .side-toggle.active,
+.crop-toggle.active,
 .refkey-toggle.active,
 .lineno-toggle.active,
 .margin-toggle.active,
@@ -566,6 +569,17 @@ body.page-mode-a4 main#page {
 body.page-mode-dynamic main#page {
   width: var(--page-natural-width, 100%);
   zoom: var(--page-scale);
+  /* Dynamic mode always uses a fixed 10mm margin: the configurable page
+     margin is an A4 concern (matching the printed page); dynamic is a
+     fluid reading mode where the geometry margin would just waste width.
+     10mm × 794px/210mm ≈ 37.8px. Overriding the base alone would be dead
+     CSS: :root's `--page-pad-x: var(--page-pad-x-base)` substitutes AT
+     :root, and descendants inherit the resolved value — so re-derive the
+     used variable here, where this element's base is in scope. The crop
+     override (later in source, equal specificity) still wins while
+     cropped. */
+  --page-pad-x-base: 37.8px;
+  --page-pad-x: var(--page-pad-x-base);
 }
 /* Typeset line numbers (lineno-style): one number per wrapped visual line,
    right-aligned in the page's left padding so they sit just outside the
@@ -610,16 +624,6 @@ body.page-mode-dynamic main#page {
     --refkey-gutter: 52px;
     padding-top: 34px;
     padding-bottom: 46px;
-  }
-  /* Narrow the side padding only in dynamic mode. In A4 mode the on-screen
-     content column must stay --a4-width − 2×margin ≈ 176mm to match the
-     printable column, so line wrapping (and therefore Cmd+P's pagination)
-     agrees between screen and print. The A4 sheet is zoomed to fit the
-     viewport anyway, so the wider padding costs no usable width. Overriding
-     the BASE (not --page-pad-x) so the crop math below reads the real
-     dynamic pad. */
-  body.page-mode-dynamic main#page {
-    --page-pad-x-base: 24px;
   }
   #page-shell {
     width: calc(100vw - 16px);

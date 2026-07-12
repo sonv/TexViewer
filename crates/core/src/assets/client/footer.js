@@ -215,7 +215,7 @@
           clearSourceRangeHighlights();
           if (msg.typing) {
             clearSourceActive();
-            if (msg.element_id) scrollSourceElementOnly(msg.element_id);
+            if (msg.element_id) scrollSourceElementOnly(msg.element_id, true);
           } else if (msg.element_id) {
             // A scroll_only event targets a block-level element (section
             // heading): follow it without the flash.
@@ -223,7 +223,7 @@
             else revealSourceElement(msg.element_id, true);
           }
         } else if (msg.event === 'source-range') {
-          highlightSourceRange(msg.element_ids || [], true, msg.math_rows || []);
+          highlightSourceRange(msg.element_ids || [], true, msg.math_rows || [], msg.typing === true);
         } else if (msg.event === 'search-sync') {
           // The editor's `/` search pattern — highlight its matches in the
           // preview (empty string / omitted clears them).

@@ -527,7 +527,11 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - `toc` toggles the left navigation pane. The pane has `Index` and
   `Pages` tabs; the page list is generated from A4/dynamic page dividers.
 - `A4` / `dynamic` switches between a fixed A4-ratio sheet that scales
-  with the browser width and a wider readable flow layout.
+  with the browser width and a wider readable flow layout (`4` and `d`
+  switch modes from the keyboard). The configurable page margin applies
+  to the A4 sheet only — dynamic mode always uses a compact 10 mm
+  margin. A `crop` button sits next to them, the clickable counterpart
+  of the `c` key below.
 - `keys` toggles LaTeX refkeys for labeled sections, theorem boxes,
   floats, display equations, and loose labels. Visible keys sit in the
   page margin, and multi-row displays show row-level keys.
@@ -580,7 +584,8 @@ a Rust roundtrip unless they are controlling the daemon itself.
   unchanged; line numbers hide while cropped since their gutter is gone;
   the `keys` chips sit in the margin normally and overlay the content
   edge only while cropped (translucent until hovered);
-  persisted per browser), `q` closes the viewer (same as `:q` — the Locus window
+  persisted per browser), `4` / `d` switch to the A4 / dynamic page
+  modes, `q` closes the viewer (same as `:q` — the Locus window
   exits; a browser tab closes itself where the browser allows it, and
   otherwise the status pill names the key that will), and `Ctrl-o` jumps
   back and forth between the current place and the previous one

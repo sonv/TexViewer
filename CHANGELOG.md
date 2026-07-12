@@ -26,7 +26,12 @@ summary.
   on-screen padding and the Cmd+P print margin from one value, so the screen
   column keeps matching the printed column — wrapping and pagination stay in
   sync. Also settable from the viewer's **config** dialog (leave the field
-  empty to keep following the document).
+  empty to keep following the document). The margin applies to the A4 page
+  mode only; dynamic mode always uses a compact 10 mm margin.
+- **A `crop` button in the toolbar, and `4` / `d` keys for the page modes.**
+  Crop-to-content was keyboard-only (`c`); it now has a clickable toggle next
+  to the `A4` / `dynamic` buttons that stays in sync with the key. The mode
+  buttons gained keyboard counterparts: `4` switches to A4, `d` to dynamic.
 - **Click a row of a multiline equation to copy just that row.** In an
   `align`/`gather`/`multline`, a plain click now selects the clicked row —
   a thin underline shows exactly what ⌘C will grab, and the copy is that
@@ -44,6 +49,17 @@ summary.
 
 ### Fixed
 
+- **Typing near the end of the document no longer makes the whole page
+  flicker.** Every keystroke launched a fresh smooth-scroll animation: the
+  cursor-follow tried to pin the edited element at 25 % of the viewport, a
+  target the page often cannot reach near its end (and the element's rect
+  oscillates mid-retypeset), so the scroll re-fired on every keystroke and
+  the viewport visibly swam while you typed. Typing now follows the cursor
+  at most once per burst (a pause re-arms it), scrolls only when the element
+  is genuinely out of view, and never launches a scroll the page can't
+  perform. Deliberate cursor jumps still scroll as before — and the `keys`
+  layer now rebuilds once per keystroke instead of twice (each rebuild is a
+  full-page geometry pass on long papers).
 - **The "Abstract" heading no longer renders with its top sliced off.**
   The abstract block pulled itself up with a negative top margin to sit
   closer to the title. When the front matter splits into separate
