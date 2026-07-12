@@ -149,6 +149,12 @@ struct AppState {
     /// also spawn an editor (which would reopen the file in a second buffer).
     /// 0 = never polled.
     last_jump_poll_ms: Arc<AtomicU64>,
+    /// Unix-ms timestamp of the last editor-originated request (buffer push,
+    /// cursor, selection, search — endpoints only the plugin calls). Feeds
+    /// /debug's `editor_active` so the plugin's stale-daemon sweep can tell
+    /// an abandoned daemon from one whose editor simply has sync disabled
+    /// (no jump poll) but is still pushing edits. 0 = never contacted.
+    last_editor_contact_ms: Arc<AtomicU64>,
 }
 
 const LOG_BUFFER_CAP: usize = 400;
@@ -184,6 +190,15 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Record that an editor-only endpoint was just called (see
+/// `last_editor_contact_ms`). Called at the top of /buffer, /cursor,
+/// /selection and /search — the requests only the plugin makes.
+fn touch_editor_contact(state: &AppState) {
+    state
+        .last_editor_contact_ms
+        .store(now_ms(), Ordering::Release);
 }
 
 /// One server-side log entry. `level` is one of `"info"`, `"warn"`,
@@ -359,6 +374,16 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
         // nvim plugin reads this to reuse an already-open tab instead of opening
         // a duplicate on a repeat :MathPreview.
         "clients": state.tx.receiver_count(),
+        "pid": std::process::id(),
+        // An editor is attached: a /jump long-poll is parked (or was within
+        // the last 45s — polls re-park within ~31s), or an editor-only
+        // endpoint (/buffer, /cursor, /selection, /search) was called within
+        // the last 45s (covers plugins running with sync = false, which
+        // never poll). The plugin's stale-daemon sweep treats
+        // editor_active == false && clients == 0 as abandoned.
+        "editor_active": state.active_jump_pollers.load(Ordering::Acquire) > 0
+            || now_ms().saturating_sub(state.last_jump_poll_ms.load(Ordering::Acquire)) < 45_000
+            || now_ms().saturating_sub(state.last_editor_contact_ms.load(Ordering::Acquire)) < 45_000,
         "debug_logging": state.debug_logging.load(Ordering::Acquire),
         "editor_cmd": state.editor_cmd.as_ref(),
         "viewer_config": {
@@ -677,6 +702,7 @@ pub async fn run(
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         debug_logging: Arc::new(AtomicBool::new(false)),
         last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
+        last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
     };
 
     // Seed the log buffer with startup info so the panel always has
@@ -1150,6 +1176,7 @@ async fn serve_cursor(
     State(state): State<AppState>,
     Json(req): Json<SourceRequest>,
 ) -> axum::http::StatusCode {
+    touch_editor_contact(&state);
     let file = normalize_source_path(req.file);
     let line = req.line.max(1);
     let col = req.col.unwrap_or(1).max(1);
@@ -1266,6 +1293,7 @@ async fn serve_search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> axum::http::StatusCode {
+    touch_editor_contact(&state);
     let query = if req.clear.unwrap_or(false) {
         String::new()
     } else {
@@ -1283,6 +1311,7 @@ async fn serve_selection(
     State(state): State<AppState>,
     Json(req): Json<RangeRequest>,
 ) -> axum::http::StatusCode {
+    touch_editor_contact(&state);
     let file = normalize_source_path(req.file);
     let bounds = (req.start_line, req.start_col, req.end_line, req.end_col);
     let (element_ids, math_rows): (Vec<String>, Vec<serde_json::Value>) = match bounds {
@@ -2447,6 +2476,7 @@ async fn serve_buffer_push(
     headers: axum::http::HeaderMap,
     body: String,
 ) -> axum::http::StatusCode {
+    touch_editor_contact(&state);
     let path_header = headers
         .get("x-mathpreview-path")
         .and_then(|v| v.to_str().ok())
@@ -3915,6 +3945,7 @@ Third paragraph with $x^2$.
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
+            last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let older = begin_render_attempt(&state);
@@ -4314,6 +4345,7 @@ Third paragraph with $x^2$.
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
+            last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let mut headers = axum::http::HeaderMap::new();
@@ -4412,6 +4444,7 @@ Third paragraph with $x^2$.
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
+            last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let mut headers = axum::http::HeaderMap::new();

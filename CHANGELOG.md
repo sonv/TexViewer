@@ -15,6 +15,19 @@ summary.
 
 ## [1.0.6] — 2026-07-12
 
+### Added
+
+- **Stale-daemon cleanup — `:MathPreviewClean` and a once-per-session
+  sweep.** Preview daemons can outlive their sessions (crashes, or pre-1.0.2
+  versions that never died with nvim) and pile up silently. The daemon now
+  reports its `pid` and whether an editor is actually attached
+  (`editor_active` in `/debug` — a parked jump poll or any editor request
+  within 45s), and on the first `:MathPreview` of a session the plugin scans
+  the preview port range for daemons with **no editor and no viewer tab**
+  and asks before stopping them. Old daemons that can't report editor state
+  are listed as "state unknown" when unviewed. `:MathPreviewClean` runs the
+  sweep on demand; `stale_check = false` opts out of the startup one.
+
 ### Fixed
 
 - **`:MathPreview` works on files that were never saved.** A root file

@@ -261,7 +261,7 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
 {
   "sonv/TexViewer",
   ft  = { "tex", "plaintex", "latex" },
-  cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewStatus", "MathPreviewDebug" },
+  cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewClean", "MathPreviewStatus", "MathPreviewDebug" },
   -- Install/update the binary on install/update (Rust toolchain required).
   -- With this, you can skip the manual binary install in §1 entirely. Omit it
   -- if you install mathpreview-cli yourself (tarball / cargo install).
@@ -429,6 +429,13 @@ Other commands:
   `VimLeavePre`.)
 - `:MathPreviewRestart` — stop, then start. Useful after preamble
   changes the daemon's macro cache misses.
+- `:MathPreviewClean` — scan the preview port range for abandoned daemons
+  (no editor attached, no viewer tab connected — leftovers from crashed
+  sessions or old versions that never died with nvim) and offer to stop
+  them. The first `:MathPreview` of a session runs the same sweep once,
+  asking before it stops anything; set `stale_check = false` to opt out.
+  Old daemons that can't report editor state are listed as
+  "state unknown" when nothing is viewing them — you decide.
 - `:MathPreviewStatus` — echoes daemon PID/port, last push time, push
   counters, and the resolved binary path.
 - `:MathPreviewDebug` — echoes the resolved viewer settings, the

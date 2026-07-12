@@ -30,6 +30,10 @@ vim.api.nvim_create_user_command("MathPreviewRestart", function()
   require("mathpreview").restart()
 end, { desc = "Restart the mathpreview daemon" })
 
+vim.api.nvim_create_user_command("MathPreviewClean", function()
+  require("mathpreview").clean()
+end, { desc = "Find and stop abandoned mathpreview daemons (no editor, no viewer)" })
+
 vim.api.nvim_create_user_command("MathPreviewStatus", function()
   print(vim.inspect(require("mathpreview").status()))
 end, { desc = "Show mathpreview daemon and plugin status" })

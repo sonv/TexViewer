@@ -98,6 +98,12 @@ local config = {
   -- on your $PATH, the plugin still runs the binary by absolute path and warns
   -- you once with the line to add.
   install_root = nil,
+  -- On the first :MathPreview of a session, scan the port range for preview
+  -- daemons that look abandoned — no editor attached and no viewer tab open
+  -- (e.g. leftovers from crashed sessions, or pre-1.0.2 daemons that never
+  -- died with nvim) — and offer to stop them. `:MathPreviewClean` runs the
+  -- same sweep on demand. Set to false to never be asked.
+  stale_check = true,
   -- Override the MathJax bundle URL the daemon serves to the browser.
   -- nil → use the vendored, embedded `/vendor/mathjax/tex-svg.js` (works
   -- offline, default). Set to a CDN like
@@ -572,6 +578,114 @@ local function find_free_port(start_port)
     if port_is_free(port) then return port end
   end
   return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Stale-daemon sweep: find preview daemons in the port range that nothing is
+-- using anymore — crashed sessions, pre-1.0.2 daemons that never died with
+-- nvim — and offer to stop them. A daemon is a candidate when no viewer tab
+-- is connected (`clients == 0`) AND it reports no recent editor contact
+-- (`editor_active == false`, 1.0.6+). Older daemons can't report editor
+-- state; they're listed as "state unknown" when unviewed and the user
+-- decides. Daemons owned by THIS session are always skipped.
+
+-- Collect /debug from every port in the scan range (async; cb gets a list).
+local function scan_daemons(cb)
+  local own = {}
+  for _, e in pairs(daemons) do
+    if e.port then own[e.port] = true end
+  end
+  local results, pending, launched = {}, 0, false
+  local function finish_one()
+    pending = pending - 1
+    if launched and pending == 0 then cb(results) end
+  end
+  for port = DEFAULT_PORT, DEFAULT_PORT + PORT_SCAN_RANGE - 1 do
+    if not own[port] then
+      pending = pending + 1
+      run_system({
+        "curl", "--silent", "--max-time", "1",
+        "http://127.0.0.1:" .. tostring(port) .. "/debug",
+      }, {}, function(res)
+        if res and res.code == 0 and res.stdout and res.stdout ~= "" then
+          local ok, d = pcall(json_decode, res.stdout)
+          if ok and type(d) == "table" and d.root then
+            table.insert(results, {
+              port = port,
+              root = tostring(d.root),
+              version = d.version and tostring(d.version) or nil,
+              clients = tonumber(d.clients) or 0,
+              editor_active = d.editor_active, -- nil on pre-1.0.6 daemons
+            })
+          end
+        end
+        finish_one()
+      end)
+    end
+  end
+  launched = true
+  if pending == 0 then cb(results) end
+end
+
+-- POST /stop to a daemon (the topbar stop endpoint — honored by every
+-- released version, so old strays are stoppable too).
+local function stop_daemon_at(port, cb)
+  run_system({
+    "curl", "--silent", "--max-time", "2", "-X", "POST",
+    "http://127.0.0.1:" .. tostring(port) .. "/stop",
+  }, {}, function(res)
+    if cb then cb(res and res.code == 0) end
+  end)
+end
+
+local function sweep_stale_daemons(sweep_opts)
+  sweep_opts = sweep_opts or {}
+  scan_daemons(function(found)
+    local cands = {}
+    for _, d in ipairs(found) do
+      if d.clients == 0 and d.editor_active ~= true then
+        table.insert(cands, d)
+      end
+    end
+    if #cands == 0 then
+      if sweep_opts.report_empty then
+        vim.notify("mathpreview: no stale preview daemons found", vim.log.levels.INFO)
+      end
+      return
+    end
+    local lines = {}
+    for _, d in ipairs(cands) do
+      table.insert(lines, ("  port %d · %s%s%s"):format(
+        d.port,
+        vim.fn.fnamemodify(d.root, ":~"),
+        d.version and (" · v" .. d.version) or "",
+        d.editor_active == nil and " · state unknown (old daemon)" or ""))
+    end
+    local prompt = (
+      "mathpreview: %d preview daemon(s) look abandoned (no editor attached, no viewer open):\n%s\n" ..
+      "Stop them? (make sure no other nvim session is previewing these files)")
+      :format(#cands, table.concat(lines, "\n"))
+    if vim.fn.confirm(prompt, "&Yes\n&No", 1) ~= 1 then return end
+    local done, total = 0, #cands
+    for _, d in ipairs(cands) do
+      stop_daemon_at(d.port, function()
+        done = done + 1
+        if done == total then
+          vim.notify(("mathpreview: stopped %d stale daemon(s)"):format(total),
+            vim.log.levels.INFO)
+        end
+      end)
+    end
+  end)
+end
+
+-- Run at most once per session, a beat after the first successful start (so
+-- the prompt never delays the preview itself).
+local stale_scan_done = false
+local function maybe_sweep_stale_daemons()
+  if not config.stale_check or stale_scan_done then return end
+  stale_scan_done = true
+  vim.defer_fn(function() sweep_stale_daemons() end, 2500)
 end
 
 local function set_urls(port)
@@ -1662,6 +1776,9 @@ local function start_with(cmd, opts)
   stopping[root] = nil
   daemons[root] = entry
   if first then attach_autocmds() end
+  -- One sweep for abandoned daemons per session, now that ours is registered
+  -- (and therefore excluded from the scan).
+  maybe_sweep_stale_daemons()
   -- Activate only if this daemon serves the buffer you're actually in;
   -- otherwise sync to the current buffer (it may have changed during the async
   -- binary resolve / restart gap).
@@ -1861,6 +1978,12 @@ end
 
 function M.stop()
   stop_entry(target_entry())
+end
+
+-- Scan the port range for abandoned preview daemons and offer to stop them
+-- (the on-demand form of the once-per-session startup sweep).
+function M.clean()
+  sweep_stale_daemons({ report_empty = true })
 end
 
 function M.restart()
