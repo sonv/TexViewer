@@ -576,7 +576,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   to the text (trims the paper margins, TeXpresso-style — wrapping is
   unchanged; margin overlays like line numbers and ref-key chips hide
   while cropped since there is no margin to hold them; persisted per
-  browser), and `Ctrl-o` jumps
+  browser), `q` closes the viewer (same as `:q` — the Locus window
+  exits; a browser tab closes itself where the browser allows it, and
+  otherwise the status pill names the key that will), and `Ctrl-o` jumps
   back and forth between the current place and the previous one
   (pressing it repeatedly ping-pongs between the two). These bindings
   are ignored while typing in editable controls.

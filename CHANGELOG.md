@@ -13,6 +13,26 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.7] — 2026-07-12
+
+### Added
+
+- **`q` closes the viewer** (TeXpresso/zathura-style), doing exactly what
+  the `:q` command does: the Locus window exits; a browser tab closes
+  itself where the browser allows it, and otherwise the status pill says
+  which key really closes it.
+
+### Fixed
+
+- **The "Abstract" heading no longer renders with its top sliced off.**
+  The abstract block pulled itself up with a negative top margin to sit
+  closer to the title. When the front matter splits into separate
+  render blocks (amsart documents), that negative margin pushed the
+  heading's ink above its own block — and the blocks' paint containment
+  (`content-visibility`) clipped everything outside, leaving amputated
+  glyphs ("missing strokes"). The spacing now comes from the title
+  block's bottom margin instead; the visual gap is identical.
+
 ## [1.0.6] — 2026-07-12
 
 ### Added

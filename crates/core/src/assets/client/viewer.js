@@ -962,6 +962,26 @@
     return false;
   }
 
+  // Close the viewer — the `q` key and the `:q` command. Locus (native
+  // window): wry injects `window.ipc` only when the window installed its IPC
+  // handler, so its presence *is* the "am I in Locus?" test; the message
+  // exits the window process. Browser tab: scripts may only close windows
+  // they opened (or single-history tabs, which a fresh preview tab is), so
+  // window.close() is best-effort — if we're still here a beat later, tell
+  // the user how to really close via `hint`.
+  function closeViewer(hint) {
+    if (window.ipc && typeof window.ipc.postMessage === 'function') {
+      window.ipc.postMessage('close');
+      return;
+    }
+    window.close();
+    setTimeout(function() {
+      var mac = /Mac/.test(navigator.platform || '');
+      hint('the browser blocks tabs from closing themselves — press ' +
+        (mac ? '⌘W' : 'Ctrl+W'));
+    }, 150);
+  }
+
   function handleVimNavigation(e) {
     if (e.defaultPrevented || e.altKey || e.metaKey || isEditableTarget(e.target)) return false;
     // A modal dialog (e.g. the margin magnify overlay) puts focus on a button,
@@ -1043,6 +1063,12 @@
       case 'c':
         clearVimPending();
         setPageCrop(!pageCropped, true);
+        return true;
+      case 'q':
+        // TeXpresso/zathura-style quit. Same routine as the `:q` command;
+        // the refusal hint lands on the status pill (no cmdline open here).
+        clearVimPending();
+        closeViewer(function(msg) { setStatus('dead', '○ ' + msg); });
         return true;
       default:
         clearVimPending();
@@ -2864,24 +2890,7 @@
       return;
     }
     if (cmd === 'q' || cmd === 'quit') {
-      // Locus (native window): wry injects `window.ipc` only when the window
-      // installed its IPC handler, so its presence *is* the "am I in Locus?"
-      // test; the message exits the window process.
-      if (window.ipc && typeof window.ipc.postMessage === 'function') {
-        window.ipc.postMessage('close');
-        return;
-      }
-      // Browser tab: scripts may only close windows they opened, so this is
-      // best-effort. If we're still here a beat later, say how to really quit.
-      window.close();
-      setTimeout(function() {
-        var mac = /Mac/.test(navigator.platform || '');
-        setCmdlineFeedback(
-          'the browser blocks tabs from closing themselves — press ' +
-            (mac ? '⌘W' : 'Ctrl+W'),
-          true
-        );
-      }, 150);
+      closeViewer(function(msg) { setCmdlineFeedback(msg, true); });
       return;
     }
     setCmdlineFeedback('unknown command: ' + cmd, true);
