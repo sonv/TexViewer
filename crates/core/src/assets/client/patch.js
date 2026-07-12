@@ -544,7 +544,7 @@
       // the double-click source-jump trigger, leave on/off depending on
       // what was selected before the jump.
       var rowInfo = (e.detail <= 1 && clickedMath.hasAttribute('data-row-tex-spans'))
-        ? mathRowFromClick(clickedMath, e.target) : null;
+        ? mathRowFromClick(clickedMath, e.target, e.clientY) : null;
       if (rowInfo) {
         if (selectedMathRow && selectedMathRow.block === clickedMath &&
             selectedMathRow.row === rowInfo.row) {

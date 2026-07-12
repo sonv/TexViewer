@@ -21,9 +21,12 @@ summary.
   `align`/`gather`/`multline`, a plain click now selects the clicked row —
   a tinted band shows exactly what ⌘C will grab, and the copy is that
   row's own LaTeX source (leading comments left by the previous row's
-  `% …` are skipped). Clicking the same row again widens back to the whole
-  environment; clicking elsewhere clears. Shift+click still selects the
-  whole environment at once, and single equations behave as before.
+  `% …` are skipped). The whole horizontal band counts, not just the
+  glyphs — airy rows full of whitespace select as easily as dense ones,
+  and the same applies to Cmd/Ctrl-click source jumps. Clicking the same
+  row again widens back to the whole environment; clicking elsewhere
+  clears. Shift+click still selects the whole environment at once, and
+  single equations behave as before.
 - **`q` closes the viewer** (TeXpresso/zathura-style), doing exactly what
   the `:q` command does: the Locus window exits; a browser tab closes
   itself where the browser allows it, and otherwise the status pill says

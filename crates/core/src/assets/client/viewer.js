@@ -1226,8 +1226,12 @@
   // { row, count } or null (single-row block, or the click missed every row).
   // A click inside a nested table (cases/matrix) walks up to the enclosing
   // outer row; a click on the equation-number / refkey gutter maps through
-  // its per-row wrapper, which the renderer emits one per row.
-  function mathRowFromClick(block, target) {
+  // its per-row wrapper, which the renderer emits one per row. A click that
+  // hits no row's INK but lands inside the SVG resolves by vertical
+  // position: a row's <g> only covers its glyphs, so most of a row — the
+  // space between and around symbols — would otherwise not count, making
+  // airy rows (wide integrals, sparse alignment columns) nearly unhittable.
+  function mathRowFromClick(block, target, clientY) {
     var groups = mathRowGroups(block);
     if (groups.length < 2 || !target || !target.closest) return null;
     var rowSel = '[data-mml-node="mtr"],[data-mml-node="mlabeledtr"]';
@@ -1240,6 +1244,23 @@
     if (gutterRow && gutterRow.parentElement && block.contains(gutterRow)) {
       var i = Array.prototype.indexOf.call(gutterRow.parentElement.children, gutterRow);
       if (i >= 0 && i < groups.length) return { row: i, count: groups.length };
+    }
+    // Geometric fallback: nearest row band by click Y, bounded to the SVG
+    // (clicks on the block's outer padding keep selecting the whole env).
+    var svg = block.querySelector('svg');
+    if (svg && isFinite(clientY)) {
+      var sr = svg.getBoundingClientRect();
+      if (clientY >= sr.top && clientY <= sr.bottom) {
+        var best = -1, bestDist = Infinity;
+        for (var j = 0; j < groups.length; j++) {
+          var r = groups[j].getBoundingClientRect();
+          if (!r.height) continue;
+          var d = clientY < r.top ? r.top - clientY
+                : clientY > r.bottom ? clientY - r.bottom : 0;
+          if (d < bestDist) { bestDist = d; best = j; }
+        }
+        if (best !== -1) return { row: best, count: groups.length };
+      }
     }
     return null;
   }
@@ -1412,7 +1433,7 @@
     // DOM). The parsed data-src above stays in the payload as the daemon's
     // fallback anchor when the row can't be resolved.
     if (el.id && el.classList.contains('math')) {
-      var rowInfo = mathRowFromClick(el, e.target);
+      var rowInfo = mathRowFromClick(el, e.target, e.clientY);
       if (rowInfo) {
         info.element_id = el.id;
         info.math_row = rowInfo.row;
