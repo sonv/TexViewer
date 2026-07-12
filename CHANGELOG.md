@@ -38,6 +38,12 @@ Nothing yet.
 
 ### Fixed
 
+- **No phantom equation number after a trailing `\\`.** A multi-row math
+  environment ending with `\\` (e.g. a 2-row `align` with a separator after
+  the last row) showed an extra gutter number — (1)(2)(3) for two rendered
+  rows — and bumped every later equation's number by one. The empty final row
+  that MathJax drops is now also dropped from numbering, so the gutter matches
+  the rendered rows and the next equation continues the counter correctly.
 - **Upgrades no longer strip the native window out of the binary.** The
   auto-reinstall on version skew rebuilt with only the current viewer's
   features, so with `viewer = "browser"` it dropped the `gui` feature from a

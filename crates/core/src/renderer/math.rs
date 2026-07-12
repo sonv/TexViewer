@@ -84,8 +84,15 @@ pub(super) fn equation_row_refkey_html(
 
 pub(super) fn math_row_labels(body: &str) -> Vec<Vec<String>> {
     let mut seen = Vec::<String>::new();
-    split_math_rows(body)
-        .into_iter()
+    let mut rows = split_math_rows(body);
+    // A trailing `\\` leaves an empty final row that MathJax does NOT render as
+    // a table row — drop it so the refkey row list lines up with the rendered
+    // rows (and with `row_numbers`, which drops it the same way). An empty row
+    // cannot carry a `\label`, so no labels are lost.
+    if rows.last().is_some_and(|r| r.is_empty()) {
+        rows.pop();
+    }
+    rows.into_iter()
         .map(|row| {
             let mut row_labels = Vec::new();
             for label in latex_command_args(row, "label") {

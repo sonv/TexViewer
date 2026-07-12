@@ -360,7 +360,15 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                     None => false,
                 };
                 if numbered && env.as_deref().is_some_and(is_multirow_numbered_math_env) {
-                    let rows = split_math_rows(body);
+                    let mut rows = split_math_rows(body);
+                    // A trailing `\\` leaves an empty final row that MathJax does
+                    // NOT render as a table row — drop it so it neither shows a
+                    // gutter number nor advances the equation counter. (Empty
+                    // rows in the middle, from `\\ \\`, are kept: MathJax does
+                    // render those as blank rows.)
+                    if rows.last().is_some_and(|r| r.is_empty()) {
+                        rows.pop();
+                    }
                     let mut first_numbered_row = true;
                     for row in rows {
                         if row_is_unnumbered(row) {

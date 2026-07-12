@@ -3985,6 +3985,36 @@ mod tests {
     }
 
     #[test]
+    fn align_trailing_row_separator_gets_no_phantom_number() {
+        // Regression: a trailing `\\` leaves an empty final row that MathJax
+        // does not render, but numbering still gave it a gutter number and
+        // advanced the equation counter — a 2-row align showed (1)(2)(3) and
+        // the next equation became (4).
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{align}\na &= b \\\\\nc &= d \\\\\n\\end{align}\n\\begin{equation}\ne = f\n\\end{equation}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(1)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(2)</span>"#));
+        assert_eq!(
+            out.body_html.matches("eq-num-row").count(),
+            2,
+            "phantom gutter row for the empty trailing align row: {}",
+            out.body_html
+        );
+        assert!(out.body_html.contains(r#"<span class="eq-num">(3)</span>"#));
+        assert!(!out.body_html.contains("(4)"));
+    }
+
+    #[test]
     fn viewer_shell_contains_index_and_page_modes() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
