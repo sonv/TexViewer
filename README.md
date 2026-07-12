@@ -71,7 +71,7 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 - **Selectable SVG MathJax equations**: click an inline or display
   equation to select only that math node; copying returns the original
   LaTeX source instead of SVG text. In a multiline `align`/`gather`/
-  `multline`, clicking a row selects just that row — a tinted band shows
+  `multline`, clicking a row selects just that row — a thin underline shows
   what ⌘C will grab, and the copy is that row's own source; click the
   same row again to widen back to the whole environment.
 - **Inline LaTeX** in titles / theorem names / `\omitref` payloads:

@@ -65,8 +65,10 @@
     return new TextDecoder().decode(bytes.subarray(+m[1], +m[2]));
   }
 
-  // Mark `row` of `block` as the copy target: a selection-tinted band on the
-  // row (same geometry as the cursor band) plus the block's focus outline.
+  // Mark `row` of `block` as the copy target: a thin underline beneath the
+  // row (a filled box over the math read as noise) plus the block's focus
+  // outline. Geometry is relative to the row's ink box, so it scales with
+  // the page zoom like everything else in the SVG.
   function selectMathRow(block, row) {
     clearSelectedMath();
     clearSelectedMathRow();
@@ -76,14 +78,23 @@
     var bb;
     try { bb = g.getBBox(); } catch (e) { return false; }
     if (!bb || !isFinite(bb.width) || bb.width <= 0 || bb.height <= 0) return false;
-    var padY = bb.height * 0.12;
     var padX = bb.height * 0.1;
+    var thickness = bb.height * 0.05;
+    var gap = bb.height * 0.08;
+    // MathJax's SVG root flips the Y axis (glyph coords are y-up), so the
+    // VISUAL bottom of the row is the local-coordinate minimum when the
+    // cumulative transform has a negative y scale.
+    var ctm = g.getCTM ? g.getCTM() : null;
+    var yUnder = (ctm && ctm.d < 0)
+      ? bb.y - gap - thickness
+      : bb.y + bb.height + gap;
     var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     rect.setAttribute('class', 'mp-row-select');
     rect.setAttribute('x', bb.x - padX);
-    rect.setAttribute('y', bb.y - padY);
+    rect.setAttribute('y', yUnder);
     rect.setAttribute('width', bb.width + padX * 2);
-    rect.setAttribute('height', bb.height + padY * 2);
+    rect.setAttribute('height', thickness);
+    rect.setAttribute('rx', thickness / 2);
     g.insertBefore(rect, g.firstChild);
     selectedMathRow = { block: block, row: row };
     focusMathNode(block);

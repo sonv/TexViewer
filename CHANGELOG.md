@@ -19,7 +19,7 @@ summary.
 
 - **Click a row of a multiline equation to copy just that row.** In an
   `align`/`gather`/`multline`, a plain click now selects the clicked row —
-  a tinted band shows exactly what ⌘C will grab, and the copy is that
+  a thin underline shows exactly what ⌘C will grab, and the copy is that
   row's own LaTeX source (leading comments left by the previous row's
   `% …` are skipped). The whole horizontal band counts, not just the
   glyphs — airy rows full of whitespace select as easily as dense ones,
