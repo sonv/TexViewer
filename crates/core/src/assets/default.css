@@ -58,7 +58,15 @@
   --a4-width: 794px;
   --dynamic-width: 720px;
   --page-scale: 1;
-  --page-pad-x: 64px;
+  /* The A4 horizontal page margin. `--page-pad-x-base` is the configured /
+     default full margin (the daemon overrides it from page-margin config or
+     the document's geometry); `--page-pad-x` is what the page actually uses
+     — equal to the base normally, dropped to --crop-pad while cropped, and
+     narrowed in dynamic mode. Keeping the base separate lets the crop width
+     math and the JS fit math read the real margin instead of a hardcoded 64. */
+  --page-pad-x-base: 64px;
+  --crop-pad: 12px;
+  --page-pad-x: var(--page-pad-x-base);
   --refkey-gutter: 58px;
   --refkey-gap: 8px;
   /* Reference height for everything that needs to sit just below the
@@ -572,7 +580,7 @@ body.page-mode-dynamic main#page {
 .lineno-num {
   position: absolute;
   left: 0;
-  width: calc(var(--page-pad-x) - 12px);
+  width: calc(var(--page-pad-x) - var(--crop-pad));
   text-align: right;
   color: var(--muted);
   opacity: 0.65;
@@ -604,12 +612,14 @@ body.page-mode-dynamic main#page {
     padding-bottom: 46px;
   }
   /* Narrow the side padding only in dynamic mode. In A4 mode the on-screen
-     content column must stay 794 − 2×64px ≈ 176mm to match the printable
-     column, so line wrapping (and therefore Cmd+P's pagination) agrees between
-     screen and print. The A4 sheet is zoomed to fit the viewport anyway, so the
-     wider padding costs no usable width. */
+     content column must stay --a4-width − 2×margin ≈ 176mm to match the
+     printable column, so line wrapping (and therefore Cmd+P's pagination)
+     agrees between screen and print. The A4 sheet is zoomed to fit the
+     viewport anyway, so the wider padding costs no usable width. Overriding
+     the BASE (not --page-pad-x) so the crop math below reads the real
+     dynamic pad. */
   body.page-mode-dynamic main#page {
-    --page-pad-x: 24px;
+    --page-pad-x-base: 24px;
   }
   #page-shell {
     width: calc(100vw - 16px);
@@ -618,22 +628,21 @@ body.page-mode-dynamic main#page {
 }
 /* Crop-to-content (the viewer's "c" key, TeXpresso-style): trim the paper
    margins so the reading area is essentially all text. The page narrows by
-   exactly the horizontal padding removed — 104px = 2×(64−12) for the A4 rule
-   below — so the text column and its line wrapping are UNCHANGED
-   (viewer.js's cropDxNow computes the same delta for the shell / dynamic
-   natural width; keep the 12px pad = CROP_PAD in sync). Placed after the
-   max-width media query so the 12px padding also wins on narrow viewports.
-   Scoped to screen: the A4 width rule out-specifies @media print's
-   `width: auto` reset, so letting it exist in print would shrink the printed
-   column — crop must never affect Cmd+P. */
+   exactly the horizontal padding removed — 2×(margin − crop-pad) — so the
+   text column and its line wrapping are UNCHANGED (viewer.js's cropDxNow
+   computes the same delta for the shell / dynamic natural width from the
+   same --page-pad-x-base). Placed after the max-width media query so the
+   crop padding also wins on narrow viewports. Scoped to screen: the A4 width
+   rule out-specifies @media print's `width: auto` reset, so letting it exist
+   in print would shrink the printed column — crop must never affect Cmd+P. */
 @media screen {
   body.page-crop main#page {
-    --page-pad-x: 12px;
+    --page-pad-x: var(--crop-pad);
     padding-top: 14px;
     padding-bottom: 18px;
   }
   body.page-crop.page-mode-a4 main#page {
-    width: calc(var(--a4-width) - 104px);
+    width: calc(var(--a4-width) - 2 * (var(--page-pad-x-base) - var(--crop-pad)));
   }
   /* The line-number gutter lives INSIDE the page padding, whose width
      derives from --page-pad-x — under crop it collapses to 12px and the
@@ -650,14 +659,14 @@ body.page-mode-dynamic main#page {
      covered line stays guessable, fully opaque on hover. */
   body.page-crop .refkey-chip {
     right: auto;
-    left: -6px;
+    left: 0;
     opacity: 0.88;
     z-index: 6;
   }
   body.page-crop .refkey-chip:hover { opacity: 1; }
   body.page-crop .eq-refkey-list {
     right: auto;
-    left: -6px;
+    left: 0;
     align-items: flex-start;
     z-index: 6;
   }

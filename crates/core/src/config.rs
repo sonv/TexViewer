@@ -154,6 +154,12 @@ pub struct ViewerConfig {
     /// and printing never wait. Cmd+P always typesets the whole document on
     /// demand regardless of this setting.
     pub typeset_mode: Option<TypesetMode>,
+    /// A4-mode horizontal page margin, in millimetres. When unset, the viewer
+    /// uses the document's own `\usepackage[margin=…]{geometry}` if it declares
+    /// one, else the built-in default (~17 mm, matching the print margin).
+    /// Setting this pins the on-screen A4 margin AND the Cmd+P print margin
+    /// together, so screen and print keep wrapping identically.
+    pub page_margin: Option<u32>,
     #[serde(default)]
     pub source_jump: SourceJumpConfig,
     /// Removed: the on-screen page-break guides were dropped. Accepted but
@@ -295,6 +301,33 @@ pub struct ResolvedViewerConfig {
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
     pub typeset_mode: TypesetMode,
+    /// Explicit A4 page margin (mm), or `None` to fall back to the document's
+    /// geometry margin / the built-in default. Kept as an `Option` (unlike the
+    /// other resolved fields) because "unset" is meaningful: only then does the
+    /// preamble-derived margin apply.
+    pub page_margin_mm: Option<u32>,
+}
+
+/// The A4 page margin actually in effect, in millimetres — the single value
+/// the shell derives both the screen padding and the print `@page` margin
+/// from, so they stay in lockstep. Precedence: explicit `page-margin` config >
+/// the document's geometry margin > `None` (the built-in default; the caller
+/// emits no override and default.css's 64px / 17mm stand). Each layer is
+/// range-checked INDEPENDENTLY, so an absurd config value (a typo like 200)
+/// falls through to a valid geometry margin instead of past it to the
+/// default. Rounded to 0.1 mm so the value baked into the page and the value
+/// pushed over the WebSocket compare equal on the client (float-exact), which
+/// the reload-on-change check relies on.
+pub fn effective_page_margin_mm(
+    cfg: &ResolvedViewerConfig,
+    geometry_margin_mm: Option<f64>,
+) -> Option<f64> {
+    let sane = |mm: &f64| (5.0..=60.0).contains(mm);
+    cfg.page_margin_mm
+        .map(f64::from)
+        .filter(sane)
+        .or_else(|| geometry_margin_mm.filter(sane))
+        .map(|mm| (mm * 10.0).round() / 10.0)
 }
 
 impl Default for ResolvedConfig {
@@ -310,6 +343,7 @@ impl Default for ResolvedConfig {
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
                 typeset_mode: TypesetMode::Local,
+                page_margin_mm: None,
             },
             text_macros: HashMap::new(),
         }
@@ -367,6 +401,9 @@ impl Config {
                     .viewer
                     .typeset_mode
                     .unwrap_or(defaults.viewer.typeset_mode),
+                // Passthrough (no default fill): `None` means "fall back to the
+                // document's geometry margin, resolved at render time".
+                page_margin_mm: self.viewer.page_margin,
             },
             text_macros: self.text_macros,
         }
@@ -417,6 +454,9 @@ impl ViewerConfig {
         }
         if other.typeset_mode.is_some() {
             self.typeset_mode = other.typeset_mode;
+        }
+        if other.page_margin.is_some() {
+            self.page_margin = other.page_margin;
         }
         self.source_jump.merge(other.source_jump);
     }
@@ -612,6 +652,44 @@ weird-extra-field = "oops"
         .expect("a leftover page-guides key must not fail the whole config");
         // The real settings alongside it are honored, not lost to defaults.
         assert!(!cfg.resolve().viewer.wrap_equations);
+    }
+
+    #[test]
+    fn page_margin_config_and_geometry_precedence() {
+        // Explicit config wins over the document's geometry margin.
+        let cfg = Config::parse("[viewer]\npage-margin = 30\n", Path::new("t.toml"))
+            .unwrap()
+            .resolve();
+        assert_eq!(cfg.viewer.page_margin_mm, Some(30));
+        assert_eq!(
+            effective_page_margin_mm(&cfg.viewer, Some(25.4)),
+            Some(30.0)
+        );
+        // No config → geometry margin applies.
+        let bare = Config::default().resolve();
+        assert_eq!(bare.viewer.page_margin_mm, None);
+        assert_eq!(
+            effective_page_margin_mm(&bare.viewer, Some(25.4)),
+            Some(25.4)
+        );
+        // No config, no geometry → None (caller keeps the built-in default).
+        assert_eq!(effective_page_margin_mm(&bare.viewer, None), None);
+        // Out-of-range config falls through to a VALID geometry margin —
+        // a typo'd config must not poison the document's own setting.
+        let big = Config::parse("[viewer]\npage-margin = 200\n", Path::new("t.toml"))
+            .unwrap()
+            .resolve();
+        assert_eq!(
+            effective_page_margin_mm(&big.viewer, Some(25.4)),
+            Some(25.4)
+        );
+        // …and to None (built-in default) when there's no geometry either.
+        assert_eq!(effective_page_margin_mm(&big.viewer, None), None);
+        // Rounded to 0.1mm so baked and pushed values compare equal client-side.
+        assert_eq!(
+            effective_page_margin_mm(&bare.viewer, Some(25.4444)),
+            Some(25.4)
+        );
     }
 
     #[test]

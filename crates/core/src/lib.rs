@@ -23,8 +23,8 @@ use anyhow::Result;
 
 pub use ast::{Node, NodeKind, Pos, Role, Span};
 pub use config::{
-    discover_config_files, load_and_merge as load_and_merge_config, Config, PageMode,
-    ResolvedConfig, ResolvedViewerConfig, SourceJumpTrigger, Theme,
+    discover_config_files, effective_page_margin_mm, load_and_merge as load_and_merge_config,
+    Config, PageMode, ResolvedConfig, ResolvedViewerConfig, SourceJumpTrigger, Theme,
 };
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{

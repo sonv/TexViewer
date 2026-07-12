@@ -674,6 +674,8 @@ wrap-equations = true           # wrap long display math (MathJax line-breaking)
                                 # set false to let it overflow + scroll instead
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
 typeset-mode = "local"          # | "background" — see below
+# page-margin = 25              # A4 horizontal margin in mm; omit to follow the
+                                # document's \usepackage[margin=…]{geometry}
 
 [viewer.source-jump]
 # Which click gesture sends `POST /reveal-source` to spawn `--editor`
@@ -698,6 +700,16 @@ quietly fills in the rest while the tab is idle, so scrolling to deep sections
 and printing never wait (at the cost of typesetting — and holding in memory —
 the whole document). Either way, **Cmd/Ctrl+P** typesets the whole document on
 demand before printing.
+
+`page-margin` sets the A4 page's horizontal margin, in millimetres. Omit it
+and the viewer follows the document's own
+`\usepackage[margin=…]{geometry}` (parsing `margin` / `hmargin` /
+`left`+`right` / `textwidth`); with no geometry either, it uses the built-in
+default (~17 mm). The setting moves the on-screen margin **and** the Cmd+P
+print margin together from the same value, so the screen column keeps
+matching the printed column — line wrapping and pagination stay in sync.
+On narrow viewports dynamic mode still tightens to a compact reading
+padding regardless.
 
 **Theorem numbering.** By default (`theorem-numbering = "auto"`) theorem-likes
 are numbered from the document's `\newtheorem` declarations — continuously

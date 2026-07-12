@@ -312,6 +312,13 @@ fn log_event(state: &AppState, level: &'static str, message: String) {
 async fn serve_debug(State(state): State<AppState>) -> Response {
     let viewer_config = state.viewer_config.read().await.clone();
     let session_macros = state.session_macros.read().await.clone();
+    // The document's geometry margin (if any), for the effective-margin echo.
+    let geometry_margin_mm = state
+        .preamble_cache
+        .read()
+        .await
+        .as_ref()
+        .and_then(|c| c.preamble.geometry_margin_mm);
     let log: Vec<LogEntry> = state
         .log_buffer
         .lock()
@@ -394,6 +401,8 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
             "wrap_equations": viewer_config.wrap_equations,
             "mathjax_config": viewer_config.mathjax_config,
+            "page_margin_mm": mathpreview_core::effective_page_margin_mm(
+                &viewer_config, geometry_margin_mm),
         },
         "config_paths": config_paths,
         "macro_paths": macro_paths,
@@ -2821,6 +2830,11 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "wrap_equations": viewer_config.wrap_equations,
         "mathjax_config": viewer_config.mathjax_config,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
+        // The EFFECTIVE page margin baked into config_css (config > geometry >
+        // default). The margin lives in the <head>, so a live change can only
+        // take effect via reload — the client watches this value for that.
+        "page_margin_mm": mathpreview_core::effective_page_margin_mm(
+            &viewer_config, out.preamble.geometry_margin_mm),
     });
 
     let (payload, op_count, kind) = if fallback_full {
@@ -3919,6 +3933,7 @@ Third paragraph with $x^2$.
                     date: None,
                     sidenote_wrappers: Vec::new(),
                     show_only_refs: false,
+                    geometry_margin_mm: None,
                 },
                 included_files: Vec::new(),
             })),
@@ -4277,6 +4292,7 @@ Third paragraph with $x^2$.
             date: None,
             sidenote_wrappers: Vec::new(),
             show_only_refs: false,
+            geometry_margin_mm: None,
         }
     }
 

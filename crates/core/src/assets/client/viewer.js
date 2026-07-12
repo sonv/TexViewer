@@ -2722,6 +2722,18 @@
     if (typeof cfg.typeset_mode === 'string') {
       setTypesetMode(cfg.typeset_mode);
     }
+    // The page margin is baked into config_css in the <head> (screen padding
+    // + @page print margin), which a body patch can't touch — reload when the
+    // effective value flips. null (default/no override) is a valid value, so
+    // compare with a sentinel to catch default→set and set→default both.
+    if ('page_margin_mm' in cfg) {
+      var wasMargin = window.__mpConfig.pageMarginMm;
+      window.__mpConfig.pageMarginMm = cfg.page_margin_mm;
+      if (wasMargin !== undefined && wasMargin !== cfg.page_margin_mm) {
+        location.reload();
+        return;
+      }
+    }
   }
 
   function logPanelEl() { return document.getElementById('log-panel'); }
@@ -3214,7 +3226,16 @@
   // media query for a scrollbar's width around 720px and reflow the column.
   function cropDxNow() {
     if (!pageCropped) return 0;
-    var basePadX = (currentPageMode !== 'a4' && window.innerWidth <= 720) ? 24 : 64;
+    // Read the REAL uncropped margin (--page-pad-x-base, which the daemon may
+    // have overridden from page-margin config / the document's geometry)
+    // rather than assuming 64. Crop drops --page-pad-x to --crop-pad, so the
+    // page narrows by 2×(base − crop) — mirror that exactly. --page-pad-x-base
+    // survives the crop (only --page-pad-x is overridden), and the dynamic
+    // ≤720 media query lowers the base to 24, so this covers that case too.
+    var page = pageEl();
+    var cs = page ? getComputedStyle(page) : null;
+    var basePadX = cs ? parseFloat(cs.getPropertyValue('--page-pad-x-base')) : NaN;
+    if (!isFinite(basePadX)) basePadX = 64;
     return 2 * (basePadX - CROP_PAD);
   }
 

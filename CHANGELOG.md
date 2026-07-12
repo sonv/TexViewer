@@ -17,6 +17,15 @@ summary.
 
 ### Added
 
+- **Configurable A4 page margin, defaulting to the document's `geometry`.**
+  The viewer now reads `\usepackage[margin=…]{geometry}` (also `hmargin`,
+  `left`+`right`, `textwidth`) and uses it as the A4 page margin, so a paper
+  laid out at `margin=1in` previews at 1-inch margins instead of the old
+  fixed ~17 mm. A `page-margin` config option (millimetres) overrides the
+  document; with neither, the built-in default stands. The margin drives the
+  on-screen padding and the Cmd+P print margin from one value, so the screen
+  column keeps matching the printed column — wrapping and pagination stay in
+  sync.
 - **Click a row of a multiline equation to copy just that row.** In an
   `align`/`gather`/`multline`, a plain click now selects the clicked row —
   a thin underline shows exactly what ⌘C will grab, and the copy is that

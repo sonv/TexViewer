@@ -81,6 +81,13 @@ pub struct ExtractedPreamble {
     /// labels are referenced somewhere get numbers.
     #[serde(default)]
     pub show_only_refs: bool,
+    /// Horizontal page margin in millimetres parsed from a `geometry` package
+    /// load (`\usepackage[margin=1in]{geometry}` / `\geometry{...}`), when the
+    /// document specifies one. The viewer uses it as the A4 page margin unless
+    /// an explicit `page-margin` config overrides it. `None` = no parseable
+    /// geometry margin; the viewer keeps its built-in default.
+    #[serde(default)]
+    pub geometry_margin_mm: Option<f64>,
 }
 
 /// Bundled built-in macro overrides. Loaded as the first (lowest-priority)
@@ -610,6 +617,7 @@ impl Extractor {
             .map(|m| m.name.clone())
             .collect();
         let show_only_refs = detect_show_only_refs(&metadata_src);
+        let geometry_margin_mm = detect_geometry_margin(&metadata_src);
         ExtractedPreamble {
             macros: self.macros,
             packages_short,
@@ -625,6 +633,7 @@ impl Extractor {
             date,
             sidenote_wrappers,
             show_only_refs,
+            geometry_margin_mm,
         }
     }
 }
@@ -669,6 +678,160 @@ fn detect_show_only_refs(cleaned: &str) -> bool {
         }
     }
     active
+}
+
+/// Parse a LaTeX length (`1in`, `2.5cm`, `25mm`, `72pt`, `1.5em`… ) to
+/// millimetres. Only absolute units are meaningful for a page margin; `em`/`ex`
+/// and unitless values return `None` (we can't resolve them without the font).
+fn latex_length_to_mm(raw: &str) -> Option<f64> {
+    let s = raw.trim();
+    let split = s
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_alphabetic())
+        .map(|(i, _)| i)?;
+    let value: f64 = s[..split].trim().parse().ok()?;
+    let unit = s[split..].trim().to_ascii_lowercase();
+    let mm_per = match unit.as_str() {
+        "mm" => 1.0,
+        "cm" => 10.0,
+        "in" => 25.4,
+        "pt" => 25.4 / 72.27, // TeX point
+        "bp" => 25.4 / 72.0,  // PostScript "big point"
+        "pc" => 25.4 / 72.27 * 12.0,
+        _ => return None,
+    };
+    Some(value * mm_per)
+}
+
+/// Split a geometry option list on top-level commas only — braced values
+/// (`margin={1in,1.25in}`) keep their inner comma.
+fn split_geometry_options(opts: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in opts.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&opts[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&opts[start..]);
+    out
+}
+
+/// Unwrap a geometry value that may be a braced pair: `{A,B}` → `(A, Some(B))`,
+/// `{A}` → `(A, None)`, plain `A` → `(A, None)`.
+fn braced_pair(v: &str) -> (&str, Option<&str>) {
+    match v.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        Some(inner) => match inner.split_once(',') {
+            Some((a, b)) => (a.trim(), Some(b.trim())),
+            None => (inner.trim(), None),
+        },
+        None => (v, None),
+    }
+}
+
+/// Horizontal page margin (mm) declared by the `geometry` package, if the
+/// document loads it with a parseable horizontal spec. Scans comment-stripped
+/// preamble source for `\usepackage[opts]{geometry}` and `\geometry{opts}`,
+/// applying options in SOURCE ORDER with geometry's own later-wins semantics —
+/// across calls and within one option list alike. Tracks the left and right
+/// margins per side: `margin` / `hmargin` set both (a braced pair
+/// `margin={h,v}` uses the horizontal component; `hmargin={l,r}` sets the
+/// sides separately), `left`/`lmargin`/`inner` and `right`/`rmargin`/`outer`
+/// set one side, and `textwidth` derives margin = (paperwidth − textwidth)/2
+/// when no side was set (paper from `a4paper`/`letterpaper`, remembered
+/// across calls; a paper set only via `\documentclass` options isn't seen —
+/// A4 is assumed). Vertical-only keys are ignored. `None` when no horizontal
+/// margin can be derived.
+fn detect_geometry_margin(cleaned: &str) -> Option<f64> {
+    static GEOM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        // The \geometry body capture tolerates one level of nested braces so
+        // `\geometry{margin={1in,1.25in}}` captures the whole option list.
+        Regex::new(
+            r"\\usepackage\s*\[([^\]]*)\]\s*\{\s*geometry\s*\}|\\geometry\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
+        )
+        .unwrap()
+    });
+    let mut left: Option<f64> = None;
+    let mut right: Option<f64> = None;
+    let mut textwidth: Option<f64> = None;
+    let mut a4 = true; // geometry defaults to the class paper; A4 is our render target
+    for cap in GEOM_RE.captures_iter(cleaned) {
+        let opts = cap
+            .get(1)
+            .or_else(|| cap.get(2))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        for opt in split_geometry_options(opts) {
+            let opt = opt.trim();
+            if opt.eq_ignore_ascii_case("letterpaper") {
+                a4 = false;
+                continue;
+            }
+            if opt.eq_ignore_ascii_case("a4paper") {
+                a4 = true;
+                continue;
+            }
+            let Some((k, v)) = opt.split_once('=') else {
+                continue;
+            };
+            let (first, second) = braced_pair(v.trim());
+            match k.trim().to_ascii_lowercase().as_str() {
+                "margin" => {
+                    // Braced pair = {horizontal, vertical}: use the h part.
+                    if let Some(h) = latex_length_to_mm(first) {
+                        left = Some(h);
+                        right = Some(h);
+                    }
+                }
+                "hmargin" => match second {
+                    Some(r) => {
+                        if let (Some(lm), Some(rm)) =
+                            (latex_length_to_mm(first), latex_length_to_mm(r))
+                        {
+                            left = Some(lm);
+                            right = Some(rm);
+                        }
+                    }
+                    None => {
+                        if let Some(m) = latex_length_to_mm(first) {
+                            left = Some(m);
+                            right = Some(m);
+                        }
+                    }
+                },
+                "left" | "lmargin" | "inner" => {
+                    if let Some(m) = latex_length_to_mm(first) {
+                        left = Some(m);
+                    }
+                }
+                "right" | "rmargin" | "outer" => {
+                    if let Some(m) = latex_length_to_mm(first) {
+                        right = Some(m);
+                    }
+                }
+                "textwidth" => {
+                    textwidth = latex_length_to_mm(first).or(textwidth);
+                }
+                _ => {}
+            }
+        }
+    }
+    let paper_w_mm = if a4 { 210.0 } else { 215.9 }; // A4 vs US Letter width
+    let derived = match (left, right) {
+        (Some(l), Some(r)) => Some((l + r) / 2.0),
+        (Some(m), None) | (None, Some(m)) => Some(m),
+        (None, None) => textwidth.map(|tw| ((paper_w_mm - tw) / 2.0).max(0.0)),
+    };
+    // Clamp to something sane: a 0mm or absurd margin would break the layout
+    // more than it helps. Below ~5mm or above ~60mm, keep the viewer default.
+    derived.filter(|m| (5.0..=60.0).contains(m))
 }
 
 /// Like `extract_brace_arg`, but also captures the LaTeX optional `[...]`
@@ -1303,6 +1466,90 @@ mod tests {
         let mut e = Extractor::new();
         e.scan(src, Path::new("test.tex"));
         e.finish()
+    }
+
+    fn geom(src: &str) -> Option<f64> {
+        preamble(src).geometry_margin_mm
+    }
+
+    #[test]
+    fn geometry_margin_parses_common_forms() {
+        // margin=1in → 25.4mm (the user's real paper).
+        assert_eq!(geom(r"\usepackage[margin=1in]{geometry}"), Some(25.4));
+        // \geometry{...} form, cm.
+        assert_eq!(
+            geom(r"\usepackage{geometry}\geometry{margin=2cm}"),
+            Some(20.0)
+        );
+        // hmargin wins for horizontal; vmargin ignored.
+        assert_eq!(
+            geom(r"\usepackage[hmargin=30mm,vmargin=20mm]{geometry}"),
+            Some(30.0)
+        );
+        // left+right average.
+        assert_eq!(
+            geom(r"\usepackage[left=25mm,right=35mm]{geometry}"),
+            Some(30.0)
+        );
+        // textwidth on A4 (default paper): (210 − 150)/2 = 30.
+        assert_eq!(geom(r"\usepackage[textwidth=150mm]{geometry}"), Some(30.0));
+        // Last \geometry wins (geometry's own last-key semantics).
+        assert_eq!(
+            geom(r"\usepackage[margin=1in]{geometry}\geometry{margin=15mm}"),
+            Some(15.0)
+        );
+    }
+
+    #[test]
+    fn geometry_margin_absent_or_out_of_range_is_none() {
+        assert_eq!(geom(r"\usepackage{amsmath}"), None); // no geometry
+        assert_eq!(geom(r"\usepackage[a4paper]{geometry}"), None); // no margin key
+        assert_eq!(geom(r"\usepackage[margin=1mm]{geometry}"), None); // clamped out (<5)
+        assert_eq!(geom(r"\usepackage[margin=3in]{geometry}"), None); // 76.2mm, clamped out (>60)
+        assert_eq!(geom(r"% \usepackage[margin=1in]{geometry}"), None); // commented out
+    }
+
+    #[test]
+    fn geometry_margin_later_key_wins_within_one_call() {
+        // geometry applies options left-to-right; a later hmargin overrides
+        // an earlier margin — INSIDE one option list, not just across calls.
+        assert_eq!(
+            geom(r"\usepackage[margin=1in,hmargin=30mm]{geometry}"),
+            Some(30.0)
+        );
+        assert_eq!(
+            geom(r"\geometry{margin=1in,left=30mm,right=30mm}"),
+            Some(30.0)
+        );
+        // A later vertical-only key must NOT clobber the horizontal value.
+        assert_eq!(
+            geom(r"\usepackage[margin=20mm,vmargin=40mm]{geometry}"),
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn geometry_margin_braced_pairs() {
+        // margin={horizontal, vertical} → the horizontal component.
+        assert_eq!(
+            geom(r"\usepackage[margin={1in,1.25in}]{geometry}"),
+            Some(25.4)
+        );
+        // hmargin={left, right} → the average.
+        assert_eq!(
+            geom(r"\usepackage[hmargin={2cm,4cm}]{geometry}"),
+            Some(30.0)
+        );
+        // Braced pair inside the \geometry{...} form (nested braces).
+        assert_eq!(geom(r"\geometry{margin={1in,1.25in}}"), Some(25.4));
+    }
+
+    #[test]
+    fn geometry_margin_paper_size_remembered_across_calls() {
+        // letterpaper (215.9mm) declared in the package load applies to a
+        // later \geometry textwidth: (215.9 − 152.4)/2 ≈ 31.75.
+        let m = geom(r"\usepackage[letterpaper]{geometry}\geometry{textwidth=6in}").unwrap();
+        assert!((m - 31.75).abs() < 0.01, "got {m}");
     }
 
     /// Cascade the same way `extract_preamble_with_overrides` does, but

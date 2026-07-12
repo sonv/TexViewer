@@ -53,10 +53,27 @@ pub(super) fn wrap_in_shell(
     // Config-driven overrides emitted after the bundled CSS so they win
     // by source order, and as a separate `<script>` so client JS can read
     // the values at init without round-tripping through localStorage.
-    let config_css = format!(
+    let mut config_css = format!(
         ":root {{ --body-font-size: {}px; --ui-font-size: {}px; }}",
         opts.viewer_config.font_size, opts.viewer_config.ui_font_size,
     );
+    // A4 page margin. Precedence: explicit `page-margin` config > the
+    // document's own geometry margin > the built-in default (emit nothing,
+    // so default.css's 64px / @page 17mm stand exactly). When we DO override,
+    // both the screen padding and the print margin are derived from the SAME
+    // millimetre value, so the screen A4 column keeps equaling the printed
+    // text column (line wrapping and Cmd+P pagination stay in sync — the
+    // 176 mm invariant). 794px == 210 mm (A4 width), so px = mm × 794/210.
+    let page_margin_mm =
+        crate::effective_page_margin_mm(&opts.viewer_config, preamble.geometry_margin_mm);
+    if let Some(mm) = page_margin_mm {
+        let pad_px = mm * (794.0 / 210.0);
+        // --page-pad-x-base is what the base padding, crop math, and the JS
+        // cropDxNow all read; the @page override keeps print in lockstep.
+        config_css.push_str(&format!(
+            "\n:root {{ --page-pad-x-base: {pad_px:.1}px; }}\n@page {{ size: A4; margin: {mm:.1}mm; }}",
+        ));
+    }
     // The trigger string comes from a finite enum (cmd-click / ctrl-click
     // / alt-click / double-click) with no JSON-special characters, so a
     // plain quote-wrap is sufficient and avoids dragging in an escape
@@ -66,7 +83,7 @@ pub(super) fn wrap_in_shell(
     let mathjax_config_js = serde_json::to_string(&opts.viewer_config.mathjax_config)
         .unwrap_or_else(|_| "\"\"".to_string());
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx}, pageMarginMm: {margin} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
@@ -74,6 +91,13 @@ pub(super) fn wrap_in_shell(
         thm = opts.viewer_config.theorem_numbering.as_str(),
         tsm = opts.viewer_config.typeset_mode.as_str(),
         mjx = mathjax_config_js,
+        // Seeded so applyViewerConfig can detect the FIRST live change (its
+        // reload guard treats `undefined` as not-yet-seen; without this seed
+        // the first flip after page load was silently swallowed). `null` =
+        // no override in effect — matches the WS push's JSON null.
+        margin = page_margin_mm
+            .map(|m| format!("{m:.1}"))
+            .unwrap_or_else(|| "null".to_string()),
     );
 
     let mut out = String::new();
