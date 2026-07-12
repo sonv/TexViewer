@@ -91,7 +91,17 @@ fn finish_render(
     // numbering when the `\newtheorem` declarations aren't visible to detection.
     thms.apply_numbering_scheme(opts.viewer_config.theorem_numbering);
     let mut body = parser::parse_body(&project, &thms)?;
-    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms);
+    // mathtools `showonlyrefs`: collect every referenced key up front so the
+    // numbering pass can suppress numbers on unreferenced equations. The scan
+    // covers every body file (include order) and skips comments itself.
+    let referenced = preamble.show_only_refs.then(|| {
+        let mut keys = std::collections::HashSet::new();
+        for f in &project.files {
+            numbering::collect_referenced_keys(&f.source, &mut keys);
+        }
+        keys
+    });
+    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms, referenced);
     let mut sync = SyncIndex::new();
     // Inject the resolved root path so the topbar can show "title — path".
     // Done as a clone to avoid asking callers to mutate the &HtmlOptions

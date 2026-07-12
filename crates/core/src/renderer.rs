@@ -3985,6 +3985,92 @@ mod tests {
     }
 
     #[test]
+    fn align_label_on_second_row_refs_that_rows_number() {
+        // Regression: the env's primary label (first \label anywhere in the
+        // body) was recorded against the FIRST numbered row, and record_label
+        // is first-write-wins — so a label sitting on row 2 resolved to row
+        // 1's number.
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{align}\na &= b \\\\\nc &= d \\label{eq:second}\n\\end{align}\nSee \\eqref{eq:second}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:second" data-kind="eqref">(2)</a>"##));
+        assert!(!out.body_html.contains(r#"data-kind="eqref">(1)</a>"#));
+    }
+
+    #[test]
+    fn showonlyrefs_numbers_only_referenced_align_rows() {
+        // mathtools [showonlyrefs]: only referenced equations are numbered,
+        // consecutively among the shown ones. Label+ref on row 2 only → row 1
+        // gets no number, row 2 is (1), and \eqref resolves to (1).
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\usepackage[showonlyrefs]{mathtools}\n\\begin{document}\n\\begin{align}\na &= b \\\\\nc &= d \\label{eq:second}\n\\end{align}\nSee \\eqref{eq:second}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row empty"></span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(1)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:second" data-kind="eqref">(1)</a>"##));
+        assert!(!out.body_html.contains("(2)"), "{}", out.body_html);
+    }
+
+    #[test]
+    fn showonlyrefs_via_mathtoolsset_skips_unreferenced_equation() {
+        // The \mathtoolsset{showonlyrefs} spelling. An unreferenced equation
+        // shows no number and does not tick the counter; the referenced one
+        // after it is (1).
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\usepackage{mathtools}\n\\mathtoolsset{showonlyrefs}\n\\begin{document}\n\\begin{equation}\na = b\n\\end{equation}\n\\begin{equation}\nc = d \\label{eq:used}\n\\end{equation}\nSee \\eqref{eq:used}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r#"<span class="eq-num">(1)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:used" data-kind="eqref">(1)</a>"##));
+        assert!(!out.body_html.contains("(2)"), "{}", out.body_html);
+    }
+
+    #[test]
+    fn showonlyrefs_false_keeps_normal_numbering() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\usepackage[showonlyrefs=false]{mathtools}\n\\begin{document}\n\\begin{align}\na &= b \\\\\nc &= d \\label{eq:second}\n\\end{align}\nSee \\eqref{eq:second}.\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(1)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="eq-num-row">(2)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r##"data-target="eq:second" data-kind="eqref">(2)</a>"##));
+    }
+
+    #[test]
     fn align_trailing_row_separator_gets_no_phantom_number() {
         // Regression: a trailing `\\` leaves an empty final row that MathJax
         // does not render, but numbering still gave it a gutter number and

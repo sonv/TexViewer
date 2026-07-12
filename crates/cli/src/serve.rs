@@ -2596,7 +2596,17 @@ async fn render_cached(
     t.body_parse_ms = t2.elapsed().as_millis();
 
     let t3 = std::time::Instant::now();
-    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms);
+    // mathtools `showonlyrefs`: collect referenced keys so numbering can
+    // suppress numbers on unreferenced equations (mirrors lib.rs
+    // finish_render — this is the daemon's live-render twin of that path).
+    let referenced = preamble.show_only_refs.then(|| {
+        let mut keys = std::collections::HashSet::new();
+        for f in &project.files {
+            numbering::collect_referenced_keys(&f.source, &mut keys);
+        }
+        keys
+    });
+    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms, referenced);
     t.number_ms = t3.elapsed().as_millis();
 
     let t4 = std::time::Instant::now();
@@ -3843,6 +3853,7 @@ Third paragraph with $x^2$.
                     author_details: Vec::new(),
                     date: None,
                     sidenote_wrappers: Vec::new(),
+                    show_only_refs: false,
                 },
                 included_files: Vec::new(),
             })),
@@ -4199,6 +4210,7 @@ Third paragraph with $x^2$.
             author_details: Vec::new(),
             date: None,
             sidenote_wrappers: Vec::new(),
+            show_only_refs: false,
         }
     }
 

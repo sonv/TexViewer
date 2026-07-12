@@ -76,6 +76,11 @@ pub struct ExtractedPreamble {
     /// pattern. The renderer picks these up and emits them as collapsible
     /// margin chips instead of falling back to opaque LaTeX text.
     pub sidenote_wrappers: Vec<String>,
+    /// mathtools' `showonlyrefs` is active (`\usepackage[showonlyrefs]
+    /// {mathtools}` or `\mathtoolsset{showonlyrefs}`): only equations whose
+    /// labels are referenced somewhere get numbers.
+    #[serde(default)]
+    pub show_only_refs: bool,
 }
 
 /// Bundled built-in macro overrides. Loaded as the first (lowest-priority)
@@ -604,6 +609,7 @@ impl Extractor {
             .filter(|m| m.body.trim_start().starts_with(r"\sidenote"))
             .map(|m| m.name.clone())
             .collect();
+        let show_only_refs = detect_show_only_refs(&metadata_src);
         ExtractedPreamble {
             macros: self.macros,
             packages_short,
@@ -618,8 +624,51 @@ impl Extractor {
             author_details,
             date,
             sidenote_wrappers,
+            show_only_refs,
         }
     }
+}
+
+/// Detect mathtools' `showonlyrefs` option in comment-stripped preamble
+/// source: `\usepackage[...,showonlyrefs,...]{...,mathtools,...}` (the option
+/// only counts on a command that loads mathtools) or
+/// `\mathtoolsset{...,showonlyrefs,...}`. Occurrences are processed in source
+/// order and the last setting wins, so `\mathtoolsset{showonlyrefs=false}`
+/// can switch it back off.
+fn detect_show_only_refs(cleaned: &str) -> bool {
+    static SOR_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(
+            r"\\(?:usepackage|RequirePackage)\s*\[([^\]]*)\]\s*\{\s*([^}]+?)\s*\}|\\mathtoolsset\s*\{([^}]*)\}",
+        )
+        .unwrap()
+    });
+    let mut active = false;
+    for cap in SOR_RE.captures_iter(cleaned) {
+        let opts = match (cap.get(1), cap.get(3)) {
+            (Some(opts), _) => {
+                let loads_mathtools = cap
+                    .get(2)
+                    .is_some_and(|pkgs| pkgs.as_str().split(',').any(|p| p.trim() == "mathtools"));
+                if !loads_mathtools {
+                    continue;
+                }
+                opts.as_str()
+            }
+            (None, Some(opts)) => opts.as_str(),
+            _ => continue,
+        };
+        for opt in opts.split(',') {
+            let opt = opt.trim();
+            if opt == "showonlyrefs" {
+                active = true;
+            } else if let Some(value) = opt.strip_prefix("showonlyrefs") {
+                if let Some(value) = value.trim_start().strip_prefix('=') {
+                    active = value.trim() != "false";
+                }
+            }
+        }
+    }
+    active
 }
 
 /// Like `extract_brace_arg`, but also captures the LaTeX optional `[...]`

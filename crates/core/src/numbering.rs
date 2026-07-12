@@ -16,7 +16,7 @@
 //!   number per top-level row unless that row has `\notag` / `\nonumber`.
 //!   Starred forms (`equation*` etc.) are unnumbered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Node, NodeKind, RefKind};
 use crate::bibtex::{alphabetic_label, alphabetic_sort_key, authoryear_label, BibEntry, BibStyle};
@@ -82,8 +82,10 @@ pub fn assign_numbers(
     bib: &HashMap<String, BibEntry>,
     style: BibStyle,
     thms: &TheoremRegistry,
+    referenced: Option<HashSet<String>>,
 ) -> LabelTable {
     let mut state = State::new(thms);
+    state.referenced = referenced;
     walk(nodes, &mut state);
 
     // Finalize citation order + display per style.
@@ -202,6 +204,11 @@ struct State<'r> {
     labels: LabelTable,
     pending_labels: Vec<String>,
     registry: &'r TheoremRegistry,
+    /// `Some(keys)` when mathtools' `showonlyrefs` is active: the set of every
+    /// key referenced anywhere in the document. An equation row is numbered
+    /// (and ticks the counter) only when one of its labels is in the set.
+    /// `None` = normal numbering.
+    referenced: Option<HashSet<String>>,
 }
 
 impl<'r> State<'r> {
@@ -218,6 +225,7 @@ impl<'r> State<'r> {
             labels: LabelTable::default(),
             pending_labels: Vec::new(),
             registry,
+            referenced: None,
         }
     }
 }
@@ -385,14 +393,32 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                             continue;
                         }
 
+                        // mathtools `showonlyrefs`: a row shows a number (and
+                        // ticks the counter) only when one of its labels is
+                        // referenced somewhere in the document.
+                        if let Some(referenced) = &state.referenced {
+                            if !labels_from_latex(row)
+                                .iter()
+                                .any(|l| referenced.contains(l))
+                            {
+                                row_numbers.push(None);
+                                continue;
+                            }
+                        }
+
                         let n = next_equation_number(state);
                         row_numbers.push(Some(n.clone()));
                         *number = Some(n.clone());
 
                         if first_numbered_row {
-                            if let Some(l) = label {
-                                record_label(&mut state.labels, l.clone(), &n, "Equation");
-                            }
+                            // Only pending labels (from before the env) bind to
+                            // the first numbered row. The env's primary `label`
+                            // is NOT recorded here: it is just the first \label
+                            // in the body and may sit on a LATER row — the
+                            // per-row pass below records every in-body label
+                            // against its own row's number, and record_label is
+                            // first-write-wins, so recording the primary here
+                            // would pin it to the wrong row.
                             let pending = std::mem::take(&mut state.pending_labels);
                             for l in pending {
                                 record_label(&mut state.labels, l, &n, "Equation");
@@ -404,7 +430,7 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                             record_label(&mut state.labels, l, &n, "Equation");
                         }
                     }
-                } else if numbered && !row_is_unnumbered(body) {
+                } else if numbered && !row_is_unnumbered(body) && single_eq_is_shown(state, body) {
                     let n = next_equation_number(state);
                     *number = Some(n.clone());
                     if let Some(l) = label {
@@ -685,6 +711,103 @@ fn skip_row_separator_spacing(src: &str, mut i: usize) -> usize {
     before_ws
 }
 
+/// mathtools `showonlyrefs` for single-display environments (`equation`,
+/// `multline`): shown only when one of the body's labels is referenced.
+/// Always shown when the option is off (`state.referenced` is `None`).
+fn single_eq_is_shown(state: &State<'_>, body: &str) -> bool {
+    match &state.referenced {
+        None => true,
+        Some(set) => labels_from_latex(body).iter().any(|l| set.contains(l)),
+    }
+}
+
+/// Collect every key referenced by a `\ref`-family command in raw source
+/// `src` into `out`. Line comments are skipped inline (a commented-out
+/// `% \eqref{x}` does not count), matching the comment-stripped-scan
+/// invariant of the preamble extractors.
+/// Drives mathtools' `showonlyrefs`: an equation keeps its number only when
+/// one of its labels lands in this set. mathtools itself only counts
+/// `\eqref`/`\refeq`; the preview is deliberately generous — referencing a key
+/// any way keeps its number visible (e.g. `\cref` + `showonlyrefs` produces
+/// broken PDFs, so faithfulness to that combination isn't useful).
+pub fn collect_referenced_keys(src: &str, out: &mut HashSet<String>) {
+    const REF_COMMANDS: &[&str] = &[
+        "ref", "eqref", "refeq", "pageref", "cref", "Cref", "autoref", "nameref",
+    ];
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'\\' {
+            if !bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+                // Escaped char (`\\`, `\%`, `\λ`…): skip both so an escaped
+                // `%` doesn't read as a comment. The escaped char may be
+                // multibyte.
+                let next_w = src[i + 1..].chars().next().map_or(0, |c| c.len_utf8());
+                i += 1 + next_w;
+                continue;
+            }
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
+                end += 1;
+            }
+            if REF_COMMANDS.contains(&&src[start..end]) {
+                let mut j = end;
+                // Starred variants (`\cref*`, `\ref*`) reference all the same.
+                if bytes.get(j) == Some(&b'*') {
+                    j += 1;
+                }
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'{') {
+                    let arg_start = j + 1;
+                    let mut depth = 1i32;
+                    let mut k = arg_start;
+                    while k < bytes.len() {
+                        match bytes[k] {
+                            b'\\' if k + 1 < bytes.len() => {
+                                k += 2;
+                                continue;
+                            }
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                    if depth == 0 {
+                        // `\cref{eq:a,eq:b}` and `\crefrange`-style comma lists.
+                        for key in src[arg_start..k].split(',') {
+                            let key = key.trim();
+                            if !key.is_empty() {
+                                out.insert(key.to_string());
+                            }
+                        }
+                        i = k + 1;
+                        continue;
+                    }
+                }
+            }
+            i = end;
+            continue;
+        }
+        let ch = src[i..].chars().next().unwrap_or('\0');
+        i += ch.len_utf8();
+    }
+}
+
 fn row_is_unnumbered(row: &str) -> bool {
     has_latex_command(row, "notag")
         || has_latex_command(row, "nonumber")
@@ -866,7 +989,7 @@ mod tests {
         let project = project_with(preamble, src);
         let thms = TheoremRegistry::from_preamble(preamble);
         let mut ns = parse_body(&project, &thms).unwrap();
-        assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric, &thms)
+        assign_numbers(&mut ns, &HashMap::new(), BibStyle::Numeric, &thms, None)
     }
 
     /// Number an already-parsed body with built-in AMS defaults.
@@ -876,6 +999,7 @@ mod tests {
             &HashMap::new(),
             BibStyle::Numeric,
             &TheoremRegistry::with_builtin_defaults(),
+            None,
         )
     }
 
