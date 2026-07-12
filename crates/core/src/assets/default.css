@@ -91,6 +91,13 @@ html, body {
    `overflow-x: hidden` would break). Fixed margin columns aren't clipped (they
    anchor to the viewport, not body). */
 body { overflow-x: clip; }
+/* Zoomed wider than the viewport (viewer.js updatePageScale toggles this):
+   trade the clip for a real horizontal scroll context so the mouse/trackpad
+   can pan. `clip` propagates to the viewport as `hidden` — programmatically
+   scrollable (h/l always worked) but dead to user input; `auto` propagates
+   as user-scrollable, and since the value moves to the viewport, body itself
+   still isn't a scroll container — the sticky topbar keeps sticking. */
+body.page-overwide { overflow-x: auto; }
 .topbar {
   display: flex;
   flex-direction: column;
@@ -100,6 +107,11 @@ body { overflow-x: clip; }
   padding: 4px 12px 4px 36px;
   background: #fff;
   border-bottom: 1px solid var(--border);
+  /* Sticky pins the bar vertically only. Horizontal pans of a zoomed page
+     (body.page-overwide) are handled by a translateX shim in footer.js —
+     sticky `left: 0` can't help here, because the bar fills body's width
+     exactly and sticky never pushes an element outside its containing
+     block. */
   position: sticky; top: 0; z-index: 10;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-size: var(--ui-font-size);
@@ -771,9 +783,15 @@ body.page-mode-dynamic main#page {
   display: block;
   min-height: 1.2em;
   line-height: 1.2;
+  /* The list passes clicks through (it spans the block's full height), but
+     the visible "(n)" itself must be hittable: Cmd/Ctrl-clicking a row's
+     equation number backward-jumps to that row's source line (viewer.js
+     mathRowFromClick maps the row wrapper by sibling index). */
+  pointer-events: auto;
 }
 .eq-num-row.empty {
   visibility: hidden;
+  pointer-events: none;
 }
 .eq-refkey-list {
   position: absolute;

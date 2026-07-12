@@ -569,12 +569,17 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - **Content zoom.** `+` / `-` zoom the page (header and sidebar stay
   put), `0` resets, and `=` auto-fits the page width to the viewport.
   `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
-  only scale the paper. The zoom factor is persisted in
+  only scale the paper. When the page is zoomed wider than the window it
+  pans natively — trackpad two-finger pan or shift+wheel, with `h`/`l`
+  still available for keyboard nudges. The zoom factor is persisted in
   `localStorage["mathpreview.userZoom"]`.
 - **Cmd/Ctrl-click → source.** Modifier-click any rendered token to jump
-  the editor to that source line. Under the nvim plugin this navigates in
-  place; for other editors set the plugin's `editor = '…'` option (or
-  `--editor` on a hand-run `serve`), e.g. `code -g {file}:{line}`.
+  the editor to that source line — word-precise in prose, and row-precise
+  inside multiline math: clicking a row of an `align`/`gather`/`multline`
+  lands on that row's own source line (cursor on its first token), not on
+  the `\begin` line. Under the nvim plugin this navigates in place; for
+  other editors set the plugin's `editor = '…'` option (or `--editor` on a
+  hand-run `serve`), e.g. `code -g {file}:{line}`.
 - **Math-only search.** Prefix the `/` query with `m:` (or wrap it like
   `$\alpha$`) to match only SVG math glyphs, skipping body text. A single
   letter or `\command` auto-widens across MathJax's style variants

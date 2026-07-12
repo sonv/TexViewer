@@ -1167,6 +1167,51 @@
     });
   }
 
+  // The rendered rows of a multi-row math block: the direct
+  // [data-mml-node="mtr"/"mlabeledtr"] rows of the OUTERMOST mtable (first in
+  // document order — the align/gather itself). A descendant query would also
+  // grab mtr from a nested matrix/cases/aligned inside a row, inflating the
+  // count and breaking the index→row mapping, so keep only rows whose nearest
+  // mtable IS the outermost. Shared by the forward highlight
+  // (highlightMathRows) and the backward click→row mapping (mathRowFromClick)
+  // — both directions must count rows identically or their index schemes
+  // drift apart.
+  function mathRowGroups(block) {
+    var svg = block ? block.querySelector('svg') : null;
+    var mtable = svg ? svg.querySelector('[data-mml-node="mtable"]') : null;
+    var groups = [];
+    if (mtable) {
+      mtable.querySelectorAll('[data-mml-node="mtr"],[data-mml-node="mlabeledtr"]')
+        .forEach(function(g) {
+          if (g.closest('[data-mml-node="mtable"]') === mtable) groups.push(g);
+        });
+    }
+    return groups;
+  }
+
+  // Which rendered row of a multi-row math block a click landed on — the
+  // backward-search counterpart of highlightMathRows' index scheme. Returns
+  // { row, count } or null (single-row block, or the click missed every row).
+  // A click inside a nested table (cases/matrix) walks up to the enclosing
+  // outer row; a click on the equation-number / refkey gutter maps through
+  // its per-row wrapper, which the renderer emits one per row.
+  function mathRowFromClick(block, target) {
+    var groups = mathRowGroups(block);
+    if (groups.length < 2 || !target || !target.closest) return null;
+    var rowSel = '[data-mml-node="mtr"],[data-mml-node="mlabeledtr"]';
+    var g = target.closest(rowSel);
+    while (g && groups.indexOf(g) === -1) {
+      g = g.parentElement && g.parentElement.closest(rowSel);
+    }
+    if (g) return { row: groups.indexOf(g), count: groups.length };
+    var gutterRow = target.closest('.eq-num-row, .eq-refkey-row');
+    if (gutterRow && gutterRow.parentElement && block.contains(gutterRow)) {
+      var i = Array.prototype.indexOf.call(gutterRow.parentElement.children, gutterRow);
+      if (i >= 0 && i < groups.length) return { row: i, count: groups.length };
+    }
+    return null;
+  }
+
   // Highlight the selected rows of multi-row math blocks (align/gather). Each
   // entry is { id, count, rows } from the daemon: `count` is the number of rows
   // it expects (a guard against MathJax merging/dropping rows) and `rows` the
@@ -1184,19 +1229,7 @@
       // Box the whole equation block (CSS outline on its SVG); the rows below
       // get the fill. One clean box beats per-row strokes that clip mid-edge.
       block.classList.add('mp-math-active');
-      var svg = block.querySelector('svg');
-      // The OUTERMOST table is the align/gather itself (first in document
-      // order). Take only ITS direct rows: a descendant query would also grab
-      // mtr from a nested matrix/cases/aligned inside a row, inflating the
-      // count and breaking the index→row mapping.
-      var mtable = svg ? svg.querySelector('[data-mml-node="mtable"]') : null;
-      var groups = [];
-      if (mtable) {
-        mtable.querySelectorAll('[data-mml-node="mtr"],[data-mml-node="mlabeledtr"]')
-          .forEach(function(g) {
-            if (g.closest('[data-mml-node="mtable"]') === mtable) groups.push(g);
-          });
-      }
+      var groups = mathRowGroups(block);
       if (!groups.length || groups.length !== mr.count) {
         block.classList.add('source-range');
         return;
@@ -1341,6 +1374,19 @@
     if (!info) return false;
     e.preventDefault();
     e.stopPropagation();
+    // A click inside a multi-row align/gather also names the exact rendered
+    // row; the daemon resolves it to that row's own source line through the
+    // sync index (always as fresh as the render — nothing to go stale in the
+    // DOM). The parsed data-src above stays in the payload as the daemon's
+    // fallback anchor when the row can't be resolved.
+    if (el.id && el.classList.contains('math')) {
+      var rowInfo = mathRowFromClick(el, e.target);
+      if (rowInfo) {
+        info.element_id = el.id;
+        info.math_row = rowInfo.row;
+        info.row_count = rowInfo.count;
+      }
+    }
     revealSourceElement(el.id, false);
     // Fire both endpoints: `/jump` lands the request on whichever nvim
     // plugin is polling for it (the path that already works without
@@ -3092,6 +3138,12 @@
     var shellW = parseFloat(shell.style.width) || 0;
     var gutter = Math.max(0, Math.floor((vw - shellW) / 2));
     document.documentElement.style.setProperty('--margin-gutter', gutter + 'px');
+    // A page zoomed wider than the viewport needs a horizontally
+    // USER-scrollable viewport: body's default `overflow-x: clip` reaches the
+    // viewport as `hidden` — fine for scrollBy (h/l keys) but dead to the
+    // mouse/trackpad — so this class swaps it for `auto` (see default.css).
+    // Runs on zoom and window resize, so the class tracks the fit exactly.
+    document.body.classList.toggle('page-overwide', vw > 0 && shellW > vw + 1);
   }
 
   function clampUserZoom(z) {

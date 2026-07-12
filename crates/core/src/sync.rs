@@ -33,15 +33,28 @@ pub struct SyncEntry {
     pub kind: SyncKind,
 }
 
+/// One rendered row of a multi-row math block: its inclusive source line range
+/// plus the byte column of the row's first non-whitespace character.
+/// `start_col == 0` means "unknown": the row starts on the `\begin` line, whose
+/// file column the renderer can't see from the body slice alone — consumers
+/// fall back to the block anchor's column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MathRow {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub start_col: u32,
+}
+
 /// Per-row source spans for a multi-row display-math block (align/gather/…).
-/// Lets an editor selection highlight the individual rows it covers rather than
-/// the whole block. `rows[i]` is the (start_line, end_line) of the i-th rendered
-/// table row, so the client maps overlapping indices to the SVG `mtr` groups.
+/// Forward: lets an editor selection highlight the individual rows it covers
+/// rather than the whole block. Backward: lets a click on the i-th rendered
+/// `mtr` row jump to that row's own source line instead of the `\begin` line.
+/// `rows[i]` corresponds to the i-th rendered table row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MathRowsEntry {
     pub element_id: String,
     pub file: PathBuf,
-    pub rows: Vec<(u32, u32)>,
+    pub rows: Vec<MathRow>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -97,7 +110,7 @@ impl SyncIndex {
         &mut self,
         element_id: impl Into<String>,
         file: PathBuf,
-        rows: Vec<(u32, u32)>,
+        rows: Vec<MathRow>,
     ) {
         self.math_rows.push(MathRowsEntry {
             element_id: element_id.into(),
@@ -126,7 +139,7 @@ impl SyncIndex {
                 .rows
                 .iter()
                 .enumerate()
-                .filter(|(_, &(rs, re))| rs <= end_line && re >= start_line)
+                .filter(|(_, r)| r.start_line <= end_line && r.end_line >= start_line)
                 .map(|(i, _)| i)
                 .collect();
             if !hits.is_empty() {
@@ -134,6 +147,32 @@ impl SyncIndex {
             }
         }
         out
+    }
+
+    /// Backward-search counterpart of `math_rows_in_range`: the source position
+    /// of the `row`-th rendered row of block `element_id` in `file`, as
+    /// `(line, col)` with a 1-based byte col (col 0 = row starts on the
+    /// `\begin` line; the caller keeps the block anchor's column).
+    /// `expected_count` is how many rows the client's rendered SVG actually
+    /// has — a mismatch means source and render disagree (mid-edit skew), so
+    /// return None and let the caller fall back to the block anchor, exactly
+    /// like the forward direction falls back to a whole-block highlight.
+    pub fn math_row_pos(
+        &self,
+        element_id: &str,
+        file: &Path,
+        row: usize,
+        expected_count: usize,
+    ) -> Option<(u32, u32)> {
+        let m = self
+            .math_rows
+            .iter()
+            .find(|m| m.element_id == element_id && same_path(&m.file, file))?;
+        if m.rows.len() != expected_count {
+            return None;
+        }
+        let r = m.rows.get(row)?;
+        Some((r.start_line, r.start_col))
     }
 
     pub fn lookup_by_label(&self, label: &str) -> Option<&SyncEntry> {
@@ -366,12 +405,24 @@ mod tests {
         assert!(sync.leaves_in_range(&file, 30, 1, 31, 1).is_empty());
     }
 
+    fn row(start_line: u32, end_line: u32, start_col: u32) -> MathRow {
+        MathRow {
+            start_line,
+            end_line,
+            start_col,
+        }
+    }
+
     #[test]
     fn math_rows_in_range_returns_overlapping_row_indices() {
         let file = PathBuf::from("/tmp/main.tex");
         let mut sync = SyncIndex::new();
         // A 3-row align with rows on source lines 4, 5, 6.
-        sync.record_math_rows("dm-1", file.clone(), vec![(4, 4), (5, 5), (6, 6)]);
+        sync.record_math_rows(
+            "dm-1",
+            file.clone(),
+            vec![row(4, 4, 3), row(5, 5, 3), row(6, 6, 3)],
+        );
 
         // Selecting lines 4..5 hits rows 0 and 1 (not row 2); count is reported.
         assert_eq!(
@@ -389,5 +440,31 @@ mod tests {
         assert!(sync
             .math_rows_in_range(Path::new("/tmp/other.tex"), 4, 6)
             .is_empty());
+    }
+
+    #[test]
+    fn math_row_pos_resolves_clicked_row_and_guards_skew() {
+        let file = PathBuf::from("/tmp/main.tex");
+        let mut sync = SyncIndex::new();
+        sync.record_math_rows(
+            "dm-1",
+            file.clone(),
+            vec![row(4, 4, 0), row(5, 6, 3), row(7, 7, 5)],
+        );
+
+        // The clicked row's own position, including its start column.
+        assert_eq!(sync.math_row_pos("dm-1", &file, 1, 3), Some((5, 3)));
+        // Row 0 starts on the \begin line: col is the 0 = unknown sentinel.
+        assert_eq!(sync.math_row_pos("dm-1", &file, 0, 3), Some((4, 0)));
+        // Rendered/source row-count skew → refuse, caller falls back.
+        assert_eq!(sync.math_row_pos("dm-1", &file, 1, 2), None);
+        // Row index out of bounds → refuse.
+        assert_eq!(sync.math_row_pos("dm-1", &file, 3, 3), None);
+        // Unknown block or wrong file → refuse.
+        assert_eq!(sync.math_row_pos("dm-9", &file, 0, 3), None);
+        assert_eq!(
+            sync.math_row_pos("dm-1", Path::new("/tmp/other.tex"), 0, 3),
+            None
+        );
     }
 }

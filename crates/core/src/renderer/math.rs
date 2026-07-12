@@ -7,6 +7,7 @@ use std::fmt::Write;
 
 use crate::ast::RefKind;
 use crate::numbering::LabelTable;
+use crate::sync::MathRow;
 
 use super::util::{
     asset_url, css_number, escape_attr, escape_html, escape_math, escape_tex_text, fnv_hash,
@@ -245,14 +246,18 @@ pub(super) fn label_alias_anchors(body: &str, primary: Option<&str>) -> String {
     out
 }
 
-/// Per-row source line ranges `(start_line, end_line)` (1-based, inclusive) for
+/// Per-row source spans (1-based inclusive line range + start byte column) for
 /// a multi-row display-math `body`, given the source line of the block's
 /// `\begin{env}` (always the line the body starts on). Rows are the same
-/// `\\`-split rows MathJax renders as table rows, so the i-th range corresponds
-/// to the i-th rendered `mtr` — letting an editor selection highlight the rows
-/// it covers. Uses each (trimmed) row slice's offset within `body` to count the
-/// newlines before it.
-pub(super) fn math_row_line_ranges(body: &str, start_line: u32) -> Vec<(u32, u32)> {
+/// `\\`-split rows MathJax renders as table rows, so the i-th span corresponds
+/// to the i-th rendered `mtr` — forward search highlights the rows an editor
+/// selection covers; backward search jumps a click on a row to that row's own
+/// source position. Uses each (trimmed) row slice's offset within `body` to
+/// count the newlines before it; the trim means `start_col` lands on the row's
+/// first non-whitespace char. A row that starts on the `\begin` line has no
+/// knowable file column (`body` begins mid-line and we only know its line), so
+/// its `start_col` is the 0 = unknown sentinel.
+pub(super) fn math_row_spans(body: &str, start_line: u32) -> Vec<MathRow> {
     let mut rows = split_math_rows(body);
     // A trailing `\\` leaves an empty final row that MathJax does NOT render as
     // a table row — drop it so our row count/indices line up with the rendered
@@ -267,11 +272,54 @@ pub(super) fn math_row_line_ranges(body: &str, start_line: u32) -> Vec<(u32, u32
         let upto = upto.min(bytes.len());
         start_line + bytes[..upto].iter().filter(|&&b| b == b'\n').count() as u32
     };
+    let col_at = |off: usize| -> u32 {
+        match bytes[..off.min(bytes.len())]
+            .iter()
+            .rposition(|&b| b == b'\n')
+        {
+            Some(nl) => (off - nl) as u32,
+            None => 0,
+        }
+    };
+    // A row slice can begin at a `%` comment: split_math_rows skips comments
+    // only while SCANNING for `\\`, so a trailing `% …` after the previous
+    // row's separator (or a full comment line between rows) stays at the head
+    // of the next slice. The rendered row's first token is the first
+    // non-whitespace char outside any comment — that's where a backward jump
+    // must land, not on the comment (which can even be the PREVIOUS row's
+    // line). A leading literal `\%` starts at the backslash, so it's safe.
+    let content_at = |off: usize, end: usize| -> usize {
+        let mut i = off;
+        loop {
+            while i < end && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < end && bytes[i] == b'%' {
+                while i < end && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        // A row that is nothing but comments renders as an empty table row;
+        // pointing at the comment is the best position it has.
+        if i >= end {
+            off
+        } else {
+            i
+        }
+    };
     rows.iter()
         .map(|r| {
             let off = (r.as_ptr() as usize).saturating_sub(base).min(bytes.len());
             let end = (off + r.len()).min(bytes.len());
-            (line_at(off), line_at(end))
+            let content = content_at(off, end);
+            MathRow {
+                start_line: line_at(content),
+                end_line: line_at(end),
+                start_col: col_at(content),
+            }
         })
         .collect()
 }
@@ -696,25 +744,70 @@ pub(super) fn write_flow_marker(
 mod tests {
     use super::*;
 
+    fn row(start_line: u32, end_line: u32, start_col: u32) -> MathRow {
+        MathRow {
+            start_line,
+            end_line,
+            start_col,
+        }
+    }
+
     #[test]
-    fn math_row_line_ranges_maps_rows_to_source_lines() {
+    fn math_row_spans_maps_rows_to_source_lines() {
         // Body as captured after `\begin{align}` on source line 3: a leading
         // newline, then one row per line (4, 5, 6). `\\` is the LaTeX row sep.
         let body = "\na &= b \\\\\nc &= d \\\\\ne &= f\n";
-        assert_eq!(math_row_line_ranges(body, 3), vec![(4, 4), (5, 5), (6, 6)]);
+        assert_eq!(
+            math_row_spans(body, 3),
+            vec![row(4, 4, 1), row(5, 5, 1), row(6, 6, 1)]
+        );
     }
 
     #[test]
-    fn math_row_line_ranges_single_row_is_one_range() {
-        // A one-liner align (all on the \begin line, source line 3).
+    fn math_row_spans_start_col_lands_on_first_token() {
+        // Indented rows: start_col points at the first non-whitespace char
+        // (byte col, 1-based), so a backward jump lands ON the row's content.
+        let body = "\n  a &= b \\\\\n    c &= d\n";
+        assert_eq!(math_row_spans(body, 3), vec![row(4, 4, 3), row(5, 5, 5)]);
+    }
+
+    #[test]
+    fn math_row_spans_single_row_is_one_range() {
+        // A one-liner align (all on the \begin line, source line 3). The file
+        // column of the row is unknowable from the body slice → 0 sentinel.
         let body = " a &= b ";
-        assert_eq!(math_row_line_ranges(body, 3), vec![(3, 3)]);
+        assert_eq!(math_row_spans(body, 3), vec![row(3, 3, 0)]);
     }
 
     #[test]
-    fn math_row_line_ranges_drops_trailing_backslash_row() {
+    fn math_row_spans_drops_trailing_backslash_row() {
         // A final `\\` must not add a phantom row — MathJax renders 2 rows here.
         let body = "\na &= b \\\\\nc &= d \\\\\n";
-        assert_eq!(math_row_line_ranges(body, 3), vec![(4, 4), (5, 5)]);
+        assert_eq!(math_row_spans(body, 3), vec![row(4, 4, 1), row(5, 5, 1)]);
+    }
+
+    #[test]
+    fn math_row_spans_multiline_row_spans_its_lines() {
+        // One logical row wrapped across two source lines: the span covers
+        // both, start_col still lands on the first token.
+        let body = "\na &= b\n  + c \\\\\nd &= e\n";
+        assert_eq!(math_row_spans(body, 3), vec![row(4, 5, 1), row(6, 6, 1)]);
+    }
+
+    #[test]
+    fn math_row_spans_skips_trailing_comment_after_separator() {
+        // A `% …` after the previous row's `\\` heads the next row's slice —
+        // the jump target must be the row's real first token on line 5, not
+        // the comment back on line 4.
+        let body = "\na &= b \\\\ % done\nc &= d\n";
+        assert_eq!(math_row_spans(body, 3), vec![row(4, 4, 1), row(5, 5, 1)]);
+    }
+
+    #[test]
+    fn math_row_spans_skips_full_comment_lines_between_rows() {
+        // Whole comment lines between rows likewise belong to the next slice;
+        // the row's position is its first non-comment token (line 6, col 1).
+        let body = "\na &= b \\\\\n% explain\nc &= d\n";
+        assert_eq!(math_row_spans(body, 3), vec![row(4, 4, 1), row(6, 6, 1)]);
     }
 }

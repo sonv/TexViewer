@@ -26,7 +26,7 @@ mod shell;
 mod util;
 use bib::format_bib_entry;
 use math::{
-    equation_number_html, equation_row_refkey_html, label_alias_anchors, math_row_line_ranges,
+    equation_number_html, equation_row_refkey_html, label_alias_anchors, math_row_spans,
     render_latex_text_with_math, resolve_math_refs, strip_labels, write_float_placeholder,
     write_flow_marker, write_inline_math_span,
 };
@@ -1232,14 +1232,15 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .map(sanitize_id)
                 .unwrap_or_else(|| ctx.idgen.next("dm"));
             record(ctx, &id, &n.span, label.as_deref());
-            // Per-row source spans so an editor selection can highlight the
-            // individual align/gather rows it covers (the client maps these
-            // indices to the SVG table rows). Only for genuinely multi-row
-            // blocks; single equations keep the whole-block highlight.
-            let row_ranges = math_row_line_ranges(body, n.span.start.line);
-            if row_ranges.len() > 1 {
+            // Per-row source spans: forward, an editor selection highlights
+            // the individual align/gather rows it covers (the client maps
+            // these indices to the SVG table rows); backward, a click on a
+            // row jumps to that row's own source position. Only for genuinely
+            // multi-row blocks; single equations keep the whole-block anchor.
+            let row_spans = math_row_spans(body, n.span.start.line);
+            if row_spans.len() > 1 {
                 ctx.sync
-                    .record_math_rows(id.clone(), n.span.file.clone(), row_ranges);
+                    .record_math_rows(id.clone(), n.span.file.clone(), row_spans);
             }
             // Strip `\label{...}` — we resolve refs through our own LabelTable
             // and MathJax otherwise warns "Label: multiply defined" when the

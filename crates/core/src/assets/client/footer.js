@@ -282,5 +282,27 @@
     // re-measured (rAF-coalesced; only when the gutter is shown).
     if (lineNumbersVisible) scheduleLineNumbers();
   });
+  // Keep the topbar in view while a zoomed page (body.page-overwide) is
+  // panned horizontally. `position: sticky; left: 0` can't do it — the
+  // topbar fills body's width exactly, and sticky never pushes an element
+  // outside its containing block — so translate it by the pan instead.
+  // rAF-coalesced; the transform is cleared whenever the page fits, so the
+  // topbar is a plain sticky element in the normal (unzoomed) case.
+  (function() {
+    var topbar = document.querySelector('.topbar');
+    var queued = false;
+    function pinTopbarX() {
+      queued = false;
+      if (!topbar) return;
+      var x = document.body.classList.contains('page-overwide')
+        ? (window.scrollX || 0) : 0;
+      topbar.style.transform = x ? 'translateX(' + x + 'px)' : '';
+    }
+    window.addEventListener('scroll', function() {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(pinTopbarX);
+    }, { passive: true });
+  })();
   connect();
 })();

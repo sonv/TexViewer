@@ -25,10 +25,18 @@ summary.
   outgoing binary for the `view` subcommand and keeps `--features gui` when
   it was there.
 
-## [1.0.5] — 2026-07-11
+## [1.0.5] — 2026-07-12
 
 ### Added
 
+- **Row-precise backward search in multiline math.** Cmd/Ctrl-clicking a row
+  of an `align`/`gather`/`multline` now jumps the editor to that row's own
+  source line — cursor on the row's first token — instead of the `\begin`
+  line. Clicks inside a nested `cases`/matrix map to the enclosing row, and
+  clicks on the equation-number / ref-key gutter map through their row.
+  Forward search already highlighted the exact row; the two directions now
+  share one row-index scheme, with the same fall-back-to-the-whole-block
+  behavior when a mid-edit render disagrees with the source.
 - **Crop to content — the viewer's `c` key** (inspired by TeXpresso). Trims
   the paper margins so the reading area is essentially all text. Line
   wrapping is untouched: the page narrows by exactly the padding it sheds.
@@ -38,6 +46,13 @@ summary.
 
 ### Fixed
 
+- **Mouse horizontal scrolling on a zoomed page.** A page zoomed wider than
+  the window could only be panned with `h`/`l` — the trackpad/wheel did
+  nothing (the body's overflow clip reaches the viewport as "hidden", which
+  is programmatically scrollable but dead to user input). The viewer now
+  lifts the clip whenever the page is wider than the window, so two-finger
+  pans and shift+wheel scroll natively — and the toolbar stays in view
+  while you pan.
 - **`:MathPreviewRestart` no longer closes the viewer — and no longer
   strands you without one.** The v1.0.2 goodbye event fired on restart's
   stop phase too, closing the tab; the restart path then skipped opening a

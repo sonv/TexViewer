@@ -479,6 +479,17 @@ struct SourceRequest {
     file: PathBuf,
     line: u32,
     col: Option<u32>,
+    /// Backward search inside a multi-row math block (POST /jump and
+    /// /reveal-source only): the block's DOM id plus which rendered `mtr` row
+    /// the click landed on, out of how many rendered rows. `file`/`line`/`col`
+    /// above stay the block's own anchor — the fallback when the sync index
+    /// disagrees (mid-edit skew) or these fields are absent (prose clicks).
+    #[serde(default)]
+    element_id: Option<String>,
+    #[serde(default)]
+    math_row: Option<usize>,
+    #[serde(default)]
+    row_count: Option<usize>,
 }
 
 /// Body for `POST /search` — the editor's active `/` search pattern, mirrored
@@ -1267,16 +1278,45 @@ async fn serve_selection(
     axum::http::StatusCode::NO_CONTENT
 }
 
+/// Resolve a backward-search click to its precise source position. A click on
+/// a specific row of a multi-row math block arrives with the block's DOM id +
+/// rendered row index/count; the always-fresh SyncIndex maps that to the
+/// row's own line (and the column of its first token) via `math_row_pos`.
+/// Everything else — prose clicks, unknown ids, mid-edit row-count skew, the
+/// col-less row that starts on the `\begin` line — falls back to the block
+/// anchor the client already sent, i.e. exactly the pre-row behavior.
+async fn resolve_jump_pos(state: &AppState, req: &SourceRequest, file: &Path) -> (u32, u32) {
+    let anchor = (req.line.max(1), req.col.unwrap_or(1).max(1));
+    let (Some(id), Some(row), Some(count)) = (&req.element_id, req.math_row, req.row_count) else {
+        return anchor;
+    };
+    let current = state.current.read().await;
+    match current.sync.math_row_pos(id, file, row, count) {
+        // A row can never sit ABOVE its own block's anchor (the `\begin` line
+        // the clicked element's data-src points at). If it does, the id
+        // matched a different block — duplicate `\label`s yield duplicate
+        // element ids and the lookup returns the FIRST one — so trust the
+        // clicked element's own anchor instead.
+        Some((line, _)) if line < anchor.0 => anchor,
+        // col 0 = row starts on the \begin line — same line as the anchor, so
+        // the anchor's column is still the best position we know.
+        Some((line, col)) => (line, if col > 0 { col } else { anchor.1 }),
+        None => anchor,
+    }
+}
+
 async fn serve_jump(
     State(state): State<AppState>,
     Json(req): Json<SourceRequest>,
 ) -> axum::http::StatusCode {
     let seq = state.jump_seq.fetch_add(1, Ordering::AcqRel) + 1;
+    let file = normalize_source_path(req.file.clone());
+    let (line, col) = resolve_jump_pos(&state, &req, &file).await;
     let jump = SourceJump {
         seq,
-        file: normalize_source_path(req.file),
-        line: req.line.max(1),
-        col: req.col.unwrap_or(1).max(1),
+        file,
+        line,
+        col,
     };
     *state.pending_jump.write().await = Some(jump.clone());
     // Wake any parked long-poll so the editor jumps without waiting.
@@ -1378,12 +1418,13 @@ async fn serve_reveal_source(
         );
         return StatusCode::NO_CONTENT.into_response();
     }
-    let file = normalize_source_path(req.file);
+    let file = normalize_source_path(req.file.clone());
+    let (line, col) = resolve_jump_pos(&state, &req, &file).await;
     let file_str = file.to_string_lossy();
     let cmd = template
         .replace("{file}", &shell_quote(&file_str))
-        .replace("{line}", &req.line.max(1).to_string())
-        .replace("{col}", &req.col.unwrap_or(1).max(1).to_string());
+        .replace("{line}", &line.to_string())
+        .replace("{col}", &col.to_string());
     let result = tokio::process::Command::new("sh")
         .args(["-c", &cmd])
         .output()
@@ -1393,7 +1434,7 @@ async fn serve_reveal_source(
             log_event(
                 &state,
                 "info",
-                format!("reveal-source → {}:{}", file_str, req.line),
+                format!("reveal-source → {}:{}", file_str, line),
             );
             StatusCode::NO_CONTENT.into_response()
         }
@@ -1404,7 +1445,7 @@ async fn serve_reveal_source(
                 "warn",
                 format!(
                     "reveal-source command exited {} ({}:{}): {stderr}",
-                    out.status, file_str, req.line
+                    out.status, file_str, line
                 ),
             );
             (
