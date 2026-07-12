@@ -1470,6 +1470,8 @@
   function setRefkeysVisible(visible, persist) {
     refkeysVisible = !!visible;
     document.body.classList.toggle('refkey-visible', refkeysVisible);
+    // The chips live in a measured page-level layer — (re)build or clear it.
+    scheduleRefkeys();
     var page = pageEl();
     // Same-value setAttribute still dirties attribute-selector styles for the
     // whole page — and this runs on every patch. Only write on a real change.
@@ -3023,21 +3025,127 @@
   /// flag on the parent skips already-injected chips so this can run
   /// after every patch. Excludes `.label-anchor` (zero-content markers
   /// for `\label` placed before the actual rendered element).
-  function decorateRefkeyChips(root) {
-    if (!root) return;
-    var nodes = root.querySelectorAll('[data-refkey]:not(.label-anchor):not([data-refkey-decorated])');
-    nodes.forEach(function(el) {
-      var key = el.getAttribute('data-refkey');
-      if (!key) return;
+  // The keys chips live in a PAGE-LEVEL layer (like the line-number gutter),
+  // not inside the render blocks: blocks have paint containment
+  // (content-visibility), which clips any ink outside their box — chips
+  // hanging into the margin from inside a block rendered as sliver stubs.
+  // The layer is a direct child of main#page, so nothing contains it; chips
+  // are absolutely positioned at their anchor's measured y, right-aligned
+  // into the real margin. Under crop there is no margin, so they overlay the
+  // content edge instead (translucent via CSS). Rebuilt whole on toggle,
+  // render, zoom and resize — same cadence as the lineno layer.
+  function clearRefkeyLayer() {
+    var l = document.querySelector('main#page > .refkey-layer');
+    if (l) l.remove();
+  }
+
+  var refkeysScheduled = false;
+  function scheduleRefkeys() {
+    if (refkeysScheduled) return;
+    refkeysScheduled = true;
+    var run = function() {
+      if (!refkeysScheduled) return;
+      refkeysScheduled = false;
+      layoutRefkeys();
+    };
+    // rAF for the common case; the timer covers background/hidden pages,
+    // where rAF freezes but layout still matters (e.g. a Locus window
+    // behind other windows getting a keys toggle via live config).
+    requestAnimationFrame(run);
+    setTimeout(run, 250);
+  }
+
+  function layoutRefkeys() {
+    var page = pageEl();
+    if (!page) return;
+    clearRefkeyLayer();
+    if (!refkeysVisible) return;
+    var pageRect = page.getBoundingClientRect();
+    if (pageRect.width === 0) return;
+    // #page is CSS-zoomed: rects are rendered coords, children position in
+    // local coords — divide measured offsets by the scale (see the lineno
+    // layer for the same dance). Computed paddingLeft is already local.
+    var scale = page.offsetHeight > 0 ? pageRect.height / page.offsetHeight : 1;
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+    var padLeft = parseFloat(getComputedStyle(page).paddingLeft) || 0;
+    var cropped = document.body.classList.contains('page-crop');
+    var layer = document.createElement('div');
+    layer.className = 'refkey-layer';
+    function addChip(key, topLocal) {
       var chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'refkey-chip';
       chip.dataset.target = key;
       chip.title = 'click to pin ' + key + ' to margin';
       chip.textContent = key;
-      el.appendChild(chip);
-      el.setAttribute('data-refkey-decorated', '1');
+      chip.style.top = Math.round(topLocal) + 'px';
+      if (cropped) {
+        // No margin to sit in: overlay the content's left edge.
+        chip.style.left = padLeft + 'px';
+      } else {
+        // Right-align the chip so it ends just before the text column,
+        // whatever its width — no measuring needed. Long keys clamp to the
+        // margin width (ellipsis; the tooltip carries the full key) so a
+        // chip never pokes past the paper's left edge.
+        chip.style.left = (padLeft - 8) + 'px';
+        chip.style.transform = 'translateX(-100%)';
+        chip.style.maxWidth = Math.max(24, padLeft - 14) + 'px';
+      }
+      layer.appendChild(chip);
+    }
+    // Block/inline anchors ([data-refkey] carriers: theorems, single
+    // equations, floats, section labels…). Zero-size anchors sit inside
+    // content-visibility-skipped blocks — no geometry, no chip (same policy
+    // as line numbers for unrendered regions).
+    page.querySelectorAll('[data-refkey]:not(.label-anchor)').forEach(function(el) {
+      var key = el.getAttribute('data-refkey');
+      if (!key) return;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;
+      var top = (r.top - pageRect.top) / scale + 1;
+      if (el.classList.contains('math') && el.classList.contains('display')) {
+        top = (r.top + r.height / 2 - pageRect.top) / scale - 9;
+      } else if (el.classList.contains('thm')) {
+        top += 9;
+      }
+      addChip(key, top);
     });
+    // Per-row labels of multi-row math: texts come from the (hidden)
+    // server-rendered .eq-refkey-list; positions from the rendered SVG rows
+    // (the same index scheme as highlights and row copy). Falls back to an
+    // even spread over the block while the SVG hasn't typeset yet.
+    page.querySelectorAll('.math.display').forEach(function(block) {
+      var list = block.querySelector('.eq-refkey-list');
+      if (!list) return;
+      var br = block.getBoundingClientRect();
+      if (br.width === 0 && br.height === 0) return;
+      var groups = mathRowGroups(block);
+      var rows = list.children;
+      for (var i = 0; i < rows.length; i++) {
+        var rowChips = rows[i].querySelectorAll('.eq-refkey-chip[data-target]');
+        if (!rowChips.length) continue;
+        var y = null;
+        var g = groups[i];
+        if (g && g.getBoundingClientRect) {
+          var gr = g.getBoundingClientRect();
+          if (gr.height > 0) y = (gr.top + gr.height / 2 - pageRect.top) / scale - 9;
+        }
+        if (y == null) {
+          y = (br.top - pageRect.top + (i + 0.5) * (br.height / rows.length)) / scale - 9;
+        }
+        for (var c = 0; c < rowChips.length; c++) {
+          addChip(rowChips[c].dataset.target, y + c * 20);
+        }
+      }
+    });
+    if (layer.children.length) page.appendChild(layer);
+  }
+
+  // Kept as the render-path entry point (patch/body-updated call it with the
+  // touched root): the layer is measured from live geometry, so any render
+  // just means "rebuild the layer".
+  function decorateRefkeyChips(_root) {
+    scheduleRefkeys();
   }
 
   function isPinnableLink(target) {
@@ -3148,6 +3256,7 @@
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
+    if (refkeysVisible) scheduleRefkeys();
   }
 
   // Crop-to-content ("c", TeXpresso-style): trim the paper margins around the
@@ -3164,6 +3273,7 @@
     syncTopbarHeight();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
+    if (refkeysVisible) scheduleRefkeys();
   }
 
   function updatePageScale(_contentHeight) {
@@ -3229,6 +3339,7 @@
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
+    if (refkeysVisible) scheduleRefkeys();
     if (persist) {
       try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
     }
@@ -3308,6 +3419,7 @@
     navNeedsIndex = false;
     scheduleSidenoteLayout();
     if (lineNumbersVisible) scheduleLineNumbers();
+    if (refkeysVisible) scheduleRefkeys();
   }
 
   function clearSidenoteLayout() {

@@ -4182,11 +4182,14 @@ mod tests {
         assert!(out.html.contains("clearSearchSession"));
         assert!(out.html.contains("searchPanelIsOpen"));
         assert!(out.html.contains("math-search-glyph-active"));
-        assert!(out.html.contains(r#"[data-refkey]:not(.label-anchor)"#));
-        assert!(out.html.contains(r#"body.refkey-visible .refkey-chip"#));
-        // Chips OVERLAY their anchor (left: 0) — hanging them into the margin
-        // (right: calc(100% + gap)) gets them clipped by the render blocks'
-        // paint containment. Guard the overlay placement.
+        // Chips live in a PAGE-LEVEL layer (built by layoutRefkeys) — chips
+        // rendered inside the blocks get clipped by paint containment.
+        // Guard the layer plumbing and the absence of in-block placement.
+        assert!(out.html.contains(r#".refkey-layer"#));
+        assert!(out.html.contains("layoutRefkeys"));
+        assert!(out
+            .html
+            .contains(r#"body.refkey-visible .refkey-layer .refkey-chip"#));
         assert!(!out
             .html
             .contains(r#"right: calc(100% + var(--refkey-gap));"#));

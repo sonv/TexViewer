@@ -52,16 +52,19 @@ summary.
   (`content-visibility`) clipped everything outside, leaving amputated
   glyphs ("missing strokes"). The spacing now comes from the title
   block's bottom margin instead; the visual gap is identical.
-- **The `keys` overlay renders whole, in every state.** Two compounding
-  bugs: v1.0.5's crop hid all margin overlays (an explicit toggle losing
-  to a passive layout state), and — worse — margin-dwelling chips were
+- **The `keys` overlay renders whole, in the margin, in every state.**
+  Two compounding bugs: v1.0.5's crop hid all margin overlays (an explicit
+  toggle losing to a passive layout state), and — worse — the chips were
   CLIPPED to sliver stubs by the render blocks' paint containment
   (`content-visibility` clips ink outside a block's box) even uncropped.
-  Chips now overlay their anchor's left edge on top of the content in all
-  states — slightly translucent, opaque on hover — which keeps them inside
-  the containment box, whole at any margin, crop state, or window width.
-  Only the line-number gutter (which really does collapse with the
-  margin) stays hidden while cropped.
+  Chips now live in a page-level layer (the same architecture as the
+  line-number gutter), measured to each anchor's position and right-aligned
+  into the real margin — nothing contains the layer, so nothing can clip
+  it. Long keys clamp to the margin width with an ellipsis (the tooltip
+  has the full key). Under crop there is no margin, so chips overlay the
+  content edge instead, translucent until hovered. Only the line-number
+  gutter (which really does collapse with the margin) stays hidden while
+  cropped.
 
 ## [1.0.6] — 2026-07-12
 

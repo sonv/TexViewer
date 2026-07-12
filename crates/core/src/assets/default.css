@@ -816,9 +816,9 @@ body.page-mode-dynamic main#page {
   visibility: hidden;
   z-index: 6;
 }
-body.refkey-visible .eq-refkey-list {
-  visibility: visible;
-}
+/* The list itself never shows — viewer.js layoutRefkeys reads its per-row
+   chips and renders them in the page-level .refkey-layer instead (paint
+   containment would clip the in-block list; see .refkey-layer). */
 .eq-refkey-row {
   display: flex;
   gap: 3px;
@@ -1145,27 +1145,24 @@ blockquote.quote > :last-child { margin-bottom: 0; }
   margin-top: 0.55em;
 }
 .label-anchor { position: relative; top: -4.5rem; }
-/* Refkey chips. Each [data-refkey] that's NOT a label-anchor gets a child
-   `<button class="refkey-chip">` injected by `decorateRefkeyChips()` after
-   every render; clicking it pins the parent's target as a margin card.
-   Visibility is gated by `body.refkey-visible`, the same toggle that used
-   to drive the `::after` pseudo-element.
-
-   Placement: the chip OVERLAYS its anchor's top-left, slightly translucent
-   (opaque on hover), rather than hanging into the left margin. Chips used
-   to sit at `right: calc(100% + gap)` — but every render block has paint
-   containment (content-visibility), which CLIPS ink outside the block's
-   box: margin-dwelling chips rendered as sliver stubs at the block edge.
-   Overlaying keeps them inside the box, whole in every state — cropped or
-   not, any page margin, any window width. */
-[data-refkey]:not(.label-anchor) {
-  position: relative;
+/* Refkey chips live in a PAGE-LEVEL `.refkey-layer` (a direct child of
+   main#page, built by viewer.js layoutRefkeys), NOT inside the render
+   blocks: blocks have paint containment (content-visibility), which clips
+   any ink outside their box — margin-dwelling chips inside a block render
+   as sliver stubs. The layer measures each anchor's position and
+   right-aligns its chip into the real margin (translateX(-100%) from just
+   left of the text column); under crop there is no margin, so chips
+   overlay the content edge instead, translucent until hovered. Clicking a
+   chip pins its target as a margin card. */
+.refkey-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
 }
 .refkey-chip {
   display: none;
   position: absolute;
-  left: 0;
-  top: 0.05em;
   margin: 0;
   padding: 1px 5px;
   border: 1px solid #d8d5cc;
@@ -1181,11 +1178,14 @@ blockquote.quote > :last-child { margin-bottom: 0; }
   text-align: right;
   text-transform: none;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
-  opacity: 0.88;
-  z-index: 6;
+  pointer-events: auto;
 }
-body.refkey-visible .refkey-chip { display: block; }
+body.refkey-visible .refkey-layer .refkey-chip { display: block; }
+/* Only under crop do chips sit over content — soften them there. */
+body.page-crop .refkey-layer .refkey-chip { opacity: 0.88; }
 .refkey-chip:hover {
   background: #fff;
   border-color: var(--accent, #b04b00);
@@ -1196,9 +1196,7 @@ body.refkey-visible .refkey-chip { display: block; }
   outline: 2px solid var(--accent, #b04b00);
   outline-offset: 1px;
 }
-.math.display > .refkey-chip { top: 50%; transform: translateY(-50%); }
-.thm > .refkey-chip { top: 0.72em; }
-.float-placeholder > .refkey-chip { top: 0; }
+
 .status { font-size: 0.92em; padding: 2px 6px; border-radius: 3px; color: var(--muted); }
 .status.live { color: #1e7e1e; }
 .status.dead { color: #b22222; }

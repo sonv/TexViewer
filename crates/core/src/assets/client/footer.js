@@ -295,8 +295,10 @@
     syncTopbarHeight();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     // Resizing reflows wrapped text, so the gutter line numbers must be
-    // re-measured (rAF-coalesced; only when the gutter is shown).
+    // re-measured (rAF-coalesced; only when the gutter is shown) — and the
+    // measured refkey layer with them.
     if (lineNumbersVisible) scheduleLineNumbers();
+    if (refkeysVisible) scheduleRefkeys();
   });
   // Keep the topbar in view while a zoomed page (body.page-overwide) is
   // panned horizontally. `position: sticky; left: 0` can't do it — the
