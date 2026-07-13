@@ -339,6 +339,302 @@
     if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
   });
   document.addEventListener('scroll', hideHoverPreview, { passive: true });
+
+  // Every keyboard feature and every fixed viewer button routes through this
+  // action registry. `[keybindings]` only names actions; it never needs to know
+  // which DOM element or implementation function currently powers a control.
+  var VIEWER_ACTION_ORDER = [
+    'scroll-left', 'scroll-down', 'scroll-up', 'scroll-right',
+    'half-page-down', 'half-page-up', 'previous-place',
+    'go-top', 'go-bottom', 'open-search', 'open-command',
+    'search-next', 'search-previous', 'toggle-toc', 'toggle-topbar',
+    'toggle-crop', 'close-viewer', 'page-a4', 'page-dynamic',
+    'zoom-in', 'zoom-out', 'zoom-reset', 'zoom-fit-width',
+    'browser-print', 'toggle-margin', 'toggle-keys', 'toggle-lines',
+    'open-macros', 'open-config', 'toggle-log', 'toggle-theme',
+    'proof-main', 'proof-supporting', 'proof-all', 'print-pdf',
+    'restart-server', 'stop-server',
+  ];
+
+  function applyProofModeFromAction(mode) {
+    applyMode(mode);
+    document.querySelectorAll('.proof-toggle button').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+    });
+    var toggle = document.querySelector('.proof-toggle');
+    if (toggle) toggle.setAttribute('data-mode', mode);
+  }
+
+  function viewerLineStep() {
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    return Math.max(28, Math.round(vh * 0.06));
+  }
+
+  function viewerColumnStep() {
+    var vw = window.innerWidth || document.documentElement.clientWidth || 1000;
+    return Math.max(48, Math.round(vw * 0.08));
+  }
+
+  var viewerActions = {
+    'scroll-left': function() { scrollByVim(-viewerColumnStep(), 0); },
+    'scroll-down': function() { scrollByVim(0, viewerLineStep()); },
+    'scroll-up': function() { scrollByVim(0, -viewerLineStep()); },
+    'scroll-right': function() { scrollByVim(viewerColumnStep(), 0); },
+    'half-page-down': function() {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, Math.round(vh * 0.5));
+    },
+    'half-page-up': function() {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, -Math.round(vh * 0.5));
+    },
+    'previous-place': function() { restorePreviousPlace(); },
+    'go-top': function() {
+      recordViewerPlace();
+      window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
+    },
+    'go-bottom': function() {
+      recordViewerPlace();
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        left: window.scrollX,
+        behavior: 'auto',
+      });
+    },
+    'open-search': function() { openSearchPanel(); },
+    'open-command': function() { openCmdline(''); },
+    'search-next': function() { runSearch(false); },
+    'search-previous': function() { runSearch(true); },
+    'toggle-toc': function() { setSideOpen(!currentSideOpen, true); },
+    'toggle-topbar': function() { setTopbarHidden(!topbarHidden, true); },
+    'toggle-crop': function() { setPageCrop(!pageCropped, true); },
+    'close-viewer': function() {
+      closeViewer(function(msg) { setStatus('dead', '○ ' + msg); });
+    },
+    'page-a4': function() { setPageMode('a4'); },
+    'page-dynamic': function() { setPageMode('dynamic'); },
+    'zoom-in': function() { bumpUserZoom(ZOOM_STEP); },
+    'zoom-out': function() { bumpUserZoom(-ZOOM_STEP); },
+    'zoom-reset': function() { resetUserZoom(); },
+    'zoom-fit-width': function() { fitToWidth(); },
+    'browser-print': function() {
+      typesetAllForPrint().then(function(completed) {
+        if (completed) window.print();
+      });
+    },
+    'toggle-margin': function() { setMarginMode(!marginMode, true); },
+    'toggle-keys': function() { setRefkeysVisible(!refkeysVisible, true); },
+    'toggle-lines': function() { setLineNumbers(!lineNumbersVisible, true); },
+    'open-macros': function() { openMacrosDialog(); },
+    'open-config': function() { openConfigDialog(); },
+    'toggle-log': function() { toggleLogPanel(); },
+    'toggle-theme': function() {
+      setTheme(themeMode === 'dark' ? 'light' : 'dark', true);
+    },
+    'proof-main': function() { applyProofModeFromAction('main'); },
+    'proof-supporting': function() { applyProofModeFromAction('supporting'); },
+    'proof-all': function() { applyProofModeFromAction('all'); },
+    'print-pdf': function() {
+      var btn = document.getElementById('print-button');
+      if (btn) requestPrint(btn);
+    },
+    'restart-server': function() { restartServer(); },
+    'stop-server': function() {
+      if (manualStopRequested) startServer();
+      else stopServer();
+    },
+  };
+
+  function runViewerAction(action) {
+    var run = viewerActions[action];
+    if (!run) return false;
+    clearKeySequencePending();
+    run();
+    return true;
+  }
+
+  function normalizedBindingKey(key) {
+    var lower = key.toLowerCase();
+    if (lower === 'space' || lower === 'spacebar') return ' ';
+    if (lower === 'esc') return 'Escape';
+    if (lower === 'plus') return '+';
+    if (lower === 'minus') return '-';
+    if (lower === 'equal' || lower === 'equals') return '=';
+    if (lower === 'return') return 'Enter';
+    return key;
+  }
+
+  function parseBindingStep(raw) {
+    var rest = (raw || '').trim();
+    if (!rest) return null;
+    var step = { mod: false, ctrl: false, meta: false, alt: false, shift: false, key: '' };
+    var modifier;
+    while ((modifier = /^(Mod|Ctrl|Control|Meta|Cmd|Command|Alt|Option|Shift)\+/i.exec(rest))) {
+      var name = modifier[1].toLowerCase();
+      if (name === 'mod') step.mod = true;
+      else if (name === 'ctrl' || name === 'control') step.ctrl = true;
+      else if (name === 'meta' || name === 'cmd' || name === 'command') step.meta = true;
+      else if (name === 'alt' || name === 'option') step.alt = true;
+      else if (name === 'shift') step.shift = true;
+      rest = rest.slice(modifier[0].length);
+    }
+    if (!rest) return null;
+    step.key = normalizedBindingKey(rest);
+
+    // `KeyboardEvent.key` already contains the shifted printable glyph. Turn
+    // Shift+g / Shift+= into G / + so both notations match the same event.
+    if (step.shift) {
+      if (/^[a-z]$/.test(step.key)) {
+        step.key = step.key.toUpperCase();
+        step.shift = false;
+      } else {
+        var shifted = {
+          '`': '~', '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
+          '6': '^', '7': '&', '8': '*', '9': '(', '0': ')', '-': '_',
+          '=': '+', '[': '{', ']': '}', '\\': '|', ';': ':', "'": '"',
+          ',': '<', '.': '>', '/': '?',
+        };
+        if (Object.prototype.hasOwnProperty.call(shifted, step.key)) {
+          step.key = shifted[step.key];
+          step.shift = false;
+        }
+      }
+    }
+    return step;
+  }
+
+  function parseBinding(raw) {
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    var parts = raw.trim().split(/\s+/);
+    var steps = [];
+    for (var i = 0; i < parts.length; i++) {
+      var step = parseBindingStep(parts[i]);
+      if (!step) return null;
+      steps.push(step);
+    }
+    return steps;
+  }
+
+  function eventKey(e) {
+    return normalizedBindingKey(e.key || '');
+  }
+
+  function keyEncodesShift(key) {
+    if (/^[A-Z]$/.test(key)) return true;
+    return key.length === 1 && '~!@#$%^&*()_+{}|:"<>?'.indexOf(key) >= 0;
+  }
+
+  function isAppleKeyboardPlatform() {
+    return /Mac|iPhone|iPad|iPod/.test(
+      navigator.platform || navigator.userAgent || ''
+    );
+  }
+
+  function bindingStepMatches(step, e) {
+    var apple = isAppleKeyboardPlatform();
+    var wantsCtrl = step.ctrl || (step.mod && !apple);
+    var wantsMeta = step.meta || (step.mod && apple);
+    if (!!e.ctrlKey !== wantsCtrl || !!e.metaKey !== wantsMeta || !!e.altKey !== step.alt) {
+      return false;
+    }
+    if (!keyEncodesShift(step.key) && !!e.shiftKey !== step.shift) return false;
+    return eventKey(e) === step.key;
+  }
+
+  var viewerKeybindings = {};
+  var compiledKeybindings = [];
+
+  function displayBinding(binding) {
+    var apple = isAppleKeyboardPlatform();
+    return binding.replace(/Mod\+/g, apple ? '⌘' : 'Ctrl+');
+  }
+
+  function refreshViewerActionHint(btn) {
+    if (!btn) return;
+    var action = btn.getAttribute('data-viewer-action');
+    if (!action) return;
+    if (!btn.hasAttribute('data-viewer-action-title')) {
+      btn.setAttribute('data-viewer-action-title', btn.getAttribute('title') || '');
+    }
+    var base = btn.getAttribute('data-viewer-action-title') || '';
+    var bindings = viewerKeybindings[action] || [];
+    var hint = bindings.length
+      ? (bindings.length === 1 ? 'key: ' : 'keys: ') + bindings.map(displayBinding).join(', ')
+      : '';
+    btn.setAttribute('title', base && hint ? base + ' (' + hint + ')' : (base || hint));
+  }
+
+  function setViewerActionTitle(btn, title) {
+    if (!btn) return;
+    btn.setAttribute('data-viewer-action-title', title || '');
+    refreshViewerActionHint(btn);
+  }
+
+  function refreshViewerActionHints() {
+    document.querySelectorAll('[data-viewer-action]').forEach(refreshViewerActionHint);
+  }
+
+  function setViewerKeybindings(bindings) {
+    viewerKeybindings = (bindings && typeof bindings === 'object') ? bindings : {};
+    compiledKeybindings = [];
+    VIEWER_ACTION_ORDER.forEach(function(action) {
+      var raw = viewerKeybindings[action];
+      if (typeof raw === 'string') raw = [raw];
+      if (!Array.isArray(raw)) return;
+      raw.forEach(function(binding) {
+        var steps = parseBinding(binding);
+        if (steps) compiledKeybindings.push({ action: action, binding: binding, steps: steps });
+        else console.warn('mathpreview: ignored invalid keybinding', action, binding);
+      });
+    });
+    clearKeySequencePending();
+    refreshViewerActionHints();
+  }
+
+  function startKeybindingSequence(e) {
+    var matches = compiledKeybindings.filter(function(binding) {
+      return bindingStepMatches(binding.steps[0], e);
+    });
+    if (!matches.length) return false;
+    var exact = matches.find(function(binding) { return binding.steps.length === 1; });
+    if (exact) return runViewerAction(exact.action);
+    keySequenceCandidates = matches.map(function(binding) {
+      return { binding: binding, next: 1 };
+    });
+    armKeySequenceTimeout();
+    return true;
+  }
+
+  function continueKeybindingSequence(e) {
+    var matches = keySequenceCandidates.filter(function(candidate) {
+      return bindingStepMatches(candidate.binding.steps[candidate.next], e);
+    });
+    if (!matches.length) {
+      clearKeySequencePending();
+      return startKeybindingSequence(e);
+    }
+    var exact = matches.find(function(candidate) {
+      return candidate.next + 1 === candidate.binding.steps.length;
+    });
+    if (exact) return runViewerAction(exact.binding.action);
+    keySequenceCandidates = matches.map(function(candidate) {
+      return { binding: candidate.binding, next: candidate.next + 1 };
+    });
+    armKeySequenceTimeout();
+    return true;
+  }
+
+  function handleViewerKeybindings(e) {
+    if (e.defaultPrevented || e.isComposing || isEditableTarget(e.target)) return false;
+    // Never run page-level actions behind an open modal. Native dialog keys
+    // (Escape, Enter, Space, Tab) and form accessibility remain untouched.
+    if (document.querySelector('dialog[open]')) return false;
+    if (keySequenceCandidates.length) return continueKeybindingSequence(e);
+    return startKeybindingSequence(e);
+  }
+
+  setViewerKeybindings((window.__mpConfig || {}).keybindings);
+
   document.addEventListener('click', function(e) {
     // Any click outside the row-selected block drops the row selection and
     // its band — whichever branch below ends up handling the click.
@@ -357,25 +653,10 @@
       togglePinByRefkey(refkeyChip.dataset.target || refkeyChip.textContent || '');
       return;
     }
-    var restart = e.target.closest('#server-restart');
-    if (restart) {
-      restartServer();
-      return;
-    }
-    var stop = e.target.closest('#server-stop');
-    if (stop) {
-      if (manualStopRequested) startServer();
-      else stopServer();
-      return;
-    }
-    var printBtn = e.target.closest('#print-button');
-    if (printBtn) {
-      requestPrint(printBtn);
-      return;
-    }
-    var topbarStripe = e.target.closest('#topbar-stripe');
-    if (topbarStripe) {
-      setTopbarHidden(!topbarHidden, true);
+    var actionButton = e.target.closest('[data-viewer-action]');
+    if (actionButton) {
+      e.preventDefault();
+      runViewerAction(actionButton.getAttribute('data-viewer-action'));
       return;
     }
     // Sidenote chip (\SV / \AB / \sidenote) — toggle its content
@@ -390,36 +671,6 @@
     if (sidenoteChip) {
       e.preventDefault();
       requestSourceJump(e);
-      return;
-    }
-    var sideToggle = e.target.closest('#side-toggle');
-    if (sideToggle) {
-      setSideOpen(!currentSideOpen, true);
-      return;
-    }
-    var pageMode = e.target.closest('.page-mode-toggle button');
-    if (pageMode) {
-      setPageMode(pageMode.getAttribute('data-page-mode'));
-      return;
-    }
-    var cropToggle = e.target.closest('#crop-toggle');
-    if (cropToggle) {
-      setPageCrop(!pageCropped, true);
-      return;
-    }
-    var refkeyToggle = e.target.closest('#refkey-toggle');
-    if (refkeyToggle) {
-      setRefkeysVisible(!refkeysVisible, true);
-      return;
-    }
-    var linenoToggle = e.target.closest('#lineno-toggle');
-    if (linenoToggle) {
-      setLineNumbers(!lineNumbersVisible, true);
-      return;
-    }
-    var macrosToggle = e.target.closest('#macros-toggle');
-    if (macrosToggle) {
-      openMacrosDialog();
       return;
     }
     var macrosCancel = e.target.closest('#macros-dialog-cancel');
@@ -452,11 +703,6 @@
       registerMacrosOverride();
       return;
     }
-    var configToggle = e.target.closest('#config-toggle');
-    if (configToggle) {
-      openConfigDialog();
-      return;
-    }
     var configCancel = e.target.closest('#config-dialog-cancel');
     if (configCancel) {
       e.preventDefault();
@@ -469,11 +715,6 @@
       submitConfigDialog();
       return;
     }
-    var logToggle = e.target.closest('#log-toggle');
-    if (logToggle) {
-      toggleLogPanel();
-      return;
-    }
     var logRefresh = e.target.closest('#log-panel-refresh');
     if (logRefresh) {
       e.preventDefault();
@@ -484,16 +725,6 @@
     if (logClose) {
       e.preventDefault();
       closeLogPanel();
-      return;
-    }
-    var marginToggle = e.target.closest('#margin-toggle');
-    if (marginToggle) {
-      setMarginMode(!marginMode, true);
-      return;
-    }
-    var themeToggle = e.target.closest('#theme-toggle');
-    if (themeToggle) {
-      setTheme(themeMode === 'dark' ? 'light' : 'dark', true);
       return;
     }
     var marginZoom = e.target.closest('.margin-card-zoom');
@@ -592,16 +823,6 @@
       recordViewerPlace();
       return;
     }
-    var btn = e.target.closest('.proof-toggle button');
-    if (btn) {
-      var mode = btn.getAttribute('data-mode');
-      applyMode(mode);
-      document.querySelectorAll('.proof-toggle button').forEach(function(x) {
-        x.classList.toggle('active', x === btn);
-      });
-      document.querySelector('.proof-toggle').setAttribute('data-mode', mode);
-      return;
-    }
     var head = e.target.closest('.proof-head');
     if (head) {
       head.closest('.proof').classList.toggle('folded');
@@ -609,17 +830,6 @@
     }
   });
   document.addEventListener('keydown', function(e) {
-    // Browser print: typeset the whole document first (viewport-lazy leaves
-    // off-screen math as raw source, which would print as LaTeX), then open
-    // the dialog. Instant when everything is already typeset.
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
-        (e.key === 'p' || e.key === 'P')) {
-      e.preventDefault();
-      typesetAllForPrint().then(function(completed) {
-        if (completed) window.print();
-      });
-      return;
-    }
     var searchInput = searchInputEl();
     if (e.target === searchInput) {
       var hasSuggest = searchSuggestions.length > 0;
@@ -674,22 +884,7 @@
       return;
     }
 
-    if (handleZoomKeys(e)) {
-      e.preventDefault();
-      return;
-    }
-
-    // Cmd/Ctrl+M toggles margin mode. macOS browsers don't see Cmd+M (the OS
-    // takes it for window-minimize) — that's fine; Ctrl+M covers Linux/Windows
-    // and works everywhere the page receives it. Skip while typing.
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey &&
-        (e.key === 'm' || e.key === 'M') && !isEditableTarget(e.target)) {
-      e.preventDefault();
-      setMarginMode(!marginMode, true);
-      return;
-    }
-
-    if (handleVimNavigation(e)) {
+    if (handleViewerKeybindings(e)) {
       e.preventDefault();
     }
   });

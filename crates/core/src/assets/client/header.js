@@ -44,8 +44,8 @@
   var activeSourceRangeIds = [];
   // Per-block selected rows for multi-row math (align/gather): [{id,count,rows}].
   var activeMathRows = [];
-  var vimPendingKey = '';
-  var vimPendingTimer = 0;
+  var keySequenceCandidates = [];
+  var keySequenceTimer = 0;
   var lastSearchQuery = '';
   var mathSearchQuery = '';
   var mathSearchResults = [];
@@ -105,18 +105,17 @@
     window.scrollBy({ left: dx, top: dy, behavior: 'auto' });
   }
 
-  function clearVimPending() {
-    vimPendingKey = '';
-    if (vimPendingTimer) {
-      clearTimeout(vimPendingTimer);
-      vimPendingTimer = 0;
+  function clearKeySequencePending() {
+    keySequenceCandidates = [];
+    if (keySequenceTimer) {
+      clearTimeout(keySequenceTimer);
+      keySequenceTimer = 0;
     }
   }
 
-  function setVimPending(key) {
-    clearVimPending();
-    vimPendingKey = key;
-    vimPendingTimer = setTimeout(clearVimPending, 750);
+  function armKeySequenceTimeout() {
+    if (keySequenceTimer) clearTimeout(keySequenceTimer);
+    keySequenceTimer = setTimeout(clearKeySequencePending, 750);
   }
 
   function isEditableTarget(target) {
@@ -136,7 +135,7 @@
   }
 
   function restorePreviousPlace() {
-    clearVimPending();
+    clearKeySequencePending();
     var place = viewerJumpStack.pop();
     if (!place) {
       setStatus('dead', '○ no previous place');

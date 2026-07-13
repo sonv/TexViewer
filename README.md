@@ -596,7 +596,10 @@ a Rust roundtrip unless they are controlling the daemon itself.
   otherwise the status pill names the key that will), and `Ctrl-o` jumps
   back and forth between the current place and the previous one
   (pressing it repeatedly ping-pongs between the two). These bindings
-  are ignored while typing in editable controls.
+  are ignored while typing in editable controls. Every shortcut below is
+  configurable by action name in the global or project `[keybindings]` table;
+  every fixed toolbar button has an action name too, even when it is unbound by
+  default.
 - **Content zoom.** `+` / `-` zoom the page (header and sidebar stay
   put), `0` resets, and `=` auto-fits the page width to the viewport.
   `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
@@ -694,7 +697,59 @@ typeset-mode = "local"          # | "background" — see below
 # Which click gesture sends `POST /reveal-source` to spawn `--editor`
 # at the source line. "cmd-click" also matches Ctrl-click on Linux.
 trigger = "cmd-click"           # | "ctrl-click" | "alt-click" | "double-click"
+
+# The complete built-in keyboard map. Keep this in the global file to use the
+# same keys for every paper; a project's [keybindings] table can override just
+# the actions it mentions. One string or an array is accepted; [] disables.
+[keybindings]
+scroll-left = "h"
+scroll-down = "j"
+scroll-up = "k"
+scroll-right = "l"
+half-page-down = "Ctrl+d"
+half-page-up = "Ctrl+u"
+previous-place = "Ctrl+o"
+go-top = "g g"
+go-bottom = "G"
+open-search = "/"
+open-command = ":"
+search-next = "n"
+search-previous = "N"
+toggle-toc = "t"
+toggle-topbar = "B"
+toggle-crop = "c"
+close-viewer = "q"
+page-a4 = "4"
+page-dynamic = "d"
+zoom-in = ["+", "Mod+=", "Mod++"]
+zoom-out = ["-", "_", "Mod+-", "Mod+_"]
+zoom-reset = ["0", "Mod+0"]
+zoom-fit-width = "="
+browser-print = "Mod+p"
+toggle-margin = ["Ctrl+m", "Meta+m"]
+
+# Fixed viewer buttons without built-in shortcuts. Assign any key to bind one.
+toggle-keys = []
+toggle-lines = []
+open-macros = []
+open-config = []
+toggle-log = []
+toggle-theme = []
+proof-main = []
+proof-supporting = []
+proof-all = []
+print-pdf = []
+restart-server = []
+stop-server = []
 ```
+
+`Mod` means Command on macOS and Control elsewhere. `Ctrl`, `Meta`/`Cmd`,
+`Alt`/`Option`, and `Shift` can also be named explicitly. Shifted printable
+keys may be written as their glyph (`G`, `+`, `:`) or as a combination
+(`Shift+g`, `Shift+=`, `Shift+;`); separate sequence steps with spaces, as in
+`"g g"`. Toolbar tooltips show the effective bindings after the global,
+project, and `--config` layers have merged. If two layers mention different
+actions, both survive; a later layer replaces only the action it mentions.
 
 `wrap-equations` toggles MathJax's automatic line-breaking of long display
 equations in the preview. Default `true` (the preview wraps overlong math at

@@ -62,7 +62,7 @@ pub struct HtmlOptions {
     /// pipeline leaves it empty.
     pub macro_overrides: Vec<PathBuf>,
     /// User-resolved viewer preferences (font-size, source-jump trigger,
-    /// …). Loaded from the TOML config cascade by the daemon; static
+    /// keybindings, …). Loaded from the TOML config cascade by the daemon; static
     /// `render` callers get the built-in defaults.
     pub viewer_config: crate::config::ResolvedViewerConfig,
     /// Inline text-mode macro → HTML template map from the TOML config's
@@ -4130,6 +4130,8 @@ mod tests {
         assert!(out.html.contains(r#"id="side-index""#));
         assert!(out.html.contains(r#"data-page-mode="a4""#));
         assert!(out.html.contains(r#"data-page-mode="dynamic""#));
+        assert!(out.html.contains(r#"data-viewer-action="page-a4""#));
+        assert!(out.html.contains(r#"data-viewer-action="page-dynamic""#));
         assert!(out.html.contains(r#"id="refkey-toggle""#));
         assert!(out.html.contains(r#"id="lineno-toggle""#));
         assert!(out.html.contains("setLineNumbers"));
@@ -4178,7 +4180,44 @@ mod tests {
         assert!(out.html.contains("oldEl.innerHTML = newEl.innerHTML"));
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
-        assert!(out.html.contains("handleVimNavigation"));
+        assert!(out.html.contains("handleViewerKeybindings"));
+        assert!(out.html.contains("runViewerAction"));
+        assert!(out.html.contains(r#"data-viewer-action="toggle-theme""#));
+        assert!(out.html.contains(r#"data-viewer-action="print-pdf""#));
+        assert!(out.html.contains(r#""go-top":["g g"]"#));
+        assert!(out.html.contains(r#""toggle-lines":[]"#));
+        for action in [
+            "page-a4",
+            "page-dynamic",
+            "toggle-crop",
+            "toggle-keys",
+            "toggle-lines",
+            "open-macros",
+            "open-config",
+            "toggle-log",
+            "toggle-margin",
+            "toggle-theme",
+            "proof-main",
+            "proof-supporting",
+            "proof-all",
+            "print-pdf",
+            "restart-server",
+            "stop-server",
+            "toggle-topbar",
+            "toggle-toc",
+        ] {
+            assert!(
+                out.html
+                    .contains(&format!(r#"data-viewer-action="{action}""#)),
+                "fixed viewer control is missing action {action}"
+            );
+        }
+        for action in crate::config::KEYBINDING_ACTIONS {
+            assert!(
+                out.html.contains(&format!("'{action}': function")),
+                "configured action has no client implementation: {action}"
+            );
+        }
         assert!(out.html.contains("recordViewerPlace"));
         assert!(out.html.contains("restorePreviousPlace"));
         assert!(out.html.contains("viewerJumpStack"));

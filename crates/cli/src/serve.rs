@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "70";
+const WS_PROTOCOL_VERSION: &str = "71";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -401,6 +401,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
             "wrap_equations": viewer_config.wrap_equations,
             "mathjax_config": viewer_config.mathjax_config,
+            "keybindings": viewer_config.keybindings,
             "page_margin_mm": mathpreview_core::effective_page_margin_mm(
                 &viewer_config, geometry_margin_mm),
         },
@@ -2830,6 +2831,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "wrap_equations": viewer_config.wrap_equations,
         "mathjax_config": viewer_config.mathjax_config,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
+        "keybindings": viewer_config.keybindings,
         // The EFFECTIVE page margin baked into config_css (config > geometry >
         // default). The margin lives in the <head>, so a live change can only
         // take effect via reload — the client watches this value for that.

@@ -1,20 +1,20 @@
 //! User preferences loaded from TOML.
 //!
-//! Discovery order (last layer wins per field):
+//! Discovery order (last layer wins per field, macro name, or keybinding
+//! action):
 //!   1. Built-in defaults (the `Default` impls below)
 //!   2. `~/.config/mathpreview/config.toml` (or `$XDG_CONFIG_HOME/...`)
 //!   3. `.mathpreview.toml` walking up from the document root
 //!   4. `--config <file>` CLI flag
 //!
-//! All fields are `Option<T>` so that an unset value at a layer falls
-//! through to the previous layer cleanly. Apply the merged config with
-//! [`Config::with_defaults`] to fill missing fields with the documented
-//! defaults; the result has `non-Option` accessors that always answer.
+//! Optional viewer fields fall through to the previous layer cleanly; map-like
+//! tables merge by key. [`Config::resolve`] fills everything omitted with the
+//! documented built-in defaults.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const PROJECT_CONFIG_FILENAME: &str = ".mathpreview.toml";
@@ -110,6 +110,142 @@ pub struct Config {
     /// `[text-macros]` or `[text_macros]`.
     #[serde(default, alias = "text_macros")]
     pub text_macros: HashMap<String, TextMacro>,
+    /// Viewer action → keyboard shortcut(s). A value can be one string or an
+    /// array of strings; an empty array explicitly disables an action's
+    /// built-in shortcuts. This table lives at top level (`[keybindings]`) so
+    /// the global config can hold one keyboard layout for every paper.
+    #[serde(default)]
+    pub keybindings: BTreeMap<String, KeyBindingList>,
+}
+
+/// One or more shortcuts assigned to a viewer action. TOML accepts the common
+/// one-shortcut form (`toggle-theme = "T"`) as well as an array
+/// (`zoom-in = ["+", "Mod+="]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct KeyBindingList(pub Vec<String>);
+
+impl<'de> Deserialize<'de> for KeyBindingList {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            One(String),
+            Many(Vec<String>),
+        }
+        Ok(Self(match Raw::deserialize(d)? {
+            Raw::One(value) => vec![value],
+            Raw::Many(values) => values,
+        }))
+    }
+}
+
+/// Stable public action names accepted in `[keybindings]`. Fixed toolbar
+/// controls are included even when they have no built-in shortcut, so every
+/// button can be assigned one without changing the viewer code.
+pub const KEYBINDING_ACTIONS: &[&str] = &[
+    "scroll-left",
+    "scroll-down",
+    "scroll-up",
+    "scroll-right",
+    "half-page-down",
+    "half-page-up",
+    "previous-place",
+    "go-top",
+    "go-bottom",
+    "open-search",
+    "open-command",
+    "search-next",
+    "search-previous",
+    "toggle-toc",
+    "toggle-topbar",
+    "toggle-crop",
+    "close-viewer",
+    "page-a4",
+    "page-dynamic",
+    "zoom-in",
+    "zoom-out",
+    "zoom-reset",
+    "zoom-fit-width",
+    "browser-print",
+    "toggle-margin",
+    "toggle-keys",
+    "toggle-lines",
+    "open-macros",
+    "open-config",
+    "toggle-log",
+    "toggle-theme",
+    "proof-main",
+    "proof-supporting",
+    "proof-all",
+    "print-pdf",
+    "restart-server",
+    "stop-server",
+];
+
+fn default_keybindings() -> BTreeMap<String, Vec<String>> {
+    let defaults: &[(&str, &[&str])] = &[
+        ("scroll-left", &["h"]),
+        ("scroll-down", &["j"]),
+        ("scroll-up", &["k"]),
+        ("scroll-right", &["l"]),
+        ("half-page-down", &["Ctrl+d"]),
+        ("half-page-up", &["Ctrl+u"]),
+        ("previous-place", &["Ctrl+o"]),
+        ("go-top", &["g g"]),
+        ("go-bottom", &["G"]),
+        ("open-search", &["/"]),
+        ("open-command", &[":"]),
+        ("search-next", &["n"]),
+        ("search-previous", &["N"]),
+        ("toggle-toc", &["t"]),
+        ("toggle-topbar", &["B"]),
+        ("toggle-crop", &["c"]),
+        ("close-viewer", &["q"]),
+        ("page-a4", &["4"]),
+        ("page-dynamic", &["d"]),
+        ("zoom-in", &["+", "Mod+=", "Mod++"]),
+        ("zoom-out", &["-", "_", "Mod+-", "Mod+_"]),
+        ("zoom-reset", &["0", "Mod+0"]),
+        ("zoom-fit-width", &["="]),
+        ("browser-print", &["Mod+p"]),
+        // Cmd+M is swallowed by macOS as Minimize, but retaining both forms
+        // preserves the historical browser behavior where it is delivered.
+        ("toggle-margin", &["Ctrl+m", "Meta+m"]),
+    ];
+    let mut out = BTreeMap::new();
+    for action in KEYBINDING_ACTIONS {
+        out.insert((*action).to_string(), Vec::new());
+    }
+    for (action, bindings) in defaults {
+        out.insert(
+            (*action).to_string(),
+            bindings
+                .iter()
+                .map(|binding| (*binding).to_string())
+                .collect(),
+        );
+    }
+    out
+}
+
+fn valid_keybinding(binding: &str) -> bool {
+    binding.split_whitespace().all(|raw_step| {
+        let mut step = raw_step;
+        loop {
+            let lower = step.to_ascii_lowercase();
+            let Some(prefix) = [
+                "mod+", "ctrl+", "control+", "meta+", "cmd+", "command+", "alt+", "option+",
+                "shift+",
+            ]
+            .into_iter()
+            .find(|prefix| lower.starts_with(prefix)) else {
+                break;
+            };
+            step = &step[prefix.len()..];
+        }
+        !step.is_empty() && (!step.contains('+') || step == "+")
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -306,6 +442,9 @@ pub struct ResolvedViewerConfig {
     /// other resolved fields) because "unset" is meaningful: only then does the
     /// preamble-derived margin apply.
     pub page_margin_mm: Option<u32>,
+    /// Effective action bindings after built-ins + global + project + CLI
+    /// config layers have merged action-by-action.
+    pub keybindings: BTreeMap<String, Vec<String>>,
 }
 
 /// The A4 page margin actually in effect, in millimetres — the single value
@@ -344,6 +483,7 @@ impl Default for ResolvedConfig {
                 theorem_numbering: TheoremNumbering::Auto,
                 typeset_mode: TypesetMode::Local,
                 page_margin_mm: None,
+                keybindings: default_keybindings(),
             },
             text_macros: HashMap::new(),
         }
@@ -362,12 +502,21 @@ impl Config {
         for (name, body) in other.text_macros {
             self.text_macros.insert(name, body);
         }
+        // Later layers win per action, not for the whole table. A project can
+        // override one shortcut while keeping the user's global keyboard map.
+        for (action, bindings) in other.keybindings {
+            self.keybindings.insert(action, bindings);
+        }
     }
 
     /// Collapse this partial config into the resolved shape used by the
     /// renderer, filling any unset field with its built-in default.
     pub fn resolve(self) -> ResolvedConfig {
         let defaults = ResolvedConfig::default();
+        let mut keybindings = defaults.viewer.keybindings.clone();
+        for (action, bindings) in self.keybindings {
+            keybindings.insert(action, bindings.0);
+        }
         ResolvedConfig {
             viewer: ResolvedViewerConfig {
                 font_size: self.viewer.font_size.unwrap_or(defaults.viewer.font_size),
@@ -404,6 +553,7 @@ impl Config {
                 // Passthrough (no default fill): `None` means "fall back to the
                 // document's geometry margin, resolved at render time".
                 page_margin_mm: self.viewer.page_margin,
+                keybindings,
             },
             text_macros: self.text_macros,
         }
@@ -412,8 +562,10 @@ impl Config {
     /// Parse a TOML string into a `Config`. Returns an error with the
     /// source path attached for context if the file is malformed.
     pub fn parse(source: &str, label: &Path) -> Result<Self> {
-        toml::from_str::<Config>(source)
-            .with_context(|| format!("parsing config file {}", label.display()))
+        let config = toml::from_str::<Config>(source)
+            .with_context(|| format!("parsing config file {}", label.display()))?;
+        config.validate_keybindings(label)?;
+        Ok(config)
     }
 
     /// Read and parse a single config file. Returns `Ok(None)` if the
@@ -426,6 +578,31 @@ impl Config {
             Err(e) => Err(anyhow::Error::new(e)
                 .context(format!("reading config file {}", path.display()))),
         }
+    }
+
+    fn validate_keybindings(&self, label: &Path) -> Result<()> {
+        for (action, bindings) in &self.keybindings {
+            if !KEYBINDING_ACTIONS.contains(&action.as_str()) {
+                bail!(
+                    "unknown keybinding action {action:?} in {}; expected one of: {}",
+                    label.display(),
+                    KEYBINDING_ACTIONS.join(", ")
+                );
+            }
+            if bindings.0.iter().any(|binding| binding.trim().is_empty()) {
+                bail!(
+                    "empty shortcut for keybinding action {action:?} in {}; use [] to disable it",
+                    label.display()
+                );
+            }
+            if let Some(binding) = bindings.0.iter().find(|binding| !valid_keybinding(binding)) {
+                bail!(
+                    "invalid shortcut {binding:?} for keybinding action {action:?} in {}",
+                    label.display()
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -625,6 +802,78 @@ font-size = 20
             resolved.viewer.source_jump_trigger,
             SourceJumpTrigger::AltClick,
         );
+    }
+
+    #[test]
+    fn keybindings_accept_one_many_and_disabled_forms() {
+        let cfg = Config::parse(
+            r#"[keybindings]
+zoom-in = "z"
+toggle-theme = ["T", "Ctrl+t"]
+toggle-lines = []
+"#,
+            Path::new("keys.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert_eq!(cfg.viewer.keybindings["zoom-in"], ["z"]);
+        assert_eq!(cfg.viewer.keybindings["toggle-theme"], ["T", "Ctrl+t"]);
+        assert!(cfg.viewer.keybindings["toggle-lines"].is_empty());
+        // An omitted action keeps its built-in default.
+        assert_eq!(cfg.viewer.keybindings["scroll-down"], ["j"]);
+    }
+
+    #[test]
+    fn keybindings_merge_action_by_action_across_config_layers() {
+        let mut global = Config::parse(
+            "[keybindings]\nscroll-down = \"ArrowDown\"\ntoggle-theme = \"T\"\n",
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let project = Config::parse(
+            "[keybindings]\nscroll-down = \"j\"\n",
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        global.merge(project);
+        let resolved = global.resolve();
+        assert_eq!(resolved.viewer.keybindings["scroll-down"], ["j"]);
+        assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
+    }
+
+    #[test]
+    fn keybindings_reject_unknown_actions_and_empty_strings() {
+        let unknown = Config::parse(
+            "[keybindings]\ntoogle-theme = \"T\"\n",
+            Path::new("typo.toml"),
+        )
+        .unwrap_err();
+        assert!(unknown.to_string().contains("unknown keybinding action"));
+
+        let empty = Config::parse(
+            "[keybindings]\ntoggle-theme = \"  \"\n",
+            Path::new("empty.toml"),
+        )
+        .unwrap_err();
+        assert!(empty.to_string().contains("use [] to disable"));
+
+        let malformed = Config::parse(
+            "[keybindings]\ntoggle-theme = \"Hyper+x\"\n",
+            Path::new("malformed.toml"),
+        )
+        .unwrap_err();
+        assert!(malformed.to_string().contains("invalid shortcut"));
+    }
+
+    #[test]
+    fn every_configurable_action_has_a_resolved_binding_entry() {
+        let resolved = Config::default().resolve();
+        for action in KEYBINDING_ACTIONS {
+            assert!(
+                resolved.viewer.keybindings.contains_key(*action),
+                "missing default entry for {action}"
+            );
+        }
     }
 
     #[test]

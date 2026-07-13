@@ -936,32 +936,6 @@
     return found;
   }
 
-  // Content-only zoom. Cmd/Ctrl + `+`/`-`/`0` mirrors the browser zoom
-  // shortcut but only scales the page (not the header / sidebar). Bare
-  // `+`/`-`/`0` also work for keyboard-first usage. `=` (unshifted) is
-  // the auto-fit-to-width shortcut so the user can quickly re-fill the
-  // viewport after a manual zoom.
-  function handleZoomKeys(e) {
-    if (e.defaultPrevented || e.altKey || isEditableTarget(e.target)) return false;
-    var withModifier = (e.metaKey || e.ctrlKey);
-    var key = e.key;
-    if (withModifier && !e.shiftKey) {
-      if (key === '=' || key === '+') { bumpUserZoom(ZOOM_STEP); return true; }
-      if (key === '-' || key === '_') { bumpUserZoom(-ZOOM_STEP); return true; }
-      if (key === '0') { resetUserZoom(); return true; }
-      return false;
-    }
-    if (!withModifier) {
-      // Bare `+` requires Shift on most layouts, so treat Shift+`=` as
-      // zoom-in too. Unshifted `=` is auto-fit-to-width.
-      if (key === '+' || (key === '=' && e.shiftKey)) { bumpUserZoom(ZOOM_STEP); return true; }
-      if (key === '=') { fitToWidth(); return true; }
-      if (key === '-' || key === '_') { bumpUserZoom(-ZOOM_STEP); return true; }
-      if (key === '0') { resetUserZoom(); return true; }
-    }
-    return false;
-  }
-
   // Close the viewer — the `q` key and the `:q` command. Locus (native
   // window): wry injects `window.ipc` only when the window installed its IPC
   // handler, so its presence *is* the "am I in Locus?" test; the message
@@ -980,108 +954,6 @@
       hint('the browser blocks tabs from closing themselves — press ' +
         (mac ? '⌘W' : 'Ctrl+W'));
     }, 150);
-  }
-
-  function handleVimNavigation(e) {
-    if (e.defaultPrevented || e.altKey || e.metaKey || isEditableTarget(e.target)) return false;
-    // A modal dialog (e.g. the margin magnify overlay) puts focus on a button,
-    // not an input, so isEditableTarget won't catch it — guard explicitly so
-    // j/k/h/l/g/G and `/` `:` don't scroll the page or open panels behind it.
-    if (document.querySelector('dialog[open]')) return false;
-    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-    var vw = window.innerWidth || document.documentElement.clientWidth || 1000;
-    var line = Math.max(28, Math.round(vh * 0.06));
-    var col = Math.max(48, Math.round(vw * 0.08));
-
-    if (e.ctrlKey) {
-      if (e.key === 'd') {
-        scrollByVim(0, Math.round(vh * 0.5));
-        return true;
-      }
-      if (e.key === 'u') {
-        scrollByVim(0, -Math.round(vh * 0.5));
-        return true;
-      }
-      if (e.key === 'o') {
-        restorePreviousPlace();
-        return true;
-      }
-      return false;
-    }
-
-    switch (e.key) {
-      case 'h':
-        scrollByVim(-col, 0);
-        return true;
-      case 'j':
-        scrollByVim(0, line);
-        return true;
-      case 'k':
-        scrollByVim(0, -line);
-        return true;
-      case 'l':
-        scrollByVim(col, 0);
-        return true;
-      case 'g':
-        if (vimPendingKey === 'g') {
-          clearVimPending();
-          recordViewerPlace();
-          window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
-        } else {
-          setVimPending('g');
-        }
-        return true;
-      case 'G':
-        clearVimPending();
-        recordViewerPlace();
-        window.scrollTo({ top: document.documentElement.scrollHeight, left: window.scrollX, behavior: 'auto' });
-        return true;
-      case '/':
-        clearVimPending();
-        openSearchPanel();
-        return true;
-      case ':':
-        clearVimPending();
-        openCmdline('');
-        return true;
-      case 'n':
-        clearVimPending();
-        runSearch(false);
-        return true;
-      case 'N':
-        clearVimPending();
-        runSearch(true);
-        return true;
-      case 't':
-        clearVimPending();
-        setSideOpen(!currentSideOpen, true);
-        return true;
-      case 'B':
-        clearVimPending();
-        setTopbarHidden(!topbarHidden, true);
-        return true;
-      case 'c':
-        clearVimPending();
-        setPageCrop(!pageCropped, true);
-        return true;
-      case 'q':
-        // TeXpresso/zathura-style quit. Same routine as the `:q` command;
-        // the refusal hint lands on the status pill (no cmdline open here).
-        clearVimPending();
-        closeViewer(function(msg) { setStatus('dead', '○ ' + msg); });
-        return true;
-      case '4':
-        clearVimPending();
-        setPageMode('a4');
-        return true;
-      case 'd':
-        clearVimPending();
-        setPageMode('dynamic');
-        return true;
-      default:
-        clearVimPending();
-        return false;
-    }
   }
 
   // `typing` marks a follow caused by an edit (the plugin tags those cursor
@@ -1657,7 +1529,7 @@
       var on = themeMode === 'dark';
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-      btn.setAttribute('title', on ? 'light mode' : 'dark mode');
+      setViewerActionTitle(btn, on ? 'light mode' : 'dark mode');
       btn.setAttribute('aria-label', on ? 'switch to light mode' : 'switch to dark mode');
       var icon = btn.querySelector('.theme-toggle-icon');
       if (icon) icon.textContent = on ? '☀' : '☾';
@@ -2876,6 +2748,10 @@
     if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
     if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
     if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
+    if (cfg.keybindings && typeof cfg.keybindings === 'object') {
+      window.__mpConfig.keybindings = cfg.keybindings;
+      setViewerKeybindings(cfg.keybindings);
+    }
     // Equation wrapping (and any raw MathJax config) is baked into the <head>
     // at page load — live body pushes can't change it. So when the resolved
     // value flips, reload the page so the new MathJax config takes effect.

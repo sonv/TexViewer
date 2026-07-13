@@ -215,7 +215,10 @@
     var btn = document.getElementById('server-stop');
     if (!btn) return;
     btn.textContent = stopped ? 'start' : 'stop';
-    btn.title = stopped ? 'reload when preview server is running' : 'stop preview server';
+    setViewerActionTitle(
+      btn,
+      stopped ? 'reload when preview server is running' : 'stop preview server'
+    );
     btn.classList.toggle('is-start', stopped);
   }
 
@@ -263,4 +266,3 @@
       setStatus('dead', '○ stop failed');
     }
   }
-

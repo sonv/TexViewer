@@ -1479,7 +1479,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "mathpreview-cli"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "mathpreview-core"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "anyhow",
  "regex",

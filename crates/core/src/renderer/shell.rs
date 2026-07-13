@@ -82,8 +82,17 @@ pub(super) fn wrap_in_shell(
     // string literal (handles quotes / newlines / braces) for __mpConfig.
     let mathjax_config_js = serde_json::to_string(&opts.viewer_config.mathjax_config)
         .unwrap_or_else(|_| "\"\"".to_string());
+    let keybindings_js = serde_json::to_string(&opts.viewer_config.keybindings)
+        .unwrap_or_else(|_| "{}".to_string())
+        // This JSON is embedded in a classic script element. Keep bindings
+        // such as "<" usable without allowing a literal `</script>` to end it.
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx}, pageMarginMm: {margin} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
@@ -91,6 +100,7 @@ pub(super) fn wrap_in_shell(
         thm = opts.viewer_config.theorem_numbering.as_str(),
         tsm = opts.viewer_config.typeset_mode.as_str(),
         mjx = mathjax_config_js,
+        keybindings = keybindings_js,
         // Seeded so applyViewerConfig can detect the FIRST live change (its
         // reload guard treats `undefined` as not-yet-seen; without this seed
         // the first flip after page load was silently swallowed). `null` =
@@ -168,26 +178,26 @@ pub(super) fn wrap_in_shell(
        each pair stays grouped because segmented controls share a wrapper. -->
   <div class="topbar-row topbar-row-actions">
     <span class="page-mode-toggle" data-page-mode="a4">
-      <button data-page-mode="a4" class="active" type="button" title="A4 page mode (keyboard: 4)">A4</button>
-      <button data-page-mode="dynamic" type="button" title="dynamic page mode (keyboard: d)">dynamic</button>
+      <button data-page-mode="a4" data-viewer-action="page-a4" class="active" type="button" title="A4 page mode">A4</button>
+      <button data-page-mode="dynamic" data-viewer-action="page-dynamic" type="button" title="dynamic page mode">dynamic</button>
     </span>
-    <button class="crop-toggle" id="crop-toggle" type="button" aria-pressed="false" title="crop to content — trim the page margins (keyboard: c)">crop</button>
-    <button class="refkey-toggle" id="refkey-toggle" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
-    <button class="lineno-toggle" id="lineno-toggle" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
-    <button class="macros-toggle" id="macros-toggle" type="button" title="add a \\newcommand override for the viewer">macros</button>
-    <button class="config-toggle" id="config-toggle" type="button" title="edit viewer config (font size, source-jump trigger, default mode/theme)">config</button>
-    <button class="log-toggle" id="log-toggle" type="button" title="show daemon state + recent log entries">log</button>
-    <button class="margin-toggle" id="margin-toggle" type="button" aria-pressed="false" title="toggle margin reference cards — click \\ref / \\cite to pin (Cmd/Ctrl+M)">margin</button>
-    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
+    <button class="crop-toggle" id="crop-toggle" data-viewer-action="toggle-crop" type="button" aria-pressed="false" title="crop to content — trim the page margins">crop</button>
+    <button class="refkey-toggle" id="refkey-toggle" data-viewer-action="toggle-keys" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
+    <button class="lineno-toggle" id="lineno-toggle" data-viewer-action="toggle-lines" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
+    <button class="macros-toggle" id="macros-toggle" data-viewer-action="open-macros" type="button" title="add a \\newcommand override for the viewer">macros</button>
+    <button class="config-toggle" id="config-toggle" data-viewer-action="open-config" type="button" title="edit viewer config (font size, source-jump trigger, default mode/theme)">config</button>
+    <button class="log-toggle" id="log-toggle" data-viewer-action="toggle-log" type="button" title="show daemon state + recent log entries">log</button>
+    <button class="margin-toggle" id="margin-toggle" data-viewer-action="toggle-margin" type="button" aria-pressed="false" title="toggle margin reference cards — click \\ref / \\cite to pin">margin</button>
+    <button class="theme-toggle" id="theme-toggle" data-viewer-action="toggle-theme" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
     <span class="proof-toggle" data-mode="all">
-      <button data-mode="main">main only</button>
-      <button data-mode="supporting">+ supporting</button>
-      <button data-mode="all" class="active">all</button>
+      <button data-mode="main" data-viewer-action="proof-main" type="button">main only</button>
+      <button data-mode="supporting" data-viewer-action="proof-supporting" type="button">+ supporting</button>
+      <button data-mode="all" data-viewer-action="proof-all" type="button" class="active">all</button>
     </span>
     <span class="topbar-actions-spacer"></span>
-    <button class="print-button" id="print-button" type="button" title="compile and open the PDF">print</button>
-    <button class="server-restart" id="server-restart" type="button" title="restart preview server">restart</button>
-    <button class="server-stop" id="server-stop" type="button" title="stop preview server">stop</button>
+    <button class="print-button" id="print-button" data-viewer-action="print-pdf" type="button" title="compile and open the PDF">print</button>
+    <button class="server-restart" id="server-restart" data-viewer-action="restart-server" type="button" title="restart preview server">restart</button>
+    <button class="server-stop" id="server-stop" data-viewer-action="stop-server" type="button" title="stop preview server">stop</button>
   </div>
   <!-- The topbar hide/show toggle lives as a thin stripe on the left edge
        of the viewport (see #topbar-stripe below) so it stays reachable
@@ -195,8 +205,8 @@ pub(super) fn wrap_in_shell(
        The `toc` toggle is a fixed pill on the left edge (`#side-toggle`)
        so it's reachable independent of the top-banner visibility. -->
 </header>
-<button class="topbar-stripe" id="topbar-stripe" type="button" aria-expanded="true" aria-controls="topbar-banner" title="toggle top banner"></button>
-<button class="side-toggle" id="side-toggle" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
+<button class="topbar-stripe" id="topbar-stripe" data-viewer-action="toggle-topbar" type="button" aria-expanded="true" aria-controls="topbar-banner" title="toggle top banner"></button>
+<button class="side-toggle" id="side-toggle" data-viewer-action="toggle-toc" type="button" aria-controls="viewer-side" aria-expanded="false" title="toggle index and pages pane">toc</button>
 <div class="search-panel" id="search-panel" hidden>
   <div class="search-suggest" id="search-suggest" hidden></div>
   <label for="search-input">/</label>

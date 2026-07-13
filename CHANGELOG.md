@@ -13,6 +13,22 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.13] — 2026-07-13
+
+### Added
+
+- **Every viewer shortcut and fixed control can now be rebound.** A top-level
+  `[keybindings]` table maps stable action names to one shortcut, several
+  alternatives, or `[]` to disable an action. The global config supplies the
+  normal place for a personal keymap; project and `--config` layers replace
+  only the actions they mention. `Mod` follows the platform, explicit
+  Ctrl/Meta/Alt/Shift modifiers and multi-key sequences are supported, and
+  toolbar tooltips show the effective map.
+- **Buttons without historical shortcuts are bindable too.** The keys, lines,
+  macros, config, log, theme, proof-filter, PDF print, restart, and stop
+  controls now use the same named action registry as keyboard navigation.
+  Config edits update that registry live without a viewer reload.
+
 ## [1.0.12] — 2026-07-13
 
 ### Fixed
