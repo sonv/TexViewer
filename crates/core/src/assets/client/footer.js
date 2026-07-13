@@ -281,6 +281,10 @@
   syncTopbarHeight();
   scheduleNavigationRefresh();
   startMathObserver();
+  if (usesCompositePageZoom() && window.ResizeObserver) {
+    compositePageResizeObserver = new ResizeObserver(syncCompositePageHeight);
+    compositePageResizeObserver.observe(document.getElementById('page'));
+  }
   refreshAfterInitialEngine(40);
   setTimeout(ensureInitialTypeset, 1200);
   window.addEventListener('load', function() {

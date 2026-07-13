@@ -3100,7 +3100,8 @@ mod tests {
 
     #[test]
     fn textcolor_html_model_is_hex() {
-        let body = render_body("\\begin{document}\n\\textcolor[HTML]{FF8800}{x}\n\\end{document}\n");
+        let body =
+            render_body("\\begin{document}\n\\textcolor[HTML]{FF8800}{x}\n\\end{document}\n");
         assert!(body.contains(r##"<span style="color:#FF8800">x</span>"##), "{body}");
     }
 
@@ -4275,9 +4276,12 @@ mod tests {
         assert!(out
             .html
             .contains("var viewportY = Math.min(vh, readingTop + 1)"));
-        assert!(out
-            .html
-            .contains("if (anchor.element && anchor.element.isConnected"));
+        assert!(out.html.contains("function firstVisibleTextAnchor"));
+        assert!(out.html.contains("document.caretPositionFromPoint"));
+        assert!(out.html.contains("document.caretRangeFromPoint"));
+        assert!(out.html.contains(
+            "if (!usesCompositePageZoom() && anchor.element && anchor.element.isConnected"
+        ));
         assert!(out.html.contains("scheduleZoomAnchorRestore(page, anchor)"));
         assert!(out
             .html
@@ -4286,6 +4290,27 @@ mod tests {
         assert!(out
             .html
             .contains("previewUserZoom(available / (base - cropDxNow()), true)"));
+        // macOS Locus must never return to CSS `zoom`: WKWebView resolves
+        // MathJax SVG ex units twice there. Its committed path keeps one
+        // compositor transform and an explicit flow height instead.
+        assert!(out.html.contains("function usesCompositePageZoom()"));
+        assert!(out
+            .html
+            .contains("page.style.transform = 'scale(' + pageScaleCss + ')'"));
+        assert!(out.html.contains("syncCompositePageHeight"));
+        assert!(out
+            .html
+            .contains("compositePageResizeObserver = new ResizeObserver(syncCompositePageHeight)"));
+        assert!(out
+            .html
+            .contains("html.locus-macos body.page-mode-a4 main#page"));
+        assert!(out.html.contains("overflow-x: visible"));
+        assert!(out.html.contains("overflow-y: clip"));
+        assert!(out.html.contains("overflow-clip-margin: 2400px"));
+        assert!(out.html.contains("overflow-anchor: none"));
+        assert!(!out
+            .html
+            .contains("html.locus-macos main#page mjx-container > svg"));
         // Dynamic mode pins a 10mm margin by re-deriving --page-pad-x AT THE
         // ELEMENT. Overriding only the base is dead CSS: :root substitutes
         // var() at declaration time and descendants inherit the resolved

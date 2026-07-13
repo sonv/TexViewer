@@ -17,6 +17,7 @@
   var zoomPreviewAnchor = null;
   var zoomAnchorRestoreRaf = 0;
   var zoomAnchorVerifyRaf = 0;
+  var compositePageResizeObserver = null;
   var currentUserZoom = 1;
   var committedPageScale = 1;
   var ZOOM_MIN = 0.5;
@@ -69,6 +70,24 @@
 
   function pageShellEl() {
     return document.getElementById('page-shell');
+  }
+
+  function usesCompositePageZoom() {
+    return document.documentElement.classList.contains('locus-macos');
+  }
+
+  // CSS transforms do not participate in layout, so macOS Locus gives the
+  // shell the paper's visual height explicitly. This also runs after patches,
+  // lazy typesetting and font loading, not just after a zoom key.
+  function syncCompositePageHeight() {
+    var page = pageEl();
+    var shell = pageShellEl();
+    if (!page || !shell) return;
+    if (!usesCompositePageZoom()) {
+      shell.style.height = '';
+      return;
+    }
+    shell.style.height = Math.ceil(page.offsetHeight * committedPageScale) + 'px';
   }
 
   function cleanNavText(text) {

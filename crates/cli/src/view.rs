@@ -147,9 +147,9 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
                 let _ = proxy.send_event(UserEvent::CloseWindow);
             }
         });
-    // WKWebView alone double-counts CSS `zoom` when MathJax's outer SVG uses
-    // ex-sized dimensions. Mark only the macOS native shell so mathjax.css can
-    // apply its responsive workaround without changing browser/WebKitGTK.
+    // Mark only the macOS native shell. WKWebView double-counts CSS `zoom` for
+    // MathJax's ex-sized SVGs, so the client uses compositor scaling there
+    // instead of changing MathJax output or the browser/Linux zoom path.
     #[cfg(target_os = "macos")]
     let builder = builder
         .with_initialization_script("document.documentElement.classList.add('locus-macos');");

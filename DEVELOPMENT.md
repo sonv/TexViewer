@@ -154,8 +154,9 @@ Every rule below exists because violating it produced a user-visible bug.
   containment.
 - **The layers are measured, not styled, into position.** `layoutRefkeys()`
   reads each anchor's client rect and divides by the zoom scale
-  (`pageRect.height / page.offsetHeight` — `main#page` is CSS-`zoom`ed, so
-  rendered coords ≠ local coords; computed-style lengths are already local).
+  (`pageRect.height / page.offsetHeight` — `main#page` may be CSS-`zoom`ed or
+  compositor-scaled, so rendered coords ≠ local coords; computed-style lengths
+  are already local).
   In-block markup (`.eq-refkey-list`, `[data-refkey]`) is a hidden **data
   carrier only** — texts come from it, geometry never does. The layer is
   rebuilt whole; there is no incremental path to get subtly stale.
@@ -165,24 +166,27 @@ Every rule below exists because violating it produced a user-visible bug.
   go through the trailing 180 ms timer in `scheduleRefkeys()` (coalesces to
   one pass); crop/mode changes pass `0` for a pre-paint (rAF) rebuild so chips
   move in the same frame as the page. Repeated zoom keys are different:
-  `previewUserZoom()` compositor-scales the existing page immediately, then
-  commits CSS `zoom` and refreshes both overlays once after the key burst. The
-  compositor transform and the real-layout commit must preserve one shared
-  viewport anchor. That anchor is the first visible line immediately below the
-  toolbar: a viewport-centre anchor is geometrically stable but still lets a
-  WebKit repaint replace the top line by half the zoom displacement, while a
-  page-relative `top center` origin makes displacement grow with scroll depth.
-  Committing without a compensating scroll produces a rebound. On macOS,
-  WKWebView does not expose the committed CSS-zoom geometry reliably in the
-  setter task: restore the anchor in the next pre-paint rAF and verify it once
-  more on the following frame, cancelling both when a new zoom burst starts.
-  A synchronous-only restore passes Chromium but lets the macOS layout snap
-  afterward. The anchor must retain a live content element in every mode:
-  dynamic width changes reflow text, while A4's `content-visibility` can replace
-  estimated block heights above the viewport during the real layout even
-  though line wrapping is unchanged. Applying CSS `zoom` or walking either
-  overlay per key re-creates long-paper jank; making crop/mode entirely trailing
-  leaves chips visibly misplaced.
+  `previewUserZoom()` compositor-scales the existing page immediately and
+  refreshes both overlays once after the key burst. Browser/Linux then commit
+  CSS `zoom`; macOS Locus keeps an absolute compositor transform, because its
+  WKWebView does not scale MathJax SVG and prose consistently under CSS `zoom`.
+  The preview and commit must preserve one shared viewport anchor: the first
+  visible line immediately below the toolbar. A viewport-centre anchor is
+  geometrically stable but still replaces the top line by half the zoom
+  displacement, while a page-relative `top center` origin makes displacement
+  grow with scroll depth. On macOS, the absolute transform uses origin `0 0`
+  plus a translation that fixes the captured page-local point; changing from a
+  committed top-left transform to an anchor-origin transform would itself
+  cause a jump. Capture scans caret-character rects just below the toolbar:
+  `elementFromPoint` only identifies a paragraph box in inter-line whitespace,
+  which preserves the paragraph but lets its first visible text line drift.
+  The shell gets the transformed page's explicit visual height,
+  kept current by a `ResizeObserver` after edits, fonts and lazy typesetting.
+  Restore macOS from the captured page-local point, not its live element rect:
+  `content-visibility` can replace an offscreen height estimate during the
+  shell resize even though composite zoom itself does not reflow the text.
+  Walking either overlay per key re-creates long-paper jank; making crop/mode
+  entirely trailing leaves chips visibly misplaced.
 - **The margin variables are a derivation chain — override the *used* var,
   not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
   substitutes **at `:root`**; descendants inherit the *resolved* value. An
@@ -206,22 +210,31 @@ Every rule below exists because violating it produced a user-visible bug.
 
 ### CSS `zoom` × MathJax `ex` — the macOS-WebKit-only trap
 
-`main#page` scales with CSS `zoom` (`--page-scale`). MathJax sizes every SVG
-in **`ex` units** (`width="50.242ex"`, `vertical-align:-0.566ex`). On macOS
-Locus (WKWebView) the spec-compliant `zoom` resolves those `ex` against a
-**zoom-inflated font** *and* geometrically scales the box — a double count, so
-equations grew by `zoom²` while text grew by `zoom`. Chromium (browser tab)
-and WebKitGTK (Linux window) don't double-count, so they were fine — **the bug
-is invisible in the Chromium preview you test in.** Reason about the engine,
-don't rely on reproducing it here.
+MathJax sizes SVGs in **`ex` units** (`width="50.242ex"`,
+`vertical-align:-0.566ex`). On macOS Locus, WKWebView resolves those units
+differently from prose under CSS `zoom`; equation size can drift toward
+`zoom²`, while browser Chromium and Linux WebKitGTK remain correct.
 
-- **Fix:** the macOS native shell adds `html.locus-macos` at document start;
-  `engines/assets/mathjax.css` uses that marker to give only the outer MathJax
-  SVG an explicit inherited `font-size:1em`. WebKit then keeps the SVG's `ex`
-  box in local CSS pixels and the page `zoom` supplies the one visual scale.
-  Do not pin width/height/baseline to px: that looks correct during zoom but
-  freezes already-typeset equations when the live document font size changes.
-- **Verification:** in WKWebView, assert the SVG's rendered width/height scales
-  exactly ×`--page-scale`, its `ex` attributes remain responsive, and doubling
-  `--body-font-size` also doubles an already-typeset SVG. Browser Chromium is
-  the no-regression control; it cannot reproduce the macOS double count.
+- **Do not compensate inside MathJax.** Pixel-pinning the generated SVG fixed
+  one zoom snapshot but froze already-typeset math when the document font size
+  changed. Giving the SVG `font-size:1em` still failed on real WKWebView pages.
+  `engines/assets/mathjax.{js,css}` must remain engine-neutral.
+- **Fix at the page boundary:** the macOS shell adds `html.locus-macos` before
+  document scripts run. That marker disables CSS `zoom` for `main#page`; the
+  viewer scales the already-rendered paper with one `transform`, so prose,
+  SVGs, equation numbers and overlays are a single composited surface. Dynamic
+  mode also keeps its natural column width during keyboard zoom, avoiding a
+  text reflow at commit. Browser/Linux keep their existing CSS-zoom behavior.
+- **Flow/print invariants:** a transform has no layout height, so
+  `syncCompositePageHeight()` sizes `#page-shell` and a `ResizeObserver` tracks
+  content-height changes. The screen shell clips **vertical overflow only**;
+  horizontal overflow must stay visible because refkey chips and sidenotes hang
+  past the paper and WKWebView ignores `overflow-clip-margin` for them. A large
+  clip margin protects vertical ink, and native scroll anchoring is disabled so
+  it cannot double-compensate the explicit height change. Print forces both
+  transform and explicit height off.
+- **Verification:** the real check is WKWebView on a paper with inline and
+  numbered display math. Across repeated `+`/`-` presses, math/prose ratios and
+  the top visible line must remain fixed; changing `--body-font-size` must
+  still resize existing `ex`-based SVGs. Chromium is only the regression
+  control because it cannot reproduce the macOS engine bug.

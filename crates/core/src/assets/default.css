@@ -581,6 +581,30 @@ body.page-mode-dynamic main#page {
   --page-pad-x-base: 37.8px;
   --page-pad-x: var(--page-pad-x-base);
 }
+/* WKWebView resolves MathJax's ex-sized SVG boxes differently from prose under
+   CSS `zoom`. Locus therefore leaves the page at its natural layout size and
+   compositor-scales the already-rendered paper in viewer.js. Vertical clipping
+   keeps the unscaled layout box from creating a dead scroll strip at scale < 1;
+   horizontal overflow stays visible for page-level chips and sidenotes. Browser
+   and Linux viewers retain the normal CSS-zoom path above. */
+@media screen {
+  html.locus-macos body.page-mode-a4 main#page,
+  html.locus-macos body.page-mode-dynamic main#page {
+    zoom: 1;
+  }
+  html.locus-macos #page-shell {
+    /* Only the unscaled vertical layout box creates a dead strip at zoom < 1.
+       Keep horizontal overflow visible: refkey chips and sidenotes deliberately
+       hang beyond the paper, and WKWebView does not honor clip-margin for them. */
+    overflow-x: visible;
+    overflow-y: clip;
+    overflow-clip-margin: 2400px;
+    /* Its explicit transformed height changes at commit. Native scroll
+       anchoring would compensate that height delta on top of viewer.js's
+       measured reading-line restore, producing a large double jump. */
+    overflow-anchor: none;
+  }
+}
 /* Typeset line numbers (lineno-style): one number per wrapped visual line,
    right-aligned in the page's left padding so they sit just outside the
    text column. Positions are computed in JS from each line's client rect. */
@@ -1116,12 +1140,12 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
   .lineno-layer, .refkey-chip, .margin-layer, .flash-layer { display: none !important; }
   html, body { background: #fff; margin: 0; }
   body { color: #000; }
-  #page-shell { width: auto; margin: 0; box-shadow: none; }
+  #page-shell { width: auto; height: auto !important; margin: 0; box-shadow: none; }
   /* Map the content 1:1 onto the @page printable area: no outer frame, no
      zoom, no page padding (the @page margin supplies the margins). The width
      is the printable width so line breaks match the on-screen A4 column. */
   body.page-mode-a4 main#page, main#page {
-    width: auto; zoom: 1; border: 0; box-shadow: none; padding: 0;
+    width: auto; zoom: 1; transform: none !important; border: 0; box-shadow: none; padding: 0;
     content-visibility: visible;
   }
   main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
@@ -1899,8 +1923,8 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   padding: 10px 12px;
   /* Margin cards hold document content (equations, theorems, …), so their text
      MATCHES the main text: size = body font × the document's --page-scale (the
-     same factor main#page is CSS-`zoom`ed by, which includes Cmd/Ctrl +/- zoom
-     AND the A4 fit-to-width). The fixed column can't inherit that zoom, so it's
+     same factor main#page is scaled by, including Cmd/Ctrl +/- and A4
+     fit-to-width). The fixed column can't inherit the page scaling, so it is
      folded into the font here. Everything else in the card uses `em`, so the
      whole card scales as one unit from this base. */
   font-size: calc(var(--body-font-size) * var(--page-scale, 1));

@@ -13,6 +13,24 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.14] — 2026-07-13
+
+### Fixed
+
+- **macOS Locus zoom now scales the rendered paper as one surface.** WKWebView
+  no longer receives CSS `zoom` on the document page, which could scale
+  MathJax's `ex`-sized SVGs differently from prose and make equation numbers
+  collide. The unsuccessful MathJax-specific SVG compensation has been
+  removed; equations, text, labels, line numbers, and key chips now share one
+  compositor transform while browser and Linux rendering stay unchanged.
+  The transformed shell clips only vertically, so long key chips and sidenotes
+  remain whole beyond the paper edge.
+- **Repeated zoom no longer reflows the macOS reading column at commit.** The
+  fast transform remains the committed zoom, the shell tracks its visual
+  height without a dead scroll strip, and the first actual text line below the
+  toolbar is used as the anchor. This removes the delayed rerender/rebound and
+  keeps rapid `+`, `-`, and `=` input responsive.
+
 ## [1.0.13] — 2026-07-13
 
 ### Added

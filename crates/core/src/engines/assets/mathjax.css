@@ -18,14 +18,3 @@
   width: 100%;
   min-width: 0 !important;
 }
-
-/* WKWebView resolves an ex-sized outer SVG against the zoom-inflated font and
-   then geometrically applies main#page's CSS `zoom`, producing zoom² math next
-   to linearly-scaled prose. An explicit inherited font size makes WebKit keep
-   the SVG's ex box in local CSS pixels, leaving `zoom` as the single visual
-   scale. The macOS native shell adds this class at document start; browser and
-   Linux viewers keep their existing rendering. Unlike px-pinning the SVG,
-   this remains responsive when the document font size changes live. */
-html.locus-macos main#page mjx-container > svg {
-  font-size: 1em;
-}

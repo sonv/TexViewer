@@ -3416,13 +3416,13 @@
       };
     }
 
-    // Dynamic mode: the page's natural width is the smaller of
-    // DYNAMIC_BASE_WIDTH and the viewport room available *before*
-    // applying the user's zoom — that way zooming in scales the
-    // text rather than shrinking the column.
+    // Dynamic mode normally reflows to the visual viewport before zoom. In
+    // macOS Locus keep the natural column fixed during keyboard zoom instead:
+    // the entire rendered page is compositor-scaled, so no line is replaced
+    // at the end of the key burst.
     var naturalWidth = Math.min(
       DYNAMIC_BASE_WIDTH,
-      available / Math.max(userZoom, 1e-6)
+      usesCompositePageZoom() ? available : available / Math.max(userZoom, 1e-6)
     );
     var pageW = naturalWidth - cropDx;
     return {
@@ -3431,6 +3431,76 @@
       shellWidth: pageW * userZoom,
       naturalWidth: pageW,
     };
+  }
+
+  // Return the text character rect nearest a viewport point, provided it lives
+  // in the paper's reading content. Both APIs are needed: caretRangeFromPoint
+  // is WebKit's long-standing spelling; caretPositionFromPoint is standard.
+  function textRectAtPoint(page, x, y) {
+    var node = null;
+    var offset = 0;
+    if (document.caretPositionFromPoint) {
+      var pos = document.caretPositionFromPoint(x, y);
+      if (pos) {
+        node = pos.offsetNode;
+        offset = pos.offset;
+      }
+    } else if (document.caretRangeFromPoint) {
+      var caret = document.caretRangeFromPoint(x, y);
+      if (caret) {
+        node = caret.startContainer;
+        offset = caret.startOffset;
+      }
+    }
+    if (!node || node.nodeType !== Node.TEXT_NODE || !page.contains(node)) return null;
+    var parent = node.parentElement;
+    if (!parent || parent.closest(
+      '.lineno-layer, .refkey-layer, .flash-layer, .sidenote, .margin-card'
+    )) return null;
+    var value = node.nodeValue || '';
+    if (!value.length || !/\S/.test(value)) return null;
+    var index = Math.max(0, Math.min(value.length - 1, offset));
+    if (/\s/.test(value.charAt(index))) {
+      var found = -1;
+      for (var d = 1; d <= 24 && found < 0; d++) {
+        if (index + d < value.length && /\S/.test(value.charAt(index + d))) found = index + d;
+        else if (index - d >= 0 && /\S/.test(value.charAt(index - d))) found = index - d;
+      }
+      if (found < 0) return null;
+      index = found;
+    }
+    var range = document.createRange();
+    range.setStart(node, index);
+    range.setEnd(node, index + 1);
+    var rect = range.getBoundingClientRect();
+    if (!(rect.height > 0)) return null;
+    return { rect: rect, parent: parent };
+  }
+
+  // Find the first real text line at the reading boundary. elementFromPoint
+  // returns the paragraph box even in inter-line whitespace; anchoring that
+  // blank coordinate keeps the paragraph but lets its top line drift as it is
+  // scaled. Sampling caret rects makes the visible character line authoritative.
+  function firstVisibleTextAnchor(page, pageRect, readingTop, vh, vw, viewportX) {
+    var xs = [
+      viewportX,
+      pageRect.left + pageRect.width * 0.25,
+      pageRect.left + pageRect.width * 0.75,
+      pageRect.left + 80,
+      pageRect.right - 80,
+    ];
+    var best = null;
+    var maxY = Math.min(Math.max(0, vh - 1), readingTop + 96);
+    for (var y = readingTop; y <= maxY; y += 6) {
+      for (var i = 0; i < xs.length; i++) {
+        var x = Math.max(0, Math.min(Math.max(0, vw - 1), xs[i]));
+        var hit = textRectAtPoint(page, x, y);
+        if (!hit || hit.rect.bottom < readingTop - 1 || hit.rect.top > maxY) continue;
+        if (!best || hit.rect.top < best.rect.top) best = hit;
+      }
+      if (best && best.rect.top <= y + 1) break;
+    }
+    return best;
   }
 
   // Keep the first visible line immediately below the topbar stationary while
@@ -3450,13 +3520,18 @@
     viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
     var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
 
+    var textAnchor = firstVisibleTextAnchor(
+      page, rect, readingTop, vh, vw, viewportX
+    );
+    if (textAnchor) viewportY = textAnchor.rect.top;
+
     // Retain the live source element under the reading line in every mode.
     // Dynamic mode can reflow it; A4 keeps its wrapping but content-visibility
     // can still replace estimated heights above it during the real zoom layout.
     // The page-local point remains a fallback for whitespace and paper edges.
     var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
     var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
-    var hit = document.elementFromPoint(hitX, hitY);
+    var hit = textAnchor ? textAnchor.parent : document.elementFromPoint(hitX, hitY);
     var element = hit && page.contains(hit) && hit.closest ? hit.closest('[data-src]') : null;
     var elementRatioY = null;
     if (element && page.contains(element)) {
@@ -3473,6 +3548,8 @@
       viewportY: viewportY,
       localX: (viewportX - rect.left) / Math.max(widthScale, 1e-6),
       localY: (viewportY - rect.top) / Math.max(heightScale, 1e-6),
+      pageLeft: rect.left,
+      pageTop: rect.top,
       element: element,
       elementRatioY: elementRatioY,
     };
@@ -3485,7 +3562,12 @@
     var widthScale = rect.width / Math.max(page.offsetWidth, 1);
     var targetX = rect.left + anchor.localX * widthScale;
     var targetY = rect.top + anchor.localY * heightScale;
-    if (anchor.element && anchor.element.isConnected &&
+    // Composite zoom does not reflow text, and a live element rect can jump
+    // when content-visibility replaces an offscreen height estimate during
+    // the shell resize. Its captured page-local point is the stable authority.
+    // Browser/Linux CSS zoom may reflow dynamic mode, so retain the live
+    // element anchor there.
+    if (!usesCompositePageZoom() && anchor.element && anchor.element.isConnected &&
         anchor.elementRatioY !== null) {
       var elementRect = anchor.element.getBoundingClientRect();
       if (elementRect.height > 1) {
@@ -3539,8 +3621,13 @@
     }
     zoomPreviewAnchor = null;
     if (!page) return;
-    page.style.transform = '';
-    page.style.transformOrigin = '';
+    if (usesCompositePageZoom()) {
+      page.style.transform = 'scale(' + committedPageScale.toFixed(6) + ')';
+      page.style.transformOrigin = '0 0';
+    } else {
+      page.style.transform = '';
+      page.style.transformOrigin = '';
+    }
     page.style.willChange = '';
   }
 
@@ -3552,11 +3639,10 @@
     cancelZoomAnchorRestore();
     clearZoomPreview(page);
     var plan = pageScalePlan(currentUserZoom);
-    // `main#page` uses CSS `zoom` (in default.css), so the layout box
-    // scales with the visual rendering — no manual shell height is
-    // required, CSS auto-sizes the shell to the zoomed content. We
-    // still set the shell's *width* so margin: auto centers the page
-    // around the scaled content rather than the unscaled column.
+    // Browser/Linux use CSS `zoom`, whose layout box scales automatically.
+    // macOS Locus instead compositor-scales the already-rendered page and
+    // explicitly sizes the shell; this avoids WKWebView's zoom² MathJax SVGs
+    // and does not reflow the text at the end of every zoom burst.
     // Crop narrows the paper by the padding it removes (CSS drops --page-pad-x
     // to 12px), keeping the text column — and its wrapping — identical. See
     // cropDxNow for the media-query mirroring.
@@ -3569,7 +3655,13 @@
     committedPageScale = parseFloat(pageScaleCss);
     document.documentElement.style.setProperty('--page-scale', pageScaleCss);
     shell.style.width = Math.round(plan.shellWidth) + 'px';
-    shell.style.height = '';
+    if (usesCompositePageZoom()) {
+      page.style.transformOrigin = '0 0';
+      page.style.transform = 'scale(' + pageScaleCss + ')';
+      syncCompositePageHeight();
+    } else {
+      shell.style.height = '';
+    }
     // Gutter beside the centered page — the default width of each margin column,
     // so notes sit in the whitespace without overlapping the text (a card's pin
     // button expands its column past this, over the text).
@@ -3606,8 +3698,8 @@
   function commitUserZoom() {
     zoomCommitTimer = 0;
     updatePageScale();
-    // The gutter (line numbers) and keys layers live inside the CSS-zoomed page,
-    // so refresh them once after the key burst rather than walking the document
+    // The gutter (line numbers) and keys layers live inside the scaled page, so
+    // refresh them once after the key burst rather than walking the document
     // after every intermediate step.
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
   }
@@ -3621,18 +3713,34 @@
     cancelZoomAnchorRestore();
     currentUserZoom = clampUserZoom(z);
     var targetScale = pageScalePlan(currentUserZoom).pageScale;
-    var previewScale = targetScale / Math.max(committedPageScale, 1e-6);
+    var previewScale = usesCompositePageZoom()
+      ? targetScale
+      : targetScale / Math.max(committedPageScale, 1e-6);
     if (!zoomPreviewAnchor) zoomPreviewAnchor = captureZoomAnchor(page);
     // CSS zoom lays out the entire paper and is expensive on long documents.
-    // Transform the already-laid-out paper immediately, then make one real CSS
-    // zoom/layout commit after the user pauses. Anchoring the transform at the
-    // current reading point stops deep-page content from jumping by the whole
-    // distance between that point and the top of the paper.
-    page.style.transformOrigin =
-      zoomPreviewAnchor.localX.toFixed(3) + 'px ' +
-      zoomPreviewAnchor.localY.toFixed(3) + 'px';
+    // Transform the already-laid-out paper immediately, then commit once after
+    // the user pauses. macOS keeps that compositor transform as the committed
+    // zoom; browser/Linux replace only the preview with CSS zoom.
+    if (usesCompositePageZoom()) {
+      // The committed transform uses a top-left origin. An absolute target
+      // scale around the reading point would jump merely from changing that
+      // origin, so keep origin zero and translate the captured local point
+      // back to its original viewport coordinate.
+      var tx = zoomPreviewAnchor.viewportX - zoomPreviewAnchor.pageLeft -
+        zoomPreviewAnchor.localX * previewScale;
+      var ty = zoomPreviewAnchor.viewportY - zoomPreviewAnchor.pageTop -
+        zoomPreviewAnchor.localY * previewScale;
+      page.style.transformOrigin = '0 0';
+      page.style.transform =
+        'translate(' + tx.toFixed(3) + 'px, ' + ty.toFixed(3) + 'px) ' +
+        'scale(' + previewScale.toFixed(6) + ')';
+    } else {
+      page.style.transformOrigin =
+        zoomPreviewAnchor.localX.toFixed(3) + 'px ' +
+        zoomPreviewAnchor.localY.toFixed(3) + 'px';
+      page.style.transform = 'scale(' + previewScale.toFixed(6) + ')';
+    }
     page.style.willChange = 'transform';
-    page.style.transform = 'scale(' + previewScale.toFixed(6) + ')';
     if (zoomCommitTimer) clearTimeout(zoomCommitTimer);
     zoomCommitTimer = setTimeout(commitUserZoom, NAV_RESIZE_IDLE_MS);
     if (persist) {
@@ -3706,6 +3814,7 @@
 
   function refreshNavigation() {
     navRefreshTimer = 0;
+    syncCompositePageHeight();
     if (navNeedsIndex) rebuildIndex(false);
     navNeedsIndex = false;
     scheduleSidenoteLayout();
@@ -3813,8 +3922,9 @@
     if (!lineNumbersVisible) return;
 
     var pageRect = page.getBoundingClientRect();
-    // #page is CSS `zoom`ed (var(--page-scale)); getClientRects returns rendered
-    // (zoomed) coords, but a child's `top` is in the page's unzoomed local space.
+    // #page is scaled by CSS zoom or a macOS compositor transform;
+    // getClientRects returns rendered coords, but a child's `top` is in the
+    // page's unscaled local space.
     // Convert measured offsets to local space so the gutter aligns at any scale.
     // Self-correcting: this ratio is 1 when the page isn't scaled, so the
     // common 1:1 case is unchanged.
