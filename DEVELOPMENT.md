@@ -163,10 +163,12 @@ Every rule below exists because violating it produced a user-visible bug.
   ~80 ms of forced layout on a long paper, and every keystroke triggers two
   rebuild requests (patch apply + its typeset landing). Render-path callers
   go through the trailing 180 ms timer in `scheduleRefkeys()` (coalesces to
-  one pass); interactive geometry changes (crop/mode/zoom) pass `0` for a
-  pre-paint (rAF) rebuild so chips move in the same frame as the page.
-  Making everything immediate re-creates per-keystroke jank; making
-  everything trailing leaves chips visibly misplaced after toggles.
+  one pass); crop/mode changes pass `0` for a pre-paint (rAF) rebuild so chips
+  move in the same frame as the page. Repeated zoom keys are different:
+  `previewUserZoom()` compositor-scales the existing page immediately, then
+  commits CSS `zoom` and refreshes both overlays once after the key burst.
+  Applying CSS `zoom` or walking either overlay per key re-creates long-paper
+  jank; making crop/mode entirely trailing leaves chips visibly misplaced.
 - **The margin variables are a derivation chain — override the *used* var,
   not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
   substitutes **at `:root`**; descendants inherit the *resolved* value. An
@@ -199,18 +201,13 @@ and WebKitGTK (Linux window) don't double-count, so they were fine — **the bug
 is invisible in the Chromium preview you test in.** Reason about the engine,
 don't rely on reproducing it here.
 
-- **Fix:** `pinSvgPx()` in `engines/assets/mathjax.js` converts each typeset
-  SVG's `ex` width/height/`vertical-align` to **px** (ex-count × unzoomed
-  ex-px). `zoom` then scales the box as a pure geometric transform — identical
-  to text on every engine. Full-width line-broken displays (`width="full"`)
-  keep `width:100%`; only their height/baseline pin.
-- **`contextEmEx` must measure zoom-invariantly.** Use
-  `getBoundingClientRect() / pageZoom()` (a plain block scales like text, once,
-  on every engine), **not** `getComputedStyle().fontSize` / `offsetHeight` —
-  WebKit inflates those under `zoom`, Blink doesn't, so only the rect÷zoom path
-  yields the same unzoomed px everywhere. This keeps the px pin correct even
-  for equations typeset while the page is already zoomed.
-- **Verification:** assert the SVG's `getBoundingClientRect().height` scales
-  **exactly** ×`--page-scale` and its style is `…px` (not `ex`). Chromium can
-  only prove no-regression; the WebKit double-count is removed by construction
-  (no `ex` left to resolve under zoom).
+- **Fix:** the macOS native shell adds `html.locus-macos` at document start;
+  `engines/assets/mathjax.css` uses that marker to give only the outer MathJax
+  SVG an explicit inherited `font-size:1em`. WebKit then keeps the SVG's `ex`
+  box in local CSS pixels and the page `zoom` supplies the one visual scale.
+  Do not pin width/height/baseline to px: that looks correct during zoom but
+  freezes already-typeset equations when the live document font size changes.
+- **Verification:** in WKWebView, assert the SVG's rendered width/height scales
+  exactly ×`--page-scale`, its `ex` attributes remain responsive, and doubling
+  `--body-font-size` also doubles an already-typeset SVG. Browser Chromium is
+  the no-regression control; it cannot reproduce the macOS double count.

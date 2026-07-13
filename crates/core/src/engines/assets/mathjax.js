@@ -75,77 +75,30 @@
     }
     return 0;
   }
-  // The current page zoom (main#page's CSS `zoom`, mirrored in --page-scale).
-  function pageZoom() {
-    var v = parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue('--page-scale')
-    );
-    return v > 0 ? v : 1;
-  }
-  // Context font metrics (em = font size, ex = x-height), always in UNZOOMED
-  // CSS px. tex2svg renders each equation standalone at MathJax's own default
-  // em; a normal equation then rescales into the page through its ex-based
+  // Context font metrics (em = font size, ex = x-height, in unzoomed px).
+  // tex2svg renders each equation standalone at MathJax's own default em; a
+  // normal equation then rescales into the page through its ex-based
   // width/height, but a full-width display (multline, or one MathJax
   // line-breaks) uses width:100% with NO viewBox and skips that rescale — so it
   // would render at ~18px regardless of the document font. Passing the real
   // em/ex makes every equation, full-width included, match the surrounding
-  // text.
-  //
-  // Measured with getBoundingClientRect (spec: reports the ZOOMED box on every
-  // engine) divided by the page zoom, NOT offsetHeight/getComputedStyle: under
-  // CSS `zoom`, WebKit inflates those while Blink doesn't, so only the
-  // rect÷zoom path yields the same unzoomed px on both. A plain em/ex-sized
-  // block scales like text (once), so this stays exact even while the page is
-  // zoomed. Cached per computed font-size string (stable per font × zoom).
-  var emExCache = {};
+  // text. `offsetHeight` is unzoomed layout px (matches getComputedStyle),
+  // measured over 10ex for sub-pixel accuracy; cached per distinct font size.
+  var exByEm = {};
   function contextEmEx(el) {
-    var key = getComputedStyle(el).fontSize;
-    var hit = emExCache[key];
-    if (hit) return hit;
-    var z = pageZoom();
-    var probe = document.createElement('div');
-    probe.style.cssText =
-      'display:inline-block;width:0;height:10em;visibility:hidden;padding:0;border:0;';
-    el.appendChild(probe);
-    var em = probe.getBoundingClientRect().height / z / 10;
-    probe.style.height = '10ex';
-    var ex = probe.getBoundingClientRect().height / z / 10;
-    el.removeChild(probe);
-    if (!(em > 0)) em = parseFloat(key) || 16;
-    if (!(ex > 0)) ex = em * 0.43;
-    var res = { em: em, ex: ex };
-    emExCache[key] = res;
-    return res;
-  }
-  // Pin the outer <svg> to px sized from the UNZOOMED ex, so CSS `zoom` scales
-  // it as a pure geometric transform — exactly like text. MathJax sizes the
-  // svg in `ex` units (width="50.242ex"); under the spec-compliant CSS `zoom`
-  // in macOS WebKit, an SVG's intrinsic ex-based width resolves against the
-  // zoom-inflated font AND the box is geometrically zoomed, so equations grew
-  // by zoom² while text grew by zoom (Blink and WebKitGTK don't double-count,
-  // so they were already fine — and px vs ex is identical there). exPx is the
-  // context ex in unzoomed px; a full-width line-broken svg (width:100%, no
-  // viewBox) keeps its fluid width and only pins height.
-  function pinSvgPx(root, exPx) {
-    if (!root || !(exPx > 0) || !root.querySelector) return;
-    var tag = root.tagName && root.tagName.toLowerCase();
-    var container = tag === 'mjx-container' ? root : root.querySelector('mjx-container');
-    var svg = tag === 'svg' ? root : (container ? container.querySelector('svg') : root.querySelector('svg'));
-    if (!svg) return;
-    // Full-width line-broken displays (multline, wrapped equations) lay out at
-    // width:100% with no viewBox (mathjax.css keys off the container's
-    // width="full"); pinning their width would break the fluid layout, so pin
-    // height only. Every other display keeps aspect ratio (both are ex).
-    var full = container && container.getAttribute('width') === 'full';
-    var hAttr = svg.getAttribute('height');
-    var wAttr = svg.getAttribute('width');
-    if (hAttr && /ex$/.test(hAttr)) svg.style.height = (parseFloat(hAttr) * exPx).toFixed(3) + 'px';
-    if (!full && wAttr && /ex$/.test(wAttr)) svg.style.width = (parseFloat(wAttr) * exPx).toFixed(3) + 'px';
-    // Inline math carries an ex-based `vertical-align` (baseline offset); pin
-    // it too, or it would drift against the (px-scaling) text baseline under
-    // the same WebKit zoom double-count.
-    var va = svg.style.verticalAlign;
-    if (va && /ex$/.test(va)) svg.style.verticalAlign = (parseFloat(va) * exPx).toFixed(3) + 'px';
+    var em = parseFloat(getComputedStyle(el).fontSize);
+    if (!(em > 0)) em = 16;
+    var ex = exByEm[em];
+    if (ex == null) {
+      var probe = document.createElement('div');
+      probe.style.cssText =
+        'display:inline-block;width:0;height:10ex;visibility:hidden;padding:0;border:0;';
+      el.appendChild(probe);
+      ex = (probe.offsetHeight || em * 4.3) / 10;
+      el.removeChild(probe);
+      exByEm[em] = ex;
+    }
+    return { em: em, ex: ex };
   }
   // A STALE source (wrapper carries data-mp-stale) holds the PREVIOUS
   // render's <mjx-container> as an anti-flash placeholder while its new TeX
@@ -179,7 +132,6 @@
         return window.MathJax.tex2svgPromise(sourceTex(source), opts)
           .then(function(svg) {
             source.replaceChildren(svg);
-            pinSvgPx(svg, mm.ex);
             clearStale(source);
           })
           .catch(function(e) {
@@ -199,12 +151,7 @@
       source.textContent = (wrapper && wrapper.getAttribute('data-mathjax-tex')) || '';
       clearStale(source);
     });
-    return window.MathJax.typesetPromise(sources).then(function() {
-      // Same zoom-invariant px pin as the tex2svg path (see pinSvgPx).
-      sources.forEach(function(source) {
-        pinSvgPx(source, contextEmEx(source).ex);
-      });
-    });
+    return window.MathJax.typesetPromise(sources);
   }
   window.__mpEngine = {
     name: 'mathjax',

@@ -3511,11 +3511,55 @@
     if (refkeysVisible) scheduleRefkeys(0);
   }
 
+  function pageScalePlan(userZoom) {
+    var vw = document.documentElement.clientWidth || 0;
+    var available = Math.max(320, vw - 32);
+    var cropDx = cropDxNow();
+    if (currentPageMode === 'a4') {
+      var baseW = A4_CSS_WIDTH - cropDx;
+      var pageScale = Math.min(1, available / baseW) * userZoom;
+      return {
+        viewportWidth: vw,
+        pageScale: pageScale,
+        shellWidth: baseW * pageScale,
+        naturalWidth: null,
+      };
+    }
+
+    // Dynamic mode: the page's natural width is the smaller of
+    // DYNAMIC_BASE_WIDTH and the viewport room available *before*
+    // applying the user's zoom — that way zooming in scales the
+    // text rather than shrinking the column.
+    var naturalWidth = Math.min(
+      DYNAMIC_BASE_WIDTH,
+      available / Math.max(userZoom, 1e-6)
+    );
+    var pageW = naturalWidth - cropDx;
+    return {
+      viewportWidth: vw,
+      pageScale: userZoom,
+      shellWidth: pageW * userZoom,
+      naturalWidth: pageW,
+    };
+  }
+
+  function clearZoomPreview(page) {
+    if (zoomCommitTimer) {
+      clearTimeout(zoomCommitTimer);
+      zoomCommitTimer = 0;
+    }
+    if (!page) return;
+    page.style.transform = '';
+    page.style.transformOrigin = '';
+    page.style.willChange = '';
+  }
+
   function updatePageScale(_contentHeight) {
     var page = pageEl();
     var shell = pageShellEl();
     if (!page || !shell) return;
-    var available = Math.max(320, document.documentElement.clientWidth - 32);
+    clearZoomPreview(page);
+    var plan = pageScalePlan(currentUserZoom);
     // `main#page` uses CSS `zoom` (in default.css), so the layout box
     // scales with the visual rendering — no manual shell height is
     // required, CSS auto-sizes the shell to the zoomed content. We
@@ -3524,44 +3568,30 @@
     // Crop narrows the paper by the padding it removes (CSS drops --page-pad-x
     // to 12px), keeping the text column — and its wrapping — identical. See
     // cropDxNow for the media-query mirroring.
-    var cropDx = cropDxNow();
-    if (currentPageMode === 'a4') {
-      var baseW = A4_CSS_WIDTH - cropDx;
-      var fit = Math.min(1, available / baseW);
-      var combined = fit * currentUserZoom;
-      document.documentElement.style.setProperty('--page-scale', combined.toFixed(4));
-      shell.style.width = Math.round(baseW * combined) + 'px';
-      shell.style.height = '';
-    } else {
-      // Dynamic mode: the page's natural width is the smaller of
-      // DYNAMIC_BASE_WIDTH and the viewport room available *before*
-      // applying the user's zoom — that way zooming in scales the
-      // text rather than shrinking the column.
-      var naturalWidth = Math.min(
-        DYNAMIC_BASE_WIDTH,
-        available / Math.max(currentUserZoom, 1e-6)
-      );
-      var pageW = naturalWidth - cropDx;
+    if (plan.naturalWidth !== null) {
       document.documentElement.style.setProperty(
-        '--page-natural-width', Math.round(pageW) + 'px'
+        '--page-natural-width', Math.round(plan.naturalWidth) + 'px'
       );
-      document.documentElement.style.setProperty('--page-scale', currentUserZoom.toFixed(4));
-      shell.style.width = Math.round(pageW * currentUserZoom) + 'px';
-      shell.style.height = '';
     }
+    var pageScaleCss = plan.pageScale.toFixed(4);
+    committedPageScale = parseFloat(pageScaleCss);
+    document.documentElement.style.setProperty('--page-scale', pageScaleCss);
+    shell.style.width = Math.round(plan.shellWidth) + 'px';
+    shell.style.height = '';
     // Gutter beside the centered page — the default width of each margin column,
     // so notes sit in the whitespace without overlapping the text (a card's pin
     // button expands its column past this, over the text).
-    var vw = document.documentElement.clientWidth || 0;
-    var shellW = parseFloat(shell.style.width) || 0;
-    var gutter = Math.max(0, Math.floor((vw - shellW) / 2));
+    var gutter = Math.max(0, Math.floor((plan.viewportWidth - plan.shellWidth) / 2));
     document.documentElement.style.setProperty('--margin-gutter', gutter + 'px');
     // A page zoomed wider than the viewport needs a horizontally
     // USER-scrollable viewport: body's default `overflow-x: clip` reaches the
     // viewport as `hidden` — fine for scrollBy (h/l keys) but dead to the
     // mouse/trackpad — so this class swaps it for `auto` (see default.css).
     // Runs on zoom and window resize, so the class tracks the fit exactly.
-    document.body.classList.toggle('page-overwide', vw > 0 && shellW > vw + 1);
+    document.body.classList.toggle(
+      'page-overwide',
+      plan.viewportWidth > 0 && plan.shellWidth > plan.viewportWidth + 1
+    );
     // Zoom/crop/mode changes move the flashed element — track it.
     if (flashBoxTarget) drawFlashBox();
   }
@@ -3575,8 +3605,38 @@
     currentUserZoom = clampUserZoom(z);
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
-    if (lineNumbersVisible) scheduleLineNumbers();
-    if (refkeysVisible) scheduleRefkeys(0);
+    if (persist) {
+      try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
+    }
+  }
+
+  function commitUserZoom() {
+    zoomCommitTimer = 0;
+    updatePageScale();
+    // The gutter (line numbers) and keys layers live inside the CSS-zoomed page,
+    // so refresh them once after the key burst rather than walking the document
+    // after every intermediate step.
+    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+  }
+
+  function previewUserZoom(z, persist) {
+    var page = pageEl();
+    if (!page) {
+      setUserZoom(z, persist);
+      return;
+    }
+    currentUserZoom = clampUserZoom(z);
+    var targetScale = pageScalePlan(currentUserZoom).pageScale;
+    var previewScale = targetScale / Math.max(committedPageScale, 1e-6);
+    // CSS zoom lays out the entire paper and is expensive on long documents.
+    // Transform the already-laid-out paper immediately, then make one real CSS
+    // zoom/layout commit after the user pauses. Center origin keeps the preview
+    // aligned with the shell while its committed width is deliberately stable.
+    page.style.transformOrigin = 'top center';
+    page.style.willChange = 'transform';
+    page.style.transform = 'scale(' + previewScale.toFixed(6) + ')';
+    if (zoomCommitTimer) clearTimeout(zoomCommitTimer);
+    zoomCommitTimer = setTimeout(commitUserZoom, NAV_RESIZE_IDLE_MS);
     if (persist) {
       try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
     }
@@ -3584,11 +3644,11 @@
 
   function bumpUserZoom(delta) {
     var next = Math.round((currentUserZoom + delta) * 100) / 100;
-    setUserZoom(next, true);
+    previewUserZoom(next, true);
   }
 
   function resetUserZoom() {
-    setUserZoom(1, true);
+    previewUserZoom(1, true);
   }
 
   // Width the crop removes from the page, or 0 when not cropped.
@@ -3611,7 +3671,7 @@
   function fitToWidth() {
     var available = Math.max(320, document.documentElement.clientWidth - 32);
     var base = (currentPageMode === 'a4') ? A4_CSS_WIDTH : DYNAMIC_BASE_WIDTH;
-    setUserZoom(available / (base - cropDxNow()), true);
+    previewUserZoom(available / (base - cropDxNow()), true);
   }
 
   function headingSignature(headings) {
@@ -3844,4 +3904,3 @@
     if (navRefreshTimer) clearTimeout(navRefreshTimer);
     navRefreshTimer = setTimeout(refreshNavigation, typeof delay === 'number' ? delay : NAV_IDLE_MS);
   }
-

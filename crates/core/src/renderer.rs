@@ -4198,6 +4198,27 @@ mod tests {
         // render path keeps the trailing coalescing timer (DEVELOPMENT.md,
         // "The margin overlays").
         assert!(out.html.contains("scheduleRefkeys(0)"));
+        // Zoom bursts must not trigger the expensive line-number text walk or
+        // keys-layer rebuild once per keypress. The debounced navigation
+        // refresh runs both once after the burst settles.
+        let zoom_start = out
+            .html
+            .find("function setUserZoom(z, persist)")
+            .expect("zoom setter present");
+        let zoom_tail = &out.html[zoom_start..];
+        let zoom_end = zoom_tail
+            .find("function bumpUserZoom")
+            .expect("zoom setter closes before bump helper");
+        let zoom_fn = &zoom_tail[..zoom_end];
+        assert!(zoom_fn.contains("scheduleNavigationRefresh"));
+        assert!(zoom_fn.contains("page.style.transform"));
+        assert!(zoom_fn.contains("setTimeout(commitUserZoom, NAV_RESIZE_IDLE_MS)"));
+        assert!(!zoom_fn.contains("scheduleLineNumbers"));
+        assert!(!zoom_fn.contains("scheduleRefkeys"));
+        assert!(out.html.contains("previewUserZoom(next, true)"));
+        assert!(out
+            .html
+            .contains("previewUserZoom(available / (base - cropDxNow()), true)"));
         // Dynamic mode pins a 10mm margin by re-deriving --page-pad-x AT THE
         // ELEMENT. Overriding only the base is dead CSS: :root substitutes
         // var() at declaration time and descendants inherit the resolved

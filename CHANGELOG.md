@@ -86,9 +86,14 @@ summary.
   browser tab and the Linux window were unaffected. The cause was MathJax
   sizing each equation's SVG in `ex` units, which macOS WebKit's zoom
   resolves against a zoom-inflated font *and* then scales geometrically —
-  a double count. Equations are now pinned to pixel dimensions measured
-  independently of zoom, so they scale exactly with the text on every
-  platform.
+  a double count. The macOS native viewer now gives the SVG an explicit,
+  inherited font size, so WebKit applies only the geometric page scale while
+  equations remain responsive to live document-font changes.
+- **Repeated zoom keys stay responsive on long papers.** Each `+`, `-`, or `=`
+  now gives immediate compositor-scaled feedback, then performs one real page
+  layout after the zoom-key burst settles. Line-number and `keys` overlays also
+  defer their full-document geometry walks to that single commit instead of
+  rebuilding once per keystroke.
 - **Typing near the end of the document no longer makes the whole page
   flicker.** Every keystroke launched a fresh smooth-scroll animation: the
   cursor-follow tried to pin the edited element at 25 % of the viewport, a

@@ -147,6 +147,12 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
                 let _ = proxy.send_event(UserEvent::CloseWindow);
             }
         });
+    // WKWebView alone double-counts CSS `zoom` when MathJax's outer SVG uses
+    // ex-sized dimensions. Mark only the macOS native shell so mathjax.css can
+    // apply its responsive workaround without changing browser/WebKitGTK.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .with_initialization_script("document.documentElement.classList.add('locus-macos');");
     #[cfg(not(target_os = "linux"))]
     let _webview = builder.build(&window).context("creating the webview")?;
     // On Linux, wry's raw-window-handle path supports only X11 (Xlib) handles;

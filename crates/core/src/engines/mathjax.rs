@@ -262,4 +262,24 @@ mod tests {
             "full-width displays must be block-level, not shrink-wrapped"
         );
     }
+
+    #[test]
+    fn macos_locus_zoom_workaround_stays_responsive() {
+        assert!(
+            EXTRA_CSS.contains("html.locus-macos main#page mjx-container > svg"),
+            "mathjax.css must scope the WKWebView workaround to macOS Locus"
+        );
+        let rule = EXTRA_CSS
+            .split("html.locus-macos main#page mjx-container > svg")
+            .nth(1)
+            .unwrap_or("");
+        assert!(
+            rule.contains("font-size: 1em"),
+            "the outer SVG must inherit a responsive explicit font size"
+        );
+        assert!(
+            !ADAPTER_JS.contains("pinSvgPx"),
+            "MathJax SVG dimensions must remain responsive instead of being pinned to px"
+        );
+    }
 }
