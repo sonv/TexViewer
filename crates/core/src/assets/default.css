@@ -1382,7 +1382,7 @@ body.margin-mode .sidenote {
    mode, so pinned cards survive turning the pin-on-click mode off).
    By default a column fills only the GUTTER beside the centered page
    (--margin-gutter, measured in JS), so notes don't overlap the text. A card's
-   pin button expands its column over the text (body.margin-{side}-expanded). */
+   ↔ button expands its column over the text (body.margin-{side}-expanded). */
 aside#margin, aside#margin-left {
   display: none;
   position: fixed;
@@ -1421,9 +1421,9 @@ body.margin-dragging .margin-cards:empty {
    it's open, push the left margin column past it so the panel stays clickable
    (mirrors the log-panel's 268px offset). */
 body.side-panel-open aside#margin-left { left: 268px; }
-/* Pin button: expand a card past the gutter, over the text, for reading. The
-   column widens to make room, but the pin is PER-CARD: only the pinned card
-   (.expanded) fills the wider column; its un-pinned siblings keep the gutter
+/* Horizontal-expand button: widen a card past the gutter, over the text, for
+   reading. The column makes room per card: only the expanded card fills the
+   wider column; its unexpanded siblings keep the gutter
    width and hug the page edge, so they stay put while one card juts over text. */
 body.margin-right-expanded aside#margin,
 body.margin-left-expanded aside#margin-left { width: min(540px, 44vw); }
@@ -1974,7 +1974,7 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 }
 .margin-card-close:hover { color: #000; }
 .margin-card-zoom,
-.margin-card-pin {
+.margin-card-expand {
   background: transparent;
   border: none;
   cursor: pointer;
@@ -1984,9 +1984,9 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   padding: 0 2px;
 }
 .margin-card-zoom:hover,
-.margin-card-pin:hover { color: var(--accent, #b04b00); }
-/* Pin "active" = this card's column is expanded over the text. */
-.margin-card-pin.active { color: var(--accent, #b04b00); }
+.margin-card-expand:hover { color: var(--accent, #b04b00); }
+/* Active = this card's column is expanded over the text. */
+.margin-card-expand.active { color: var(--accent, #b04b00); }
 .margin-card-body {
   font-size: 1em;
   /* A long note scrolls within its card instead of stretching the column;

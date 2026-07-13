@@ -549,10 +549,11 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - `margin` toggles a right-hand column of pinned reference cards: with it
   on, clicking a `\ref`/`\cite` pins the referenced theorem/equation/bib
   entry (typeset math preserved) instead of scrolling to it — click again
-  or the `×` to unpin, drag the `⋮⋮` grip to reorder. Hovering a
-  `\ref`/`\cite` shows a quick, proof-less preview regardless of mode. You
-  can also pin from a left-margin refkey chip (needs `keys` on) or the `:`
-  command line (`:pin`/`:unpin`/`:clear`, with Tab fuzzy-completion; `:q`
+  or the `×` to unpin, use `↔` to expand it horizontally over the text, and
+  drag the `⋮⋮` grip to reorder. Hovering a `\ref`/`\cite` shows a quick,
+  proof-less preview regardless of mode. A left-margin refkey chip (needs
+  `keys` on) now toggles its card the same way; the `:` command line keeps
+  explicit `:pin`/`:unpin`/`:clear` commands with Tab fuzzy-completion (`:q`
   closes the viewer — the Locus window, or the tab itself when the browser
   permits it, which it does for a freshly opened preview tab; otherwise it
   shows the ⌘W/Ctrl+W hint).

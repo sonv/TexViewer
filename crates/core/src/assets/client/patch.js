@@ -346,7 +346,7 @@
         !(selectedMathRow.block.isConnected && selectedMathRow.block.contains(e.target))) {
       clearSelectedMathRow();
     }
-    // Refkey chip in the left margin → pin its target as a margin card.
+    // Refkey chip in the left margin → toggle its target as a margin card.
     // Same path as the typed-refkey input; works for theorems, sections,
     // floats, equations, and the per-row .eq-refkey-chip in multi-row
     // math environments.
@@ -354,7 +354,7 @@
     if (refkeyChip) {
       e.preventDefault();
       e.stopPropagation();
-      pinByRefkey(refkeyChip.dataset.target || refkeyChip.textContent || '');
+      togglePinByRefkey(refkeyChip.dataset.target || refkeyChip.textContent || '');
       return;
     }
     var restart = e.target.closest('#server-restart');
@@ -502,10 +502,10 @@
       if (zcard) openMarginZoom(zcard);
       return;
     }
-    var marginPin = e.target.closest('.margin-card-pin');
-    if (marginPin) {
-      var pcard = marginPin.closest('.margin-card');
-      if (pcard) toggleMarginExpand(pcard);
+    var marginExpand = e.target.closest('.margin-card-expand');
+    if (marginExpand) {
+      var expandedCard = marginExpand.closest('.margin-card');
+      if (expandedCard) toggleMarginExpand(expandedCard);
       return;
     }
     // Dismiss the magnify overlay: explicit close button, or a click on the
@@ -670,7 +670,7 @@
     var eqChip = e.target.closest('.eq-refkey-chip[data-target]');
     if (eqChip && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
-      pinByRefkey(eqChip.dataset.target || eqChip.textContent || '');
+      togglePinByRefkey(eqChip.dataset.target || eqChip.textContent || '');
       return;
     }
 

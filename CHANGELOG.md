@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.9] — 2026-07-13
+
+### Changed
+
+- **Margin `keys` now toggle their side cards.** Click a theorem/equation key
+  once to open its card and click the same key again to close it, matching the
+  existing toggle behavior of `\ref` links. The card's misleading 📌 control
+  is now a `↔` button with explicit horizontal expand/collapse semantics;
+  `:pin` remains idempotent for command-line use.
+
 ## [1.0.8] — 2026-07-13
 
 ### Changed

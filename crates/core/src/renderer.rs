@@ -4145,6 +4145,13 @@ mod tests {
         assert!(out.html.contains(r#"id="cmdline""#));
         assert!(out.html.contains(r#"id="cmdline-input""#));
         assert!(out.html.contains("pinByRefkey"));
+        assert!(out.html.contains("togglePinByRefkey"));
+        assert!(out
+            .html
+            .contains("togglePinByRefkey(refkeyChip.dataset.target"));
+        assert!(out.html.contains("margin-card-expand"));
+        assert!(out.html.contains("expand.textContent = '↔'"));
+        assert!(!out.html.contains("margin-card-pin"));
         assert!(out.html.contains("openCmdline"));
         assert!(out.html.contains("setRefkeysVisible"));
         assert!(out.html.contains("mathpreview.refkeys"));

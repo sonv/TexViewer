@@ -1748,20 +1748,24 @@
     var leftExp = !!(left && left.querySelector('.margin-card.expanded'));
     document.body.classList.toggle('margin-right-expanded', rightExp);
     document.body.classList.toggle('margin-left-expanded', leftExp);
-    // Each pin button reflects ITS OWN card's expanded state.
+    // Each horizontal-expand button reflects ITS OWN card's expanded state.
     document.querySelectorAll('.margin-card').forEach(function(card) {
-      var btn = card.querySelector('.margin-card-pin');
+      var btn = card.querySelector('.margin-card-expand');
       if (!btn) return;
       var on = card.classList.contains('expanded');
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.setAttribute(
+        'aria-label', on ? 'collapse to the margin' : 'expand horizontally over the text'
+      );
+      btn.title = on ? 'collapse to the margin' : 'expand horizontally over the text';
     });
   }
 
   /// Toggle whether THIS card expands past the gutter, over the text. Per-card:
   /// only the clicked card grows. The column widens just enough to host it (see
-  /// updateMarginCardsClass), while un-pinned sibling cards stay at gutter width,
-  /// so pinning one card no longer expands the others.
+  /// updateMarginCardsClass), while unexpanded sibling cards stay at gutter
+  /// width, so expanding one card no longer expands the others.
   function toggleMarginExpand(card) {
     if (!card) return;
     card.classList.toggle('expanded');
@@ -1872,15 +1876,15 @@
     zoom.setAttribute('aria-label', 'magnify');
     zoom.title = 'magnify (read full size)';
     zoom.textContent = '⤢';
-    // Pin: expand THIS card past the gutter, over the text, so a note that's too
-    // narrow in the margin can be read in place. Per-card — siblings stay put.
-    var pin = document.createElement('button');
-    pin.type = 'button';
-    pin.className = 'margin-card-pin';
-    pin.setAttribute('aria-label', 'pin open over the text');
-    pin.setAttribute('aria-pressed', 'false');
-    pin.title = 'pin open over the text';
-    pin.textContent = '📌';
+    // Horizontal expand: widen THIS card past the gutter, over the text, so a
+    // narrow note can be read in place. Per-card — siblings stay put.
+    var expand = document.createElement('button');
+    expand.type = 'button';
+    expand.className = 'margin-card-expand';
+    expand.setAttribute('aria-label', 'expand horizontally over the text');
+    expand.setAttribute('aria-pressed', 'false');
+    expand.title = 'expand horizontally over the text';
+    expand.textContent = '↔';
     var close = document.createElement('button');
     close.type = 'button';
     close.className = 'margin-card-close';
@@ -1890,7 +1894,7 @@
     head.appendChild(grip);
     head.appendChild(title);
     head.appendChild(zoom);
-    head.appendChild(pin);
+    head.appendChild(expand);
     head.appendChild(close);
 
     var body = document.createElement('div');
@@ -2070,6 +2074,16 @@
     pinnedRefs.set(key, card);
     updateMarginCardsClass();
     return { ok: true, reason: 'pinned' };
+  }
+
+  /// Refkey chips are toggles: the first activation opens the target's margin
+  /// card and the second closes that same card. Keep `pinByRefkey` idempotent
+  /// for the explicit `:pin` command; only direct chip activation uses this.
+  function togglePinByRefkey(rawKey) {
+    var key = (rawKey || '').trim();
+    if (!key) return { ok: false, reason: 'empty' };
+    if (pinnedRefs.has(key)) return unpinByRefkey(key);
+    return pinByRefkey(key);
   }
 
   function unpinByRefkey(rawKey) {
