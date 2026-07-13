@@ -3557,11 +3557,78 @@
     };
   }
 
+  // Keep the point the user is reading stationary while zooming. Mid-document
+  // that is the centre of the visible area below the topbar; when the paper's
+  // top or bottom edge is visible, keep that edge fixed instead. Coordinates
+  // are stored in the page's unzoomed local space so one anchor survives the
+  // whole compositor-preview burst.
+  function captureZoomAnchor(page) {
+    var rect = page.getBoundingClientRect();
+    var heightScale = rect.height / Math.max(page.offsetHeight, 1);
+    var widthScale = rect.width / Math.max(page.offsetWidth, 1);
+    var vh = window.innerHeight || 0;
+    var vw = document.documentElement.clientWidth || window.innerWidth || 0;
+    var readingTop = Math.max(0, Math.min(vh, topbarOffset()));
+    var viewportY = readingTop + Math.max(0, vh - readingTop) / 2;
+    if (rect.top >= readingTop && rect.top <= vh) viewportY = rect.top;
+    else if (rect.bottom >= readingTop && rect.bottom <= vh) viewportY = rect.bottom;
+    viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
+    var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
+
+    // Dynamic mode changes the paper's natural width at commit, so its text can
+    // reflow. Retain a content element as a better vertical fallback there;
+    // A4 keeps identical line wrapping and uses the exact page-local point.
+    var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
+    var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
+    var hit = document.elementFromPoint(hitX, hitY);
+    var element = hit && page.contains(hit) && hit.closest ? hit.closest('[data-src]') : null;
+    var elementRatioY = null;
+    if (element && page.contains(element)) {
+      var elementRect = element.getBoundingClientRect();
+      if (elementRect.height > 1) {
+        elementRatioY = Math.max(
+          0,
+          Math.min(1, (viewportY - elementRect.top) / elementRect.height)
+        );
+      }
+    }
+    return {
+      viewportX: viewportX,
+      viewportY: viewportY,
+      localX: (viewportX - rect.left) / Math.max(widthScale, 1e-6),
+      localY: (viewportY - rect.top) / Math.max(heightScale, 1e-6),
+      element: element,
+      elementRatioY: elementRatioY,
+    };
+  }
+
+  function restoreZoomAnchor(page, anchor) {
+    if (!anchor) return;
+    var rect = page.getBoundingClientRect();
+    var heightScale = rect.height / Math.max(page.offsetHeight, 1);
+    var widthScale = rect.width / Math.max(page.offsetWidth, 1);
+    var targetX = rect.left + anchor.localX * widthScale;
+    var targetY = rect.top + anchor.localY * heightScale;
+    if (currentPageMode === 'dynamic' && anchor.element &&
+        anchor.element.isConnected && anchor.elementRatioY !== null) {
+      var elementRect = anchor.element.getBoundingClientRect();
+      if (elementRect.height > 1) {
+        targetY = elementRect.top + anchor.elementRatioY * elementRect.height;
+      }
+    }
+    var dx = targetX - anchor.viewportX;
+    var dy = targetY - anchor.viewportY;
+    if (Math.abs(dx) < 0.5) dx = 0;
+    if (Math.abs(dy) < 0.5) dy = 0;
+    if (dx || dy) window.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+  }
+
   function clearZoomPreview(page) {
     if (zoomCommitTimer) {
       clearTimeout(zoomCommitTimer);
       zoomCommitTimer = 0;
     }
+    zoomPreviewAnchor = null;
     if (!page) return;
     page.style.transform = '';
     page.style.transformOrigin = '';
@@ -3572,6 +3639,7 @@
     var page = pageEl();
     var shell = pageShellEl();
     if (!page || !shell) return;
+    var anchor = zoomPreviewAnchor;
     clearZoomPreview(page);
     var plan = pageScalePlan(currentUserZoom);
     // `main#page` uses CSS `zoom` (in default.css), so the layout box
@@ -3606,6 +3674,7 @@
       'page-overwide',
       plan.viewportWidth > 0 && plan.shellWidth > plan.viewportWidth + 1
     );
+    restoreZoomAnchor(page, anchor);
     // Zoom/crop/mode changes move the flashed element — track it.
     if (flashBoxTarget) drawFlashBox();
   }
@@ -3642,11 +3711,15 @@
     currentUserZoom = clampUserZoom(z);
     var targetScale = pageScalePlan(currentUserZoom).pageScale;
     var previewScale = targetScale / Math.max(committedPageScale, 1e-6);
+    if (!zoomPreviewAnchor) zoomPreviewAnchor = captureZoomAnchor(page);
     // CSS zoom lays out the entire paper and is expensive on long documents.
     // Transform the already-laid-out paper immediately, then make one real CSS
-    // zoom/layout commit after the user pauses. Center origin keeps the preview
-    // aligned with the shell while its committed width is deliberately stable.
-    page.style.transformOrigin = 'top center';
+    // zoom/layout commit after the user pauses. Anchoring the transform at the
+    // current reading point stops deep-page content from jumping by the whole
+    // distance between that point and the top of the paper.
+    page.style.transformOrigin =
+      zoomPreviewAnchor.localX.toFixed(3) + 'px ' +
+      zoomPreviewAnchor.localY.toFixed(3) + 'px';
     page.style.willChange = 'transform';
     page.style.transform = 'scale(' + previewScale.toFixed(6) + ')';
     if (zoomCommitTimer) clearTimeout(zoomCommitTimer);

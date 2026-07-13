@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.10] — 2026-07-13
+
+### Fixed
+
+- **Zooming no longer makes the paper jump vertically.** The fast preview for
+  `+`, `-`, and `=` used the top of the paper as its transform origin, so the
+  displacement grew with scroll depth and the delayed real-layout commit
+  could visibly rebound. A zoom burst now keeps the current reading point (or
+  a visible paper edge) stationary through both phases; dynamic mode retains
+  the same content anchor when its narrower natural width reflows text.
+
 ## [1.0.9] — 2026-07-13
 
 ### Changed

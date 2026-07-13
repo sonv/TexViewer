@@ -4219,9 +4219,17 @@ mod tests {
         let zoom_fn = &zoom_tail[..zoom_end];
         assert!(zoom_fn.contains("scheduleNavigationRefresh"));
         assert!(zoom_fn.contains("page.style.transform"));
+        assert!(zoom_fn.contains("captureZoomAnchor"));
+        assert!(zoom_fn.contains("zoomPreviewAnchor.localX"));
+        assert!(zoom_fn.contains("zoomPreviewAnchor.localY"));
         assert!(zoom_fn.contains("setTimeout(commitUserZoom, NAV_RESIZE_IDLE_MS)"));
         assert!(!zoom_fn.contains("scheduleLineNumbers"));
         assert!(!zoom_fn.contains("scheduleRefkeys"));
+        assert!(out.html.contains("function restoreZoomAnchor"));
+        assert!(out.html.contains("restoreZoomAnchor(page, anchor)"));
+        assert!(out
+            .html
+            .contains("window.scrollBy({ left: dx, top: dy, behavior: 'auto' })"));
         assert!(out.html.contains("previewUserZoom(next, true)"));
         assert!(out
             .html

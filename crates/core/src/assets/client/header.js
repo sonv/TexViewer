@@ -14,6 +14,7 @@
   var topbarHidden = false;
   var navRefreshTimer = 0;
   var zoomCommitTimer = 0;
+  var zoomPreviewAnchor = null;
   var currentUserZoom = 1;
   var committedPageScale = 1;
   var ZOOM_MIN = 0.5;
