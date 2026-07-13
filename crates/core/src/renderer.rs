@@ -4226,6 +4226,9 @@ mod tests {
         assert!(!zoom_fn.contains("scheduleLineNumbers"));
         assert!(!zoom_fn.contains("scheduleRefkeys"));
         assert!(out.html.contains("function restoreZoomAnchor"));
+        assert!(out
+            .html
+            .contains("var viewportY = Math.min(vh, readingTop + 1)"));
         assert!(out.html.contains("restoreZoomAnchor(page, anchor)"));
         assert!(out
             .html

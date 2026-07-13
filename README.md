@@ -600,8 +600,8 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - **Content zoom.** `+` / `-` zoom the page (header and sidebar stay
   put), `0` resets, and `=` auto-fits the page width to the viewport.
   `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
-  only scale the paper. The reading point at the centre of the viewport
-  stays fixed through repeated zoom keys and the final layout commit. When
+  only scale the paper. The first visible line below the toolbar stays fixed
+  through repeated zoom keys and the final layout commit. When
   the page is zoomed wider than the window it pans natively — trackpad
   two-finger pan or shift+wheel, with `h`/`l` still available for keyboard
   nudges. The zoom factor is persisted in

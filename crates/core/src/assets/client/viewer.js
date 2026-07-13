@@ -3557,11 +3557,12 @@
     };
   }
 
-  // Keep the point the user is reading stationary while zooming. Mid-document
-  // that is the centre of the visible area below the topbar; when the paper's
-  // top or bottom edge is visible, keep that edge fixed instead. Coordinates
-  // are stored in the page's unzoomed local space so one anchor survives the
-  // whole compositor-preview burst.
+  // Keep the first visible line immediately below the topbar stationary while
+  // zooming. Anchoring the viewport centre still lets WebKit replace the line
+  // at the top by half the zoom displacement when it repaints the real layout,
+  // which reads as a vertical jump. Clamp to a paper edge when that edge is
+  // already visible. Coordinates are stored in the page's unzoomed local space
+  // so one anchor survives the whole compositor-preview burst.
   function captureZoomAnchor(page) {
     var rect = page.getBoundingClientRect();
     var heightScale = rect.height / Math.max(page.offsetHeight, 1);
@@ -3569,9 +3570,7 @@
     var vh = window.innerHeight || 0;
     var vw = document.documentElement.clientWidth || window.innerWidth || 0;
     var readingTop = Math.max(0, Math.min(vh, topbarOffset()));
-    var viewportY = readingTop + Math.max(0, vh - readingTop) / 2;
-    if (rect.top >= readingTop && rect.top <= vh) viewportY = rect.top;
-    else if (rect.bottom >= readingTop && rect.bottom <= vh) viewportY = rect.bottom;
+    var viewportY = Math.min(vh, readingTop + 1);
     viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
     var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
 

@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.11] — 2026-07-13
+
+### Fixed
+
+- **Zooming now holds the top visible line steady through WebKit repaint.**
+  Anchoring the viewport centre kept the middle geometrically stable, but the
+  first visible line still changed by roughly half the zoom displacement when
+  macOS committed and repainted the real layout. The shared preview/commit
+  anchor now sits immediately below the toolbar (or on a visible paper edge),
+  so the line used to orient reading does not move or get replaced.
+
 ## [1.0.10] — 2026-07-13
 
 ### Fixed

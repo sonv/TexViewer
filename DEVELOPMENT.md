@@ -168,12 +168,15 @@ Every rule below exists because violating it produced a user-visible bug.
   `previewUserZoom()` compositor-scales the existing page immediately, then
   commits CSS `zoom` and refreshes both overlays once after the key burst. The
   compositor transform and the real-layout commit must preserve one shared
-  viewport anchor; a `top center` origin makes displacement grow with scroll
-  depth, while committing without a compensating scroll produces a rebound.
-  Dynamic mode also needs a live content element because its natural width
-  changes and reflows text at commit. Applying CSS `zoom` or walking either
-  overlay per key re-creates long-paper jank; making crop/mode entirely
-  trailing leaves chips visibly misplaced.
+  viewport anchor. That anchor is the first visible line immediately below the
+  toolbar: a viewport-centre anchor is geometrically stable but still lets a
+  WebKit repaint replace the top line by half the zoom displacement, while a
+  page-relative `top center` origin makes displacement grow with scroll depth.
+  Committing without a compensating scroll produces a rebound. Dynamic mode
+  also needs a live content element because its natural width changes and
+  reflows text at commit. Applying CSS `zoom` or walking either overlay per key
+  re-creates long-paper jank; making crop/mode entirely trailing leaves chips
+  visibly misplaced.
 - **The margin variables are a derivation chain — override the *used* var,
   not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
   substitutes **at `:root`**; descendants inherit the *resolved* value. An
