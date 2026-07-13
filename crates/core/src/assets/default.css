@@ -861,7 +861,9 @@ body.page-mode-dynamic main#page {
   background: #fbfaf7;
   color: var(--muted);
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 11px;
+  /* Keep the default 11:18 key-to-document ratio while following the live
+     viewer font-size setting instead of freezing the chip at 11px. */
+  font-size: calc(var(--body-font-size) * 0.611111);
   font-style: normal;
   font-weight: 500;
   line-height: 1.35;
@@ -1216,7 +1218,8 @@ blockquote.quote > :last-child { margin-bottom: 0; }
   background: #fbfaf7;
   color: var(--muted);
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  font-size: 11px;
+  /* Page-level copies of .eq-refkey-chip use the same live document ratio. */
+  font-size: calc(var(--body-font-size) * 0.611111);
   font-style: normal;
   font-weight: 500;
   line-height: 1.35;

@@ -4234,6 +4234,14 @@ mod tests {
         // Guard the layer plumbing and the absence of in-block placement.
         assert!(out.html.contains(r#".refkey-layer"#));
         assert!(out.html.contains("layoutRefkeys"));
+        assert_eq!(
+            out.html
+                .matches("font-size: calc(var(--body-font-size) * 0.611111)")
+                .count(),
+            2
+        );
+        assert!(out.html.contains("var chipHalfHeight = chipHeight / 2"));
+        assert!(out.html.contains("y + c * chipStackStep"));
         assert!(out
             .html
             .contains(r#"body.refkey-visible .refkey-layer .refkey-chip"#));

@@ -160,6 +160,14 @@ Every rule below exists because violating it produced a user-visible bug.
   In-block markup (`.eq-refkey-list`, `[data-refkey]`) is a hidden **data
   carrier only** — texts come from it, geometry never does. The layer is
   rebuilt whole; there is no incremental path to get subtly stale.
+- **Key typography follows document typography.** Both the hidden row-key
+  carriers and their page-layer copies preserve the original 11px-at-18px
+  ratio via `--body-font-size`; never put a fixed pixel size back on either.
+  `layoutRefkeys()` derives the matching chip height once per pass for vertical
+  centering and stacked-key spacing. A live viewer font change must request an
+  immediate refkey rebuild as well as a line-number rebuild. Do not measure
+  every chip: that turns one overlay pass into a long sequence of forced
+  layouts.
 - **Rebuild cadence is two-tier — keep it that way.** One layer pass costs
   ~80 ms of forced layout on a long paper, and every keystroke triggers two
   rebuild requests (patch apply + its typeset landing). Render-path callers

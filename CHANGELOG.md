@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.15] — 2026-07-13
+
+### Fixed
+
+- **Margin key chips now follow the viewer's document font size.** Their
+  original visual ratio is preserved instead of fixing them at `11px`, and
+  their centering and multi-key spacing are recomputed when the font setting
+  changes live.
+
 ## [1.0.14] — 2026-07-13
 
 ### Fixed

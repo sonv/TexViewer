@@ -2731,8 +2731,10 @@
       document.documentElement.style.setProperty(
         '--body-font-size', cfg.font_size + 'px'
       );
-      // Font size changes line heights/wrapping, so the gutter must re-measure.
+      // Font size changes line heights/wrapping and key chip geometry, so both
+      // page-level overlay layers must re-measure before the next paint.
       if (lineNumbersVisible) scheduleLineNumbers();
+      if (refkeysVisible) scheduleRefkeys(0);
     }
     if (typeof cfg.ui_font_size === 'number') {
       // Scales the toolbar (topbar) and the index/pages side panel (TOC);
@@ -3118,7 +3120,17 @@
     // layer for the same dance). Computed paddingLeft is already local.
     var scale = page.offsetHeight > 0 ? pageRect.height / page.offsetHeight : 1;
     if (!isFinite(scale) || scale <= 0) scale = 1;
-    var padLeft = parseFloat(getComputedStyle(page).paddingLeft) || 0;
+    var pageStyle = getComputedStyle(page);
+    var padLeft = parseFloat(pageStyle.paddingLeft) || 0;
+    // Key typography keeps the original 11px-at-18px ratio. Derive its local
+    // box geometry once so row centering and multi-key spacing track a live
+    // viewer font-size change without measuring every chip (a forced-layout
+    // pass per chip is expensive on long papers).
+    var pageFontSize = parseFloat(pageStyle.fontSize) || 18;
+    var chipFontSize = pageFontSize * (11 / 18);
+    var chipHeight = chipFontSize * 1.35 + 4; // line box + padding + borders
+    var chipHalfHeight = chipHeight / 2;
+    var chipStackStep = Math.ceil(chipHeight + 1);
     var cropped = document.body.classList.contains('page-crop');
     var layer = document.createElement('div');
     layer.className = 'refkey-layer';
@@ -3181,9 +3193,9 @@
       }
       var top = (r.top - pageRect.top) / scale + 1;
       if (el.classList.contains('math') && el.classList.contains('display')) {
-        top = (r.top + r.height / 2 - pageRect.top) / scale - 9;
+        top = (r.top + r.height / 2 - pageRect.top) / scale - chipHalfHeight;
       } else if (el.classList.contains('thm')) {
-        top += 9;
+        top += chipHalfHeight;
       }
       addChip(key, top);
     });
@@ -3216,13 +3228,16 @@
         var g = groups[i];
         if (g && g.getBoundingClientRect) {
           var gr = g.getBoundingClientRect();
-          if (gr.height > 0) y = (gr.top + gr.height / 2 - pageRect.top) / scale - 9;
+          if (gr.height > 0) {
+            y = (gr.top + gr.height / 2 - pageRect.top) / scale - chipHalfHeight;
+          }
         }
         if (y == null) {
-          y = (br.top - pageRect.top + (i + 0.5) * (br.height / rows.length)) / scale - 9;
+          y = (br.top - pageRect.top + (i + 0.5) * (br.height / rows.length)) /
+            scale - chipHalfHeight;
         }
         for (var c = 0; c < rowChips.length; c++) {
-          addChip(rowChips[c].dataset.target, y + c * 20);
+          addChip(rowChips[c].dataset.target, y + c * chipStackStep);
         }
       }
     });
@@ -3233,7 +3248,11 @@
       var kr = blk.getBoundingClientRect();
       if (kr.width === 0 && kr.height === 0) return;
       keys.forEach(function(key, i) {
-        addChip(key, (kr.top - pageRect.top + (i + 0.5) * (kr.height / keys.length)) / scale - 9);
+        addChip(
+          key,
+          (kr.top - pageRect.top + (i + 0.5) * (kr.height / keys.length)) /
+            scale - chipHalfHeight
+        );
       });
       watchEstimatedBlk(blk);
     });
