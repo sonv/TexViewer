@@ -100,8 +100,10 @@ Only on explicit user request. `dev → main` is always a fast-forward.
 5. While CI runs, write curated release notes: theme-grouped highlights
    distilled from the CHANGELOG span since the previous release, ending with
    the standard binaries/checksums line (and a WS-bump note when applicable).
-6. On success: confirm the draft has **8 assets** (4 tarballs + 4 checksums),
-   then `gh release edit vX.Y.Z --notes-file <notes> --draft=false --latest`.
+6. On success: confirm the draft has **14 assets** (4 daemon tarballs +
+   3 `-locus-` gui tarballs, each with a `.sha256`), then
+   `gh release edit vX.Y.Z --notes-file <notes> --draft=false --latest`,
+   and give the release a title (`--title "vX.Y.Z — <short theme list>"`).
 7. Verify: `isDraft=false`, `Latest` marker in `gh release list`, and report
    the release URL.
 
