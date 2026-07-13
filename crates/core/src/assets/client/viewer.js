@@ -3245,24 +3245,50 @@
         chip.style.left = padLeft + 'px';
       } else {
         // Right-align the chip so it ends just before the text column,
-        // whatever its width — no measuring needed. Long keys clamp to the
-        // margin width (ellipsis; the tooltip carries the full key) so a
-        // chip never pokes past the paper's left edge.
+        // whatever its width — no measuring needed. Long keys extend PAST
+        // the paper's left edge into the gutter: reading the whole key
+        // beats fitting the page (the layer hangs outside every block's
+        // containment and the page doesn't clip its own overflow). The
+        // clamp is the VIEWPORT's left edge — body's overflow-x clip cuts
+        // there silently, so cap at the real gutter and let the ellipsis
+        // signal truncation in narrow windows (pageRect.left is rendered
+        // px; the chip lays out in zoom-local px).
         chip.style.left = (padLeft - 8) + 'px';
         chip.style.transform = 'translateX(-100%)';
-        chip.style.maxWidth = Math.max(24, padLeft - 14) + 'px';
+        chip.style.maxWidth =
+          Math.max(24, padLeft - 8 + Math.max(0, pageRect.left) / scale - 4) + 'px';
       }
       layer.appendChild(chip);
     }
+    // Zero-rect anchors sit inside content-visibility-skipped blocks that
+    // haven't rendered yet. They still get chips — estimated inside their
+    // block's placeholder box — so the whole document is keyed on first
+    // paint instead of chips popping in as you scroll. Deliberately hidden
+    // content (folded proofs) stays chipless, as does anything whose block
+    // box is itself hidden (proof-filter modes). Estimated blocks are
+    // watched: rendering without a typeset (plain-text sections, re-skipped
+    // regions revisited after an edit) triggers no relayout of its own, so
+    // an IntersectionObserver re-runs the layout when one scrolls in —
+    // that's what refines estimates to exact positions.
+    var pendingPerBlk = new Map(); // blk -> keys of its unrendered anchors
+    function pendEstimate(el, keys) {
+      if (el.closest('.folded')) return;
+      var blk = el.closest('.blk');
+      if (!blk) return;
+      var arr = pendingPerBlk.get(blk);
+      if (!arr) { arr = []; pendingPerBlk.set(blk, arr); }
+      for (var i = 0; i < keys.length; i++) arr.push(keys[i]);
+    }
     // Block/inline anchors ([data-refkey] carriers: theorems, single
-    // equations, floats, section labels…). Zero-size anchors sit inside
-    // content-visibility-skipped blocks — no geometry, no chip (same policy
-    // as line numbers for unrendered regions).
+    // equations, floats, section labels…).
     page.querySelectorAll('[data-refkey]:not(.label-anchor)').forEach(function(el) {
       var key = el.getAttribute('data-refkey');
       if (!key) return;
       var r = el.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) return;
+      if (r.width === 0 && r.height === 0) {
+        pendEstimate(el, [key]);
+        return;
+      }
       var top = (r.top - pageRect.top) / scale + 1;
       if (el.classList.contains('math') && el.classList.contains('display')) {
         top = (r.top + r.height / 2 - pageRect.top) / scale - 9;
@@ -3274,14 +3300,25 @@
     // Per-row labels of multi-row math: texts come from the (hidden)
     // server-rendered .eq-refkey-list; positions from the rendered SVG rows
     // (the same index scheme as highlights and row copy). Falls back to an
-    // even spread over the block while the SVG hasn't typeset yet.
+    // even spread over the block while the SVG hasn't typeset yet. Rows of
+    // an UNRENDERED region join their block's shared estimate pool instead —
+    // one spread per block, so a theorem key and its equation's row keys
+    // can't stack on the same spot.
     page.querySelectorAll('.math.display').forEach(function(block) {
       var list = block.querySelector('.eq-refkey-list');
       if (!list) return;
-      var br = block.getBoundingClientRect();
-      if (br.width === 0 && br.height === 0) return;
-      var groups = mathRowGroups(block);
       var rows = list.children;
+      var br = block.getBoundingClientRect();
+      if (br.width === 0 && br.height === 0) {
+        var keys = [];
+        for (var p = 0; p < rows.length; p++) {
+          var pc = rows[p].querySelectorAll('.eq-refkey-chip[data-target]');
+          for (var q = 0; q < pc.length; q++) keys.push(pc[q].dataset.target);
+        }
+        if (keys.length) pendEstimate(block, keys);
+        return;
+      }
+      var groups = mathRowGroups(block);
       for (var i = 0; i < rows.length; i++) {
         var rowChips = rows[i].querySelectorAll('.eq-refkey-chip[data-target]');
         if (!rowChips.length) continue;
@@ -3299,7 +3336,39 @@
         }
       }
     });
+    // One even spread per block over its placeholder box, and a watch for
+    // the render that will make the positions exact.
+    if (refkeyEstimateObserver) refkeyEstimateObserver.disconnect();
+    pendingPerBlk.forEach(function(keys, blk) {
+      var kr = blk.getBoundingClientRect();
+      if (kr.width === 0 && kr.height === 0) return;
+      keys.forEach(function(key, i) {
+        addChip(key, (kr.top - pageRect.top + (i + 0.5) * (kr.height / keys.length)) / scale - 9);
+      });
+      watchEstimatedBlk(blk);
+    });
     if (layer.children.length) page.appendChild(layer);
+  }
+
+  // Blocks whose chips are estimates: when one scrolls into view it has
+  // rendered (content-visibility renders ahead of the viewport), so one
+  // relayout snaps its chips to exact positions. Typeset-carrying blocks
+  // get this for free from the typeset flush; this covers the rest.
+  var refkeyEstimateObserver = null;
+  function watchEstimatedBlk(blk) {
+    if (!refkeyEstimateObserver) {
+      refkeyEstimateObserver = new IntersectionObserver(function(entries) {
+        var hit = false;
+        entries.forEach(function(en) {
+          if (en.isIntersecting) {
+            refkeyEstimateObserver.unobserve(en.target);
+            hit = true;
+          }
+        });
+        if (hit && refkeysVisible) scheduleRefkeys();
+      });
+    }
+    refkeyEstimateObserver.observe(blk);
   }
 
   // Kept as the render-path entry point (patch/body-updated call it with the

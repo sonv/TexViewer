@@ -15,6 +15,21 @@ summary.
 
 ## [1.0.8] — 2026-07-13
 
+### Changed
+
+- **Long `keys` show whole, hanging past the paper edge.** Chips used to
+  clamp to the margin width with an ellipsis; seeing the full key matters
+  more than fitting the page, so they now extend left into the gutter
+  (the tooltip still carries the key for the truly extreme cases a narrow
+  window can't fit).
+- **`keys` cover the whole document immediately.** Labels inside regions
+  that haven't rendered yet (the lazy-rendered blocks far from the
+  viewport) used to get no chips — they popped in and reshuffled as you
+  scrolled. Every label now gets a chip from the first paint, placed at
+  its block's estimated position and refined to exact when the region
+  renders; scrolling no longer reorganizes the key column. Keys inside
+  folded proofs stay hidden, as before.
+
 ### Fixed
 
 - **The cursor flash box shows all four edges again.** The box was drawn as

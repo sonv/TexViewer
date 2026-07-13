@@ -534,7 +534,12 @@ a Rust roundtrip unless they are controlling the daemon itself.
   of the `c` key below.
 - `keys` toggles LaTeX refkeys for labeled sections, theorem boxes,
   floats, display equations, and loose labels. Visible keys sit in the
-  page margin, and multi-row displays show row-level keys.
+  page margin, and multi-row displays show row-level keys. Long keys
+  extend past the paper edge into the gutter — reading the whole key
+  beats fitting the page (in a window too narrow for any gutter they
+  fall back to an ellipsis). Keys cover the whole document from the first
+  paint: labels in regions that haven't rendered yet get chips at
+  estimated positions that refine as you scroll, instead of popping in.
 - `lines` toggles typeset line numbers (LaTeX `lineno`-style): every
   *wrapped* visual line of body text gets a number in the left margin,
   recomputed on render, resize, zoom, and A4 ⇄ dynamic switches. Display
