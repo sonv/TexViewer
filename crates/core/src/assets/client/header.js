@@ -15,6 +15,8 @@
   var navRefreshTimer = 0;
   var zoomCommitTimer = 0;
   var zoomPreviewAnchor = null;
+  var zoomAnchorRestoreRaf = 0;
+  var zoomAnchorVerifyRaf = 0;
   var currentUserZoom = 1;
   var committedPageScale = 1;
   var ZOOM_MIN = 0.5;

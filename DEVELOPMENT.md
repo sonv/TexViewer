@@ -172,11 +172,17 @@ Every rule below exists because violating it produced a user-visible bug.
   toolbar: a viewport-centre anchor is geometrically stable but still lets a
   WebKit repaint replace the top line by half the zoom displacement, while a
   page-relative `top center` origin makes displacement grow with scroll depth.
-  Committing without a compensating scroll produces a rebound. Dynamic mode
-  also needs a live content element because its natural width changes and
-  reflows text at commit. Applying CSS `zoom` or walking either overlay per key
-  re-creates long-paper jank; making crop/mode entirely trailing leaves chips
-  visibly misplaced.
+  Committing without a compensating scroll produces a rebound. On macOS,
+  WKWebView does not expose the committed CSS-zoom geometry reliably in the
+  setter task: restore the anchor in the next pre-paint rAF and verify it once
+  more on the following frame, cancelling both when a new zoom burst starts.
+  A synchronous-only restore passes Chromium but lets the macOS layout snap
+  afterward. The anchor must retain a live content element in every mode:
+  dynamic width changes reflow text, while A4's `content-visibility` can replace
+  estimated block heights above the viewport during the real layout even
+  though line wrapping is unchanged. Applying CSS `zoom` or walking either
+  overlay per key re-creates long-paper jank; making crop/mode entirely trailing
+  leaves chips visibly misplaced.
 - **The margin variables are a derivation chain — override the *used* var,
   not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
   substitutes **at `:root`**; descendants inherit the *resolved* value. An

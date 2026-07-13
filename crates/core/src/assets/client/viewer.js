@@ -3574,9 +3574,10 @@
     viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
     var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
 
-    // Dynamic mode changes the paper's natural width at commit, so its text can
-    // reflow. Retain a content element as a better vertical fallback there;
-    // A4 keeps identical line wrapping and uses the exact page-local point.
+    // Retain the live source element under the reading line in every mode.
+    // Dynamic mode can reflow it; A4 keeps its wrapping but content-visibility
+    // can still replace estimated heights above it during the real zoom layout.
+    // The page-local point remains a fallback for whitespace and paper edges.
     var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
     var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
     var hit = document.elementFromPoint(hitX, hitY);
@@ -3608,8 +3609,8 @@
     var widthScale = rect.width / Math.max(page.offsetWidth, 1);
     var targetX = rect.left + anchor.localX * widthScale;
     var targetY = rect.top + anchor.localY * heightScale;
-    if (currentPageMode === 'dynamic' && anchor.element &&
-        anchor.element.isConnected && anchor.elementRatioY !== null) {
+    if (anchor.element && anchor.element.isConnected &&
+        anchor.elementRatioY !== null) {
       var elementRect = anchor.element.getBoundingClientRect();
       if (elementRect.height > 1) {
         targetY = elementRect.top + anchor.elementRatioY * elementRect.height;
@@ -3620,6 +3621,39 @@
     if (Math.abs(dx) < 0.5) dx = 0;
     if (Math.abs(dy) < 0.5) dy = 0;
     if (dx || dy) window.scrollBy({ left: dx, top: dy, behavior: 'auto' });
+  }
+
+  function cancelZoomAnchorRestore() {
+    if (zoomAnchorRestoreRaf) {
+      cancelAnimationFrame(zoomAnchorRestoreRaf);
+      zoomAnchorRestoreRaf = 0;
+    }
+    if (zoomAnchorVerifyRaf) {
+      cancelAnimationFrame(zoomAnchorVerifyRaf);
+      zoomAnchorVerifyRaf = 0;
+    }
+  }
+
+  // macOS WKWebView does not expose the final CSS-zoom geometry reliably in
+  // the same task that changes --page-scale. Restoring there uses the old page
+  // rect, then WebKit applies the new layout after our scroll compensation and
+  // the viewport snaps. The first rAF runs after style/layout invalidation but
+  // before the committed frame is painted; a second pass catches WebKit's own
+  // late scroll anchoring. A new key burst cancels both so an old anchor cannot
+  // fight the new compositor preview.
+  function scheduleZoomAnchorRestore(page, anchor) {
+    cancelZoomAnchorRestore();
+    if (!anchor) return;
+    zoomAnchorRestoreRaf = requestAnimationFrame(function() {
+      zoomAnchorRestoreRaf = 0;
+      if (zoomPreviewAnchor || !page.isConnected) return;
+      restoreZoomAnchor(page, anchor);
+      zoomAnchorVerifyRaf = requestAnimationFrame(function() {
+        zoomAnchorVerifyRaf = 0;
+        if (zoomPreviewAnchor || !page.isConnected) return;
+        restoreZoomAnchor(page, anchor);
+      });
+    });
   }
 
   function clearZoomPreview(page) {
@@ -3639,6 +3673,7 @@
     var shell = pageShellEl();
     if (!page || !shell) return;
     var anchor = zoomPreviewAnchor;
+    cancelZoomAnchorRestore();
     clearZoomPreview(page);
     var plan = pageScalePlan(currentUserZoom);
     // `main#page` uses CSS `zoom` (in default.css), so the layout box
@@ -3673,7 +3708,7 @@
       'page-overwide',
       plan.viewportWidth > 0 && plan.shellWidth > plan.viewportWidth + 1
     );
-    restoreZoomAnchor(page, anchor);
+    scheduleZoomAnchorRestore(page, anchor);
     // Zoom/crop/mode changes move the flashed element — track it.
     if (flashBoxTarget) drawFlashBox();
   }
@@ -3707,6 +3742,7 @@
       setUserZoom(z, persist);
       return;
     }
+    cancelZoomAnchorRestore();
     currentUserZoom = clampUserZoom(z);
     var targetScale = pageScalePlan(currentUserZoom).pageScale;
     var previewScale = targetScale / Math.max(committedPageScale, 1e-6);

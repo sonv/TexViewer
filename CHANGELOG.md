@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.12] — 2026-07-13
+
+### Fixed
+
+- **The macOS viewer now restores the top-line zoom anchor after WebKit's real
+  layout settles.** Locus 1.0.11 chose the correct line but compensated in the
+  same task that changed CSS zoom; WKWebView could still expose the old page
+  geometry and snap to the uncorrected scroll position on its delayed commit.
+  Anchor restoration now follows the live source element in both A4 and dynamic
+  modes, runs in the next pre-paint frame, and verifies once on the following
+  frame; this also survives lazy blocks above the viewport replacing their
+  estimated heights. A resumed key burst cancels stale corrections.
+
 ## [1.0.11] — 2026-07-13
 
 ### Fixed

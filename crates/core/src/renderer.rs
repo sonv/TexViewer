@@ -4226,10 +4226,20 @@ mod tests {
         assert!(!zoom_fn.contains("scheduleLineNumbers"));
         assert!(!zoom_fn.contains("scheduleRefkeys"));
         assert!(out.html.contains("function restoreZoomAnchor"));
+        assert!(out.html.contains("function scheduleZoomAnchorRestore"));
+        assert!(out
+            .html
+            .contains("zoomAnchorRestoreRaf = requestAnimationFrame"));
+        assert!(out
+            .html
+            .contains("zoomAnchorVerifyRaf = requestAnimationFrame"));
         assert!(out
             .html
             .contains("var viewportY = Math.min(vh, readingTop + 1)"));
-        assert!(out.html.contains("restoreZoomAnchor(page, anchor)"));
+        assert!(out
+            .html
+            .contains("if (anchor.element && anchor.element.isConnected"));
+        assert!(out.html.contains("scheduleZoomAnchorRestore(page, anchor)"));
         assert!(out
             .html
             .contains("window.scrollBy({ left: dx, top: dy, behavior: 'auto' })"));
