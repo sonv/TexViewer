@@ -13,6 +13,14 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.17] — 2026-07-13
+
+### Changed
+
+- **Magnified margin cards are now always larger than their margin view.** The
+  full-page reading view stays 15% larger than the card's actual zoom-scaled
+  text while retaining full document size as its minimum when zoomed out.
+
 ## [1.0.16] — 2026-07-13
 
 ### Fixed

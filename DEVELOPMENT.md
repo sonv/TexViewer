@@ -168,6 +168,10 @@ Every rule below exists because violating it produced a user-visible bug.
   immediate refkey rebuild as well as a line-number rebuild. Do not measure
   every chip: that turns one overlay pass into a long sequence of forced
   layouts.
+- **Magnifying a margin card must enlarge it.** The dialog uses full document
+  size as its floor, then stays 15% larger than the card's actual
+  `--page-scale`-adjusted text. This keeps zoomed-out cards comfortable to read
+  and prevents a zoomed-in card from shrinking when opened full-page.
 - **Rebuild cadence is two-tier — keep it that way.** One layer pass costs
   ~80 ms of forced layout on a long paper, and every keystroke triggers two
   rebuild requests (patch apply + its typeset landing). Render-path callers

@@ -4155,6 +4155,9 @@ mod tests {
         assert!(out.html.contains("margin-card-expand"));
         assert!(out.html.contains("expand.textContent = '↔'"));
         assert!(!out.html.contains("margin-card-pin"));
+        assert!(out
+            .html
+            .contains("calc(var(--body-font-size) * var(--page-scale, 1) * 1.15)"));
         assert!(out.html.contains("openCmdline"));
         assert!(out.html.contains("setRefkeysVisible"));
         assert!(out.html.contains("mathpreview.refkeys"));
