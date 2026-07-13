@@ -13,6 +13,21 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.8] — 2026-07-13
+
+### Fixed
+
+- **The cursor flash box shows all four edges again.** The box was drawn as
+  an outline on the flashed element, and the render blocks' paint
+  containment (`content-visibility`) clips any ink outside a block's box —
+  so a paragraph that filled its block flashed with NO edges at all (just
+  the faint tint), and a word on a paragraph's first or last line lost the
+  edges that crossed the block boundary. The box now lives in a page-level
+  layer (the same architecture as the `keys` chips and line numbers),
+  measured to the flashed element and immune to containment. Same visuals:
+  2 px line, 4 px offset, tint, 1.8 s fade; it tracks zoom and page-mode
+  changes and never intercepts clicks.
+
 ## [1.0.7] — 2026-07-12
 
 ### Added

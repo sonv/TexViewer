@@ -4220,6 +4220,15 @@ mod tests {
         assert!(crop_pad_override > dyn_rule_start);
         // The crop toggle button (syncs with the `c` key via setPageCrop).
         assert!(out.html.contains(r#"id="crop-toggle""#));
+        // The cursor flash box is drawn in a page-level layer — an outline on
+        // the flashed element is clipped by block paint containment (a
+        // paragraph's box rendered with no edges). Guard the layer plumbing
+        // and the absence of the outline-based rule.
+        assert!(out.html.contains(r#".flash-layer"#));
+        assert!(out.html.contains("drawFlashBox"));
+        // (leading \n: .source-space.source-active's `outline: 0` reset must
+        // not trip this — only a revived bare .source-active box rule should)
+        assert!(!out.html.contains("\n.source-active {"));
         assert!(out.html.contains("setStopButtonMode"));
         assert!(out.html.contains("startServer"));
         assert!(out.html.contains("stopServer"));

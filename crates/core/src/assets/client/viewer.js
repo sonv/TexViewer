@@ -1135,6 +1135,102 @@
     return el;
   }
 
+  // The cursor-flash BOX, drawn in a page-level layer. An outline on the
+  // flashed element is clipped by the render blocks' paint containment
+  // wherever it crosses the block's box — for a paragraph that fills its
+  // block (the common case) ALL FOUR edges land outside and the "box" was
+  // just the background tint. Same doctrine as the refkey/lineno layers
+  // (DEVELOPMENT.md, "The margin overlays"): measure, divide by the zoom
+  // scale, draw in a layer nothing contains.
+  var flashBoxTarget = null;
+  var flashTrackRaf = 0;
+  function removeFlashBox() {
+    flashBoxTarget = null;
+    if (flashTrackRaf) { cancelAnimationFrame(flashTrackRaf); flashTrackRaf = 0; }
+    var page = pageEl();
+    var l = page && page.querySelector(':scope > .flash-layer');
+    if (l) l.remove();
+  }
+  // Measure the target and place the box. Returns the layer-relative
+  // geometry key ('' while the target has no geometry — a
+  // content-visibility-skipped block), so the tracker can compare frames.
+  function positionFlashBox(page, layer) {
+    var r = flashBoxTarget.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) {
+      layer.replaceChildren();
+      return '';
+    }
+    // Origin: the LAYER's own rect, not the page's — `inset: 0` anchors the
+    // layer to the page's padding box, and the page's border would shift
+    // every box by its width otherwise. Same for the scale denominator:
+    // clientHeight is the padding box; offsetHeight (border box) would run
+    // the scale slightly low and sag the box toward the page bottom.
+    var pr = layer.getBoundingClientRect();
+    var scale = page.clientHeight > 0 ? pr.height / page.clientHeight : 1;
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+    var box = layer.firstElementChild;
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'flash-box';
+      layer.appendChild(box);
+    }
+    var pad = 4; // the outline-offset the box replaces
+    box.style.left = Math.round((r.left - pr.left) / scale - pad) + 'px';
+    box.style.top = Math.round((r.top - pr.top) / scale - pad) + 'px';
+    box.style.width = Math.round(r.width / scale + 2 * pad) + 'px';
+    box.style.height = Math.round(r.height / scale + 2 * pad) + 'px';
+    return ((r.left - pr.left) / scale).toFixed(1) + ',' +
+      ((r.top - pr.top) / scale).toFixed(1) + ',' +
+      (r.width / scale).toFixed(1) + ',' + (r.height / scale).toFixed(1);
+  }
+  function drawFlashBox(el) {
+    if (el) flashBoxTarget = el;
+    var page = pageEl();
+    if (!page || !flashBoxTarget) return;
+    if (!flashBoxTarget.isConnected) {
+      // The flashed element was edited away mid-flash (a patch removed its
+      // block) — a box left behind would outline whatever reflowed into its
+      // place.
+      removeFlashBox();
+      return;
+    }
+    var layer = page.querySelector(':scope > .flash-layer');
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.className = 'flash-layer';
+      page.appendChild(layer);
+    }
+    var lastKey = positionFlashBox(page, layer);
+    // The outline this replaces was painted on the element and tracked
+    // every reflow for free; a positioned box must track them itself.
+    // During the short flash window, follow the element through ANY layout
+    // shift — lazy typesets landing, proof folds, a skipped block gaining
+    // geometry after the scroll renders it — by re-measuring each frame.
+    // The key is layer-relative, so plain scrolling neither redraws nor
+    // writes. rAF freezes on hidden pages, where a misplaced transient box
+    // can't be seen anyway.
+    if (!flashTrackRaf) {
+      var track = function() {
+        if (!flashBoxTarget) { flashTrackRaf = 0; return; }
+        if (!flashBoxTarget.isConnected) { removeFlashBox(); return; }
+        var p = pageEl();
+        var l = p && p.querySelector(':scope > .flash-layer');
+        if (l) {
+          var now = flashBoxTarget.getBoundingClientRect();
+          var origin = l.getBoundingClientRect();
+          var scale = p.clientHeight > 0 ? origin.height / p.clientHeight : 1;
+          if (!isFinite(scale) || scale <= 0) scale = 1;
+          var key = ((now.left - origin.left) / scale).toFixed(1) + ',' +
+            ((now.top - origin.top) / scale).toFixed(1) + ',' +
+            (now.width / scale).toFixed(1) + ',' + (now.height / scale).toFixed(1);
+          if (key !== lastKey) lastKey = positionFlashBox(p, l);
+        }
+        flashTrackRaf = requestAnimationFrame(track);
+      };
+      flashTrackRaf = requestAnimationFrame(track);
+    }
+  }
+
   function revealSourceElement(id, shouldScroll) {
     if (!id) return;
     activeSourceId = id;
@@ -1143,11 +1239,17 @@
     });
     var raw = document.getElementById(id);
     var el = visibleSyncElement(raw);
-    if (!el) return;
+    // Unresolvable id (the flashed element was edited away): drop the box
+    // too, or it would sit over whatever reflowed into its place.
+    if (!el) { removeFlashBox(); return; }
     el.classList.add('source-active');
+    // Spaces keep their small ::after caret (class-driven) instead of a box.
+    if (el.classList.contains('source-space')) removeFlashBox();
+    else drawFlashBox(el);
     if (sourceFlashTimer) clearTimeout(sourceFlashTimer);
     sourceFlashTimer = setTimeout(function() {
       if (el && el.classList) el.classList.remove('source-active');
+      removeFlashBox();
       // The flash is over — forget it, or restoreSourceHighlight would
       // resurrect a long-faded box on the next re-render (visible as a
       // one-beat blink when a patch lands just before the first
@@ -1183,6 +1285,7 @@
       el.classList.remove('source-active');
     });
     activeSourceId = null;
+    removeFlashBox();
   }
 
   // Clear the line/row band (visual selection or cursor-on-math-row).
@@ -3390,6 +3493,8 @@
     // mouse/trackpad — so this class swaps it for `auto` (see default.css).
     // Runs on zoom and window resize, so the class tracks the fit exactly.
     document.body.classList.toggle('page-overwide', vw > 0 && shellW > vw + 1);
+    // Zoom/crop/mode changes move the flashed element — track it.
+    if (flashBoxTarget) drawFlashBox();
   }
 
   function clampUserZoom(z) {

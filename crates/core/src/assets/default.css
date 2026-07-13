@@ -940,11 +940,29 @@ body.page-mode-dynamic main#page {
   outline: 2px solid rgba(91, 62, 162, 0.5);
   outline-offset: 3px;
 }
-.source-active {
-  outline: 2px solid rgba(91, 62, 162, 0.55);
-  outline-offset: 4px;
+/* The cursor flash BOX is not drawn here: an outline (or any ink outside the
+   element) is clipped by the render blocks' paint containment the moment the
+   element fills its block — a paragraph's flash box rendered with no edges
+   at all. The box lives in a page-level .flash-layer (drawFlashBox), same
+   doctrine as the refkey/lineno layers (DEVELOPMENT.md, "The margin
+   overlays"). The class remains as the flash's state marker and for the
+   .source-space caret below. */
+.flash-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 7;
+}
+.flash-box {
+  position: absolute;
+  /* content-box: drawFlashBox sizes the box to the target + the 4px offset,
+     and the 2px line must sit OUTSIDE that (spanning 4..6px out), exactly
+     like the outline it replaces — under the global border-box the line
+     would eat into the offset instead. */
+  box-sizing: content-box;
+  border: 2px solid rgba(91, 62, 162, 0.55);
+  border-radius: 3px;
   background: rgba(91, 62, 162, 0.07);
-  transition: background 0.12s ease, outline-color 0.12s ease;
 }
 /* Editor visual-selection highlight: a calm, persistent tint (no outline, no
    flash) so a multi-element selection reads as one continuous tinted region. */
@@ -1095,7 +1113,7 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
 @media print {
   /* Hide all viewer chrome — only the paper prints. */
   .topbar, .side-panel, details.warnings, dialog,
-  .lineno-layer, .refkey-chip, .margin-layer { display: none !important; }
+  .lineno-layer, .refkey-chip, .margin-layer, .flash-layer { display: none !important; }
   html, body { background: #fff; margin: 0; }
   body { color: #000; }
   #page-shell { width: auto; margin: 0; box-shadow: none; }
@@ -2198,8 +2216,8 @@ body.theme-dark .status.dead { color: #e08080; }
 body.theme-dark .cmdline-feedback.error { color: #e08080; }
 body.theme-dark .cite.missing { color: #6a6a6a; }
 body.theme-dark .math.math-selected,
-body.theme-dark .math:focus,
-body.theme-dark .source-active { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
+body.theme-dark .math:focus { outline-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
+body.theme-dark .flash-box { border-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .source-range { background: rgba(179, 157, 232, 0.20); }
 body.theme-dark .mp-row-hl { fill: rgba(179, 157, 232, 0.22); }
 body.theme-dark .mp-row-select { fill: rgba(179, 157, 232, 0.70); }

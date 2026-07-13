@@ -146,8 +146,11 @@ Every rule below exists because violating it produced a user-visible bug.
   a negative margin). Layout is unaffected, so `getBoundingClientRect` /
   computed-style checks **cannot detect** this clipping — only looking at
   pixels (or reasoning about containment) can. Anything that must render in
-  the page margin therefore lives in a **page-level layer**: a direct child
-  of `main#page` (`.refkey-layer`, `.lineno-layer`), outside every block's
+  the page margin — or draw ANY ink outside an element's own box (an
+  `outline` / `box-shadow` / `outline-offset` on something that fills its
+  block: the cursor flash box rendered with zero edges this way) —
+  therefore lives in a **page-level layer**: a direct child of `main#page`
+  (`.refkey-layer`, `.lineno-layer`, `.flash-layer`), outside every block's
   containment.
 - **The layers are measured, not styled, into position.** `layoutRefkeys()`
   reads each anchor's client rect and divides by the zoom scale
