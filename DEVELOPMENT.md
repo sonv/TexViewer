@@ -187,3 +187,30 @@ Every rule below exists because violating it produced a user-visible bug.
   stay in the served page; the e2e recipe is the same in every session —
   chips whole and inside the page bounds, column width constant across crop
   toggles, computed-end-property assertions in both page modes.
+
+### CSS `zoom` × MathJax `ex` — the macOS-WebKit-only trap
+
+`main#page` scales with CSS `zoom` (`--page-scale`). MathJax sizes every SVG
+in **`ex` units** (`width="50.242ex"`, `vertical-align:-0.566ex`). On macOS
+Locus (WKWebView) the spec-compliant `zoom` resolves those `ex` against a
+**zoom-inflated font** *and* geometrically scales the box — a double count, so
+equations grew by `zoom²` while text grew by `zoom`. Chromium (browser tab)
+and WebKitGTK (Linux window) don't double-count, so they were fine — **the bug
+is invisible in the Chromium preview you test in.** Reason about the engine,
+don't rely on reproducing it here.
+
+- **Fix:** `pinSvgPx()` in `engines/assets/mathjax.js` converts each typeset
+  SVG's `ex` width/height/`vertical-align` to **px** (ex-count × unzoomed
+  ex-px). `zoom` then scales the box as a pure geometric transform — identical
+  to text on every engine. Full-width line-broken displays (`width="full"`)
+  keep `width:100%`; only their height/baseline pin.
+- **`contextEmEx` must measure zoom-invariantly.** Use
+  `getBoundingClientRect() / pageZoom()` (a plain block scales like text, once,
+  on every engine), **not** `getComputedStyle().fontSize` / `offsetHeight` —
+  WebKit inflates those under `zoom`, Blink doesn't, so only the rect÷zoom path
+  yields the same unzoomed px everywhere. This keeps the px pin correct even
+  for equations typeset while the page is already zoomed.
+- **Verification:** assert the SVG's `getBoundingClientRect().height` scales
+  **exactly** ×`--page-scale` and its style is `…px` (not `ex`). Chromium can
+  only prove no-regression; the WebKit double-count is removed by construction
+  (no `ex` left to resolve under zoom).

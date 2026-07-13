@@ -79,6 +79,16 @@ summary.
 
 ### Fixed
 
+- **Zooming (`+` / `-` / `=`) no longer mis-sizes equations in the macOS
+  Locus window.** On macOS (WebKit/WKWebView) the page zoom scaled display
+  equations by the square of the zoom factor while the surrounding text
+  scaled linearly, so equations ballooned or shrank out of proportion; the
+  browser tab and the Linux window were unaffected. The cause was MathJax
+  sizing each equation's SVG in `ex` units, which macOS WebKit's zoom
+  resolves against a zoom-inflated font *and* then scales geometrically —
+  a double count. Equations are now pinned to pixel dimensions measured
+  independently of zoom, so they scale exactly with the text on every
+  platform.
 - **Typing near the end of the document no longer makes the whole page
   flicker.** Every keystroke launched a fresh smooth-scroll animation: the
   cursor-follow tried to pin the edited element at 25 % of the viewport, a
