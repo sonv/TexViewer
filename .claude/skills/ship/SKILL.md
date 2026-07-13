@@ -113,6 +113,16 @@ measurements in [PERFORMANCE.md](../../../PERFORMANCE.md) — read it before
 touching `broadcast_render`, `IdGen`, the typeset queue, or per-patch client
 passes.
 
+The `keys`/line-number margin overlays have their own hard-won invariants in
+[DEVELOPMENT.md § "The margin overlays"](../../../DEVELOPMENT.md) — read that
+section before touching `.refkey-layer` / `.lineno-layer`, `layoutRefkeys`,
+`scheduleRefkeys`, the `--page-pad-x*` variable chain, crop width math
+(`cropDxNow`), or anything that renders in the page margin. Short version:
+no ink outside a `.blk` (paint containment clips it), margin content lives in
+page-level layers, element overrides of derived CSS vars must re-declare the
+derivation, and verification asserts computed end properties — never the
+variable.
+
 - Patch `blocks` metadata is **positional and full-length** (`blk-N` ids
   renumber on insert/delete); unchanged positions ship as `0` — keep the delta
   when editing `broadcast_render` / `syncPatchBlockMetadata`.

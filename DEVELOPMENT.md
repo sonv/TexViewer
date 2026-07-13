@@ -133,3 +133,54 @@ the per-patch client path.
 - **Extractors must strip `%` comments** (`macros::strip_line_comments`) before
   regex-scanning preamble source — trailing-`%` continuation is the standard
   multi-line def style, and commented-out defs must not win.
+
+### The margin overlays (`keys` chips, line numbers) — why they're built the way they are
+
+The `keys` feature broke three times before landing on this architecture.
+Every rule below exists because violating it produced a user-visible bug.
+
+- **No ink outside a `.blk`'s box — ever.** Render blocks use
+  `content-visibility: auto`, whose paint containment **clips any ink outside
+  the block's border box** (that's what turned margin-hanging chips into
+  sliver stubs, and what amputated the amsart "Abstract" heading pulled up by
+  a negative margin). Layout is unaffected, so `getBoundingClientRect` /
+  computed-style checks **cannot detect** this clipping — only looking at
+  pixels (or reasoning about containment) can. Anything that must render in
+  the page margin therefore lives in a **page-level layer**: a direct child
+  of `main#page` (`.refkey-layer`, `.lineno-layer`), outside every block's
+  containment.
+- **The layers are measured, not styled, into position.** `layoutRefkeys()`
+  reads each anchor's client rect and divides by the zoom scale
+  (`pageRect.height / page.offsetHeight` — `main#page` is CSS-`zoom`ed, so
+  rendered coords ≠ local coords; computed-style lengths are already local).
+  In-block markup (`.eq-refkey-list`, `[data-refkey]`) is a hidden **data
+  carrier only** — texts come from it, geometry never does. The layer is
+  rebuilt whole; there is no incremental path to get subtly stale.
+- **Rebuild cadence is two-tier — keep it that way.** One layer pass costs
+  ~80 ms of forced layout on a long paper, and every keystroke triggers two
+  rebuild requests (patch apply + its typeset landing). Render-path callers
+  go through the trailing 180 ms timer in `scheduleRefkeys()` (coalesces to
+  one pass); interactive geometry changes (crop/mode/zoom) pass `0` for a
+  pre-paint (rAF) rebuild so chips move in the same frame as the page.
+  Making everything immediate re-creates per-keystroke jank; making
+  everything trailing leaves chips visibly misplaced after toggles.
+- **The margin variables are a derivation chain — override the *used* var,
+  not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
+  substitutes **at `:root`**; descendants inherit the *resolved* value. An
+  element-level `--page-pad-x-base` override alone is dead CSS (the shipped
+  dynamic-mode 10 mm pin silently didn't work until the rule also re-declared
+  `--page-pad-x: var(--page-pad-x-base)` at element level). Corollary for
+  verification: **assert computed end properties** (`paddingLeft`, column
+  width), never the custom-property value.
+- **Crop must never change line wrapping.** CSS drops `--page-pad-x` to
+  `--crop-pad` while JS narrows the page by `cropDxNow()` = 2 × (base − crop);
+  the two must read the **same base** (the element's computed
+  `--page-pad-x-base`) or the text column reflows on every crop toggle. Any
+  new mode/margin override must keep `cropDxNow()` and the CSS crop rule in
+  agreement — and the crop override must stay **later in source** than
+  mode-level `--page-pad-x` declarations (equal specificity; order decides).
+- **What guards it:** `viewer_shell_contains_index_and_page_modes` (renderer
+  tests) asserts the layer + scheduling wiring and the CSS invariants above
+  stay in the served page; the e2e recipe is the same in every session —
+  chips whole and inside the page bounds, column width constant across crop
+  toggles, computed-end-property assertions in both page modes.

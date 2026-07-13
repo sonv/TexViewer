@@ -4194,6 +4194,32 @@ mod tests {
             .html
             .contains(r#"right: calc(100% + var(--refkey-gap));"#));
         assert!(out.html.contains(r#".eq-refkey-list"#));
+        // Interactive geometry toggles rebuild the layer pre-paint; the
+        // render path keeps the trailing coalescing timer (DEVELOPMENT.md,
+        // "The margin overlays").
+        assert!(out.html.contains("scheduleRefkeys(0)"));
+        // Dynamic mode pins a 10mm margin by re-deriving --page-pad-x AT THE
+        // ELEMENT. Overriding only the base is dead CSS: :root substitutes
+        // var() at declaration time and descendants inherit the resolved
+        // value (this shipped broken once — DEVELOPMENT.md has the story).
+        let dyn_rule_start = out
+            .html
+            .find("body.page-mode-dynamic main#page {")
+            .expect("dynamic page-mode rule present");
+        let dyn_rule = &out.html[dyn_rule_start..];
+        let dyn_rule = &dyn_rule[..dyn_rule.find('}').expect("rule closes")];
+        assert!(dyn_rule.contains("--page-pad-x-base: 37.8px;"));
+        assert!(dyn_rule.contains("--page-pad-x: var(--page-pad-x-base);"));
+        // Crop wins over mode-level margin overrides by SOURCE ORDER (equal
+        // specificity): its --page-pad-x rule must stay after the dynamic
+        // rule, or cropping stops trimming the margin in dynamic mode.
+        let crop_pad_override = out
+            .html
+            .find("--page-pad-x: var(--crop-pad)")
+            .expect("crop pad override present");
+        assert!(crop_pad_override > dyn_rule_start);
+        // The crop toggle button (syncs with the `c` key via setPageCrop).
+        assert!(out.html.contains(r#"id="crop-toggle""#));
         assert!(out.html.contains("setStopButtonMode"));
         assert!(out.html.contains("startServer"));
         assert!(out.html.contains("stopServer"));
