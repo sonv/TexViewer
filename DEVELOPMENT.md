@@ -175,9 +175,14 @@ Every rule below exists because violating it produced a user-visible bug.
   one pass); crop/mode changes pass `0` for a pre-paint (rAF) rebuild so chips
   move in the same frame as the page. Repeated zoom keys are different:
   `previewUserZoom()` compositor-scales the existing page immediately and
-  refreshes both overlays once after the key burst. Browser/Linux then commit
-  CSS `zoom`; macOS Locus keeps an absolute compositor transform, because its
-  WKWebView does not scale MathJax SVG and prose consistently under CSS `zoom`.
+  commits without refreshing either measured overlay. A line number or refkey
+  is already a child of the page and shares its scale; rebuilding it would only
+  walk the document again. Dynamic mode must keep the same natural column
+  width during zoom on every viewer, or its inverse-width adjustment reflows
+  text and invalidates those layers. A real viewport resize may change the
+  natural width and does rebuild them. Browser/Linux commit CSS `zoom`; macOS
+  Locus keeps an absolute compositor transform, because its WKWebView does not
+  scale MathJax SVG and prose consistently under CSS `zoom`.
   The preview and commit must preserve one shared viewport anchor: the first
   visible line immediately below the toolbar. A viewport-centre anchor is
   geometrically stable but still replaces the top line by half the zoom
@@ -193,8 +198,8 @@ Every rule below exists because violating it produced a user-visible bug.
   Restore macOS from the captured page-local point, not its live element rect:
   `content-visibility` can replace an offscreen height estimate during the
   shell resize even though composite zoom itself does not reflow the text.
-  Walking either overlay per key re-creates long-paper jank; making crop/mode
-  entirely trailing leaves chips visibly misplaced.
+  Walking either overlay after zoom re-creates long-paper jank; making
+  crop/mode entirely trailing leaves chips visibly misplaced.
 - **The margin variables are a derivation chain — override the *used* var,
   not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
   substitutes **at `:root`**; descendants inherit the *resolved* value. An
@@ -230,9 +235,10 @@ differently from prose under CSS `zoom`; equation size can drift toward
 - **Fix at the page boundary:** the macOS shell adds `html.locus-macos` before
   document scripts run. That marker disables CSS `zoom` for `main#page`; the
   viewer scales the already-rendered paper with one `transform`, so prose,
-  SVGs, equation numbers and overlays are a single composited surface. Dynamic
-  mode also keeps its natural column width during keyboard zoom, avoiding a
-  text reflow at commit. Browser/Linux keep their existing CSS-zoom behavior.
+  SVGs, equation numbers and overlays are a single composited surface. All
+  viewers keep dynamic mode's natural column width during keyboard zoom,
+  avoiding text reflow and overlay reconstruction at commit. Browser/Linux
+  retain CSS `zoom` for that stable geometry.
 - **Flow/print invariants:** a transform has no layout height, so
   `syncCompositePageHeight()` sizes `#page-shell` and a `ResizeObserver` tracks
   content-height changes. The screen shell clips **vertical overflow only**;

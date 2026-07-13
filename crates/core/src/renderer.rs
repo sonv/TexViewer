@@ -4253,9 +4253,8 @@ mod tests {
         // render path keeps the trailing coalescing timer (DEVELOPMENT.md,
         // "The margin overlays").
         assert!(out.html.contains("scheduleRefkeys(0)"));
-        // Zoom bursts must not trigger the expensive line-number text walk or
-        // keys-layer rebuild once per keypress. The debounced navigation
-        // refresh runs both once after the burst settles.
+        // Pure zoom preserves the page's local geometry. It must not trigger
+        // the expensive line-number text walk or keys-layer rebuild at all.
         let zoom_start = out
             .html
             .find("function setUserZoom(z, persist)")
@@ -4265,7 +4264,7 @@ mod tests {
             .find("function bumpUserZoom")
             .expect("zoom setter closes before bump helper");
         let zoom_fn = &zoom_tail[..zoom_end];
-        assert!(zoom_fn.contains("scheduleNavigationRefresh"));
+        assert!(!zoom_fn.contains("scheduleNavigationRefresh"));
         assert!(zoom_fn.contains("page.style.transform"));
         assert!(zoom_fn.contains("captureZoomAnchor"));
         assert!(zoom_fn.contains("zoomPreviewAnchor.localX"));
@@ -4273,6 +4272,19 @@ mod tests {
         assert!(zoom_fn.contains("setTimeout(commitUserZoom, NAV_RESIZE_IDLE_MS)"));
         assert!(!zoom_fn.contains("scheduleLineNumbers"));
         assert!(!zoom_fn.contains("scheduleRefkeys"));
+        // Dynamic mode must scale one stable natural column too. Dividing its
+        // width by userZoom reflows text and invalidates the line layer.
+        let plan_start = out
+            .html
+            .find("function pageScalePlan(userZoom)")
+            .expect("page scale planner present");
+        let plan_tail = &out.html[plan_start..];
+        let plan_end = plan_tail
+            .find("function textRectAtPoint")
+            .expect("page scale planner closes before text anchor helper");
+        let plan_fn = &plan_tail[..plan_end];
+        assert!(plan_fn.contains("Math.min(DYNAMIC_BASE_WIDTH, available)"));
+        assert!(!plan_fn.contains("available / Math.max(userZoom"));
         assert!(out.html.contains("function restoreZoomAnchor"));
         assert!(out.html.contains("function scheduleZoomAnchorRestore"));
         assert!(out

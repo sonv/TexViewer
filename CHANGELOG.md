@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.16] — 2026-07-13
+
+### Fixed
+
+- **Viewer zoom no longer renumbers unchanged lines.** A zoom step now scales
+  one stable page geometry—including dynamic mode—without reflowing text or
+  rebuilding line-number and key overlays after the key burst. Line numbers
+  are still recomputed for real layout changes such as a document font-size
+  update at fixed page width, content edits, mode changes, and window resizes.
+
 ## [1.0.15] — 2026-07-13
 
 ### Fixed

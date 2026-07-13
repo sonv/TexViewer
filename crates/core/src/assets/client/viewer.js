@@ -3435,14 +3435,12 @@
       };
     }
 
-    // Dynamic mode normally reflows to the visual viewport before zoom. In
-    // macOS Locus keep the natural column fixed during keyboard zoom instead:
-    // the entire rendered page is compositor-scaled, so no line is replaced
-    // at the end of the key burst.
-    var naturalWidth = Math.min(
-      DYNAMIC_BASE_WIDTH,
-      usesCompositePageZoom() ? available : available / Math.max(userZoom, 1e-6)
-    );
+    // Dynamic mode keeps one natural column width and scales that rendered
+    // geometry as a whole. Making the natural width inversely proportional to
+    // userZoom reflowed the text at every zoom commit, forcing line-number and
+    // refkey reconstruction and changing the visible line breaks. A viewport
+    // resize can still change this width and legitimately reflow the column.
+    var naturalWidth = Math.min(DYNAMIC_BASE_WIDTH, available);
     var pageW = naturalWidth - cropDx;
     return {
       viewportWidth: vw,
@@ -3708,7 +3706,6 @@
   function setUserZoom(z, persist) {
     currentUserZoom = clampUserZoom(z);
     updatePageScale();
-    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (persist) {
       try { localStorage.setItem('mathpreview.userZoom', String(currentUserZoom)); } catch (e) {}
     }
@@ -3717,10 +3714,9 @@
   function commitUserZoom() {
     zoomCommitTimer = 0;
     updatePageScale();
-    // The gutter (line numbers) and keys layers live inside the scaled page, so
-    // refresh them once after the key burst rather than walking the document
-    // after every intermediate step.
-    scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
+    // Line numbers, refkeys and sidenotes are children of the page and share
+    // its scale. Their local geometry is unchanged, so rebuilding any overlay
+    // here would only repeat an expensive document walk after every key burst.
   }
 
   function previewUserZoom(z, persist) {
