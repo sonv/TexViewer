@@ -7,20 +7,9 @@
 if vim.g.loaded_mathpreview == 1 then return end
 vim.g.loaded_mathpreview = 1
 
-vim.api.nvim_create_user_command("MathPreview", function(cmd)
-  -- Optional argument picks the viewer for this (and later) previews:
-  --   :MathPreview           use the configured default (setup{viewer=…})
-  --   :MathPreview window    open in the native Locus window
-  --   :MathPreview browser   open in a browser tab
-  require("mathpreview").start({ viewer = cmd.args ~= "" and cmd.args or nil })
-end, {
-  nargs = "?",
-  complete = function(arglead)
-    return vim.tbl_filter(function(v) return v:find(arglead, 1, true) == 1 end,
-      { "browser", "window" })
-  end,
-  desc = "Start the mathpreview daemon (optionally: MathPreview window|browser)",
-})
+vim.api.nvim_create_user_command("MathPreview", function()
+  require("mathpreview").start()
+end, { desc = "Start the mathpreview daemon and open the browser viewer" })
 
 vim.api.nvim_create_user_command("MathPreviewStop", function()
   require("mathpreview").stop()

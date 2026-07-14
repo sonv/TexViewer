@@ -5,8 +5,7 @@
 -- this file holds the implementation that those commands lazy-require:
 --
 --     :MathPreview         start the daemon for the current .tex buffer and
---                          open the viewer — a browser tab by default;
---                          `:MathPreview window` for the native Locus window
+--                          open the viewer in a browser tab
 --     :MathPreviewStop     kill the daemon
 --     :MathPreviewRestart  stop + start
 --     :MathPreviewClean    find + stop abandoned daemons (no editor/viewer)
@@ -15,8 +14,8 @@
 --
 -- The plugin spawns the daemon as a background job, finds the first free
 -- port starting at 23636, opens the viewer, then debounces buffer pushes
--- on TextChanged. By default VimLeavePre kills the spawned daemon (and closes
--- the native window) so quitting nvim doesn't leave a stray server bound to
+-- on TextChanged. By default VimLeavePre kills the spawned daemon so quitting
+-- nvim doesn't leave a stray server bound to
 -- the port; set `close_on_exit = false` to deliberately let the preview
 -- outlive nvim instead (see the config comment).
 
@@ -31,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.26"
+local PLUGIN_VERSION = "2.0.0"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -56,28 +55,10 @@ local config = {
   -- to keep the preview search independent of the editor's.
   sync_search = true,
   auto_open_browser = true,
-  -- Which viewer to open the preview in:
-  --   "browser" (default) — your default web browser, in a new tab. Works
-  --                         everywhere with zero extra dependencies.
-  --   "window"            — Locus, the standalone native window (the OS
-  --                         webview: WebKit on macOS, WebKitGTK on Linux).
-  --                         No browser tab. Same preview, every feature
-  --                         identical.
-  -- Switch per invocation with `:MathPreview window` / `:MathPreview browser`
-  -- (tab-completed), or permanently with `setup({ viewer = "window" })`.
-  -- "window" needs a binary built with the `gui` cargo feature. The plugin's
-  -- own auto-install handles this: when viewer="window" it adds `--features
-  -- gui`, and on `:MathPreview` it detects a binary that lacks the feature and
-  -- reinstalls once (so switching browser→window just works on a source
-  -- checkout). Upgrades keep the feature: the version-skew reinstall probes
-  -- the old binary and rebuilds with gui when it had it, whatever the current
-  -- viewer. The gui build pulls in webview deps — on Linux you need
-  -- `libwebkit2gtk-4.1-dev` installed first. `auto_open_browser = false` opens
-  -- neither.
-  viewer = "browser",
+  -- Set false to start the daemon without opening a browser tab.
   -- What happens to the preview when you quit nvim.
-  --   true  (default) — tear it down, peek.nvim-style: stop the daemon, close
-  --                     the native window, and close the browser tab too. The
+  --   true  (default) — tear it down, peek.nvim-style: stop the daemon and ask
+  --                     the browser tab to close too. The
   --                     dying daemon broadcasts a "bye" WS event and the page
   --                     closes itself — browsers allow window.close() for a
   --                     tab whose session history has a single entry, which a
@@ -85,11 +66,11 @@ local config = {
   --                     that tab, the browser refuses and the tab just shows
   --                     "preview ended".)
   --   false           — leave the preview RUNNING so it outlives nvim: the
-  --                     daemon and window/tab stay live and fully usable until
+  --                     daemon and tab stay live and fully usable until
   --                     you close them or run `:MathPreviewStop`. Use this to
   --                     keep reading the rendered doc after quitting the
-  --                     editor. Implemented by spawning the daemon and window
-  --                     detached so nvim's exit doesn't kill them;
+  --                     editor. Implemented by spawning the daemon detached so
+  --                     nvim's exit doesn't kill it;
   --                     `:MathPreviewStop` still stops them explicitly.
   close_on_exit = true,
   -- Where `cargo install` drops the auto-built binary. nil → cargo's default
@@ -180,23 +161,6 @@ local daemon_root = nil  -- active daemon's root .tex path
 -- Roots we're deliberately stopping (M.stop/M.restart), so the daemon's on_exit
 -- doesn't mistake the SIGTERM for a port-bind race and auto-restart it.
 local stopping = {}
--- Native Locus windows, keyed by daemon ROOT — deliberately NOT stored on the
--- registry entry: a restart replaces the entry while the window survives and
--- reconnects, so its handle must outlive the entry. Keeping it here lets a
--- post-restart crash/stop still close the window, and lets open_window's
--- idempotence guard suppress a duplicate even when the reopen check races the
--- window's own hard-reload. Each value: { job = jobid, stopping = bool }.
-local windows = {}
-
--- Close the tracked native window for `root` (no-op without one). `stopping`
--- suppresses the on_exit crash notification for this deliberate kill.
-local function close_window(root)
-  local w = windows[root]
-  if not w then return end
-  windows[root] = nil
-  w.stopping = true
-  if w.job then pcall(vim.fn.jobstop, w.job) end
-end
 
 -- Push state (carried across pushes for :MathPreviewStatus).
 local timer = nil
@@ -223,10 +187,7 @@ local last_status = {
 -- Warn at most once per nvim session, even across restarts, so a stale
 -- binary nags you once rather than on every :MathPreviewRestart.
 local version_warned = false
--- Warn at most once per nvim session when the installed macOS app bundle is
--- stale. Its native shell can carry behavior (for example the WKWebView zoom
--- marker), so matching daemon HTML does not make shell-version skew harmless.
-local app_version_warned = false
+local viewer_migration_warned = false
 
 -- Root of this plugin's checkout. init.lua lives at
 -- <root>/lua/mathpreview/init.lua, so three `:h` heads climb back to <root>.
@@ -265,19 +226,9 @@ local function bundled_binary_path()
   return plugin_root() .. "/target/release/" .. exe_name()
 end
 
--- The `cargo install` command used to (re)install the binary. `with_gui`
--- forces the `gui` feature in regardless of the current viewer — the skew
--- reinstall passes it when the binary being replaced already had the feature,
--- so an upgrade can't silently strip the native window.
-local function cargo_install_args(with_gui)
+-- The `cargo install` command used to (re)install the browser-only daemon.
+local function cargo_install_args()
   local args = { "cargo", "install", "--path", "crates/cli", "--force" }
-  -- The native window needs the `gui` feature (wry/tao). Only pull it in when
-  -- the window is in play, so the default "browser" install stays webview-free
-  -- (no WebKitGTK build deps on Linux).
-  if with_gui or config.viewer == "window" then
-    table.insert(args, "--features")
-    table.insert(args, "gui")
-  end
   if config.install_root and config.install_root ~= "" then
     table.insert(args, "--root")
     table.insert(args, vim.fn.expand(config.install_root))
@@ -419,16 +370,6 @@ local function semver_cmp(a, b)
   return 0
 end
 
--- Read the semantic version printed by a CLI executable. This is synchronous
--- only on the native-window open path and returns immediately for the tiny
--- clap `--version` command; keeping the check here prevents an old Locus.app
--- shell from silently overriding the freshly installed plugin binary.
-local function executable_version(cmd)
-  local out = vim.fn.system({ cmd, "--version" })
-  if vim.v.shell_error ~= 0 or not out then return nil end
-  return out:gsub("%s+$", ""):match("(%S+)%s*$")
-end
-
 -- Run `cmd --version` async, record the version for :MathPreviewStatus, and
 -- vim.notify once if it doesn't match PLUGIN_VERSION. Non-blocking: start
 -- never waits on this. The binary and plugin install separately, so a
@@ -497,8 +438,7 @@ local INSTALL_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 -- later callers' `starting[root]` guard would stay stuck true forever.
 local install_waiters = {}
 
--- opts.gui forces `--features gui` into the build (see cargo_install_args).
-local function auto_install(on_done, opts)
+local function auto_install(on_done)
   if installing then
     -- One build is already running; ride its result instead of dropping ours.
     if on_done then install_waiters[#install_waiters + 1] = on_done end
@@ -545,7 +485,7 @@ local function auto_install(on_done, opts)
     end
   end
   run_system(
-    cargo_install_args(opts and opts.gui),
+    cargo_install_args(),
     { cwd = plugin_root(), on_stderr_line = on_stderr_line },
     function(res)
       installing = false
@@ -732,125 +672,10 @@ local function open_browser(url)
   vim.fn.jobstart(argv, { detach = true })
 end
 
--- Launch the standalone native window (`mathpreview-cli view --attach <url>`),
--- which just opens a webview against this entry's already-running daemon — no
--- second daemon. Tracked in `windows[root]` (surviving entry replacement on
--- restart) and killed on stop/:bd/quit, so the window is tied to the preview
--- session. On a binary without the `gui` feature the `view` subcommand is
--- missing; we detect the quick non-zero exit and point the user at the fix.
-local function open_window(entry)
-  -- Idempotent: a tracked window for this root means one is already open (or
-  -- opening, or surviving a restart), so a second reuse-or-open landing in
-  -- that gap is a no-op instead of launching — and orphaning — a duplicate.
-  if windows[entry.root] then return end
-  local root = entry.root
-  local cmd = entry.cmd or resolve_cmd()
-  local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
-  local title = vim.fn.fnamemodify(entry.root, ":t")
-  -- On macOS, prefer a CURRENT installed Locus.app bundle: a process run from
-  -- inside a bundle carries the bundle identity, so the window gets the Locus
-  -- dock icon and app name from the .icns. The shell also injects native-only
-  -- behavior (including the WKWebView compositor-zoom marker), however, so an
-  -- old app is not interchangeable with the current CLI even though both load
-  -- the daemon's current HTML. Fall back to `cmd view` on any mismatch. Build
-  -- the current bundle with scripts/make-locus-app.sh --install.
-  local argv = { cmd, "view", "--attach", url, "--title", title }
-  if vim.fn.has("mac") == 1 then
-    for _, app_bin in ipairs({
-      "/Applications/Locus.app/Contents/MacOS/locus",
-      vim.fn.expand("~/Applications/Locus.app/Contents/MacOS/locus"),
-    }) do
-      if vim.fn.executable(app_bin) == 1 then
-        local app_version = executable_version(app_bin)
-        if app_version and semver_cmp(app_version, PLUGIN_VERSION) == 0 then
-          argv = { app_bin, "--attach", url, "--title", title }
-          break
-        end
-        if not app_version_warned then
-          app_version_warned = true
-          vim.notify(
-            ("mathpreview: installed Locus.app is %s; plugin expects %s. "
-              .. "Using the current CLI window so native fixes are not lost. "
-              .. "Refresh the app with `scripts/make-locus-app.sh --install`.")
-              :format(app_version or "unversioned", PLUGIN_VERSION),
-            vim.log.levels.WARN)
-        end
-      end
-    end
-  else
-    -- Linux/BSD: prefer the `locus` binary (a sibling of the daemon binary —
-    -- `cargo install --features gui` installs both) so the window's X11
-    -- WM_CLASS, which GTK derives from the program name, is "locus" and
-    -- matches the desktop entry's StartupWMClass (see
-    -- scripts/install-locus-desktop.sh). The Wayland app_id is pinned in
-    -- view.rs regardless of binary; this aligns the X11 side.
-    local sibling = vim.fn.fnamemodify(cmd, ":h") .. "/locus"
-    for _, locus_bin in ipairs({ sibling, "locus" }) do
-      if vim.fn.executable(locus_bin) == 1 then
-        argv = { locus_bin, "--attach", url, "--title", title }
-        break
-      end
-    end
-  end
-  local stderr_lines = {}
-  -- The tracker table is captured by on_exit directly (not looked up), so a
-  -- deliberate close_window — which may already have deregistered it — can
-  -- still flag `stopping` and be honored when the exit lands.
-  local w = { job = nil, stopping = false }
-  local jid
-  jid = vim.fn.jobstart(
-    argv,
-    {
-      -- Match the daemon: detached only when the preview should outlive nvim
-      -- (close_on_exit=off), so quitting nvim leaves the window up. With
-      -- close_on_exit on, it stays a child and stop_all closes it on exit.
-      detach = not config.close_on_exit,
-      on_stderr = function(_, data)
-        if data then vim.list_extend(stderr_lines, data) end
-      end,
-      on_exit = function(_, code)
-        -- Deregister only if the root still tracks THIS window (a later exit
-        -- from a window we've already replaced must not nil out the new one).
-        if windows[root] == w then windows[root] = nil end
-        -- Deliberate kill (:MathStop / :bd / daemon-crash teardown): the
-        -- SIGTERM exit code is non-zero but expected — don't cry crash.
-        -- Mirrors the daemon's `stopping` guard.
-        if w.stopping then return end
-        if code ~= 0 then
-          local tail = vim.trim(table.concat(stderr_lines, "\n"))
-          vim.schedule(function()
-            -- clap prints exactly this for a missing `view` (non-gui binary).
-            if tail:match("unrecognized subcommand") then
-              vim.notify(
-                "mathpreview: this binary lacks the native window (built without the "
-                  .. "`gui` feature). Reinstall with it, or use the browser viewer\n"
-                  .. "(:MathPreview browser, or setup{ viewer = 'browser' }).\n"
-                  .. "  cargo install --path crates/cli --features gui --force",
-                vim.log.levels.ERROR)
-            elseif tail ~= "" then
-              vim.notify("mathpreview: native window exited (code " .. code .. ")\n" .. tail,
-                vim.log.levels.WARN)
-            end
-          end)
-        end
-      end,
-    })
-  if jid <= 0 then
-    vim.notify("mathpreview: failed to launch native window", vim.log.levels.ERROR)
-    return
-  end
-  w.job = jid
-  windows[root] = w
-end
-
--- Open the configured viewer (browser tab or native window) for this daemon.
+-- Open the browser viewer for this daemon.
 local function open_viewer(entry)
   entry.opened = true
-  if config.viewer == "window" then
-    open_window(entry)
-  else
-    open_browser("http://127.0.0.1:" .. tostring(entry.port) .. "/")
-  end
+  open_browser("http://127.0.0.1:" .. tostring(entry.port) .. "/")
 end
 
 -- The daemon is already running and the user ran :MathPreview again. Don't
@@ -864,11 +689,10 @@ end
 local function reuse_or_open_browser(entry)
   local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
   local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
-  local noun = config.viewer == "window" and "window" or "tab"
   local function do_open() open_viewer(entry) end
   local function say_reuse()
     entry.opened = true
-    vim.notify("mathpreview: preview already open — reusing " .. noun .. " (" .. url .. ")",
+    vim.notify("mathpreview: preview already open — reusing tab (" .. url .. ")",
       vim.log.levels.INFO)
   end
   run_system(
@@ -1468,23 +1292,14 @@ local function activate_for_current_buffer()
   if entry then activate(entry) end
 end
 
--- Tear down on nvim exit (VimLeavePre): stop every daemon AND close its native
--- window. With `close_on_exit = false` we do nothing — the daemon and window
--- were spawned detached, so they outlive nvim and the preview stays live
--- (`:MathPreviewStop` still stops them explicitly). A browser tab can't be
--- closed either way; `close_on_exit = false` just keeps its daemon alive so the
--- tab keeps working.
+-- Tear down on nvim exit (VimLeavePre). With `close_on_exit = false` the
+-- detached daemon outlives nvim and the browser tab stays usable.
 local function stop_all()
   if not config.close_on_exit then return end
   for root, d in pairs(daemons) do
     stopping[root] = true
-    close_window(root)
     pcall(vim.fn.jobstop, d.job)
     daemons[root] = nil
-  end
-  -- Windows can outlive their entry (post-crash leftovers): sweep those too.
-  for root in pairs(windows) do
-    close_window(root)
   end
   deactivate()
   pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
@@ -1582,7 +1397,7 @@ local function attach_autocmds()
     callback = function() activate_for_current_buffer() end,
   })
   -- `:bd` / `:bw` on the previewed document closes its preview (daemon +
-  -- native window) — deleting the buffer is an explicit "done with this file".
+  -- browser tab) — deleting the buffer is an explicit "done with this file".
   -- ROOT buffers only: deleting an \input'd child of a multi-file project
   -- keeps the preview, which renders the root document, alive. This is
   -- deliberate regardless of `close_on_exit` (that option is about nvim
@@ -1612,7 +1427,7 @@ local function detach_autocmds()
   pcall(vim.api.nvim_del_augroup_by_name, "mathpreview")
 end
 
--- Stop ONE preview session — its daemon and (if any) its native window.
+-- Stop ONE preview session and its daemon.
 -- Shared by :MathPreviewStop (M.stop) and the :bd autocmd. Declared as a
 -- forward local above attach_autocmds.
 function stop_entry(entry, opts)
@@ -1627,9 +1442,9 @@ function stop_entry(entry, opts)
     daemon_root = nil
   end
   -- How the daemon dies decides what the VIEWER does. jobstop's SIGTERM makes
-  -- the daemon broadcast a goodbye — tabs and windows close themselves (the
+  -- the daemon broadcast a goodbye — browser tabs close themselves (the
   -- teardown routes: :MathPreviewStop, :bd, quitting nvim). A RESTART must
-  -- keep the viewer alive instead: SIGUSR1 exits silently, the tab/window sits
+  -- keep the viewer alive instead: SIGUSR1 exits silently, the tab sits
   -- on its 1s reconnect loop, finds the new daemon on the rebound port, and
   -- hard-reloads in place (which is why the restart path skips re-opening).
   local killed
@@ -1645,14 +1460,6 @@ function stop_entry(entry, opts)
   end
   if not killed then
     pcall(vim.fn.jobstop, entry.job)  -- its on_exit is now a no-op (already deregistered)
-  end
-  -- Close the native window too — it's tied to this preview session
-  -- (close_window flags the deliberate kill so its on_exit doesn't misreport
-  -- the SIGTERM as a crash). On restart the window stays: it's a WS client
-  -- like the tab and reconnects to the new daemon the same way — and because
-  -- it's tracked per ROOT in `windows`, the restarted session keeps its handle.
-  if not opts.restart then
-    close_window(entry.root)
   end
   if daemon_count() == 0 then detach_autocmds() end
 end
@@ -1744,14 +1551,6 @@ local function start_with(cmd, opts)
         local exited_root = root
         local was_stopping = stopping[root]
         stopping[root] = nil
-        -- Daemon died on its own (crash/OOM/external kill): close its native
-        -- window too, so it doesn't linger as a frozen ghost retrying a dead
-        -- port and outlive the plugin's reach (M.stop already handles the
-        -- deliberate path, hence the `not was_stopping` guard). Windows are
-        -- tracked per ROOT, so this reaches a window that survived a restart.
-        if not was_stopping then
-          close_window(root)
-        end
         daemons[root] = nil
         if daemon_root == root then
           -- The active daemon died: clear the globals (don't save its now-gone
@@ -1837,13 +1636,8 @@ local function start_with(cmd, opts)
   end
   -- Skip the open on a restart that rebound the same port: the existing
   -- viewer survives the restart (the daemon dies silently, no goodbye) and
-  -- reconnects on its own — opening another would pile up duplicates. For the
-  -- native window, take the shortcut only while one is actually tracked
-  -- (windows[root] survives entry replacement); if the user closed it before
-  -- restarting, the wait-and-check path below opens a fresh one. Either way
-  -- open_window's per-root guard suppresses a race-driven duplicate.
+  -- reconnects on its own — opening another would pile up duplicates.
   local reused_tab = opts.prev_port ~= nil and port == opts.prev_port
-    and (config.viewer ~= "window" or windows[root] ~= nil)
   if config.auto_open_browser then
     if reused_tab then
       entry.opened = true
@@ -1913,27 +1707,6 @@ local function ensure_binary(root, on_ready)
   -- A user `cmd` / unrelated $PATH binary isn't ours to touch — just run the
   -- async skew check (which warns) and use it as-is.
   if can_build and is_managed(cmd) then
-    -- Proceed with the current binary once it's confirmed current AND (for the
-    -- window viewer) confirmed to have the `gui` feature. Reinstalls when
-    -- older than the plugin, or when viewer='window' but the binary was built
-    -- without gui (so `view` is missing) — the reinstall picks up --features
-    -- gui via cargo_install_args().
-    local function proceed_if_gui_ok()
-      if config.viewer ~= "window" then
-        on_ready(cmd)
-        return
-      end
-      -- `view --help` exits 0 iff the gui feature is compiled in.
-      run_system({ cmd, "view", "--help" }, {}, function(vres)
-        if vres and vres.code == 0 then
-          on_ready(cmd)
-        else
-          vim.notify("mathpreview: installing the native-window (gui) build…",
-            vim.log.levels.INFO)
-          auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
-        end
-      end)
-    end
     run_system({ cmd, "--version" }, {}, function(res)
       local ver = (res and res.code == 0 and res.stdout)
         and res.stdout:gsub("%s+$", ""):match("(%S+)%s*$") or nil
@@ -1943,16 +1716,9 @@ local function ensure_binary(root, on_ready)
           ("mathpreview: binary %s is older than plugin %s — reinstalling…")
             :format(ver, PLUGIN_VERSION),
           vim.log.levels.INFO)
-        -- Probe the outgoing binary for the gui feature (`view --help` exits 0
-        -- only when it's compiled in) and carry the feature into the rebuild.
-        -- Without this, upgrading while viewer="browser" would rebuild without
-        -- --features gui and silently drop a native window the user installed.
-        run_system({ cmd, "view", "--help" }, {}, function(vres)
-          auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end,
-            { gui = vres and vres.code == 0 })
-        end)
+        auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
       else
-        proceed_if_gui_ok()
+        on_ready(cmd)
       end
     end)
     return
@@ -1964,16 +1730,15 @@ end
 
 function M.start(opts)
   opts = opts or {}
-  -- Optional per-command viewer choice (`:MathPreview window|browser`). It sets
-  -- the session default (sticky) so the reuse/open/install paths — which all
-  -- read config.viewer — agree for this and later previews until changed again.
   if opts.viewer and opts.viewer ~= "" then
-    if opts.viewer ~= "browser" and opts.viewer ~= "window" then
-      vim.notify("mathpreview: viewer must be 'browser' or 'window' (got '"
-        .. tostring(opts.viewer) .. "')", vim.log.levels.ERROR)
-      return
+    if opts.viewer ~= "browser" and not viewer_migration_warned then
+      viewer_migration_warned = true
+      vim.notify(
+        "mathpreview: the native window viewer was removed; opening the browser instead. "
+          .. "Remove `viewer = " .. string.format("%q", tostring(opts.viewer))
+          .. "` from your config.",
+        vim.log.levels.WARN)
     end
-    config.viewer = opts.viewer
   end
   local root, err = opts.root, nil
   if not root then root, err = current_root() end
@@ -2020,8 +1785,8 @@ function M.restart()
   -- Remember the port so the restart can rebind it and let the open tab
   -- reconnect, instead of opening a fresh one each time.
   local prev_port, root = entry.port, entry.root
-  -- restart=true kills the daemon SILENTLY (no goodbye), so the tab/window
-  -- survive and reconnect to the rebound port — M.stop() would close them.
+  -- restart=true kills the daemon SILENTLY (no goodbye), so the tab survives
+  -- and reconnects to the rebound port — M.stop() would close it.
   stop_entry(entry, { restart = true })
   -- Give the OS a moment to release the port before re-binding.
   vim.defer_fn(function() M.start({ prev_port = prev_port, root = root }) end, 200)
@@ -2124,6 +1889,17 @@ end
 --   })
 function M.setup(opts)
   opts = opts or {}
+  if opts.viewer ~= nil then
+    if opts.viewer ~= "browser" and not viewer_migration_warned then
+      viewer_migration_warned = true
+      vim.notify(
+        "mathpreview: `viewer` is obsolete because previews now use the browser. "
+          .. "Ignoring viewer = " .. string.format("%q", tostring(opts.viewer)) .. ".",
+        vim.log.levels.WARN)
+    end
+    opts = vim.tbl_extend("force", {}, opts)
+    opts.viewer = nil
+  end
   config = vim.tbl_extend("force", config, opts)
 end
 

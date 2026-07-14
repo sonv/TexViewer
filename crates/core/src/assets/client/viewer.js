@@ -936,18 +936,12 @@
     return found;
   }
 
-  // Close the viewer — the `q` key and the `:q` command. Locus (native
-  // window): wry injects `window.ipc` only when the window installed its IPC
-  // handler, so its presence *is* the "am I in Locus?" test; the message
-  // exits the window process. Browser tab: scripts may only close windows
-  // they opened (or single-history tabs, which a fresh preview tab is), so
+  // Close the viewer — the `q` key and the `:q` command. Browser scripts may
+  // only close windows they opened (or single-history tabs, which a fresh
+  // preview tab is), so
   // window.close() is best-effort — if we're still here a beat later, tell
   // the user how to really close via `hint`.
   function closeViewer(hint) {
-    if (window.ipc && typeof window.ipc.postMessage === 'function') {
-      window.ipc.postMessage('close');
-      return;
-    }
     window.close();
     setTimeout(function() {
       var mac = /Mac/.test(navigator.platform || '');
@@ -1978,9 +1972,8 @@
   ///   :pin <key>     pin <key>'s target as a margin card
   ///   :unpin <key>   remove the matching card (no-op if not pinned)
   ///   :clear         remove all pinned cards
-  ///   :q / :quit     close the viewer (the Locus window via IPC; a browser
-  ///                  tab via window.close(), allowed for a single-history
-  ///                  tab — otherwise it shows the ⌘W/Ctrl+W hint)
+  ///   :q / :quit     close the viewer tab via window.close(), allowed for a
+  ///                  single-history tab — otherwise show the ⌘W/Ctrl+W hint
   /// Enter executes, Esc closes, empty-Backspace also closes.
   var cmdlineFeedbackTimer = 0;
   var cmdlineSuggestions = [];
@@ -3349,7 +3342,6 @@
         }
       });
     }, 250);
-    syncCompositePageHeight();
   }
 
   // -1 = nothing pending, 0 = immediate (pre-paint) pending, 180 = trailing.
@@ -3381,8 +3373,7 @@
     };
     if (delay === 0) {
       // The timer covers background/hidden pages, where rAF freezes but
-      // layout still matters (e.g. a Locus window behind other windows
-      // getting a keys toggle via live config).
+      // layout still matters when a keys toggle arrives via live config.
       requestAnimationFrame(run);
       refkeysTimer = setTimeout(run, 250);
     } else {
@@ -3754,16 +3745,14 @@
   }
 
   // Keep the reading boundary immediately below the topbar stationary while
-  // zooming. CSS-zoom browser engines refine it to the first visible text line
-  // because their committed layout can settle differently; native Locus scales
-  // an unchanged compositor surface, so the geometric point is authoritative.
+  // zooming. Browser engines refine it to the first visible text line because
+  // committed CSS-zoom layout can settle differently.
   // Clamp to a paper edge when that edge is visible. Coordinates live in the
   // page's unzoomed local space so one anchor survives the whole preview burst.
   function captureZoomAnchor(page) {
     var rect = page.getBoundingClientRect();
     var heightScale = rect.height / Math.max(page.offsetHeight, 1);
     var widthScale = rect.width / Math.max(page.offsetWidth, 1);
-    var composite = usesCompositePageZoom();
     var vh = window.innerHeight || 0;
     var vw = document.documentElement.clientWidth || window.innerWidth || 0;
     var readingTop = Math.max(0, Math.min(vh, topbarOffset()));
@@ -3771,38 +3760,27 @@
     viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
     var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
 
-    // A correctly marked native Locus shell never commits CSS zoom: it scales
-    // one unchanged compositor surface, so the page-local point at the reading
-    // boundary is exact. Do not walk up to 85 caret positions to find a text
-    // character there. CSS-zoom engines can still settle lazy/reflowed layout
-    // differently, so retain the character + live-element anchor for them.
-    var textAnchor = null;
-    if (!composite) {
-      textAnchor = firstVisibleTextAnchor(
-        page, rect, readingTop, vh, vw, viewportX
-      );
-      if (textAnchor) viewportY = textAnchor.rect.top;
-    }
+    var textAnchor = firstVisibleTextAnchor(
+      page, rect, readingTop, vh, vw, viewportX
+    );
+    if (textAnchor) viewportY = textAnchor.rect.top;
 
     // CSS-zoom engines retain the live source element under the reading line
     // in both page modes. Dynamic can reflow it; A4 keeps its wrapping but
     // content-visibility can still replace estimated heights above it during
     // real zoom layout. The page-local point remains the fallback.
-    var element = null;
+    var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
+    var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
+    var hit = textAnchor ? textAnchor.parent : document.elementFromPoint(hitX, hitY);
+    var element = hit && page.contains(hit) && hit.closest ? hit.closest('[data-src]') : null;
     var elementRatioY = null;
-    if (!composite) {
-      var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
-      var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
-      var hit = textAnchor ? textAnchor.parent : document.elementFromPoint(hitX, hitY);
-      element = hit && page.contains(hit) && hit.closest ? hit.closest('[data-src]') : null;
-      if (element && page.contains(element)) {
-        var elementRect = element.getBoundingClientRect();
-        if (elementRect.height > 1) {
-          elementRatioY = Math.max(
-            0,
-            Math.min(1, (viewportY - elementRect.top) / elementRect.height)
-          );
-        }
+    if (element && page.contains(element)) {
+      var elementRect = element.getBoundingClientRect();
+      if (elementRect.height > 1) {
+        elementRatioY = Math.max(
+          0,
+          Math.min(1, (viewportY - elementRect.top) / elementRect.height)
+        );
       }
     }
     return {
@@ -3810,8 +3788,6 @@
       viewportY: viewportY,
       localX: (viewportX - rect.left) / Math.max(widthScale, 1e-6),
       localY: (viewportY - rect.top) / Math.max(heightScale, 1e-6),
-      pageLeft: rect.left,
-      pageTop: rect.top,
       element: element,
       elementRatioY: elementRatioY,
     };
@@ -3824,12 +3800,9 @@
     var widthScale = rect.width / Math.max(page.offsetWidth, 1);
     var targetX = rect.left + anchor.localX * widthScale;
     var targetY = rect.top + anchor.localY * heightScale;
-    // Composite zoom does not reflow text, and a live element rect can jump
-    // when content-visibility replaces an offscreen height estimate during
-    // the shell resize. Its captured page-local point is the stable authority.
     // A browser CSS-zoom commit may settle differently, so retain the live
-    // element anchor there.
-    if (!usesCompositePageZoom() && anchor.element && anchor.element.isConnected &&
+    // element anchor when possible.
+    if (anchor.element && anchor.element.isConnected &&
         anchor.elementRatioY !== null) {
       var elementRect = anchor.element.getBoundingClientRect();
       if (elementRect.height > 1) {
@@ -3854,18 +3827,13 @@
     }
   }
 
-  // A compositor-only native-window commit has final geometry synchronously:
-  // restore once in the same task, before paint. CSS-zoom engines can expose
-  // their final layout later, so the first rAF restores after invalidation and
-  // the second catches a late layout/scroll-anchor adjustment. A new key burst
+  // CSS-zoom engines can expose final layout later, so the first rAF restores
+  // after invalidation and the second catches a late layout/scroll-anchor
+  // adjustment. A new key burst
   // cancels both so an old anchor cannot fight the next preview.
   function scheduleZoomAnchorRestore(page, anchor) {
     cancelZoomAnchorRestore();
     if (!anchor) return;
-    if (usesCompositePageZoom()) {
-      restoreZoomAnchor(page, anchor);
-      return;
-    }
     zoomAnchorRestoreRaf = requestAnimationFrame(function() {
       zoomAnchorRestoreRaf = 0;
       if (zoomPreviewAnchor || !page.isConnected) return;
@@ -3885,13 +3853,8 @@
     }
     zoomPreviewAnchor = null;
     if (!page) return;
-    if (usesCompositePageZoom()) {
-      page.style.transform = 'scale(' + committedPageScale.toFixed(6) + ')';
-      page.style.transformOrigin = '0 0';
-    } else {
-      page.style.transform = '';
-      page.style.transformOrigin = '';
-    }
+    page.style.transform = '';
+    page.style.transformOrigin = '';
     page.style.willChange = '';
   }
 
@@ -3904,9 +3867,6 @@
     clearZoomPreview(page);
     var plan = pageScalePlan(currentUserZoom);
     // Browser tabs use CSS `zoom`, whose layout box scales automatically.
-    // Native macOS/Linux Locus instead compositor-scales the already-rendered
-    // page and explicitly sizes the shell. This prevents Linux line reflow and
-    // also avoids WKWebView's zoom² MathJax SVGs on macOS.
     // Crop narrows the paper by the padding it removes (CSS drops --page-pad-x
     // to 12px), keeping the text column — and its wrapping — identical. See
     // cropDxNow for the media-query mirroring.
@@ -3919,13 +3879,7 @@
     committedPageScale = parseFloat(pageScaleCss);
     document.documentElement.style.setProperty('--page-scale', pageScaleCss);
     shell.style.width = Math.round(plan.shellWidth) + 'px';
-    if (usesCompositePageZoom()) {
-      page.style.transformOrigin = '0 0';
-      page.style.transform = 'scale(' + pageScaleCss + ')';
-      syncCompositePageHeight();
-    } else {
-      shell.style.height = '';
-    }
+    shell.style.height = '';
     // Gutter beside the centered page — the default width of each margin column,
     // so notes sit in the whitespace without overlapping the text (a card's pin
     // button expands its column past this, over the text).
@@ -3975,33 +3929,15 @@
     cancelZoomAnchorRestore();
     currentUserZoom = clampUserZoom(z);
     var targetScale = pageScalePlan(currentUserZoom).pageScale;
-    var previewScale = usesCompositePageZoom()
-      ? targetScale
-      : targetScale / Math.max(committedPageScale, 1e-6);
+    var previewScale = targetScale / Math.max(committedPageScale, 1e-6);
     if (!zoomPreviewAnchor) zoomPreviewAnchor = captureZoomAnchor(page);
     // CSS zoom lays out the entire paper and is expensive on long documents.
     // Transform the already-laid-out paper immediately, then commit once after
-    // the user pauses. Native Locus keeps that compositor transform as the
-    // committed zoom; browser tabs replace only the preview with CSS zoom.
-    if (usesCompositePageZoom()) {
-      // The committed transform uses a top-left origin. An absolute target
-      // scale around the reading point would jump merely from changing that
-      // origin, so keep origin zero and translate the captured local point
-      // back to its original viewport coordinate.
-      var tx = zoomPreviewAnchor.viewportX - zoomPreviewAnchor.pageLeft -
-        zoomPreviewAnchor.localX * previewScale;
-      var ty = zoomPreviewAnchor.viewportY - zoomPreviewAnchor.pageTop -
-        zoomPreviewAnchor.localY * previewScale;
-      page.style.transformOrigin = '0 0';
-      page.style.transform =
-        'translate(' + tx.toFixed(3) + 'px, ' + ty.toFixed(3) + 'px) ' +
-        'scale(' + previewScale.toFixed(6) + ')';
-    } else {
-      page.style.transformOrigin =
-        zoomPreviewAnchor.localX.toFixed(3) + 'px ' +
-        zoomPreviewAnchor.localY.toFixed(3) + 'px';
-      page.style.transform = 'scale(' + previewScale.toFixed(6) + ')';
-    }
+    // the user pauses, when the preview is replaced with committed CSS zoom.
+    page.style.transformOrigin =
+      zoomPreviewAnchor.localX.toFixed(3) + 'px ' +
+      zoomPreviewAnchor.localY.toFixed(3) + 'px';
+    page.style.transform = 'scale(' + previewScale.toFixed(6) + ')';
     page.style.willChange = 'transform';
     if (zoomCommitTimer) clearTimeout(zoomCommitTimer);
     zoomCommitTimer = setTimeout(commitUserZoom, NAV_RESIZE_IDLE_MS);
@@ -4076,7 +4012,6 @@
 
   function refreshNavigation() {
     navRefreshTimer = 0;
-    syncCompositePageHeight();
     if (navNeedsIndex) rebuildIndex(false);
     navNeedsIndex = false;
     scheduleSidenoteLayout();
@@ -4214,7 +4149,7 @@
 
     ensureOverlayMetrics(page);
     var pageRect = page.getBoundingClientRect();
-    // #page is scaled by CSS zoom or a native Locus compositor transform;
+    // #page is scaled by CSS zoom;
     // getClientRects returns rendered coords, but a child's `top` is in the
     // page's unscaled local space.
     // Convert measured offsets to local space so the gutter aligns at any scale.

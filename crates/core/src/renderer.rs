@@ -4351,15 +4351,10 @@ mod tests {
         assert!(out.html.contains("function firstVisibleTextAnchor"));
         assert!(out.html.contains("document.caretPositionFromPoint"));
         assert!(out.html.contains("document.caretRangeFromPoint"));
-        assert!(out.html.contains("var composite = usesCompositePageZoom()"));
-        assert!(out.html.contains("if (!composite) {"));
         assert!(out.html.contains("textAnchor = firstVisibleTextAnchor"));
-        assert!(out.html.contains(
-            "if (!usesCompositePageZoom() && anchor.element && anchor.element.isConnected"
-        ));
         assert!(out
             .html
-            .contains("if (usesCompositePageZoom()) {\n      restoreZoomAnchor(page, anchor);"));
+            .contains("if (anchor.element && anchor.element.isConnected"));
         assert!(out.html.contains("scheduleZoomAnchorRestore(page, anchor)"));
         assert!(out
             .html
@@ -4368,34 +4363,19 @@ mod tests {
         assert!(out
             .html
             .contains("previewUserZoom(available / (base - cropDxNow()), true)"));
-        // Native macOS/Linux Locus must never return to CSS `zoom`: WebKitGTK
-        // can re-lay out lines, while WKWebView resolves MathJax SVG ex units
-        // twice. Their committed path keeps one compositor transform and an
-        // explicit flow height instead.
-        assert!(out.html.contains("function usesCompositePageZoom()"));
+        // Browser-only zoom keeps the fast transform preview, then commits the
+        // common CSS-zoom path without native-webview markers or sizing hooks.
         assert!(out
             .html
-            .contains("root.classList.contains('locus-composite-zoom')"));
+            .contains("var previewScale = targetScale / Math.max(committedPageScale"));
         assert!(out
             .html
-            .contains("page.style.transform = 'scale(' + pageScaleCss + ')'"));
-        assert!(out.html.contains("syncCompositePageHeight"));
-        assert!(out
-            .html
-            .contains("compositePageResizeObserver = new ResizeObserver(syncCompositePageHeight)"));
-        assert!(out
-            .html
-            .contains("html.locus-composite-zoom body.page-mode-a4 main#page"));
-        assert!(out
-            .html
-            .contains("html.locus-macos body.page-mode-a4 main#page"));
-        assert!(out.html.contains("overflow-x: visible"));
-        assert!(out.html.contains("overflow-y: clip"));
-        assert!(out.html.contains("overflow-clip-margin: 2400px"));
-        assert!(out.html.contains("overflow-anchor: none"));
-        assert!(!out
-            .html
-            .contains("html.locus-macos main#page mjx-container > svg"));
+            .contains("page.style.transform = 'scale(' + previewScale.toFixed(6) + ')'"));
+        assert!(!out.html.contains("usesCompositePageZoom"));
+        assert!(!out.html.contains("syncCompositePageHeight"));
+        assert!(!out.html.contains("compositePageResizeObserver"));
+        assert!(!out.html.contains("locus-composite-zoom"));
+        assert!(!out.html.contains("locus-macos"));
         // Dynamic mode pins a 10mm margin by re-deriving --page-pad-x AT THE
         // ELEMENT. Overriding only the base is dead CSS: :root substitutes
         // var() at declaration time and descendants inherit the resolved
@@ -4436,7 +4416,7 @@ mod tests {
         assert!(out.html.contains(r#"id="page-shell""#));
         assert!(out.html.contains("--page-scale"));
         assert!(out.html.contains("updatePageScale"));
-        // Tab favicon: the Locus icon inlined as a data URI in the head.
+        // Tab favicon: the MathPreview icon inlined as a data URI in the head.
         assert!(out
             .html
             .contains(r#"<link rel="icon" type="image/png" href="data:image/png;base64,"#));

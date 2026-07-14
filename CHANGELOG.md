@@ -13,6 +13,25 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.0.0] — 2026-07-14
+
+### Changed
+
+- **The browser is now the sole viewer.** `:MathPreview` always opens the
+  system browser, and the viewer uses one browser-optimized zoom path. Existing
+  Neovim setups with `viewer = "window"` continue by falling back to the browser
+  with a one-time migration warning.
+- **Release builds are smaller and simpler.** The CLI no longer links native
+  webview toolkits, and the release matrix only produces the four headless
+  `mathpreview-cli` archives.
+
+### Removed
+
+- **The native Locus window has been retired.** This removes the `locus` binary,
+  `mathpreview-cli view`, the Cargo `gui` feature and webview dependencies,
+  macOS/Linux app installers, native-window CI artifacts, and the
+  `:MathPreview window|browser` command argument.
+
 ## [1.0.26] — 2026-07-14
 
 ### Fixed

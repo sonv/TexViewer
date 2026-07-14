@@ -198,31 +198,19 @@ Every rule below exists because violating it produced a user-visible bug.
   commits without refreshing either measured overlay. A line number or refkey
   is already a child of the page and shares its scale; rebuilding it would only
   walk the document again. Dynamic mode must keep the same natural column
-  width during zoom on every viewer, or its inverse-width adjustment reflows
-  text and invalidates those layers. A real viewport resize may change the
-  natural width and does rebuild them. Browser tabs commit CSS `zoom`; macOS
-  and Linux Locus keep an absolute compositor transform. That avoids WebKitGTK
-  line-layout changes and WKWebView's inconsistent MathJax SVG/prose scaling.
-  The preview and commit must preserve one shared viewport anchor: the first
-  visible line immediately below the toolbar. A viewport-centre anchor is
+  width during zoom, or its inverse-width adjustment reflows text and
+  invalidates those layers. A real viewport resize may change the natural width
+  and does rebuild them. The preview and CSS-zoom commit must preserve one
+  shared viewport anchor: the first visible line immediately below the toolbar.
+  A viewport-centre anchor is
   geometrically stable but still replaces the top line by half the zoom
   displacement, while a page-relative `top center` origin makes displacement
-  grow with scroll depth. In native Locus, the absolute transform uses origin
-  `0 0` plus a translation that fixes the captured page-local point; changing
-  from a committed top-left transform to an anchor-origin transform would
-  itself cause a jump. Browser CSS-zoom commits still scan caret-character
+  grow with scroll depth. Browser CSS-zoom commits scan caret-character
   rects just below the toolbar: `elementFromPoint` only identifies a paragraph
   box in inter-line whitespace, which preserves the paragraph but lets its
-  first visible text line drift. The native compositor path must not perform
-  that scan: its unchanged surface makes the page-local point at the reading
-  boundary authoritative, so the commit restores it synchronously. The shell
-  gets the transformed page's explicit visual height,
-  kept current by a `ResizeObserver` after edits, fonts and lazy typesetting.
-  Restore macOS from the captured page-local point, not its live element rect:
-  `content-visibility` can replace an offscreen height estimate during the
-  shell resize even though composite zoom itself does not reflow the text.
-  Walking either overlay after zoom re-creates long-paper jank; making
-  crop/mode entirely trailing leaves chips visibly misplaced.
+  first visible text line drift. Walking either overlay after zoom re-creates
+  long-paper jank; making crop/mode entirely trailing leaves chips visibly
+  misplaced.
 - **The margin variables are a derivation chain — override the *used* var,
   not just the base.** `:root { --page-pad-x: var(--page-pad-x-base) }`
   substitutes **at `:root`**; descendants inherit the *resolved* value. An
@@ -243,44 +231,3 @@ Every rule below exists because violating it produced a user-visible bug.
   stay in the served page; the e2e recipe is the same in every session —
   chips whole and inside the page bounds, column width constant across crop
   toggles, computed-end-property assertions in both page modes.
-
-### CSS `zoom` × MathJax `ex` — the macOS-WebKit-only trap
-
-MathJax sizes SVGs in **`ex` units** (`width="50.242ex"`,
-`vertical-align:-0.566ex`). On macOS Locus, WKWebView resolves those units
-differently from prose under CSS `zoom`; equation size can drift toward
-`zoom²`, while browser Chromium and Linux WebKitGTK remain correct.
-
-- **Do not compensate inside MathJax.** Pixel-pinning the generated SVG fixed
-  one zoom snapshot but froze already-typeset math when the document font size
-  changed. Giving the SVG `font-size:1em` still failed on real WKWebView pages.
-  `engines/assets/mathjax.{js,css}` must remain engine-neutral.
-- **Fix at the page boundary:** native macOS and Linux shells add
-  `html.locus-composite-zoom` before document scripts run (macOS also retains
-  `html.locus-macos` for compatibility). That marker disables CSS `zoom` for
-  `main#page`; the viewer scales the already-rendered paper with one
-  `transform`, so prose, SVGs, equation numbers and overlays are a single
-  composited surface. All viewers keep dynamic mode's natural column width
-  during keyboard zoom, avoiding text reflow and overlay reconstruction at
-  commit. Normal browser tabs retain CSS `zoom` for that stable geometry.
-- **The app shell must match the plugin.** Neovim may find an installed
-  `/Applications/Locus.app` in addition to its freshly compiled CLI binary.
-  The app is preferred for its bundle identity only when its version matches
-  `PLUGIN_VERSION`; otherwise `open_window()` must fall back to the current
-  CLI. An old app can serve current HTML but still omit native initialization
-  such as `locus-composite-zoom` / `locus-macos`, silently restoring native
-  line reflow or the macOS MathJax scaling bug.
-- **Flow/print invariants:** a native-window transform has no layout height, so
-  `syncCompositePageHeight()` sizes `#page-shell` and a `ResizeObserver` tracks
-  content-height changes. The screen shell clips **vertical overflow only**;
-  horizontal overflow must stay visible because refkey chips and sidenotes hang
-  past the paper and WKWebView ignores `overflow-clip-margin` for them. A large
-  clip margin protects vertical ink, and native scroll anchoring is disabled so
-  it cannot double-compensate the explicit height change. Print forces both
-  transform and explicit height off.
-- **Verification:** the real checks are WKWebView and WebKitGTK on a paper with
-  wrapped prose plus inline and numbered display math. Across repeated `+`/`-`
-  presses, line wrapping, line-number assignments, math/prose ratios, and the
-  top visible line must remain fixed; changing `--body-font-size` must still
-  resize existing `ex`-based SVGs. Chromium with the native marker injected is
-  the geometry regression control, not a substitute for those WebKit checks.

@@ -782,7 +782,7 @@ pub async fn run(
     // session; SIGINT covers Ctrl-C on a terminal-run daemon): tell every
     // connected viewer goodbye BEFORE exiting, so a browser tab can close
     // itself (peek.nvim-style — window.close() is allowed for a tab whose
-    // session history has one entry) and the Locus window can quit. A short
+    // session history has one entry). A short
     // grace lets the WS forwarding tasks flush over loopback. Crashes skip
     // this path, so the client's reconnect UX still covers them.
     #[cfg(unix)]

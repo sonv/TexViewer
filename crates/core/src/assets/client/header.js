@@ -20,7 +20,6 @@
   var zoomPreviewAnchor = null;
   var zoomAnchorRestoreRaf = 0;
   var zoomAnchorVerifyRaf = 0;
-  var compositePageResizeObserver = null;
   var currentUserZoom = 1;
   var committedPageScale = 1;
   var ZOOM_MIN = 0.5;
@@ -55,7 +54,7 @@
   var mathSearchResults = [];
   var mathSearchIndex = -1;
   // Plain-text search: our own match list (Ranges) so `/` cycles at the ends
-  // and shows current/total — native window.find gives neither.
+  // and shows current/total.
   var textSearchQuery = '';
   var textSearchResults = [];
   var textSearchIndex = -1;
@@ -73,26 +72,6 @@
 
   function pageShellEl() {
     return document.getElementById('page-shell');
-  }
-
-  function usesCompositePageZoom() {
-    var root = document.documentElement;
-    return root.classList.contains('locus-composite-zoom') ||
-      root.classList.contains('locus-macos');
-  }
-
-  // CSS transforms do not participate in layout, so native Locus compositor
-  // zoom gives the shell the paper's visual height explicitly. This also runs
-  // after patches, lazy typesetting and font loading, not just after a zoom key.
-  function syncCompositePageHeight() {
-    var page = pageEl();
-    var shell = pageShellEl();
-    if (!page || !shell) return;
-    if (!usesCompositePageZoom()) {
-      shell.style.height = '';
-      return;
-    }
-    shell.style.height = Math.ceil(page.offsetHeight * committedPageScale) + 'px';
   }
 
   function cleanNavText(text) {

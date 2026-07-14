@@ -7,11 +7,9 @@
 # What it does:
 #   1. Build the `mathpreview-cli` daemon in release mode for four target
 #      triples in parallel: macOS arm64, macOS x86_64, Linux x86_64, Linux arm64.
-#   2. Build the Locus native-window binaries (`--features gui`) NATIVELY on
-#      macOS arm64 + Linux x86_64/arm64 (a webview can't be cross-compiled).
-#   3. Strip each binary, tarball it, generate a SHA-256 checksum, upload as an
-#      artifact. Locus tarballs are named `…-locus-…` to sit beside the daemon.
-#   4. Once all builds succeed, create a *draft* GitHub Release at the pushed
+#   2. Strip each binary, tarball it, generate a SHA-256 checksum, and upload it
+#      as an artifact.
+#   3. Once all builds succeed, create a *draft* GitHub Release at the pushed
 #      tag with every tarball attached and auto-generated notes.
 #
 # The release is left as a draft so you can review the artifacts, edit
@@ -141,92 +139,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Locus — the native-window viewer (`view` subcommand, `gui` cargo feature).
-  # It links a system webview (WebKit on macOS, WebKitGTK on Linux) and so must
-  # be built NATIVELY per platform (no cross-compile). These binaries are
-  # attached to the same draft release alongside the daemon binaries above.
-  gui:
-    name: locus (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-            linux: false
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            linux: true
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            linux: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (pinned 2026-06-25)
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install Linux webview deps
-        if: matrix.linux
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev
-
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: gui-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            gui-cargo-${{ matrix.target }}-
-
-      - name: Build (gui feature)
-        run: cargo build --locked --release --target ${{ matrix.target }} -p mathpreview-cli --features gui
-
-      # `view --help` opens no window, so it runs headlessly and proves the
-      # binary linked the webview and the `view` subcommand is wired.
-      - name: Smoke test
-        run: ./target/${{ matrix.target }}/release/mathpreview-cli view --help
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          NAME="mathpreview-cli-locus-${TAG}-${{ matrix.target }}"
-          mkdir -p staging dist
-          cp "target/${{ matrix.target }}/release/mathpreview-cli" staging/
-          strip staging/mathpreview-cli || true
-          (cd staging && tar czf "../dist/${NAME}.tar.gz" mathpreview-cli)
-          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
-          ls -lh dist/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: locus-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
-
   release:
     name: release
-    needs: [build, gui]
+    needs: [build]
     # Skip the GitHub-Release step on manual dry runs: artifacts upload
     # to the Actions tab where you can download them, but no Releases
     # entry is created. Only real tag pushes create draft releases.

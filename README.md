@@ -20,10 +20,8 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 - **nvim integration** via the bundled `mathpreview.nvim` plugin
   (`lua/mathpreview/`, `plugin/mathpreview.lua`): `:MathPreview` in a
   `.tex` buffer spawns the daemon on a free port (default 23636,
-  scanning up to 23651), opens the viewer (a browser tab by
-  default; `:MathPreview window` for the native Locus window), and pushes
-  the buffer
-  on every `TextChanged`. No disk writes, no git pollution. `VimLeavePre`
+  scanning up to 23651), opens the viewer in a browser tab, and pushes the
+  buffer on every `TextChanged`. No disk writes, no git pollution. `VimLeavePre`
   reaps the daemon so quitting nvim doesn't leave it bound.
 - **nvim ↔ HTML source sync**: cursor movement in nvim can scroll and
   highlight the matching rendered word/math/ref element, a visual-mode
@@ -167,79 +165,6 @@ cargo install --path crates/cli --force   # → ~/.cargo/bin/mathpreview-cli (on
 > daemon spawn prints the binary path plus the daemon's stderr — check those
 > first if you ever see the "old version."
 
-### Locus — the native window (no browser tab)
-
-**Locus** is the preview's own window — an alternative to the default
-browser tab. It's a standalone native window powered by the OS webview (WebKit on macOS, WebView2
-on Windows, WebKitGTK on Linux), the same rendering a browser tab would use.
-Build with the `gui` feature and run the `view` subcommand:
-
-```sh
-cargo install --path crates/cli --features gui --force   # installs `mathpreview-cli` AND `locus`
-locus paper.tex                          # opens a native window; live-reloads on edit
-```
-
-The `gui` feature installs a dedicated **`locus`** command (shown above);
-`mathpreview-cli view paper.tex` is the exact same thing under the daemon
-binary. Either starts its own daemon on a free port, so it works standalone
-from the terminal. It's the same HTML/MathJax the browser gets — live-reload, search,
-source-jump, and everything else work unchanged. The `gui` feature is off by
-default (so the normal build stays a pure daemon with no webview system deps);
-on Linux it needs the WebKitGTK development package (`libwebkit2gtk-4.1-dev`)
-to build.
-
-**From nvim**, `:MathPreview` opens a browser tab by default. To use the
-Locus window instead, pick per invocation with `:MathPreview window` (or back
-with `:MathPreview browser`, both tab-completed), or set it permanently in
-`setup()`:
-
-```lua
-require("mathpreview").setup({ viewer = "window" })   -- default is "browser"
-```
-
-The plugin manages the daemon as usual and attaches the window to it. On a
-source checkout it builds the `gui`-featured binary for you the first time (and
-detects and upgrades a binary that lacks the feature); on Linux, install
-`libwebkit2gtk-4.1-dev` first. The window closes with `:MathPreviewStop` and is
-tied to the editing session.
-
-**Locus.app (macOS).** For a first-class dock presence — the Locus icon shows
-before launch, the app is pinnable and Spotlight-visible — assemble the bundle:
-
-```sh
-scripts/make-locus-app.sh --install    # builds and copies Locus.app to /Applications
-```
-
-After pulling or recompiling a newer checkout, update the CLI, fallback window
-binary, and macOS app together with one command:
-
-```sh
-scripts/update-macos-app.sh
-```
-
-The updater performs one GUI-enabled release install, assembles
-`/Applications/Locus.app` from that exact `locus` binary, verifies all three
-versions and the app signature, then prints the `:MathPreviewRestart` reminder.
-This prevents Neovim from selecting an older app shell than the freshly built
-daemon.
-
-Double-clicking Locus.app opens a native "choose a .tex file" panel (`locus`
-with no argument does the same). When the bundle is installed, the nvim plugin
-automatically launches the window through it, so `viewer = "window"` gets the
-bundle's icon and app name too.
-
-**Linux desktop entry.** Wayland has no per-window icons — the compositor
-shows the icon of the desktop entry matching the window's app id. Install it
-(per-user, no sudo):
-
-```sh
-scripts/install-locus-desktop.sh    # icon + .desktop into ~/.local/share
-```
-
-That also puts Locus in your app launcher and makes it pinnable to the
-dock/taskbar. On X11 the window icon works without this; the entry still adds
-launcher presence. Log out/in if the icon doesn't appear immediately.
-
 ### 2. The nvim plugin
 
 The plugin lives at `lua/mathpreview/init.lua` + `plugin/mathpreview.lua`
@@ -291,10 +216,6 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
     -- default (~/.cargo/bin). A prefix like "~/.local" installs to
     -- "~/.local/bin/mathpreview-cli" (passed to `cargo install --root`).
     -- install_root = nil,
-
-    -- Which viewer :MathPreview opens: a browser tab (default) or the native
-    -- Locus window. Also switchable per invocation: :MathPreview window.
-    -- viewer = "browser",            -- | "window"
 
     -- Set to false if you don't want :MathPreview to open any viewer at all.
     -- auto_open_browser = true,
@@ -431,9 +352,7 @@ Open any `.tex` file and run:
 ```
 
 The plugin spawns `mathpreview-cli serve <buffer> --port <free>` in the
-background, opens the viewer at `http://127.0.0.1:<port>/` — a browser tab
-by default; `:MathPreview window` (or `setup({ viewer = "window" })`) uses
-the native Locus window instead — and starts
+background, opens a browser tab at `http://127.0.0.1:<port>/`, and starts
 pushing the buffer on every `TextChanged`. This works even on a buffer
 that has never been `:write`n: the daemon serves a placeholder for the
 missing file and the plugin pushes your buffer right away, so a brand-new
@@ -571,8 +490,8 @@ a Rust roundtrip unless they are controlling the daemon itself.
   proof-less preview regardless of mode. A left-margin refkey chip (needs
   `keys` on) now toggles its card the same way; the `:` command line keeps
   explicit `:pin`/`:unpin`/`:clear` commands with Tab fuzzy-completion (`:q`
-  closes the viewer — the Locus window, or the tab itself when the browser
-  permits it, which it does for a freshly opened preview tab; otherwise it
+  closes the viewer tab when the browser permits it, which it does for a
+  freshly opened preview tab; otherwise it
   shows the ⌘W/Ctrl+W hint).
 - `☾` / `☀` toggles dark mode. The choice is persisted in
   `localStorage["mathpreview.theme"]`; on first load the viewer follows
@@ -608,8 +527,8 @@ a Rust roundtrip unless they are controlling the daemon itself.
   the `keys` chips sit in the margin normally and overlay the content
   edge only while cropped (translucent until hovered);
   persisted per browser), `4` / `d` switch to the A4 / dynamic page
-  modes, `q` closes the viewer (same as `:q` — the Locus window
-  exits; a browser tab closes itself where the browser allows it, and
+  modes, `q` closes the viewer (same as `:q` — the browser tab closes itself
+  where the browser allows it, and
   otherwise the status pill names the key that will), and `Ctrl-o` jumps
   back and forth between the current place and the previous one
   (pressing it repeatedly ping-pongs between the two). These bindings
@@ -621,9 +540,7 @@ a Rust roundtrip unless they are controlling the daemon itself.
   put), `0` resets, and `=` auto-fits the page width to the viewport.
   `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
   only scale the paper. The first visible line below the toolbar stays fixed
-  through repeated zoom keys and the final layout commit. Native macOS and
-  Linux Locus windows composite the already-laid-out paper, so zoom cannot
-  change wrapping or line-number assignments. When
+  through repeated zoom keys and the final layout commit. When
   the page is zoomed wider than the window it pans natively — trackpad
   two-finger pan or shift+wheel, with `h`/`l` still available for keyboard
   nudges. The zoom factor is persisted in
@@ -1059,7 +976,7 @@ The four commands `plugin/mathpreview.lua` registers on startup:
 
 | Command | What it does |
 | --- | --- |
-| `:MathPreview [window\|browser]` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the viewer — a browser tab by default, the native Locus window with `:MathPreview window` (the choice sticks for the session). Attach `TextChanged` / `CursorMoved` / `ModeChanged` autocmds and start the `/jump` poll. If the daemon is already running, just refocus/reopen its viewer. |
+| `:MathPreview` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the browser viewer, attach `TextChanged` / `CursorMoved` / `ModeChanged` autocmds, and start the `/jump` poll. If the daemon is already running, just refocus/reopen its tab. |
 | `:MathPreviewStop` | Kill the daemon, detach autocmds, stop the poll. Also fires from `VimLeavePre`. |
 | `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after preamble changes the daemon's macro cache misses. |
 | `:MathPreviewStatus` | `print(vim.inspect(...))` of the runtime state: PID/port, root file, push and cursor counts, last error, resolved binary path, nvim version. |
@@ -1114,7 +1031,7 @@ require("mathpreview").setup({
   cursor_debounce_ms = 80,
   sync = true,                            -- false to disable cursor/jump roundtrip
   -- close_on_exit (default true): quitting nvim tears the preview down —
-  -- daemon, browser tab, native window. Set false to deliberately let the
+  -- daemon and browser tab. Set false to deliberately let the
   -- preview outlive nvim (`:MathPreviewStop` still stops it explicitly).
   close_on_exit = true,
   -- stale_check (default true): on the first :MathPreview of a session,
@@ -1325,13 +1242,6 @@ See `DESIGN.md` for the full backlog.
   cards (click-to-pin + hover preview) work, but clicking a `\ref`
   *inside* an already-pinned card doesn't yet open a child card, and
   there's no floating-popup alternative to the right-margin column.
-- **Tauri shell as a native window option.** WebSocket was picked as the
-  starting transport because it decouples backend from frontend — not as
-  a permanent rejection of Tauri. The intended destination is to add a
-  `crates/app/` Tauri binary that uses the same `mathpreview-core`
-  underneath, with the existing `mathpreview-cli serve` remaining as the
-  headless option for browser-tab users. See DESIGN §11 step 7 for the
-  migration sketch.
 - **Second rendering engine.** The `MathEngine` trait and the
   engine-neutral `window.__mpEngine` shim are in place; today the only
   implementation is `MathJaxEngine`. Adding e.g. a `PdfjsEngine` (page

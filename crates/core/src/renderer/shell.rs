@@ -123,12 +123,9 @@ pub(super) fn wrap_in_shell(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let head_title = escape_html(topbar_short.unwrap_or(&opts.title));
-    // Tab favicon: the Locus icon (64px PNG) inlined as a data URI, so it
+    // Tab favicon: the MathPreview icon (64px PNG) inlined as a data URI, so it
     // works for the daemon-served page and a static render alike — no route,
-    // no extra request. Regenerate with:
-    //   rsvg-convert -w 64 -h 64 crates/cli/assets/locus-icon.svg -o /tmp/f.png
-    //   printf 'data:image/png;base64,%s' "$(base64 -i /tmp/f.png | tr -d '\n')" \
-    //     > crates/core/src/assets/favicon-data-uri.txt
+    // no extra request.
     let favicon = include_str!("../assets/favicon-data-uri.txt").trim();
     let topbar_title_html = match topbar_short {
         Some(s) => format!(

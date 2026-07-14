@@ -827,34 +827,9 @@ push (`/buffer` accepting non-root files); server-side per-project
 preamble cache shared across reconnects; further trimming of the
 vendored MathJax font shard set; distributable binaries.
 
-Each ⏳ step is bounded by hours-to-days, not the weeks the original
-plan reserved, because the architecture pivot removed most of the
-plumbing (Tauri command/event wiring, native window persistence,
-cross-platform webview testing).
-
-### Step 8 ⏳ Tauri shell (the eventual destination)
-
-Picking WebSocket first was a starting-point decision, not a permanent
-rejection of Tauri. Tauri returns later as **one more frontend among
-many**, not as the architecture itself. Migration sketch when we're
-ready:
-
-1. Add `crates/app/` alongside `crates/cli/`. Both depend on
-   `mathpreview-core`.
-2. Choose IPC shape:
-   - **Easy path** — the Tauri window's webview connects to
-     `localhost:23636` exactly like a browser tab does. Zero protocol
-     change. Pays a WebSocket roundtrip even within one process; usually
-     fine.
-   - **Tight path** — drop `axum` from this binary, expose
-     `mathpreview-core` to the webview via Tauri commands/events
-     directly. ~half a day of plumbing; saves the loopback.
-3. The frontend (`renderer.rs`'s embedded HTML+JS) is unchanged. Same
-   DOM, same MathJax-or-PDF.js swap point, same interactive overlay.
-4. `mathpreview-cli serve` does not go away. It stays as the headless
-   option for users who want the preview in a browser tab on a second
-   monitor, or for future VSCode/Zed integration. WebSocket and Tauri
-   are siblings, not predecessor and successor.
+The browser viewer is the sole supported frontend. Keeping the viewer on the
+WebSocket boundary avoids native-window lifecycle, packaging, and
+cross-platform webview maintenance while preserving the headless server API.
 
 ### Pluggable rendering engine
 

@@ -59,19 +59,15 @@
       try {
         var msg = JSON.parse(ev.data);
         // Deliberate teardown (quit nvim / :MathPreviewStop / :bd): close the
-        // viewer like peek.nvim does. The Locus window closes via its IPC
-        // channel; a browser tab closes itself with window.close(), which the
-        // HTML spec allows for a tab whose session history has a single entry
+        // viewer like peek.nvim does. A browser tab closes itself with
+        // window.close(), which the HTML spec allows for a tab whose session
+        // history has a single entry
         // — true for a freshly opened preview tab. If the browser refuses
         // (user navigated in this tab), fall through to a terminal status.
         // Crashes don't send bye, so the reconnect path still handles them.
         if (msg.event === 'bye') {
           serverSaidBye = true;
-          if (window.ipc && typeof window.ipc.postMessage === 'function') {
-            window.ipc.postMessage('close');
-          } else {
-            window.close();
-          }
+          window.close();
           setTimeout(function() { setStatus('dead', '○ preview ended'); }, 250);
           return;
         }
@@ -281,10 +277,6 @@
   syncTopbarHeight();
   scheduleNavigationRefresh();
   startMathObserver();
-  if (usesCompositePageZoom() && window.ResizeObserver) {
-    compositePageResizeObserver = new ResizeObserver(syncCompositePageHeight);
-    compositePageResizeObserver.observe(document.getElementById('page'));
-  }
   refreshAfterInitialEngine(40);
   setTimeout(ensureInitialTypeset, 1200);
   window.addEventListener('load', function() {

@@ -30,7 +30,7 @@ enum Cmd {
         output: PathBuf,
         /// URL or relative path the page should load MathJax from.
         /// Defaults to the jsdelivr CDN for quick browser checks; switch to a
-        /// vendored path when integrating into the Tauri app.
+        /// vendored path for an offline or self-hosted preview.
         #[arg(long)]
         mathjax_url: Option<String>,
         /// Document <title>. Defaults to the input file's stem.
@@ -76,7 +76,10 @@ enum Cmd {
         /// to `:terminal` children). The bundled nvim plugin passes an
         /// explicit `--editor` built from `v:servername`, so this default
         /// only matters when you run `serve` by hand.
-        #[arg(long, default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#)]
+        #[arg(
+            long,
+            default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#
+        )]
         editor: String,
         /// Extra macro override file(s), appended to the cascade after
         /// the global `~/.config/mathpreview/macros.tex` and the
@@ -87,43 +90,6 @@ enum Cmd {
         /// Extra TOML config file(s), appended to the cascade after the
         /// global `~/.config/mathpreview/config.toml` and the project-
         /// local `.mathpreview.toml`. Later files win per field.
-        #[arg(long = "config", value_name = "FILE")]
-        config: Vec<PathBuf>,
-    },
-    /// Open the live preview in a native window (WebKit/WebView2/WebKitGTK)
-    /// instead of a browser tab. Starts the same daemon internally, so it works
-    /// standalone (`mathpreview-cli view paper.tex`). Requires the `gui`
-    /// feature at build time.
-    #[cfg(feature = "gui")]
-    View {
-        /// Input file (standalone mode: starts its own daemon). Omit when
-        /// using --attach.
-        input: Option<PathBuf>,
-        /// Attach to an ALREADY-running daemon at this URL and just open the
-        /// window — no new daemon. This is what the nvim plugin uses (it
-        /// manages its own daemon). Mutually exclusive with <input>.
-        #[arg(long, value_name = "URL", conflicts_with = "input")]
-        attach: Option<String>,
-        /// Window title. Defaults to the input file stem (or "mathpreview").
-        #[arg(long)]
-        title: Option<String>,
-        /// Port for the internal daemon. Defaults to a free ephemeral port so
-        /// it never clashes with an nvim-managed daemon.
-        #[arg(long)]
-        port: Option<u16>,
-        /// URL or path for MathJax. Same flag as `serve`.
-        #[arg(long)]
-        mathjax_url: Option<String>,
-        /// Shell command for Cmd/Ctrl-click "reveal source" (same as `serve`).
-        #[arg(
-            long,
-            default_value = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#
-        )]
-        editor: String,
-        /// Extra macro override file(s), same cascade as `serve`.
-        #[arg(long = "macros", value_name = "FILE")]
-        macros: Vec<PathBuf>,
-        /// Extra TOML config file(s), same cascade as `serve`.
         #[arg(long = "config", value_name = "FILE")]
         config: Vec<PathBuf>,
     },
@@ -150,28 +116,6 @@ fn main() -> Result<()> {
             }
             let rt = tokio::runtime::Runtime::new()?;
             return rt.block_on(serve::run(input, host, port, opts, editor, config_files));
-        }
-        #[cfg(feature = "gui")]
-        Cmd::View {
-            input,
-            attach,
-            title,
-            port,
-            mathjax_url,
-            editor,
-            macros,
-            config,
-        } => {
-            return mathpreview_cli::run_view(mathpreview_cli::ViewArgs {
-                input,
-                attach,
-                title,
-                port,
-                mathjax_url,
-                editor,
-                macros,
-                config,
-            });
         }
         Cmd::Render {
             input,

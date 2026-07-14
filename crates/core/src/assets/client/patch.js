@@ -1347,7 +1347,7 @@
           nodes.forEach(syncMathSourceText);
           await window.__mpEngine.typeset(nodes);
         } catch (err) {
-          console.error('mathpreview window typeset:', err);
+          console.error('mathpreview typeset:', err);
         } finally {
           if (lifted) blk.style.contentVisibility = '';
           typesetBusy = false;
