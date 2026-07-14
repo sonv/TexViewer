@@ -2580,6 +2580,42 @@
 
   var configLoadSeq = 0;
 
+  function withDefaultKeybindings(content, defaultConfig) {
+    var marker = defaultConfig.indexOf('[keybindings]');
+    if (marker < 0) return content;
+    var start = defaultConfig.lastIndexOf('\n# One shortcut', marker);
+    if (start < 0) start = marker;
+    else start += 1;
+    var keybindings = defaultConfig.slice(start).trim();
+    var tableMatch = /^\s*\[keybindings\]\s*(?:#.*)?$/m.exec(content);
+    if (!tableMatch) {
+      return content.replace(/[\r\n]+$/, '') + '\n\n' + keybindings + '\n';
+    }
+
+    // Complete a partial table without touching any overrides already there.
+    // The keybindings table is flat, so line-level insertion is sufficient and
+    // avoids reserializing the user's comments before the server validates it.
+    var bodyStart = tableMatch.index + tableMatch[0].length;
+    var tail = content.slice(bodyStart);
+    var nextTable = /^\s*\[[^\]\r\n]+\]\s*(?:#.*)?$/m.exec(tail);
+    var bodyEnd = nextTable ? bodyStart + nextTable.index : content.length;
+    var existing = {};
+    content.slice(bodyStart, bodyEnd).split(/\r?\n/).forEach(function(line) {
+      var match = /^\s*["']?([A-Za-z0-9-]+)["']?\s*=/.exec(line);
+      if (match) existing[match[1]] = true;
+    });
+    var missing = [];
+    defaultConfig.slice(marker).split(/\r?\n/).forEach(function(line) {
+      var match = /^\s*([A-Za-z0-9-]+)\s*=/.exec(line);
+      if (match && !existing[match[1]]) missing.push(line);
+    });
+    if (!missing.length) return content;
+    var before = content.slice(0, bodyEnd).replace(/[\r\n]+$/, '');
+    var after = content.slice(bodyEnd);
+    return before + '\n\n# Unlisted built-in bindings (editable).\n'
+      + missing.join('\n') + '\n' + after;
+  }
+
   // The rendered textarea starts with the complete built-in config. Preserve
   // that text once, then replace the editor with the selected scope's file
   // when it exists. This makes an absent project/global file immediately
@@ -2590,6 +2626,40 @@
     if (editor && editor._defaultConfig === undefined) {
       editor._defaultConfig = editor.value;
     }
+    var fontSize = parseInt(
+      getComputedStyle(document.documentElement).getPropertyValue('--body-font-size'),
+      10
+    );
+    if (!isFinite(fontSize) || fontSize <= 0) fontSize = 18;
+    var fs = document.getElementById('config-font-size');
+    if (fs) fs.value = String(fontSize);
+    var uiFontSize = parseInt(
+      getComputedStyle(document.documentElement).getPropertyValue('--ui-font-size'),
+      10
+    );
+    if (!isFinite(uiFontSize) || uiFontSize <= 0) uiFontSize = 12;
+    var uifs = document.getElementById('config-ui-font-size');
+    if (uifs) uifs.value = String(uiFontSize);
+    // Empty keeps the selected file's existing TOML value, or keeps following
+    // document geometry when it has no explicit page-margin setting.
+    var pm = document.getElementById('config-page-margin');
+    if (pm) {
+      pm.value = '';
+      var eff = cfg.pageMarginMm;
+      pm.placeholder = (typeof eff === 'number')
+        ? 'unchanged (now ' + eff + 'mm)'
+        : 'auto (default ~17mm)';
+    }
+    var trig = document.getElementById('config-source-jump-trigger');
+    if (trig) trig.value = cfg.sourceJumpTrigger || 'cmd-click';
+    var mode = document.getElementById('config-default-page-mode');
+    if (mode) mode.value = cfg.defaultPageMode || 'a4';
+    var theme = document.getElementById('config-default-theme');
+    if (theme) theme.value = cfg.defaultTheme || 'system';
+    var thmNum = document.getElementById('config-theorem-numbering');
+    if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
+    var tsMode = document.getElementById('config-typeset-mode');
+    if (tsMode) tsMode.value = cfg.typesetMode || 'local';
     var wrap = document.getElementById('config-wrap-equations');
     if (wrap) wrap.checked = cfg.wrapEquations !== false;
     var mjx = document.getElementById('config-mathjax-config');
@@ -2634,14 +2704,22 @@
         setConfigFeedback((body && body.error) || 'config load failed', false);
         return;
       }
+      var existingContent = body && body.exists ? (body.content || '') : '';
+      var preparedContent = withDefaultKeybindings(
+        existingContent,
+        editor._defaultConfig || ''
+      );
+      var addedKeybindings = body && body.exists && preparedContent !== existingContent;
       editor.value = body && body.exists
-        ? (body.content || '')
+        ? preparedContent
         : (editor._defaultConfig || '');
       editor.dataset.loadedScope = scopeKey;
       var file = body && body.file ? ' — ' + body.file : '';
       setConfigFeedback(
         body && body.exists
-          ? 'Loaded existing config' + file + '. Save replaces this file.'
+          ? 'Loaded existing config' + file + (addedKeybindings
+            ? ' and completed the default keybindings in this unsaved draft.'
+            : '. Save updates this file.')
           : 'No config at this scope' + file + ' — showing built-in defaults.',
         true
       );
@@ -2688,7 +2766,7 @@
     dlg.showModal();
     setTimeout(function() {
       var target = currentConfigMode() === 'viewer'
-        ? viewerConfigEditorEl()
+        ? document.getElementById('config-font-size')
         : document.getElementById('config-mathjax-config');
       if (target) target.focus();
     }, 0);
@@ -2709,7 +2787,39 @@
     if (currentConfigMode() === 'viewer') {
       var editor = viewerConfigEditorEl();
       if (!editor) return;
-      var writePayload = { scope: sc.scope, content: editor.value || '' };
+      var values = {};
+      var fontSize = parseInt(document.getElementById('config-font-size').value, 10);
+      if (isFinite(fontSize) && fontSize > 0) values['viewer.font-size'] = fontSize;
+      var uiFontSize = parseInt(document.getElementById('config-ui-font-size').value, 10);
+      if (isFinite(uiFontSize) && uiFontSize > 0) {
+        values['viewer.ui-font-size'] = uiFontSize;
+      }
+      var pmEl = document.getElementById('config-page-margin');
+      if (pmEl && pmEl.value.trim() !== '') {
+        var pmVal = parseInt(pmEl.value, 10);
+        if (!isFinite(pmVal) || pmVal < 5 || pmVal > 60) {
+          setConfigFeedback('Page margin must be 5–60 mm (or empty to keep the TOML value).', false);
+          return;
+        }
+        values['viewer.page-margin'] = pmVal;
+      }
+      var trig = document.getElementById('config-source-jump-trigger').value;
+      if (trig) values['viewer.source-jump.trigger'] = trig;
+      var mode = document.getElementById('config-default-page-mode').value;
+      if (mode) values['viewer.default-page-mode'] = mode;
+      var theme = document.getElementById('config-default-theme').value;
+      if (theme) values['viewer.default-theme'] = theme;
+      var thmNum = document.getElementById('config-theorem-numbering').value;
+      if (thmNum) values['viewer.theorem-numbering'] = thmNum;
+      var typesetMode = document.getElementById('config-typeset-mode').value;
+      if (typesetMode) values['viewer.typeset-mode'] = typesetMode;
+      var wrap = document.getElementById('config-wrap-equations');
+      if (wrap) values['viewer.wrap-equations'] = !!wrap.checked;
+      var writePayload = {
+        scope: sc.scope,
+        content: editor.value || '',
+        values: values,
+      };
       if (sc.path) writePayload.path = sc.path;
       setConfigFeedback('Validating and saving…', true);
       try {
@@ -2737,13 +2847,15 @@
 
     var payload = { scope: sc.scope, values: {} };
     if (sc.path) payload.path = sc.path;
-    var wrapEl = document.getElementById('config-wrap-equations');
-    if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
     var mjxEl = document.getElementById('config-mathjax-config');
     // Only write it when changed, so opening the MathJax tab to inspect the
     // generated config does not inject an empty override into another scope.
     if (mjxEl && mjxEl.value !== (mjxEl.dataset.initial || '')) {
       payload.values['viewer.mathjax-config'] = mjxEl.value;
+    }
+    if (!Object.keys(payload.values).length) {
+      setConfigFeedback('No MathJax override changes to save.', true);
+      return;
     }
     setConfigFeedback('Saving…', true);
     try {
@@ -2762,8 +2874,8 @@
       var file = body && body.file ? body.file : '(file)';
       setStatus('live', '● wrote MathJax config → ' + file);
       closeConfigDialog();
-      // wrap-equations and the raw MathJax config live in the page head. The
-      // re-render's viewer_config push reloads when either value changed.
+      // The raw MathJax config lives in the page head. The re-render's
+      // viewer_config push reloads when the value changed.
     } catch (e) {
       setConfigFeedback(String(e && e.message || e), false);
     }

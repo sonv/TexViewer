@@ -2823,7 +2823,7 @@ mod tests {
     }
 
     #[test]
-    fn config_dialog_has_viewer_and_mathjax_tabs_with_full_defaults() {
+    fn config_dialog_has_common_viewer_controls_above_full_toml_editor() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
             "\\begin{document}\nConfig\n\\end{document}\n".to_string(),
@@ -2833,7 +2833,17 @@ mod tests {
 
         assert!(out.html.contains(r#"id="config-mode-viewer""#));
         assert!(out.html.contains(r#"id="config-mode-mathjax""#));
+        assert!(out.html.contains(r#"id="config-font-size""#));
+        assert!(out.html.contains(r#"id="config-source-jump-trigger""#));
+        assert!(out.html.contains(r#"id="config-typeset-mode""#));
+        assert!(out.html.contains(r#"id="config-wrap-equations""#));
         assert!(out.html.contains(r#"id="config-viewer-toml""#));
+        let controls = out.html.find(r#"id="config-font-size""#).unwrap();
+        let editor = out.html.find(r#"id="config-viewer-toml""#).unwrap();
+        assert!(
+            controls < editor,
+            "common controls must appear above the editor"
+        );
         assert!(out.html.contains("[keybindings]"));
         assert!(out
             .html

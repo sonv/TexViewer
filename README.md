@@ -751,14 +751,17 @@ keys may be written as their glyph (`G`, `+`, `:`) or as a combination
 project, and `--config` layers have merged. If two layers mention different
 actions, both survive; a later layer replaces only the action it mentions.
 
-The toolbar **config** dialog exposes this complete built-in TOML in a
-**Viewer config** tab. Pick **Project (local)** or **Global** and it loads that
-file when present; for a missing file it starts from the defaults above. Save
-validates the full config before replacing the selected file, so unknown
-settings or misspelled keybinding actions cannot overwrite a working config.
-The adjacent **MathJax config** tab keeps the generated-config inspector,
-equation-wrapping switch, and raw JavaScript override with the same save
-targets.
+The toolbar **config** dialog's **Viewer config** tab provides structured
+controls for the common settings, followed by a full TOML editor for advanced
+settings and keybindings. Pick **Project (local)** or **Global** and it loads
+that file when present; for a missing file it starts from the defaults above.
+If an existing file has no `[keybindings]` table—or only overrides some
+actions—the missing default bindings are added to the unsaved editor draft.
+Save merges the structured controls into the editor text, preserves the other
+local content and comments, and validates the complete result before replacing
+the selected file. The adjacent
+**MathJax config** tab keeps the generated-config inspector and raw JavaScript
+override with the same save targets.
 
 `wrap-equations` toggles MathJax's automatic line-breaking of long display
 equations in the preview. Default `true` (the preview wraps overlong math at
@@ -769,7 +772,7 @@ This affects the **preview only** — it can't change how `latexmk` breaks lines
 in the PDF.
 
 `typeset-mode` controls how much of the document is typeset (has its math
-rendered) at once — it is also present in the **Viewer config** tab's template.
+rendered) at once — it is also a structured **Viewer config** option.
 Default `local` typesets only the region around the viewport plus a small
 buffer, leaving the rest until you scroll to it; this keeps memory and CPU
 low on a long paper. `background` typesets the visible region first, then
@@ -779,8 +782,9 @@ the whole document). Either way, **Cmd/Ctrl+P** typesets the whole document on
 demand before printing.
 
 `page-margin` sets the A4 page's horizontal margin, in millimetres — the
-**Viewer config** template includes a commented example (leave it commented
-to keep following the document). Omit it
+**Viewer config** editor includes a commented example (leave it commented to
+keep following the document), and the structured option can set it directly.
+Omit it
 and the viewer follows the document's own
 `\usepackage[margin=…]{geometry}` (parsing `margin` / `hmargin` /
 `left`+`right` / `textwidth`); with no geometry either, it uses the built-in
@@ -818,11 +822,11 @@ window.MathJax.tex.packages['[+]'].push('color'); // load an extra package
 
 Both `wrap-equations` and `mathjax-config` live in the MathJax `<head>`, so a
 change reloads the preview tab automatically (the daemon signals it) — however
-you edit them: the **config** toolbar dialog's **MathJax config** tab (a
-checkbox for wrapping, a read-only view of the full generated config, and a
-box for your override JS), the `.mathpreview.toml` file, or the
-macros dialog's Text→HTML editor. The read-only view shows everything in effect
-— macros, packages, output options — so you can see what to mutate.
+you edit them: the **Viewer config** tab's wrapping checkbox/TOML editor, the
+**MathJax config** tab's raw override box, the `.mathpreview.toml` file, or the
+macros dialog's Text→HTML editor. The MathJax tab's read-only view shows
+everything in effect — macros, packages, output options — so you can see what
+to mutate.
 
 Drop a `.mathpreview.toml` in the project root to override per-paper:
 

@@ -1872,6 +1872,11 @@ struct ConfigFileRequest {
     /// Whole-file contents, for `/config/write` only.
     #[serde(default)]
     content: String,
+    /// Structured viewer controls merged into `content` before validation.
+    /// This keeps the convenient form and the advanced TOML editor on one
+    /// atomic, comment-preserving save path.
+    #[serde(default)]
+    values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// `POST /config/read` — return the config TOML file's text for a scope
@@ -1924,16 +1929,19 @@ async fn serve_config_write(
             return (code, Json(serde_json::json!({ "error": msg }))).into_response();
         }
     };
-    // The full viewer editor can change every config field and keybinding.
-    // Validate the typed Config (unknown keys/actions included), not only TOML
-    // syntax, before replacing a working global/project file.
-    if let Err(error) = validate_config_file(&req.content, &target) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": error })),
-        )
-            .into_response();
-    }
+    // Merge the common controls into the user's editor text in memory, then
+    // validate and write once. Existing project-local comments, text macros,
+    // advanced fields, and keybindings therefore survive a form-based save.
+    let merged_content = match merge_config_editor_values(&req.content, &req.values, &target) {
+        Ok(content) => content,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    };
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return (
@@ -1943,7 +1951,7 @@ async fn serve_config_write(
                 .into_response();
         }
     }
-    let body = format!("{}\n", req.content.trim_end_matches(['\n', '\r']));
+    let body = format!("{}\n", merged_content.trim_end_matches(['\n', '\r']));
     if let Err(e) = std::fs::write(&target, body) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1966,6 +1974,22 @@ fn validate_config_file(content: &str, label: &Path) -> Result<(), String> {
     mathpreview_core::Config::parse(content, label)
         .map(|_| ())
         .map_err(|e| format!("invalid config: {e:#}"))
+}
+
+fn merge_config_editor_values(
+    content: &str,
+    values: &std::collections::BTreeMap<String, serde_json::Value>,
+    label: &Path,
+) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = content
+        .parse()
+        .map_err(|e| format!("invalid config: parsing TOML {}: {e}", label.display()))?;
+    for (dotted, value) in values {
+        set_dotted_key(&mut doc, dotted, value)?;
+    }
+    let merged = doc.to_string();
+    validate_config_file(&merged, label)?;
+    Ok(merged)
 }
 
 /// Resolve the target file for a config-save action. Same scope rules
@@ -3550,9 +3574,9 @@ fn watched_event_paths(
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
-        is_latest_render_attempt, origin_is_loopback, serve_buffer_push, validate_config_file,
-        watched_event_paths, websocket_needs_reload, AppState, PatchOp, PlanSlot,
-        WS_PROTOCOL_VERSION,
+        is_latest_render_attempt, merge_config_editor_values, origin_is_loopback,
+        serve_buffer_push, watched_event_paths, websocket_needs_reload, AppState, PatchOp,
+        PlanSlot, WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -3625,18 +3649,66 @@ mod tests {
     #[test]
     fn whole_file_config_editor_rejects_semantic_typos() {
         let label = PathBuf::from("config-dialog.toml");
-        validate_config_file(mathpreview_core::config::DEFAULT_CONFIG_TEMPLATE, &label)
-            .expect("the dialog's built-in template must be writable");
+        let values = std::collections::BTreeMap::new();
+        merge_config_editor_values(
+            mathpreview_core::config::DEFAULT_CONFIG_TEMPLATE,
+            &values,
+            &label,
+        )
+        .expect("the dialog's built-in template must be writable");
 
-        let error = validate_config_file("[viewer]\nfont-sze = 18\n", &label).unwrap_err();
+        let error =
+            merge_config_editor_values("[viewer]\nfont-sze = 18\n", &values, &label).unwrap_err();
         assert!(error.contains("unknown field"), "unexpected error: {error}");
 
         let error =
-            validate_config_file("[keybindings]\ntoogle-theme = \"T\"\n", &label).unwrap_err();
+            merge_config_editor_values("[keybindings]\ntoogle-theme = \"T\"\n", &values, &label)
+                .unwrap_err();
         assert!(
             error.contains("unknown keybinding action"),
             "unexpected error: {error}",
         );
+    }
+
+    #[test]
+    fn structured_editor_save_preserves_existing_local_config_content() {
+        let label = PathBuf::from(".mathpreview.toml");
+        let local = r#"# Keep this project-local explanation.
+[viewer]
+font-size = 16
+mathjax-config = "window.MathJax.svg.displayOverflow = 'scroll';"
+
+[text-macros]
+SV = "<strong>#1</strong>"
+
+[keybindings]
+toggle-theme = "T"
+"#;
+        let values = std::collections::BTreeMap::from([
+            ("viewer.font-size".to_string(), serde_json::json!(21)),
+            (
+                "viewer.default-page-mode".to_string(),
+                serde_json::json!("dynamic"),
+            ),
+            (
+                "viewer.wrap-equations".to_string(),
+                serde_json::json!(false),
+            ),
+        ]);
+
+        let merged = merge_config_editor_values(local, &values, &label).unwrap();
+        assert!(merged.contains("# Keep this project-local explanation."));
+        assert!(merged.contains("mathjax-config = \"window.MathJax"));
+        assert!(merged.contains("SV = \"<strong>#1</strong>\""));
+        assert!(merged.contains("toggle-theme = \"T\""));
+
+        let resolved = mathpreview_core::Config::parse(&merged, &label)
+            .unwrap()
+            .resolve();
+        assert_eq!(resolved.viewer.font_size, 21);
+        assert_eq!(resolved.viewer.default_page_mode.as_str(), "dynamic");
+        assert!(!resolved.viewer.wrap_equations);
+        assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
     }
 
     #[test]

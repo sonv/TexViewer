@@ -1605,12 +1605,21 @@ body.margin-left-expanded aside#margin-left .margin-card.expanded {
 }
 .config-panel[hidden] { display: none; }
 .config-viewer-editor {
-  height: min(38vh, 340px);
-  min-height: 220px;
-  max-height: 55vh;
+  height: min(30vh, 260px);
+  min-height: 180px;
+  max-height: 45vh;
   line-height: 1.45;
   tab-size: 2;
 }
+.config-viewer-fields { margin-bottom: 0; }
+.config-editor-label {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--fg);
+}
+.config-editor-hint { margin: 3px 0 6px; }
 .config-save-scope {
   display: flex;
   flex-wrap: wrap;

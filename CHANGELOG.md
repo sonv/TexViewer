@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.21] — 2026-07-14
+
+### Changed
+
+- **Viewer config restores the structured controls above the full TOML
+  editor.** Common font, margin, source-jump, page, theme, theorem, typesetting,
+  and equation-wrapping options are again available as fields and dropdowns;
+  advanced settings and the complete editable keymap remain directly below.
+  Saving atomically merges the controls into that draft, validates the result,
+  and preserves existing project-local comments, text macros, raw MathJax, and
+  keybinding overrides. Missing keybinding actions are filled into the unsaved
+  draft so every toolbar button is visible and configurable.
+
 ## [1.0.20] — 2026-07-14
 
 ### Added

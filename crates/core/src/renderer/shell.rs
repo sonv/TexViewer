@@ -332,16 +332,70 @@ pub(super) fn wrap_in_shell(
     </div>
     <section class="config-panel" id="config-mode-viewer" role="tabpanel">
       <p class="macros-dialog-hint">
-        The selected file loads below. If it does not exist, the complete
-        built-in default is shown so it can be saved as-is and customized.
-        Save replaces that one TOML file after validation.
+        Use the common controls, then edit any advanced settings and
+        keybindings in the TOML below. On save, the controls are merged into
+        the editor and the complete file is validated before it is written.
+      </p>
+      <fieldset class="macros-dialog-scope config-fields config-viewer-fields">
+        <legend>Common options</legend>
+        <label>Body font size (px)
+          <input type="number" id="config-font-size" min="10" max="40" step="1">
+        </label>
+        <label>UI font size (px)
+          <input type="number" id="config-ui-font-size" min="9" max="20" step="1">
+        </label>
+        <label>Page margin (mm)
+          <input type="number" id="config-page-margin" min="5" max="60" step="1"
+                 title="A4 page margin. Leave empty to follow the document's \usepackage[margin=…]{{geometry}} (or the built-in default). Also sets the Cmd+P print margin, keeping screen and print in sync.">
+        </label>
+        <label>Source-jump trigger
+          <select id="config-source-jump-trigger">
+            <option value="cmd-click">Cmd-click (Ctrl on Linux)</option>
+            <option value="ctrl-click">Ctrl-click only</option>
+            <option value="alt-click">Alt-click</option>
+            <option value="double-click">Double-click</option>
+          </select>
+        </label>
+        <label>Default page mode
+          <select id="config-default-page-mode">
+            <option value="a4">A4</option>
+            <option value="dynamic">Dynamic</option>
+          </select>
+        </label>
+        <label>Default theme
+          <select id="config-default-theme">
+            <option value="system">System (match OS)</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <label>Theorem numbering
+          <select id="config-theorem-numbering">
+            <option value="auto">Auto (from \newtheorem)</option>
+            <option value="continuous">Continuous (1, 2, 3…)</option>
+            <option value="section">Per section (1.1, 1.2…)</option>
+          </select>
+        </label>
+        <label>Math rendering
+          <select id="config-typeset-mode">
+            <option value="local">Local (around the view — lowest memory)</option>
+            <option value="background">Background (fill the rest while idle)</option>
+          </select>
+        </label>
+        <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
+          Wrap long equations (off = scroll horizontally)</label>
+      </fieldset>
+      <label class="config-editor-label" for="config-viewer-toml">
+        TOML editor (advanced settings and keybindings)
+      </label>
+      <p class="macros-dialog-hint config-editor-hint">
+        The selected file loads here. Missing keybindings are added to the
+        unsaved draft so every viewer button can be configured.
       </p>
       <textarea id="config-viewer-toml" class="macros-dialog-input config-viewer-editor"
-                rows="24" spellcheck="false" autocomplete="off">{default_config_html}</textarea>
+                rows="18" spellcheck="false" autocomplete="off">{default_config_html}</textarea>
     </section>
     <section class="config-panel config-fields" id="config-mode-mathjax" role="tabpanel" hidden>
-      <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
-        Wrap long equations (off = scroll horizontally)</label>
       <details class="config-mjx-current">
         <summary>Current generated config (read-only)</summary>
         <textarea id="config-mathjax-current" class="macros-dialog-input" rows="12"
