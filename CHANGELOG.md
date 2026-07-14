@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.18] — 2026-07-14
+
+### Fixed
+
+- **Neovim no longer reopens an obsolete native shell after compiling a new
+  viewer.** On macOS, the plugin now uses an installed `Locus.app` only when
+  its version matches the plugin. A stale app bundle can lack native startup
+  behavior such as the compositor-zoom marker even while loading current
+  daemon HTML; the plugin now warns once and falls back to the freshly built
+  CLI window instead.
+
 ## [1.0.17] — 2026-07-13
 
 ### Changed

@@ -243,6 +243,12 @@ differently from prose under CSS `zoom`; equation size can drift toward
   viewers keep dynamic mode's natural column width during keyboard zoom,
   avoiding text reflow and overlay reconstruction at commit. Browser/Linux
   retain CSS `zoom` for that stable geometry.
+- **The app shell must match the plugin.** Neovim may find an installed
+  `/Applications/Locus.app` in addition to its freshly compiled CLI binary.
+  The app is preferred for its bundle identity only when its version matches
+  `PLUGIN_VERSION`; otherwise `open_window()` must fall back to the current
+  CLI. An old app can serve current HTML but still omit native initialization
+  such as `locus-macos`, silently restoring the MathJax scaling bug.
 - **Flow/print invariants:** a transform has no layout height, so
   `syncCompositePageHeight()` sizes `#page-shell` and a `ResizeObserver` tracks
   content-height changes. The screen shell clips **vertical overflow only**;

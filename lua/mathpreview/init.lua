@@ -31,7 +31,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "1.0.17"
+local PLUGIN_VERSION = "1.0.18"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -223,6 +223,10 @@ local last_status = {
 -- Warn at most once per nvim session, even across restarts, so a stale
 -- binary nags you once rather than on every :MathPreviewRestart.
 local version_warned = false
+-- Warn at most once per nvim session when the installed macOS app bundle is
+-- stale. Its native shell can carry behavior (for example the WKWebView zoom
+-- marker), so matching daemon HTML does not make shell-version skew harmless.
+local app_version_warned = false
 
 -- Root of this plugin's checkout. init.lua lives at
 -- <root>/lua/mathpreview/init.lua, so three `:h` heads climb back to <root>.
@@ -413,6 +417,16 @@ local function semver_cmp(a, b)
     if pa[i] ~= pb[i] then return (pa[i] < pb[i]) and -1 or 1 end
   end
   return 0
+end
+
+-- Read the semantic version printed by a CLI executable. This is synchronous
+-- only on the native-window open path and returns immediately for the tiny
+-- clap `--version` command; keeping the check here prevents an old Locus.app
+-- shell from silently overriding the freshly installed plugin binary.
+local function executable_version(cmd)
+  local out = vim.fn.system({ cmd, "--version" })
+  if vim.v.shell_error ~= 0 or not out then return nil end
+  return out:gsub("%s+$", ""):match("(%S+)%s*$")
 end
 
 -- Run `cmd --version` async, record the version for :MathPreviewStatus, and
@@ -733,12 +747,13 @@ local function open_window(entry)
   local cmd = entry.cmd or resolve_cmd()
   local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
   local title = vim.fn.fnamemodify(entry.root, ":t")
-  -- On macOS, prefer the installed Locus.app bundle's binary: a process run
-  -- from inside a bundle carries the bundle identity, so the window gets the
-  -- Locus dock icon and app name from the .icns — no runtime branding needed.
-  -- The attach window is a pure webview client (the daemon serves the whole
-  -- page), so version skew between the .app and the daemon is harmless. Build
-  -- it with scripts/make-locus-app.sh --install.
+  -- On macOS, prefer a CURRENT installed Locus.app bundle: a process run from
+  -- inside a bundle carries the bundle identity, so the window gets the Locus
+  -- dock icon and app name from the .icns. The shell also injects native-only
+  -- behavior (including the WKWebView compositor-zoom marker), however, so an
+  -- old app is not interchangeable with the current CLI even though both load
+  -- the daemon's current HTML. Fall back to `cmd view` on any mismatch. Build
+  -- the current bundle with scripts/make-locus-app.sh --install.
   local argv = { cmd, "view", "--attach", url, "--title", title }
   if vim.fn.has("mac") == 1 then
     for _, app_bin in ipairs({
@@ -746,8 +761,20 @@ local function open_window(entry)
       vim.fn.expand("~/Applications/Locus.app/Contents/MacOS/locus"),
     }) do
       if vim.fn.executable(app_bin) == 1 then
-        argv = { app_bin, "--attach", url, "--title", title }
-        break
+        local app_version = executable_version(app_bin)
+        if app_version and semver_cmp(app_version, PLUGIN_VERSION) == 0 then
+          argv = { app_bin, "--attach", url, "--title", title }
+          break
+        end
+        if not app_version_warned then
+          app_version_warned = true
+          vim.notify(
+            ("mathpreview: installed Locus.app is %s; plugin expects %s. "
+              .. "Using the current CLI window so native fixes are not lost. "
+              .. "Refresh the app with `scripts/make-locus-app.sh --install`.")
+              :format(app_version or "unversioned", PLUGIN_VERSION),
+            vim.log.levels.WARN)
+        end
       end
     end
   else
