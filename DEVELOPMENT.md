@@ -156,10 +156,18 @@ Every rule below exists because violating it produced a user-visible bug.
   reads each anchor's client rect and divides by the zoom scale
   (`pageRect.height / page.offsetHeight` — `main#page` may be CSS-`zoom`ed or
   compositor-scaled, so rendered coords ≠ local coords; computed-style lengths
-  are already local).
+  are already local). WebKitGTK does not consistently activate
+  `content-visibility: auto` blocks ahead of scrolling, so both key and line
+  geometry are cached relative to each top-level block. Missing blocks are
+  briefly lifted together for one shared layout before the overlays are
+  painted, then containment is restored. The lazy-typeset state-change handler
+  must ignore that synthetic lift: overlay preparation must never opt raw
+  equations into eager MathJax work or override `viewer.typeset-mode`.
   In-block markup (`.eq-refkey-list`, `[data-refkey]`) is a hidden **data
   carrier only** — texts come from it, geometry never does. The layer is
-  rebuilt whole; there is no incremental path to get subtly stale.
+  rebuilt whole from block-local caches; DOM and MathJax mutations invalidate
+  only their affected blocks, while font and column-width changes invalidate
+  every block.
 - **Key typography follows document typography.** Both the hidden row-key
   carriers and their page-layer copies preserve the original 11px-at-18px
   ratio via `--body-font-size`; never put a fixed pixel size back on either.

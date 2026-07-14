@@ -550,15 +550,16 @@ a Rust roundtrip unless they are controlling the daemon itself.
   page margin, and multi-row displays show row-level keys. Long keys
   extend past the paper edge into the gutter — reading the whole key
   beats fitting the page (in a window too narrow for any gutter they
-  fall back to an ellipsis). Keys cover the whole document from the first
-  paint: labels in regions that haven't rendered yet get chips at
-  estimated positions that refine as you scroll, instead of popping in.
+  fall back to an ellipsis). Keys cover the whole document before scrolling:
+  a lightweight block-local geometry pass prepares off-screen chips without
+  forcing MathJax to render their equations.
 - `lines` toggles typeset line numbers (LaTeX `lineno`-style): every
   *wrapped* visual line of body text gets a number in the left margin,
-  recomputed on render, resize, zoom, and A4 ⇄ dynamic switches. Display
-  equations are not numbered (MathJax emits SVG with no text), matching
-  `lineno`'s default; a paragraph with inline math still numbers
-  normally. Persisted in `localStorage["mathpreview.lineNumbers"]`.
+  prepared across the whole document before scrolling and recomputed after
+  real layout changes. Display equations are not numbered (MathJax emits SVG
+  with no text), matching `lineno`'s default; a paragraph with inline math
+  still numbers normally. Persisted in
+  `localStorage["mathpreview.lineNumbers"]`.
 - `margin` toggles a right-hand column of pinned reference cards: with it
   on, clicking a `\ref`/`\cite` pins the referenced theorem/equation/bib
   entry (typeset math preserved) instead of scrolling to it — click again

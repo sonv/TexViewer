@@ -289,10 +289,12 @@
   setTimeout(ensureInitialTypeset, 1200);
   window.addEventListener('load', function() {
     // Re-measure once fonts/layout have fully settled.
+    invalidateOverlayMetrics();
     syncTopbarHeight();
     scheduleNavigationRefresh();
   });
   window.addEventListener('resize', function() {
+    invalidateOverlayMetrics();
     updatePageScale();
     // Responsive wrapping changes the toolbar's height, so re-anchor the
     // floating side controls before refreshing navigation.

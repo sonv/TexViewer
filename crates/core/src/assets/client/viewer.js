@@ -1479,10 +1479,12 @@
   }
 
   function setRefkeysVisible(visible, persist) {
+    var changed = refkeysVisible !== !!visible;
     refkeysVisible = !!visible;
     document.body.classList.toggle('refkey-visible', refkeysVisible);
-    // The chips live in a measured page-level layer — (re)build or clear it.
-    scheduleRefkeys();
+    // A user-visible toggle prelays the whole layer before its first paint.
+    // Same-state render updates keep the trailing coalescing cadence.
+    scheduleRefkeys(changed ? 0 : undefined);
     var page = pageEl();
     // Same-value setAttribute still dirties attribute-selector styles for the
     // whole page — and this runs on every patch. Only write on a real change.
@@ -2891,13 +2893,16 @@
   function applyViewerConfig(cfg) {
     if (!cfg) return;
     if (typeof cfg.font_size === 'number') {
-      document.documentElement.style.setProperty(
-        '--body-font-size', cfg.font_size + 'px'
-      );
-      // Font size changes line heights/wrapping and key chip geometry, so both
-      // page-level overlay layers must re-measure before the next paint.
-      if (lineNumbersVisible) scheduleLineNumbers();
-      if (refkeysVisible) scheduleRefkeys(0);
+      var nextFontSize = cfg.font_size + 'px';
+      if (document.documentElement.style.getPropertyValue('--body-font-size') !==
+          nextFontSize) {
+        document.documentElement.style.setProperty('--body-font-size', nextFontSize);
+        // Font size changes line heights/wrapping and key chip geometry, so both
+        // page-level overlay layers must re-measure before the next paint.
+        invalidateOverlayMetrics();
+        if (lineNumbersVisible) scheduleLineNumbers();
+        if (refkeysVisible) scheduleRefkeys(0);
+      }
     }
     if (typeof cfg.ui_font_size === 'number') {
       // Scales the toolbar (topbar) and the index/pages side panel (TOC);
@@ -3212,13 +3217,6 @@
     });
   }
 
-  /// Inject a clickable `<button class="refkey-chip">` into every
-  /// `[data-refkey]` element under `root`, so the marginal refkey
-  /// indicators (the chips that appear when the `keys` toggle is on) act
-  /// as pin-to-margin shortcuts. Idempotent: a `data-refkey-decorated`
-  /// flag on the parent skips already-injected chips so this can run
-  /// after every patch. Excludes `.label-anchor` (zero-content markers
-  /// for `\label` placed before the actual rendered element).
   // The keys chips live in a PAGE-LEVEL layer (like the line-number gutter),
   // not inside the render blocks: blocks have paint containment
   // (content-visibility), which clips any ink outside their box — chips
@@ -3226,11 +3224,100 @@
   // The layer is a direct child of main#page, so nothing contains it; chips
   // are absolutely positioned at their anchor's measured y, right-aligned
   // into the real margin. Under crop there is no margin, so they overlay the
-  // content edge instead (translucent via CSS). Rebuilt whole on toggle,
-  // render, zoom and resize — same cadence as the lineno layer.
+  // content edge instead (translucent via CSS). Their block-local positions
+  // are cached before scrolling and the page-level layer is rebuilt from that
+  // cache after edits/typesetting — zoom scales it without a rebuild.
   function clearRefkeyLayer() {
     var l = document.querySelector('main#page > .refkey-layer');
     if (l) l.remove();
+  }
+
+  function topLevelOverlayBlocks(page) {
+    return Array.prototype.filter.call(page.children, function(el) {
+      return el.classList && el.classList.contains('blk');
+    });
+  }
+
+  // Drop cached block-local overlay geometry. With no argument every block is
+  // invalidated (font/column-width changes); DOM/typeset mutations pass only
+  // their affected blocks. Rebuild scheduling stays coalesced by the existing
+  // line-number rAF and refkey timer.
+  function invalidateOverlayMetrics(blocks, rebuild) {
+    if (!blocks) {
+      refkeyBlockMetrics = new WeakMap();
+      lineNumberBlockMetrics = new WeakMap();
+    } else {
+      blocks.forEach(function(blk) {
+        refkeyBlockMetrics.delete(blk);
+        lineNumberBlockMetrics.delete(blk);
+      });
+    }
+    if (rebuild !== false) {
+      if (lineNumbersVisible) scheduleLineNumbers();
+      if (refkeysVisible) scheduleRefkeys();
+    }
+  }
+
+  // Measure missing overlay geometry before scrolling. We temporarily lift
+  // content-visibility only for blocks with no cache, force one shared layout,
+  // record block-local positions, then immediately restore containment. This
+  // does NOT typeset math: patch.js ignores the synthetic un-skip while the
+  // marker is present, so equations remain governed by typeset-mode. DOM,
+  // MathJax, fold, font and width changes invalidate the affected cache before
+  // this function measures it again.
+  function ensureOverlayMetrics(page) {
+    if (!refkeysVisible && !lineNumbersVisible) return;
+    var blocks = topLevelOverlayBlocks(page);
+    var targets = [];
+    var lifted = [];
+    var token = ++overlayPrelayoutToken;
+    blocks.forEach(function(blk) {
+      var missing = (refkeysVisible && !refkeyBlockMetrics.has(blk)) ||
+        (lineNumbersVisible && !lineNumberBlockMetrics.has(blk));
+      if (!missing) return;
+      targets.push(blk);
+      lifted.push({ blk: blk, contentVisibility: blk.style.contentVisibility });
+      blk.__mpOverlayPrelayoutToken = token;
+      blk.style.contentVisibility = 'visible';
+    });
+    if (!targets.length) return;
+
+    // Flush once after every missing block has been lifted. Measuring blocks
+    // one at a time would turn this into a layout-thrashing scroll substitute.
+    void page.offsetHeight;
+    var pageRect = page.getBoundingClientRect();
+    var scale = page.offsetHeight > 0 ? pageRect.height / page.offsetHeight : 1;
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+    var pageFontSize = parseFloat(getComputedStyle(page).fontSize) || 18;
+    var chipFontSize = pageFontSize * (11 / 18);
+    var chipHeight = chipFontSize * 1.35 + 4;
+    var chipHalfHeight = chipHeight / 2;
+    var chipStackStep = Math.ceil(chipHeight + 1);
+    targets.forEach(function(blk) {
+      if (refkeysVisible) {
+        refkeyBlockMetrics.set(
+          blk,
+          measureRefkeyBlock(blk, scale, chipHalfHeight, chipStackStep)
+        );
+      }
+      if (lineNumbersVisible) {
+        lineNumberBlockMetrics.set(blk, measureLineNumberBlock(blk, scale));
+      }
+    });
+    lifted.forEach(function(entry) {
+      entry.blk.style.contentVisibility = entry.contentVisibility;
+    });
+    // contentvisibilityautostatechange is delivered asynchronously in WebKit.
+    // Keep the marker through that delivery window so this cheap geometry pass
+    // cannot accidentally opt every equation into eager MathJax rendering.
+    setTimeout(function() {
+      lifted.forEach(function(entry) {
+        if (entry.blk.__mpOverlayPrelayoutToken === token) {
+          delete entry.blk.__mpOverlayPrelayoutToken;
+        }
+      });
+    }, 250);
+    syncCompositePageHeight();
   }
 
   // -1 = nothing pending, 0 = immediate (pre-paint) pending, 180 = trailing.
@@ -3271,11 +3358,73 @@
     }
   }
 
+  function measureRefkeyBlock(blk, scale, chipHalfHeight, chipStackStep) {
+    var blockRect = blk.getBoundingClientRect();
+    if (blockRect.width === 0 && blockRect.height === 0) return [];
+    var entries = [];
+    var anchors = [];
+    if (blk.matches('[data-refkey]:not(.label-anchor)')) anchors.push(blk);
+    blk.querySelectorAll('[data-refkey]:not(.label-anchor)').forEach(function(el) {
+      anchors.push(el);
+    });
+    anchors.forEach(function(el) {
+      var key = el.getAttribute('data-refkey');
+      if (!key) return;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;
+      var top = (r.top - blockRect.top) / scale + 1;
+      if (el.classList.contains('math') && el.classList.contains('display')) {
+        top = (r.top + r.height / 2 - blockRect.top) / scale - chipHalfHeight;
+      } else if (el.classList.contains('thm')) {
+        top += chipHalfHeight;
+      }
+      entries.push({ key: key, top: top });
+    });
+
+    var displays = [];
+    if (blk.matches('.math.display')) displays.push(blk);
+    blk.querySelectorAll('.math.display').forEach(function(math) {
+      displays.push(math);
+    });
+    displays.forEach(function(math) {
+      var list = math.querySelector('.eq-refkey-list');
+      if (!list || !list.children.length) return;
+      var rows = list.children;
+      var mathRect = math.getBoundingClientRect();
+      if (mathRect.width === 0 && mathRect.height === 0) return;
+      var groups = mathRowGroups(math);
+      for (var i = 0; i < rows.length; i++) {
+        var rowChips = rows[i].querySelectorAll('.eq-refkey-chip[data-target]');
+        if (!rowChips.length) continue;
+        var y = null;
+        var g = groups[i];
+        if (g && g.getBoundingClientRect) {
+          var gr = g.getBoundingClientRect();
+          if (gr.height > 0) {
+            y = (gr.top + gr.height / 2 - blockRect.top) / scale - chipHalfHeight;
+          }
+        }
+        if (y == null) {
+          y = (mathRect.top - blockRect.top +
+            (i + 0.5) * (mathRect.height / rows.length)) / scale - chipHalfHeight;
+        }
+        for (var c = 0; c < rowChips.length; c++) {
+          entries.push({
+            key: rowChips[c].dataset.target,
+            top: y + c * chipStackStep,
+          });
+        }
+      }
+    });
+    return entries;
+  }
+
   function layoutRefkeys() {
     var page = pageEl();
     if (!page) return;
     clearRefkeyLayer();
     if (!refkeysVisible) return;
+    ensureOverlayMetrics(page);
     var pageRect = page.getBoundingClientRect();
     if (pageRect.width === 0) return;
     // #page is CSS-zoomed: rects are rendered coords, children position in
@@ -3285,15 +3434,6 @@
     if (!isFinite(scale) || scale <= 0) scale = 1;
     var pageStyle = getComputedStyle(page);
     var padLeft = parseFloat(pageStyle.paddingLeft) || 0;
-    // Key typography keeps the original 11px-at-18px ratio. Derive its local
-    // box geometry once so row centering and multi-key spacing track a live
-    // viewer font-size change without measuring every chip (a forced-layout
-    // pass per chip is expensive on long papers).
-    var pageFontSize = parseFloat(pageStyle.fontSize) || 18;
-    var chipFontSize = pageFontSize * (11 / 18);
-    var chipHeight = chipFontSize * 1.35 + 4; // line box + padding + borders
-    var chipHalfHeight = chipHeight / 2;
-    var chipStackStep = Math.ceil(chipHeight + 1);
     var cropped = document.body.classList.contains('page-crop');
     var layer = document.createElement('div');
     layer.className = 'refkey-layer';
@@ -3325,122 +3465,19 @@
       }
       layer.appendChild(chip);
     }
-    // Zero-rect anchors sit inside content-visibility-skipped blocks that
-    // haven't rendered yet. They still get chips — estimated inside their
-    // block's placeholder box — so the whole document is keyed on first
-    // paint instead of chips popping in as you scroll. Deliberately hidden
-    // content (folded proofs) stays chipless, as does anything whose block
-    // box is itself hidden (proof-filter modes). Estimated blocks are
-    // watched: rendering without a typeset (plain-text sections, re-skipped
-    // regions revisited after an edit) triggers no relayout of its own, so
-    // an IntersectionObserver re-runs the layout when one scrolls in —
-    // that's what refines estimates to exact positions.
-    var pendingPerBlk = new Map(); // blk -> keys of its unrendered anchors
-    function pendEstimate(el, keys) {
-      if (el.closest('.folded')) return;
-      var blk = el.closest('.blk');
-      if (!blk) return;
-      var arr = pendingPerBlk.get(blk);
-      if (!arr) { arr = []; pendingPerBlk.set(blk, arr); }
-      for (var i = 0; i < keys.length; i++) arr.push(keys[i]);
-    }
-    // Block/inline anchors ([data-refkey] carriers: theorems, single
-    // equations, floats, section labels…).
-    page.querySelectorAll('[data-refkey]:not(.label-anchor)').forEach(function(el) {
-      var key = el.getAttribute('data-refkey');
-      if (!key) return;
-      var r = el.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) {
-        pendEstimate(el, [key]);
-        return;
-      }
-      var top = (r.top - pageRect.top) / scale + 1;
-      if (el.classList.contains('math') && el.classList.contains('display')) {
-        top = (r.top + r.height / 2 - pageRect.top) / scale - chipHalfHeight;
-      } else if (el.classList.contains('thm')) {
-        top += chipHalfHeight;
-      }
-      addChip(key, top);
-    });
-    // Per-row labels of multi-row math: texts come from the (hidden)
-    // server-rendered .eq-refkey-list; positions from the rendered SVG rows
-    // (the same index scheme as highlights and row copy). Falls back to an
-    // even spread over the block while the SVG hasn't typeset yet. Rows of
-    // an UNRENDERED region join their block's shared estimate pool instead —
-    // one spread per block, so a theorem key and its equation's row keys
-    // can't stack on the same spot.
-    page.querySelectorAll('.math.display').forEach(function(block) {
-      var list = block.querySelector('.eq-refkey-list');
-      if (!list) return;
-      var rows = list.children;
-      var br = block.getBoundingClientRect();
-      if (br.width === 0 && br.height === 0) {
-        var keys = [];
-        for (var p = 0; p < rows.length; p++) {
-          var pc = rows[p].querySelectorAll('.eq-refkey-chip[data-target]');
-          for (var q = 0; q < pc.length; q++) keys.push(pc[q].dataset.target);
-        }
-        if (keys.length) pendEstimate(block, keys);
-        return;
-      }
-      var groups = mathRowGroups(block);
-      for (var i = 0; i < rows.length; i++) {
-        var rowChips = rows[i].querySelectorAll('.eq-refkey-chip[data-target]');
-        if (!rowChips.length) continue;
-        var y = null;
-        var g = groups[i];
-        if (g && g.getBoundingClientRect) {
-          var gr = g.getBoundingClientRect();
-          if (gr.height > 0) {
-            y = (gr.top + gr.height / 2 - pageRect.top) / scale - chipHalfHeight;
-          }
-        }
-        if (y == null) {
-          y = (br.top - pageRect.top + (i + 0.5) * (br.height / rows.length)) /
-            scale - chipHalfHeight;
-        }
-        for (var c = 0; c < rowChips.length; c++) {
-          addChip(rowChips[c].dataset.target, y + c * chipStackStep);
-        }
-      }
-    });
-    // One even spread per block over its placeholder box, and a watch for
-    // the render that will make the positions exact.
-    if (refkeyEstimateObserver) refkeyEstimateObserver.disconnect();
-    pendingPerBlk.forEach(function(keys, blk) {
-      var kr = blk.getBoundingClientRect();
-      if (kr.width === 0 && kr.height === 0) return;
-      keys.forEach(function(key, i) {
-        addChip(
-          key,
-          (kr.top - pageRect.top + (i + 0.5) * (kr.height / keys.length)) /
-            scale - chipHalfHeight
-        );
+    // Positions are cached relative to their top-level block. The browser can
+    // keep that block skipped after this pass; its page-level chips are already
+    // present and only need the block's cheap outer rect to stay aligned.
+    topLevelOverlayBlocks(page).forEach(function(blk) {
+      var blockRect = blk.getBoundingClientRect();
+      if (blockRect.width === 0 && blockRect.height === 0) return;
+      var blockTop = (blockRect.top - pageRect.top) / scale;
+      var entries = refkeyBlockMetrics.get(blk) || [];
+      entries.forEach(function(entry) {
+        addChip(entry.key, blockTop + entry.top);
       });
-      watchEstimatedBlk(blk);
     });
     if (layer.children.length) page.appendChild(layer);
-  }
-
-  // Blocks whose chips are estimates: when one scrolls into view it has
-  // rendered (content-visibility renders ahead of the viewport), so one
-  // relayout snaps its chips to exact positions. Typeset-carrying blocks
-  // get this for free from the typeset flush; this covers the rest.
-  var refkeyEstimateObserver = null;
-  function watchEstimatedBlk(blk) {
-    if (!refkeyEstimateObserver) {
-      refkeyEstimateObserver = new IntersectionObserver(function(entries) {
-        var hit = false;
-        entries.forEach(function(en) {
-          if (en.isIntersecting) {
-            refkeyEstimateObserver.unobserve(en.target);
-            hit = true;
-          }
-        });
-        if (hit && refkeysVisible) scheduleRefkeys();
-      });
-    }
-    refkeyEstimateObserver.observe(blk);
   }
 
   // Kept as the render-path entry point (patch/body-updated call it with the
@@ -3555,6 +3592,7 @@
     var toggle = document.querySelector('.page-mode-toggle');
     if (toggle) toggle.setAttribute('data-page-mode', currentPageMode);
     try { localStorage.setItem('mathpreview.pageMode', currentPageMode); } catch (e) {}
+    invalidateOverlayMetrics();
     updatePageScale();
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
@@ -4098,38 +4136,16 @@
     return false;
   }
 
-  /// Number every *visual* (wrapped) line of rendered text, lineno-style.
-  ///
-  /// MathJax emits SVG with no text nodes, so display equations are not
-  /// numbered (matching LaTeX's `lineno`, which skips display math by
-  /// default); a paragraph with inline math still numbers normally because
-  /// its surrounding text nodes produce line rects. We walk every text node
-  /// in `#page`, collect a client rect per wrapped line fragment, then merge
-  /// fragments that share a visual line (e.g. `text \emph{x} text`) by
-  /// comparing top offsets. Recomputed on render and resize.
-  function layoutLineNumbers() {
-    var page = pageEl();
-    if (!page) return;
-    clearLineNumbers();
-    if (!lineNumbersVisible) return;
-
-    var pageRect = page.getBoundingClientRect();
-    // #page is scaled by CSS zoom or a native Locus compositor transform;
-    // getClientRects returns rendered coords, but a child's `top` is in the
-    // page's unscaled local space.
-    // Convert measured offsets to local space so the gutter aligns at any scale.
-    // Self-correcting: this ratio is 1 when the page isn't scaled, so the
-    // common 1:1 case is unchanged.
-    var scale = page.offsetHeight > 0 ? pageRect.height / page.offsetHeight : 1;
-    if (!isFinite(scale) || scale <= 0) scale = 1;
-    var walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
+  function measureLineNumberBlock(blk, scale) {
+    var blockRect = blk.getBoundingClientRect();
+    if (blockRect.width === 0 && blockRect.height === 0) return [];
+    var walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT, {
       acceptNode: function(node) {
         if (!node.nodeValue || !/\S/.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
-        if (linenoSkip(node, page)) return NodeFilter.FILTER_REJECT;
+        if (linenoSkip(node, blk)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     });
-
     var entries = [];
     var range = document.createRange();
     var node;
@@ -4139,9 +4155,51 @@
       for (var r = 0; r < rects.length; r++) {
         var rect = rects[r];
         if (rect.width === 0 && rect.height === 0) continue;
-        entries.push({ top: (rect.top - pageRect.top) / scale, h: rect.height / scale });
+        entries.push({
+          top: (rect.top - blockRect.top) / scale,
+          h: rect.height / scale,
+        });
       }
     }
+    return entries;
+  }
+
+  /// Number every *visual* (wrapped) line of rendered text, lineno-style.
+  ///
+  /// MathJax emits SVG with no text nodes, so display equations are not
+  /// numbered (matching LaTeX's `lineno`, which skips display math by
+  /// default); a paragraph with inline math still numbers normally because
+  /// its surrounding text nodes produce line rects. We walk every text node
+  /// in `#page`, collect a client rect per wrapped line fragment, then merge
+  /// fragments that share a visual line (e.g. `text \emph{x} text`) by
+  /// comparing top offsets. Each block's fragment positions are cached during
+  /// a lightweight pre-layout so scrolling never has to discover them.
+  function layoutLineNumbers() {
+    var page = pageEl();
+    if (!page) return;
+    clearLineNumbers();
+    if (!lineNumbersVisible) return;
+
+    ensureOverlayMetrics(page);
+    var pageRect = page.getBoundingClientRect();
+    // #page is scaled by CSS zoom or a native Locus compositor transform;
+    // getClientRects returns rendered coords, but a child's `top` is in the
+    // page's unscaled local space.
+    // Convert measured offsets to local space so the gutter aligns at any scale.
+    // Self-correcting: this ratio is 1 when the page isn't scaled, so the
+    // common 1:1 case is unchanged.
+    var scale = page.offsetHeight > 0 ? pageRect.height / page.offsetHeight : 1;
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+    var entries = [];
+    topLevelOverlayBlocks(page).forEach(function(blk) {
+      var blockRect = blk.getBoundingClientRect();
+      if (blockRect.width === 0 && blockRect.height === 0) return;
+      var blockTop = (blockRect.top - pageRect.top) / scale;
+      var local = lineNumberBlockMetrics.get(blk) || [];
+      local.forEach(function(entry) {
+        entries.push({ top: blockTop + entry.top, h: entry.h });
+      });
+    });
     if (!entries.length) return;
 
     entries.sort(function(a, b) { return a.top - b.top; });

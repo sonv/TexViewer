@@ -147,6 +147,9 @@ MathJax batch runs at a time; each path sets it, awaits, clears it).
    - **skipped** → *deferred*: `deferTypesetUntilVisible` registers a one-shot
      `contentvisibilityautostatechange` listener on the block, so it typesets
      the instant the browser un-skips it. Nothing is typeset eagerly off-screen.
+     The overlay pre-layout may also briefly un-skip a block to cache refkey and
+     line-number geometry; its marker makes this listener ignore that synthetic
+     event, preserving the selected `local` / `background` policy.
 
 2. **The viewport window (always on).** At the end of `flushTypeset`,
    `observeTypesetWindow` (re-)observes every block that still holds raw math

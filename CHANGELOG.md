@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.24] — 2026-07-14
+
+### Changed
+
+- **Equation keys and visual line numbers are prepared before scrolling.**
+  The viewer caches their block-local geometry in one lightweight pre-layout,
+  avoiding WebKitGTK's late `content-visibility` activation in native Linux
+  windows. MathJax remains independent: `local` still renders only the
+  viewport window, while `background` may fill the complete paper.
+
 ## [1.0.23] — 2026-07-14
 
 ### Fixed

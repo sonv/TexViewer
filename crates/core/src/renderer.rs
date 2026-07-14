@@ -4269,6 +4269,14 @@ mod tests {
         // Guard the layer plumbing and the absence of in-block placement.
         assert!(out.html.contains(r#".refkey-layer"#));
         assert!(out.html.contains("layoutRefkeys"));
+        // Native WebKit may not activate content-visibility blocks until the
+        // scroll itself. Both lightweight overlays cache block-local geometry
+        // up front without enrolling raw equations in eager MathJax work.
+        assert!(out.html.contains("function ensureOverlayMetrics(page)"));
+        assert!(out.html.contains("refkeyBlockMetrics = new WeakMap()"));
+        assert!(out.html.contains("lineNumberBlockMetrics = new WeakMap()"));
+        assert!(out.html.contains("blk.__mpOverlayPrelayoutToken"));
+        assert!(!out.html.contains("refkeyEstimateObserver"));
         assert_eq!(
             out.html
                 .matches("font-size: calc(var(--body-font-size) * 0.611111)")

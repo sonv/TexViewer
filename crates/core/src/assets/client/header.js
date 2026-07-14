@@ -5,6 +5,9 @@
   var refkeysVisible = false;
   var lineNumbersVisible = false;
   var lineNumbersScheduled = false;
+  var refkeyBlockMetrics = new WeakMap();
+  var lineNumberBlockMetrics = new WeakMap();
+  var overlayPrelayoutToken = 0;
   var marginMode = false;
   var themeMode = 'light';
   var pinnedRefs = new Map();

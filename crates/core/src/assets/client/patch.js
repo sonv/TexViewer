@@ -834,7 +834,10 @@
     }
     var head = e.target.closest('.proof-head');
     if (head) {
-      head.closest('.proof').classList.toggle('folded');
+      var clickedProof = head.closest('.proof');
+      clickedProof.classList.toggle('folded');
+      var clickedProofBlock = clickedProof.closest('.blk');
+      if (clickedProofBlock) invalidateOverlayMetrics([clickedProofBlock]);
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
     }
   });
@@ -878,7 +881,10 @@
     var head = e.target.closest('.proof-head');
     if (head && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
-      head.closest('.proof').classList.toggle('folded');
+      var keyedProof = head.closest('.proof');
+      keyedProof.classList.toggle('folded');
+      var keyedProofBlock = keyedProof.closest('.blk');
+      if (keyedProofBlock) invalidateOverlayMetrics([keyedProofBlock]);
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
       return;
     }
@@ -1132,6 +1138,10 @@
       blk.__mpLazyTypeset = true;
       blk.addEventListener('contentvisibilityautostatechange', function onState(e) {
         if (e.skipped) return;
+        // viewer.js may briefly lift a skipped block to cache lightweight key
+        // and line-number geometry. That pass must not turn local typesetting
+        // into an eager whole-document MathJax run.
+        if (blk.__mpOverlayPrelayoutToken) return;
         blk.__mpLazyTypeset = false;
         blk.removeEventListener('contentvisibilityautostatechange', onState);
         queueUntypesetMath(blk);
@@ -1456,9 +1466,21 @@
     if (mathObserver) mathObserver.disconnect();
     mathObserver = new MutationObserver(function(records) {
       var nodes = [];
+      var metricBlocks = new Set();
       records.forEach(function(record) {
+        var target = record.target.nodeType === Node.ELEMENT_NODE
+          ? record.target : record.target.parentElement;
+        var metricBlock = target && target.closest
+          ? target.closest('main#page > .blk') : null;
+        if (metricBlock) metricBlocks.add(metricBlock);
         record.addedNodes.forEach(function(node) { collectRawMath(node, nodes); });
       });
+      // Patches/typeset completion already schedule the normal trailing
+      // navigation refresh. Invalidate now but do not pull the expensive
+      // page-level layer rebuild into the current typing frame.
+      if (metricBlocks.size) {
+        invalidateOverlayMetrics(Array.from(metricBlocks), false);
+      }
       if (nodes.length) queueTypeset(nodes);
     });
     mathObserver.observe(page, { childList: true, subtree: true });

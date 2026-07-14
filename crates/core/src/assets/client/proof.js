@@ -119,6 +119,7 @@
     } else {
       document.querySelectorAll('.proof').forEach(function(p) { proofs.push(p); });
     }
+    var metricBlocks = new Set();
     proofs.forEach(function(p) {
       var role = theoremRole(p) || referencedTheoremRole(p) || precedingTheoremRole(p) || sectionProofRole(p);
       var folded;
@@ -126,8 +127,13 @@
       else if (mode === 'main')  folded = (role !== 'main');
       else                       folded = (role !== 'main' && role !== 'supporting');
       if (role === null) folded = false;
+      if (p.classList.contains('folded') !== folded) {
+        var blk = p.closest('.blk');
+        if (blk) metricBlocks.add(blk);
+      }
       p.classList.toggle('folded', folded);
     });
+    if (metricBlocks.size) invalidateOverlayMetrics(Array.from(metricBlocks));
     scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
   }
 
