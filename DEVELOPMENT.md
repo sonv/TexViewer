@@ -194,10 +194,13 @@ Every rule below exists because violating it produced a user-visible bug.
   grow with scroll depth. On macOS, the absolute transform uses origin `0 0`
   plus a translation that fixes the captured page-local point; changing from a
   committed top-left transform to an anchor-origin transform would itself
-  cause a jump. Capture scans caret-character rects just below the toolbar:
-  `elementFromPoint` only identifies a paragraph box in inter-line whitespace,
-  which preserves the paragraph but lets its first visible text line drift.
-  The shell gets the transformed page's explicit visual height,
+  cause a jump. Browser/Linux CSS-zoom commits still scan caret-character
+  rects just below the toolbar: `elementFromPoint` only identifies a paragraph
+  box in inter-line whitespace, which preserves the paragraph but lets its
+  first visible text line drift. The macOS compositor path must not perform
+  that scan: its unchanged surface makes the page-local point at the reading
+  boundary authoritative, so the commit restores it synchronously. The shell
+  gets the transformed page's explicit visual height,
   kept current by a `ResizeObserver` after edits, fonts and lazy typesetting.
   Restore macOS from the captured page-local point, not its live element rect:
   `content-visibility` can replace an offscreen height estimate during the

@@ -13,6 +13,18 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.19] — 2026-07-14
+
+### Changed
+
+- **macOS zoom now uses the shortest valid compositor path.** With a current
+  Locus shell, zoom never commits CSS layout, so it no longer scans up to 85
+  caret positions for a live text anchor or waits through two restoration
+  frames. It keeps the geometric point at the top of the reading area fixed,
+  previews each key immediately on the existing surface, and restores once
+  synchronously when the burst commits. Browser and Linux retain the extra
+  safeguards required by their CSS-zoom path.
+
 ## [1.0.18] — 2026-07-14
 
 ### Fixed

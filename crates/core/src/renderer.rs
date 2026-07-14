@@ -4302,9 +4302,15 @@ mod tests {
         assert!(out.html.contains("function firstVisibleTextAnchor"));
         assert!(out.html.contains("document.caretPositionFromPoint"));
         assert!(out.html.contains("document.caretRangeFromPoint"));
+        assert!(out.html.contains("var composite = usesCompositePageZoom()"));
+        assert!(out.html.contains("if (!composite) {"));
+        assert!(out.html.contains("textAnchor = firstVisibleTextAnchor"));
         assert!(out.html.contains(
             "if (!usesCompositePageZoom() && anchor.element && anchor.element.isConnected"
         ));
+        assert!(out
+            .html
+            .contains("if (usesCompositePageZoom()) {\n      restoreZoomAnchor(page, anchor);"));
         assert!(out.html.contains("scheduleZoomAnchorRestore(page, anchor)"));
         assert!(out
             .html

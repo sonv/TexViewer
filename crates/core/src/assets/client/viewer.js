@@ -3520,16 +3520,17 @@
     return best;
   }
 
-  // Keep the first visible line immediately below the topbar stationary while
-  // zooming. Anchoring the viewport centre still lets WebKit replace the line
-  // at the top by half the zoom displacement when it repaints the real layout,
-  // which reads as a vertical jump. Clamp to a paper edge when that edge is
-  // already visible. Coordinates are stored in the page's unzoomed local space
-  // so one anchor survives the whole compositor-preview burst.
+  // Keep the reading boundary immediately below the topbar stationary while
+  // zooming. CSS-zoom engines refine it to the first visible text line because
+  // their committed layout can settle differently; macOS scales an unchanged
+  // compositor surface, so the geometric point is already authoritative.
+  // Clamp to a paper edge when that edge is visible. Coordinates live in the
+  // page's unzoomed local space so one anchor survives the whole preview burst.
   function captureZoomAnchor(page) {
     var rect = page.getBoundingClientRect();
     var heightScale = rect.height / Math.max(page.offsetHeight, 1);
     var widthScale = rect.width / Math.max(page.offsetWidth, 1);
+    var composite = usesCompositePageZoom();
     var vh = window.innerHeight || 0;
     var vw = document.documentElement.clientWidth || window.innerWidth || 0;
     var readingTop = Math.max(0, Math.min(vh, topbarOffset()));
@@ -3537,27 +3538,38 @@
     viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
     var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
 
-    var textAnchor = firstVisibleTextAnchor(
-      page, rect, readingTop, vh, vw, viewportX
-    );
-    if (textAnchor) viewportY = textAnchor.rect.top;
+    // A correctly marked macOS shell never commits CSS zoom: it scales one
+    // unchanged compositor surface, so the page-local point at the reading
+    // boundary is exact. Do not walk up to 85 caret positions to find a text
+    // character there. CSS-zoom engines can still settle lazy/reflowed layout
+    // differently, so retain the character + live-element anchor for them.
+    var textAnchor = null;
+    if (!composite) {
+      textAnchor = firstVisibleTextAnchor(
+        page, rect, readingTop, vh, vw, viewportX
+      );
+      if (textAnchor) viewportY = textAnchor.rect.top;
+    }
 
-    // Retain the live source element under the reading line in every mode.
-    // Dynamic mode can reflow it; A4 keeps its wrapping but content-visibility
-    // can still replace estimated heights above it during the real zoom layout.
-    // The page-local point remains a fallback for whitespace and paper edges.
-    var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
-    var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
-    var hit = textAnchor ? textAnchor.parent : document.elementFromPoint(hitX, hitY);
-    var element = hit && page.contains(hit) && hit.closest ? hit.closest('[data-src]') : null;
+    // CSS-zoom engines retain the live source element under the reading line
+    // in both page modes. Dynamic can reflow it; A4 keeps its wrapping but
+    // content-visibility can still replace estimated heights above it during
+    // real zoom layout. The page-local point remains the fallback.
+    var element = null;
     var elementRatioY = null;
-    if (element && page.contains(element)) {
-      var elementRect = element.getBoundingClientRect();
-      if (elementRect.height > 1) {
-        elementRatioY = Math.max(
-          0,
-          Math.min(1, (viewportY - elementRect.top) / elementRect.height)
-        );
+    if (!composite) {
+      var hitY = Math.max(0, Math.min(Math.max(0, vh - 1), viewportY));
+      var hitX = Math.max(0, Math.min(Math.max(0, vw - 1), viewportX));
+      var hit = textAnchor ? textAnchor.parent : document.elementFromPoint(hitX, hitY);
+      element = hit && page.contains(hit) && hit.closest ? hit.closest('[data-src]') : null;
+      if (element && page.contains(element)) {
+        var elementRect = element.getBoundingClientRect();
+        if (elementRect.height > 1) {
+          elementRatioY = Math.max(
+            0,
+            Math.min(1, (viewportY - elementRect.top) / elementRect.height)
+          );
+        }
       }
     }
     return {
@@ -3609,16 +3621,18 @@
     }
   }
 
-  // macOS WKWebView does not expose the final CSS-zoom geometry reliably in
-  // the same task that changes --page-scale. Restoring there uses the old page
-  // rect, then WebKit applies the new layout after our scroll compensation and
-  // the viewport snaps. The first rAF runs after style/layout invalidation but
-  // before the committed frame is painted; a second pass catches WebKit's own
-  // late scroll anchoring. A new key burst cancels both so an old anchor cannot
-  // fight the new compositor preview.
+  // A compositor-only macOS commit has final geometry synchronously: restore
+  // once in the same task, before paint. CSS-zoom engines can expose their
+  // final layout later, so the first rAF restores after invalidation and the
+  // second catches a late layout/scroll-anchor adjustment. A new key burst
+  // cancels both so an old anchor cannot fight the next preview.
   function scheduleZoomAnchorRestore(page, anchor) {
     cancelZoomAnchorRestore();
     if (!anchor) return;
+    if (usesCompositePageZoom()) {
+      restoreZoomAnchor(page, anchor);
+      return;
+    }
     zoomAnchorRestoreRaf = requestAnimationFrame(function() {
       zoomAnchorRestoreRaf = 0;
       if (zoomPreviewAnchor || !page.isConnected) return;
