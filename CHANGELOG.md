@@ -13,6 +13,28 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.0] — 2026-07-14
+
+### Added
+
+- **Instant full-page keyboard scrolling is configurable.** The new
+  `full-page-down` and `full-page-up` viewer actions default to `Space` and
+  `b`. They use the same immediate, non-animated scroll path as the existing
+  half-page actions. Existing global and project configs remain valid; omitted
+  actions inherit these defaults.
+
+### Changed
+
+- **Prose now follows TeX alignment more closely.** Normal document text and
+  abstracts are justified with browser hyphenation, while `center`,
+  `flushleft`, and `flushright` retain their centered or ragged alignment and
+  continue to parse nested math and references.
+
+### Fixed
+
+- **TeX control spaces are preserved.** `\ ` now produces a breakable HTML
+  interword space instead of joining the words on either side.
+
 ## [2.0.0] — 2026-07-14
 
 ### Changed

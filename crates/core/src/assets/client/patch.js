@@ -354,7 +354,8 @@
   // which DOM element or implementation function currently powers a control.
   var VIEWER_ACTION_ORDER = [
     'scroll-left', 'scroll-down', 'scroll-up', 'scroll-right',
-    'half-page-down', 'half-page-up', 'previous-place',
+    'half-page-down', 'half-page-up', 'full-page-down', 'full-page-up',
+    'previous-place',
     'go-top', 'go-bottom', 'open-search', 'open-command',
     'search-next', 'search-previous', 'toggle-toc', 'toggle-topbar',
     'toggle-crop', 'close-viewer', 'page-a4', 'page-dynamic',
@@ -396,6 +397,14 @@
     'half-page-up': function() {
       var vh = window.innerHeight || document.documentElement.clientHeight || 800;
       scrollByVim(0, -Math.round(vh * 0.5));
+    },
+    'full-page-down': function() {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, vh);
+    },
+    'full-page-up': function() {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, -vh);
     },
     'previous-place': function() { restorePreviousPlace(); },
     'go-top': function() {

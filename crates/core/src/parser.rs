@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span};
+use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span, TextAlignment};
 use crate::project::Project;
 use crate::theorems::TheoremRegistry;
 
@@ -249,8 +249,6 @@ const MATH_ENVS: &[&str] = &[
     "alignat*",
     "split",
 ];
-
-const TRANSPARENT_ENVS: &[&str] = &["center"];
 
 /// Environments whose entire body is discarded, like a `%` line comment — the
 /// `comment` package's `comment` env (and its common aliases). Matches how
@@ -963,8 +961,14 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        if TRANSPARENT_ENVS.contains(&env.as_str()) {
-            self.parse_transparent_env(out, env);
+        let alignment = match env.as_str() {
+            "center" => Some(TextAlignment::Center),
+            "flushleft" => Some(TextAlignment::FlushLeft),
+            "flushright" => Some(TextAlignment::FlushRight),
+            _ => None,
+        };
+        if let Some(kind) = alignment {
+            self.parse_alignment(out, start, env, kind);
             return;
         }
 
@@ -1083,6 +1087,35 @@ impl<'a> Parser<'a> {
         self.advance(format!("\\end{{{env}}}").len());
         out.push(Node {
             kind: NodeKind::Quote { env },
+            span: self.span_from(start),
+            children,
+        });
+    }
+
+    /// Parse TeX alignment environments recursively while retaining a wrapper
+    /// that lets the renderer reproduce their centered or ragged alignment.
+    fn parse_alignment(
+        &mut self,
+        out: &mut Vec<Node>,
+        start: Pos,
+        env: String,
+        kind: TextAlignment,
+    ) {
+        let body_end = self.find_matching_end(&env);
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
+        sub.parse_block_into(&mut children, None);
+        self.advance_to(body_end);
+        self.advance(format!("\\end{{{env}}}").len());
+        out.push(Node {
+            kind: NodeKind::Alignment { kind },
             span: self.span_from(start),
             children,
         });
@@ -2195,6 +2228,33 @@ mod tests {
                 "display math inside {env} was not parsed: {:?}",
                 q.children
             );
+        }
+    }
+
+    #[test]
+    fn alignment_envs_keep_semantics_and_parse_their_body() {
+        for (env, expected) in [
+            ("center", TextAlignment::Center),
+            ("flushleft", TextAlignment::FlushLeft),
+            ("flushright", TextAlignment::FlushRight),
+        ] {
+            let n = parse(&format!(
+                "\\begin{{{env}}}\nText $E=mc^2$ and \\ref{{eq:x}}.\n\\end{{{env}}}\n"
+            ));
+            let alignment = n
+                .iter()
+                .find(
+                    |node| matches!(&node.kind, NodeKind::Alignment { kind } if *kind == expected),
+                )
+                .unwrap_or_else(|| panic!("an Alignment node for {env}"));
+            assert!(alignment
+                .children
+                .iter()
+                .any(|child| matches!(&child.kind, NodeKind::InlineMath(s) if s == "E=mc^2")));
+            assert!(alignment
+                .children
+                .iter()
+                .any(|child| matches!(&child.kind, NodeKind::Ref { key, .. } if key == "eq:x")));
         }
     }
 

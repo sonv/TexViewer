@@ -556,6 +556,11 @@ main#page {
   border: 1px solid #d8d5cc;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.06);
   position: relative;
+  /* Match TeX's paragraph defaults: fully justified prose with language-aware
+     browser hyphenation. Explicit alignment environments override both. */
+  text-align: justify;
+  text-justify: inter-word;
+  hyphens: auto;
 }
 body.page-mode-a4 main#page {
   width: var(--a4-width);
@@ -1073,7 +1078,7 @@ body.page-mode-dynamic main#page {
   font-weight: 700;
 }
 .paper-abstract .para { margin: 0; text-indent: 0; }
-.paper-abstract-body { text-align: left; }
+.paper-abstract-body { text-align: justify; }
 .references { margin-top: 2.4em; padding-top: 0; border-top: 0; }
 .references h2 { font-size: 1.12em; margin: 1.45em 0 0.55em; }
 .bib-list { display: grid; grid-template-columns: max-content 1fr; column-gap: 0.8em; row-gap: 0.35em; font-size: 0.92em; line-height: 1.35; padding: 0; margin: 0; }
@@ -1149,6 +1154,10 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
 blockquote.quote { margin: 0.8em 1.6em; padding-left: 0.85em; border-left: 3px solid var(--border-strong); }
 blockquote.quote > :first-child { margin-top: 0; }
 blockquote.quote > :last-child { margin-bottom: 0; }
+.text-alignment { margin: 0.8em 0; }
+.text-alignment.align-center { text-align: center; hyphens: none; }
+.text-alignment.align-flush-left { text-align: left; hyphens: none; }
+.text-alignment.align-flush-right { text-align: right; hyphens: none; }
 .float-placeholder { margin: 1em 0; text-align: center; color: var(--muted); }
 .float-placeholder figcaption { font-size: 0.95em; line-height: 1.35; }
 .float-kind { font-weight: 700; color: var(--fg); }

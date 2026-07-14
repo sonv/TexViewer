@@ -138,6 +138,9 @@ pub enum NodeKind {
     /// content render (an `OpaqueEnv` would emit the body as plain text, leaving
     /// math un-typeset). `env` distinguishes `quote` from `quotation`.
     Quote { env: String },
+    /// `center`, `flushleft`, and `flushright` retain their TeX alignment while
+    /// their body is parsed normally, so nested math and references still work.
+    Alignment { kind: TextAlignment },
     /// `\begin{abstract}` ... `\end{abstract}` rendered as front matter.
     Abstract,
     /// `\command[opt]{arg}{arg}` passed through opaquely.
@@ -158,6 +161,14 @@ pub enum NodeKind {
     /// argument used by `description` lists; numbering for enumerate is
     /// handled by the renderer via `<ol>`.
     ListItem { marker: Option<String> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextAlignment {
+    Center,
+    FlushLeft,
+    FlushRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

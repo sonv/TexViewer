@@ -156,6 +156,8 @@ pub const KEYBINDING_ACTIONS: &[&str] = &[
     "scroll-right",
     "half-page-down",
     "half-page-up",
+    "full-page-down",
+    "full-page-up",
     "previous-place",
     "go-top",
     "go-bottom",
@@ -197,6 +199,8 @@ fn default_keybindings() -> BTreeMap<String, Vec<String>> {
         ("scroll-right", &["l"]),
         ("half-page-down", &["Ctrl+d"]),
         ("half-page-up", &["Ctrl+u"]),
+        ("full-page-down", &["Space"]),
+        ("full-page-up", &["b"]),
         ("previous-place", &["Ctrl+o"]),
         ("go-top", &["g g"]),
         ("go-bottom", &["G"]),
@@ -834,6 +838,8 @@ toggle-lines = []
         assert!(cfg.viewer.keybindings["toggle-lines"].is_empty());
         // An omitted action keeps its built-in default.
         assert_eq!(cfg.viewer.keybindings["scroll-down"], ["j"]);
+        assert_eq!(cfg.viewer.keybindings["full-page-down"], ["Space"]);
+        assert_eq!(cfg.viewer.keybindings["full-page-up"], ["b"]);
     }
 
     #[test]

@@ -517,7 +517,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   browser. A small `toolbar` button appears at the top right to restore
   the banner.
 - Vim-style keyboard navigation works in the viewer: `h`/`j`/`k`/`l`
-  scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages,
+  scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages, and
+  `Space` / `b` move down/up by full pages. All of these use immediate browser
+  scrolling without the animated Page Down / Page Up effect.
   `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
   between search matches, `:` opens the command line (see `margin`
   above), `t` toggles the index/pages side panel, `B` toggles the top
@@ -644,6 +646,8 @@ scroll-up = "k"
 scroll-right = "l"
 half-page-down = "Ctrl+d"
 half-page-up = "Ctrl+u"
+full-page-down = "Space"
+full-page-up = "b"
 previous-place = "Ctrl+o"
 go-top = "g g"
 go-bottom = "G"

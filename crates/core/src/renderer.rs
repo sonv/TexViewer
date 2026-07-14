@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use std::collections::HashMap;
 
-use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Span};
+use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Span, TextAlignment};
 use crate::bibtex::{BibEntry, BibStyle};
 use crate::engines::Engine;
 use crate::macros::ExtractedPreamble;
@@ -935,6 +935,13 @@ fn latex_source_token_end(s: &str, start: usize) -> Option<usize> {
     }
     let punct = s[i..].chars().next()?;
     i += punct.len_utf8();
+    // A control-space is complete at the space itself. Treating it like an
+    // accent command would absorb the first letter of the following word into
+    // the control-space's source span, even though the rendered text looked
+    // correct after whitespace collapsing.
+    if punct.is_whitespace() {
+        return Some(i);
+    }
     while i < bytes.len() && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
         i += 1;
     }
@@ -1568,6 +1575,26 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             .unwrap();
             write_chunked_children(out, &n.children, ctx);
             out.push_str("</blockquote>\n");
+        }
+        NodeKind::Alignment { kind } => {
+            let (class, env) = match kind {
+                TextAlignment::Center => ("align-center", "center"),
+                TextAlignment::FlushLeft => ("align-flush-left", "flushleft"),
+                TextAlignment::FlushRight => ("align-flush-right", "flushright"),
+            };
+            let id = ctx.idgen.next("alignment");
+            record_container(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<div class="text-alignment {class}" id="{id}" data-env="{env}" data-src="{src}">"#,
+                class = class,
+                id = escape_attr(&id),
+                env = env,
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_chunked_children(out, &n.children, ctx);
+            out.push_str("</div>\n");
         }
         NodeKind::Callout { env, class, title } => {
             let id = ctx.idgen.next("callout");
@@ -2326,7 +2353,15 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
                     }
                 }
                 match p {
-                    b',' | b';' | b':' | b'!' | b' ' => {
+                    b',' | b';' | b':' | b'!' => {
+                        i = cmd_start + 1;
+                        continue;
+                    }
+                    b' ' => {
+                        // TeX's control-space (`\ `) inserts ordinary
+                        // interword glue. Preserve it as a breakable HTML
+                        // space instead of swallowing it like `\,`/`\!`.
+                        out.push(' ');
                         i = cmd_start + 1;
                         continue;
                     }
@@ -2954,6 +2989,41 @@ mod tests {
         );
         assert!(!body.contains("opaque-env\" data-env=\"quote"), "quote went opaque: {body}");
         assert!(!text_content(&body).contains("$E=mc^2$"), "raw math leaked: {body}");
+    }
+
+    #[test]
+    fn tex_control_space_renders_as_html_interword_space() {
+        let body = render_body("\\begin{document}\nLeft\\ right.\n\\end{document}\n");
+        let text = text_content(&body);
+        assert!(
+            text.contains("Left right."),
+            "control space vanished: {body}"
+        );
+        assert!(!text.contains("Leftright."), "words were joined: {body}");
+    }
+
+    #[test]
+    fn alignment_envs_render_semantic_wrappers_with_typeset_math() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{center}Centered $c$.\\end{center}\n",
+            "\\begin{flushleft}Left $l$.\\end{flushleft}\n",
+            "\\begin{flushright}Right $r$.\\end{flushright}\n",
+            "\\end{document}\n",
+        ));
+        for (class, env) in [
+            ("align-center", "center"),
+            ("align-flush-left", "flushleft"),
+            ("align-flush-right", "flushright"),
+        ] {
+            assert!(
+                body.contains(&format!(r#"class="text-alignment {class}""#)),
+                "missing {env} wrapper: {body}"
+            );
+            assert!(body.contains(&format!(r#"data-env="{env}""#)));
+            assert!(!body.contains(&format!(r#"opaque-env" data-env="{env}""#)));
+        }
+        assert_eq!(body.matches(r#"class="math inline"#).count(), 3);
     }
 
     #[test]
@@ -4221,6 +4291,8 @@ mod tests {
         assert!(out.html.contains(r#"data-viewer-action="toggle-theme""#));
         assert!(out.html.contains(r#"data-viewer-action="print-pdf""#));
         assert!(out.html.contains(r#""go-top":["g g"]"#));
+        assert!(out.html.contains(r#""full-page-down":["Space"]"#));
+        assert!(out.html.contains(r#""full-page-up":["b"]"#));
         assert!(out.html.contains(r#""toggle-lines":[]"#));
         for action in [
             "page-a4",
@@ -4257,6 +4329,19 @@ mod tests {
         assert!(out.html.contains("recordViewerPlace"));
         assert!(out.html.contains("restorePreviousPlace"));
         assert!(out.html.contains("viewerJumpStack"));
+        assert!(out.html.contains("scrollByVim(0, vh)"));
+        assert!(out.html.contains("scrollByVim(0, -vh)"));
+        assert!(out.html.contains("text-align: justify;"));
+        assert!(out.html.contains("hyphens: auto;"));
+        assert!(out
+            .html
+            .contains(".text-alignment.align-center { text-align: center; hyphens: none; }"));
+        assert!(out
+            .html
+            .contains(".text-alignment.align-flush-left { text-align: left; hyphens: none; }"));
+        assert!(out
+            .html
+            .contains(".text-alignment.align-flush-right { text-align: right; hyphens: none; }"));
         assert!(out.html.contains("window.find"));
         assert!(out.html.contains("TEX_SYMBOL_CODEPOINTS"));
         assert!(out.html.contains("theta: [0x03B8]"));
