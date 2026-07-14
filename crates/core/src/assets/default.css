@@ -1555,9 +1555,82 @@ body.margin-left-expanded aside#margin-left .margin-card.expanded {
   opacity: 0.5;
   cursor: not-allowed;
 }
-/* Config dialog reuses the macros-dialog scaffolding but needs its own
-   grid for the label/input pairs (config has typed inputs, macros has
-   a single textarea). */
+/* Config dialog: two horizontal tabs share one Project / Global / Custom
+   target selector. The viewer tab is deliberately a real TOML editor so the
+   complete keymap and future settings remain configurable without another
+   bespoke form control. */
+#config-dialog {
+  max-width: 760px;
+  width: min(760px, calc(100vw - 32px));
+}
+#config-dialog .macros-dialog-form {
+  box-sizing: border-box;
+  max-height: min(88vh, 820px);
+  overflow: auto;
+}
+.config-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 10px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.config-tab {
+  position: relative;
+  padding: 7px 12px 8px;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.config-tab input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.config-tab:hover { color: var(--fg); }
+.config-tab:has(input:checked) {
+  color: var(--fg);
+  font-weight: 650;
+  background: var(--paper);
+  border-color: var(--border) var(--border) var(--paper);
+}
+.config-tab:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.config-panel[hidden] { display: none; }
+.config-viewer-editor {
+  height: min(38vh, 340px);
+  min-height: 220px;
+  max-height: 55vh;
+  line-height: 1.45;
+  tab-size: 2;
+}
+.config-save-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 5px 16px;
+  margin-top: 10px;
+}
+.config-save-scope > label {
+  white-space: nowrap;
+  font-size: 12px;
+}
+.config-save-scope > label:has(input[value="custom"]) {
+  flex: 1 0 100%;
+  white-space: normal;
+}
+.config-save-scope .macros-dialog-custom-input {
+  width: min(520px, calc(100% - 22px));
+  white-space: normal;
+}
+/* MathJax tab reuses the label grid used by the old quick-settings form. */
 .config-fields {
   display: grid;
   grid-template-columns: 1fr;

@@ -2823,6 +2823,28 @@ mod tests {
     }
 
     #[test]
+    fn config_dialog_has_viewer_and_mathjax_tabs_with_full_defaults() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nConfig\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.html.contains(r#"id="config-mode-viewer""#));
+        assert!(out.html.contains(r#"id="config-mode-mathjax""#));
+        assert!(out.html.contains(r#"id="config-viewer-toml""#));
+        assert!(out.html.contains("[keybindings]"));
+        assert!(out
+            .html
+            .contains("zoom-in = [&quot;+&quot;, &quot;Mod+=&quot;, &quot;Mod++&quot;]"));
+        assert!(out.html.contains("Project (local)"));
+        assert!(out
+            .html
+            .contains("Global <code>~/.config/mathpreview/config.toml</code>"));
+    }
+
+    #[test]
     fn inline_math_separated_by_blank_line_renders_as_paragraphs() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),

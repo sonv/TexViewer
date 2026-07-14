@@ -1,0 +1,58 @@
+# mathpreview viewer configuration
+# Save globally for every paper, or to .mathpreview.toml for this project.
+
+[viewer]
+font-size = 18
+ui-font-size = 12
+default-page-mode = "a4"
+default-theme = "system"
+wrap-equations = true
+theorem-numbering = "auto"
+typeset-mode = "local"
+# page-margin = 17 # Uncomment to pin the A4 margin in mm; omitted follows geometry.
+
+[viewer.source-jump]
+trigger = "cmd-click"
+
+# One shortcut string or an array is accepted. Use [] to disable an action.
+# Mod means Command on macOS and Control elsewhere.
+[keybindings]
+scroll-left = "h"
+scroll-down = "j"
+scroll-up = "k"
+scroll-right = "l"
+half-page-down = "Ctrl+d"
+half-page-up = "Ctrl+u"
+previous-place = "Ctrl+o"
+go-top = "g g"
+go-bottom = "G"
+open-search = "/"
+open-command = ":"
+search-next = "n"
+search-previous = "N"
+toggle-toc = "t"
+toggle-topbar = "B"
+toggle-crop = "c"
+close-viewer = "q"
+page-a4 = "4"
+page-dynamic = "d"
+zoom-in = ["+", "Mod+=", "Mod++"]
+zoom-out = ["-", "_", "Mod+-", "Mod+_"]
+zoom-reset = ["0", "Mod+0"]
+zoom-fit-width = "="
+browser-print = "Mod+p"
+toggle-margin = ["Ctrl+m", "Meta+m"]
+
+# Fixed viewer buttons have no built-in shortcut, but can be assigned here.
+toggle-keys = []
+toggle-lines = []
+open-macros = []
+open-config = []
+toggle-log = []
+toggle-theme = []
+proof-main = []
+proof-supporting = []
+proof-all = []
+print-pdf = []
+restart-server = []
+stop-server = []

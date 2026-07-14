@@ -276,6 +276,15 @@
     }
     if (e.target && e.target.name === 'config-scope') {
       syncConfigCustomPathEnabled();
+      loadViewerConfigForScope(true);
+      return;
+    }
+    if (e.target && e.target.name === 'config-mode') {
+      syncConfigMode(false);
+      return;
+    }
+    if (e.target && e.target.id === 'config-dialog-custom-path') {
+      loadViewerConfigForScope(true);
       return;
     }
     if (e.target && e.target.id === 'log-panel-verbose') {

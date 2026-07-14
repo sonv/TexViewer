@@ -2558,51 +2558,39 @@
     fb.classList.toggle('ok', !!ok);
   }
 
-  // Populate the dialog with the values currently in effect for this
-  // session — config defaults from `__mpConfig` for the values we
-  // expose, and the computed CSS body font for `font-size`. Falls
-  // back to the documented defaults when a value isn't determinable.
+  function currentConfigMode() {
+    var radio = document.querySelector('input[name="config-mode"]:checked');
+    return radio ? radio.value : 'viewer';
+  }
+
+  function currentConfigScope() {
+    var radio = document.querySelector('input[name="config-scope"]:checked');
+    var scope = radio ? radio.value : 'project';
+    var path = null;
+    if (scope === 'custom') {
+      var pathInput = document.getElementById('config-dialog-custom-path');
+      path = pathInput && (pathInput.value || '').trim() || null;
+    }
+    return { scope: scope, path: path };
+  }
+
+  function viewerConfigEditorEl() {
+    return document.getElementById('config-viewer-toml');
+  }
+
+  var configLoadSeq = 0;
+
+  // The rendered textarea starts with the complete built-in config. Preserve
+  // that text once, then replace the editor with the selected scope's file
+  // when it exists. This makes an absent project/global file immediately
+  // useful without hiding an existing partial config behind generated values.
   function prefillConfigDialog() {
     var cfg = window.__mpConfig || {};
-    var fontSize = parseInt(
-      getComputedStyle(document.documentElement).getPropertyValue('--body-font-size'),
-      10
-    );
-    if (!isFinite(fontSize) || fontSize <= 0) fontSize = 18;
-    var fs = document.getElementById('config-font-size');
-    if (fs) fs.value = String(fontSize);
-    var uiFontSize = parseInt(
-      getComputedStyle(document.documentElement).getPropertyValue('--ui-font-size'),
-      10
-    );
-    if (!isFinite(uiFontSize) || uiFontSize <= 0) uiFontSize = 12;
-    var uifs = document.getElementById('config-ui-font-size');
-    if (uifs) uifs.value = String(uiFontSize);
-    // Page margin: the input stays EMPTY unless the user pins a value —
-    // typing a number writes viewer.page-margin; empty leaves the config
-    // untouched so the document's geometry (or the default) keeps deciding.
-    // The placeholder shows what's currently in effect.
-    var pm = document.getElementById('config-page-margin');
-    if (pm) {
-      pm.value = '';
-      var eff = cfg.pageMarginMm;
-      pm.placeholder = (typeof eff === 'number')
-        ? 'auto (now ' + eff + 'mm)'
-        : 'auto (default ~17mm)';
-      pm.dataset.effective = (typeof eff === 'number') ? String(eff) : '';
+    var editor = viewerConfigEditorEl();
+    if (editor && editor._defaultConfig === undefined) {
+      editor._defaultConfig = editor.value;
     }
-    var trig = document.getElementById('config-source-jump-trigger');
-    if (trig) trig.value = cfg.sourceJumpTrigger || 'cmd-click';
-    var mode = document.getElementById('config-default-page-mode');
-    if (mode) mode.value = cfg.defaultPageMode || 'a4';
-    var theme = document.getElementById('config-default-theme');
-    if (theme) theme.value = cfg.defaultTheme || 'system';
-    var thmNum = document.getElementById('config-theorem-numbering');
-    if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
-    var tsMode = document.getElementById('config-typeset-mode');
-    if (tsMode) tsMode.value = cfg.typesetMode || 'local';
     var wrap = document.getElementById('config-wrap-equations');
-    // Default on when unset (matches the server default).
     if (wrap) wrap.checked = cfg.wrapEquations !== false;
     var mjx = document.getElementById('config-mathjax-config');
     if (mjx) {
@@ -2615,6 +2603,68 @@
     var cur = document.getElementById('config-mathjax-current');
     var src = document.getElementById('mp-mathjax-config');
     if (cur) cur.value = src ? (src.textContent || '').replace(/^\s+|\s+$/g, '') : '(not available)';
+  }
+
+  async function loadViewerConfigForScope(force) {
+    if (currentConfigMode() !== 'viewer') return;
+    var editor = viewerConfigEditorEl();
+    if (!editor) return;
+    var sc = currentConfigScope();
+    if (sc.scope === 'custom' && !sc.path) {
+      setConfigFeedback('Enter a custom path to load or save that config.', false);
+      return;
+    }
+    var scopeKey = sc.scope + ':' + (sc.path || '');
+    if (!force && editor.dataset.loadedScope === scopeKey) return;
+    var seq = ++configLoadSeq;
+    setConfigFeedback('Loading config…', true);
+    try {
+      var payload = { scope: sc.scope };
+      if (sc.path) payload.path = sc.path;
+      var res = await fetch('/config/read', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      var body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (seq !== configLoadSeq) return;
+      if (!res.ok) {
+        setConfigFeedback((body && body.error) || 'config load failed', false);
+        return;
+      }
+      editor.value = body && body.exists
+        ? (body.content || '')
+        : (editor._defaultConfig || '');
+      editor.dataset.loadedScope = scopeKey;
+      var file = body && body.file ? ' — ' + body.file : '';
+      setConfigFeedback(
+        body && body.exists
+          ? 'Loaded existing config' + file + '. Save replaces this file.'
+          : 'No config at this scope' + file + ' — showing built-in defaults.',
+        true
+      );
+    } catch (e) {
+      if (seq === configLoadSeq) {
+        setConfigFeedback(String(e && e.message || e), false);
+      }
+    }
+  }
+
+  function syncConfigMode(forceReload) {
+    // Switching away cancels an in-flight scope read so it cannot overwrite
+    // the other tab's feedback or a newer draft.
+    configLoadSeq++;
+    var mode = currentConfigMode();
+    var viewerPanel = document.getElementById('config-mode-viewer');
+    var mathjaxPanel = document.getElementById('config-mode-mathjax');
+    if (viewerPanel) viewerPanel.hidden = mode !== 'viewer';
+    if (mathjaxPanel) mathjaxPanel.hidden = mode !== 'mathjax';
+    var save = document.getElementById('config-dialog-save');
+    if (save) save.textContent = mode === 'viewer' ? 'Save viewer config' : 'Save MathJax config';
+    setConfigFeedback('', false);
+    if (mode === 'viewer') loadViewerConfigForScope(!!forceReload);
   }
 
   function syncConfigCustomPathEnabled() {
@@ -2634,62 +2684,64 @@
     setConfigFeedback('', false);
     prefillConfigDialog();
     syncConfigCustomPathEnabled();
+    syncConfigMode(true);
     dlg.showModal();
     setTimeout(function() {
-      var fs = document.getElementById('config-font-size');
-      if (fs) fs.focus();
+      var target = currentConfigMode() === 'viewer'
+        ? viewerConfigEditorEl()
+        : document.getElementById('config-mathjax-config');
+      if (target) target.focus();
     }, 0);
   }
 
   function closeConfigDialog() {
+    configLoadSeq++;
     var dlg = configDialogEl();
     if (dlg && dlg.open) dlg.close();
   }
 
   async function submitConfigDialog() {
-    var scopeInput = document.querySelector('input[name="config-scope"]:checked');
-    var scope = scopeInput ? scopeInput.value : 'project';
-    var payload = { scope: scope, values: {} };
-    if (scope === 'custom') {
-      var pathInput = document.getElementById('config-dialog-custom-path');
-      var customPath = pathInput && (pathInput.value || '').trim();
-      if (!customPath) {
-        setConfigFeedback('Custom path is required for scope=custom.', false);
-        return;
-      }
-      payload.path = customPath;
+    var sc = currentConfigScope();
+    if (sc.scope === 'custom' && !sc.path) {
+      setConfigFeedback('Custom path is required for scope=custom.', false);
+      return;
     }
-    var fontSize = parseInt(document.getElementById('config-font-size').value, 10);
-    if (isFinite(fontSize) && fontSize > 0) payload.values['viewer.font-size'] = fontSize;
-    var uiFontSize = parseInt(document.getElementById('config-ui-font-size').value, 10);
-    if (isFinite(uiFontSize) && uiFontSize > 0) payload.values['viewer.ui-font-size'] = uiFontSize;
-    // Only written when the user typed a value — empty means "keep following
-    // the document's geometry / the default" (see prefillConfigDialog).
-    var pmEl = document.getElementById('config-page-margin');
-    if (pmEl && pmEl.value.trim() !== '') {
-      var pmVal = parseInt(pmEl.value, 10);
-      if (isFinite(pmVal) && pmVal >= 5 && pmVal <= 60) {
-        payload.values['viewer.page-margin'] = pmVal;
-      } else {
-        setConfigFeedback('Page margin must be 5–60 mm (or empty for auto).', false);
-        return;
+    if (currentConfigMode() === 'viewer') {
+      var editor = viewerConfigEditorEl();
+      if (!editor) return;
+      var writePayload = { scope: sc.scope, content: editor.value || '' };
+      if (sc.path) writePayload.path = sc.path;
+      setConfigFeedback('Validating and saving…', true);
+      try {
+        var writeRes = await fetch('/config/write', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(writePayload),
+        });
+        var writeBody = null;
+        try { writeBody = await writeRes.json(); } catch (e) {}
+        if (!writeRes.ok) {
+          setConfigFeedback((writeBody && writeBody.error) || 'save failed', false);
+          return;
+        }
+        var writtenFile = writeBody && writeBody.file ? writeBody.file : '(file)';
+        editor.dataset.loadedScope = sc.scope + ':' + (sc.path || '');
+        setStatus('live', '● wrote viewer config → ' + writtenFile);
+        closeConfigDialog();
+      } catch (e) {
+        setConfigFeedback(String(e && e.message || e), false);
       }
+      return;
     }
-    var trig = document.getElementById('config-source-jump-trigger').value;
-    if (trig) payload.values['viewer.source-jump.trigger'] = trig;
-    var mode = document.getElementById('config-default-page-mode').value;
-    if (mode) payload.values['viewer.default-page-mode'] = mode;
-    var theme = document.getElementById('config-default-theme').value;
-    if (theme) payload.values['viewer.default-theme'] = theme;
-    var thmNumEl = document.getElementById('config-theorem-numbering');
-    if (thmNumEl && thmNumEl.value) payload.values['viewer.theorem-numbering'] = thmNumEl.value;
-    var tsModeEl = document.getElementById('config-typeset-mode');
-    if (tsModeEl && tsModeEl.value) payload.values['viewer.typeset-mode'] = tsModeEl.value;
+
+    var payload = { scope: sc.scope, values: {} };
+    if (sc.path) payload.path = sc.path;
     var wrapEl = document.getElementById('config-wrap-equations');
     if (wrapEl) payload.values['viewer.wrap-equations'] = !!wrapEl.checked;
     var mjxEl = document.getElementById('config-mathjax-config');
-    // Only write it when changed, so an unrelated config save doesn't add an
-    // empty `mathjax-config` key (but clearing it is still honored).
+    // Only write it when changed, so opening the MathJax tab to inspect the
+    // generated config does not inject an empty override into another scope.
     if (mjxEl && mjxEl.value !== (mjxEl.dataset.initial || '')) {
       payload.values['viewer.mathjax-config'] = mjxEl.value;
     }
@@ -2708,11 +2760,10 @@
         return;
       }
       var file = body && body.file ? body.file : '(file)';
-      setStatus('live', '● wrote config → ' + file);
+      setStatus('live', '● wrote MathJax config → ' + file);
       closeConfigDialog();
-      // No explicit reload here: when wrap-equations (or raw MathJax config)
-      // changes, the re-render's WS viewer_config push triggers a reload in
-      // applyViewerConfig — uniformly across all edit paths.
+      // wrap-equations and the raw MathJax config live in the page head. The
+      // re-render's viewer_config push reloads when either value changed.
     } catch (e) {
       setConfigFeedback(String(e && e.message || e), false);
     }

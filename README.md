@@ -751,6 +751,15 @@ keys may be written as their glyph (`G`, `+`, `:`) or as a combination
 project, and `--config` layers have merged. If two layers mention different
 actions, both survive; a later layer replaces only the action it mentions.
 
+The toolbar **config** dialog exposes this complete built-in TOML in a
+**Viewer config** tab. Pick **Project (local)** or **Global** and it loads that
+file when present; for a missing file it starts from the defaults above. Save
+validates the full config before replacing the selected file, so unknown
+settings or misspelled keybinding actions cannot overwrite a working config.
+The adjacent **MathJax config** tab keeps the generated-config inspector,
+equation-wrapping switch, and raw JavaScript override with the same save
+targets.
+
 `wrap-equations` toggles MathJax's automatic line-breaking of long display
 equations in the preview. Default `true` (the preview wraps overlong math at
 low-priority operators so it fits the column). Set `false` if you'd rather the
@@ -760,7 +769,7 @@ This affects the **preview only** — it can't change how `latexmk` breaks lines
 in the PDF.
 
 `typeset-mode` controls how much of the document is typeset (has its math
-rendered) at once — it's also a dropdown in the **config** toolbar dialog.
+rendered) at once — it is also present in the **Viewer config** tab's template.
 Default `local` typesets only the region around the viewport plus a small
 buffer, leaving the rest until you scroll to it; this keeps memory and CPU
 low on a long paper. `background` typesets the visible region first, then
@@ -769,9 +778,9 @@ and printing never wait (at the cost of typesetting — and holding in memory �
 the whole document). Either way, **Cmd/Ctrl+P** typesets the whole document on
 demand before printing.
 
-`page-margin` sets the A4 page's horizontal margin, in millimetres — also
-available as a field in the **config** toolbar dialog (leave it empty to
-keep following the document). Omit it
+`page-margin` sets the A4 page's horizontal margin, in millimetres — the
+**Viewer config** template includes a commented example (leave it commented
+to keep following the document). Omit it
 and the viewer follows the document's own
 `\usepackage[margin=…]{geometry}` (parsing `margin` / `hmargin` /
 `left`+`right` / `textwidth`); with no geometry either, it uses the built-in
@@ -809,9 +818,9 @@ window.MathJax.tex.packages['[+]'].push('color'); // load an extra package
 
 Both `wrap-equations` and `mathjax-config` live in the MathJax `<head>`, so a
 change reloads the preview tab automatically (the daemon signals it) — however
-you edit them: the **config** toolbar dialog (a checkbox for wrapping and a
-"MathJax config (advanced)" section with a read-only view of the full generated
-config plus a box for your override JS), the `.mathpreview.toml` file, or the
+you edit them: the **config** toolbar dialog's **MathJax config** tab (a
+checkbox for wrapping, a read-only view of the full generated config, and a
+box for your override JS), the `.mathpreview.toml` file, or the
 macros dialog's Text→HTML editor. The read-only view shows everything in effect
 — macros, packages, output options — so you can see what to mutate.
 

@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.20] — 2026-07-14
+
+### Added
+
+- **The config dialog now has separate Viewer and MathJax tabs.** The Viewer
+  tab loads the selected project or global TOML file and, when that file does
+  not exist yet, starts with a complete built-in template including every
+  viewer setting and keybinding. Both tabs share Project (local), Global, and
+  Custom save targets; the MathJax tab retains equation wrapping, the generated
+  config inspector, and raw-JavaScript overrides. Whole-file saves now validate
+  typed settings and keybinding action names before replacing an existing
+  config, so semantic typos remain visible without damaging the working file.
+
 ## [1.0.19] — 2026-07-14
 
 ### Changed

@@ -19,6 +19,12 @@ use serde::{Deserialize, Serialize};
 
 pub const PROJECT_CONFIG_FILENAME: &str = ".mathpreview.toml";
 
+/// Complete built-in viewer configuration shown in the config dialog when
+/// the selected global/project file does not exist yet. A regression test
+/// resolves this template and compares it with `ResolvedConfig::default` so
+/// the editable example cannot silently drift from the runtime defaults.
+pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("assets/default-config.toml");
+
 /// A `[text-macros]` entry: an HTML template plus an optional argument count
 /// and an optional default for the first argument. Mirrors MathJax's macro
 /// form, so it deserializes from either:
@@ -721,6 +727,13 @@ mod tests {
         assert_eq!(cfg.viewer.font_size, 18);
         assert_eq!(cfg.viewer.ui_font_size, 12);
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
+    }
+
+    #[test]
+    fn editable_default_template_matches_runtime_defaults() {
+        let cfg = Config::parse(DEFAULT_CONFIG_TEMPLATE, Path::new("<default-config>"))
+            .expect("the config-dialog template must remain valid");
+        assert_eq!(cfg.resolve(), ResolvedConfig::default());
     }
 
     #[test]

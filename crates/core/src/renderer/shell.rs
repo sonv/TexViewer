@@ -50,6 +50,7 @@ pub(super) fn wrap_in_shell(
     let engine_css = engine.extra_css();
     let warnings_html = warnings_panel(preamble);
     let css = if opts.inline_css { DEFAULT_CSS } else { "" };
+    let default_config_html = escape_html(crate::config::DEFAULT_CONFIG_TEMPLATE);
     // Config-driven overrides emitted after the bundled CSS so they win
     // by source order, and as a separate `<script>` so client JS can read
     // the values at init without round-tripping through localStorage.
@@ -185,7 +186,7 @@ pub(super) fn wrap_in_shell(
     <button class="refkey-toggle" id="refkey-toggle" data-viewer-action="toggle-keys" type="button" aria-pressed="false" title="toggle LaTeX refkeys">keys</button>
     <button class="lineno-toggle" id="lineno-toggle" data-viewer-action="toggle-lines" type="button" aria-pressed="false" title="toggle line numbers">lines</button>
     <button class="macros-toggle" id="macros-toggle" data-viewer-action="open-macros" type="button" title="add a \\newcommand override for the viewer">macros</button>
-    <button class="config-toggle" id="config-toggle" data-viewer-action="open-config" type="button" title="edit viewer config (font size, source-jump trigger, default mode/theme)">config</button>
+    <button class="config-toggle" id="config-toggle" data-viewer-action="open-config" type="button" title="edit viewer and MathJax config (project or global)">config</button>
     <button class="log-toggle" id="log-toggle" data-viewer-action="toggle-log" type="button" title="show daemon state + recent log entries">log</button>
     <button class="margin-toggle" id="margin-toggle" data-viewer-action="toggle-margin" type="button" aria-pressed="false" title="toggle margin reference cards — click \\ref / \\cite to pin">margin</button>
     <button class="theme-toggle" id="theme-toggle" data-viewer-action="toggle-theme" type="button" aria-pressed="false" aria-label="dark mode" title="dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span></button>
@@ -318,62 +319,29 @@ pub(super) fn wrap_in_shell(
 </dialog>
 <dialog class="macros-dialog config-dialog" id="config-dialog">
   <form method="dialog" class="macros-dialog-form" id="config-dialog-form">
-    <h2 class="macros-dialog-title">Viewer config</h2>
+    <h2 class="macros-dialog-title">Config</h2>
     <p class="macros-dialog-hint">
-      Saves to a TOML file in the same cascade as the macros dialog.
-      Existing formatting and comments are preserved.
+      Edit the viewer's TOML or the MathJax override, then save it for this
+      project or every paper.
     </p>
-    <fieldset class="macros-dialog-scope config-fields">
-      <legend>Fields</legend>
-      <label>Body font size (px)
-        <input type="number" id="config-font-size" min="10" max="40" step="1">
-      </label>
-      <label>UI font size (px)
-        <input type="number" id="config-ui-font-size" min="9" max="20" step="1">
-      </label>
-      <label>Page margin (mm)
-        <input type="number" id="config-page-margin" min="5" max="60" step="1"
-               title="A4 page margin. Leave empty to follow the document's \usepackage[margin=…]{{geometry}} (or the built-in default). Also sets the Cmd+P print margin, keeping screen and print in sync.">
-      </label>
-      <label>Source-jump trigger
-        <select id="config-source-jump-trigger">
-          <option value="cmd-click">Cmd-click (Ctrl on Linux)</option>
-          <option value="ctrl-click">Ctrl-click only</option>
-          <option value="alt-click">Alt-click</option>
-          <option value="double-click">Double-click</option>
-        </select>
-      </label>
-      <label>Default page mode
-        <select id="config-default-page-mode">
-          <option value="a4">A4</option>
-          <option value="dynamic">Dynamic</option>
-        </select>
-      </label>
-      <label>Default theme
-        <select id="config-default-theme">
-          <option value="system">System (match OS)</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </label>
-      <label>Theorem numbering
-        <select id="config-theorem-numbering">
-          <option value="auto">Auto (from \newtheorem)</option>
-          <option value="continuous">Continuous (1, 2, 3…)</option>
-          <option value="section">Per section (1.1, 1.2…)</option>
-        </select>
-      </label>
-      <label>Math rendering
-        <select id="config-typeset-mode">
-          <option value="local">Local (around the view — lowest memory)</option>
-          <option value="background">Background (fill the rest while idle)</option>
-        </select>
-      </label>
+    <div class="config-tabs" role="tablist" aria-label="Configuration type">
+      <label class="config-tab"><input type="radio" name="config-mode" value="viewer" checked>
+        Viewer config</label>
+      <label class="config-tab"><input type="radio" name="config-mode" value="mathjax">
+        MathJax config</label>
+    </div>
+    <section class="config-panel" id="config-mode-viewer" role="tabpanel">
+      <p class="macros-dialog-hint">
+        The selected file loads below. If it does not exist, the complete
+        built-in default is shown so it can be saved as-is and customized.
+        Save replaces that one TOML file after validation.
+      </p>
+      <textarea id="config-viewer-toml" class="macros-dialog-input config-viewer-editor"
+                rows="24" spellcheck="false" autocomplete="off">{default_config_html}</textarea>
+    </section>
+    <section class="config-panel config-fields" id="config-mode-mathjax" role="tabpanel" hidden>
       <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
         Wrap long equations (off = scroll horizontally)</label>
-    </fieldset>
-    <fieldset class="macros-dialog-scope config-fields">
-      <legend>MathJax config (advanced)</legend>
       <details class="config-mjx-current">
         <summary>Current generated config (read-only)</summary>
         <textarea id="config-mathjax-current" class="macros-dialog-input" rows="12"
@@ -386,11 +354,11 @@ pub(super) fn wrap_in_shell(
                   spellcheck="false" autocomplete="off"
                   placeholder="window.MathJax.svg.displayOverflow = 'scroll';"></textarea>
       </label>
-    </fieldset>
-    <fieldset class="macros-dialog-scope">
+    </section>
+    <fieldset class="macros-dialog-scope config-save-scope">
       <legend>Save to</legend>
       <label><input type="radio" name="config-scope" value="project" checked>
-        Project <code>.mathpreview.toml</code></label>
+        Project (local) <code>.mathpreview.toml</code></label>
       <label><input type="radio" name="config-scope" value="global">
         Global <code>~/.config/mathpreview/config.toml</code></label>
       <label><input type="radio" name="config-scope" value="custom">
@@ -401,7 +369,7 @@ pub(super) fn wrap_in_shell(
     <div class="macros-dialog-feedback" id="config-dialog-feedback" aria-live="polite"></div>
     <div class="macros-dialog-actions">
       <button type="button" class="macros-dialog-cancel" id="config-dialog-cancel">Cancel</button>
-      <button type="submit" class="macros-dialog-save" id="config-dialog-save">Save</button>
+      <button type="submit" class="macros-dialog-save" id="config-dialog-save">Save viewer config</button>
     </div>
   </form>
 </dialog>
@@ -436,6 +404,7 @@ pub(super) fn wrap_in_shell(
 </html>
 "#,
         client_js = CLIENT_JS,
+        default_config_html = default_config_html,
     )
     .unwrap();
     out

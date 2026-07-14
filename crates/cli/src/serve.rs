@@ -1913,14 +1913,6 @@ async fn serve_config_write(
     State(state): State<AppState>,
     Json(req): Json<ConfigFileRequest>,
 ) -> Response {
-    // Reject syntax errors before touching disk.
-    if let Err(e) = req.content.parse::<toml_edit::DocumentMut>() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("invalid TOML: {e}") })),
-        )
-            .into_response();
-    }
     let root_file = state.current.read().await.root_file.clone();
     let root_dir = root_file
         .parent()
@@ -1932,6 +1924,16 @@ async fn serve_config_write(
             return (code, Json(serde_json::json!({ "error": msg }))).into_response();
         }
     };
+    // The full viewer editor can change every config field and keybinding.
+    // Validate the typed Config (unknown keys/actions included), not only TOML
+    // syntax, before replacing a working global/project file.
+    if let Err(error) = validate_config_file(&req.content, &target) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        )
+            .into_response();
+    }
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return (
@@ -1958,6 +1960,12 @@ async fn serve_config_write(
     }
     log_event(&state, "info", format!("config: wrote {}", target.display()));
     Json(serde_json::json!({ "file": target })).into_response()
+}
+
+fn validate_config_file(content: &str, label: &Path) -> Result<(), String> {
+    mathpreview_core::Config::parse(content, label)
+        .map(|_| ())
+        .map_err(|e| format!("invalid config: {e:#}"))
 }
 
 /// Resolve the target file for a config-save action. Same scope rules
@@ -3542,8 +3550,9 @@ fn watched_event_paths(
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
-        is_latest_render_attempt, origin_is_loopback, serve_buffer_push, watched_event_paths,
-        websocket_needs_reload, AppState, PatchOp, PlanSlot, WS_PROTOCOL_VERSION,
+        is_latest_render_attempt, origin_is_loopback, serve_buffer_push, validate_config_file,
+        watched_event_paths, websocket_needs_reload, AppState, PatchOp, PlanSlot,
+        WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -3610,6 +3619,23 @@ mod tests {
             footer.contains(&needle),
             "footer.js WS_PROTOCOL_VERSION must equal the server's {WS_PROTOCOL_VERSION:?} — \
              update crates/core/src/assets/client/footer.js"
+        );
+    }
+
+    #[test]
+    fn whole_file_config_editor_rejects_semantic_typos() {
+        let label = PathBuf::from("config-dialog.toml");
+        validate_config_file(mathpreview_core::config::DEFAULT_CONFIG_TEMPLATE, &label)
+            .expect("the dialog's built-in template must be writable");
+
+        let error = validate_config_file("[viewer]\nfont-sze = 18\n", &label).unwrap_err();
+        assert!(error.contains("unknown field"), "unexpected error: {error}");
+
+        let error =
+            validate_config_file("[keybindings]\ntoogle-theme = \"T\"\n", &label).unwrap_err();
+        assert!(
+            error.contains("unknown keybinding action"),
+            "unexpected error: {error}",
         );
     }
 
