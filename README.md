@@ -210,6 +210,19 @@ before launch, the app is pinnable and Spotlight-visible — assemble the bundle
 scripts/make-locus-app.sh --install    # builds and copies Locus.app to /Applications
 ```
 
+After pulling or recompiling a newer checkout, update the CLI, fallback window
+binary, and macOS app together with one command:
+
+```sh
+scripts/update-macos-app.sh
+```
+
+The updater performs one GUI-enabled release install, assembles
+`/Applications/Locus.app` from that exact `locus` binary, verifies all three
+versions and the app signature, then prints the `:MathPreviewRestart` reminder.
+This prevents Neovim from selecting an older app shell than the freshly built
+daemon.
+
 Double-clicking Locus.app opens a native "choose a .tex file" panel (`locus`
 with no argument does the same). When the bundle is installed, the nvim plugin
 automatically launches the window through it, so `viewer = "window"` gets the

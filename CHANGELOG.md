@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.22] — 2026-07-14
+
+### Added
+
+- **One-command macOS app updates.** `scripts/update-macos-app.sh` now installs
+  the GUI-enabled CLI and bare Locus fallback, assembles
+  `/Applications/Locus.app` from that exact binary without compiling twice,
+  and verifies the three versions plus the app signature. The existing bundle
+  builder accepts `LOCUS_BINARY` for this checked prebuilt-binary path.
+
 ## [1.0.21] — 2026-07-14
 
 ### Changed
