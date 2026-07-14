@@ -4351,10 +4351,14 @@ mod tests {
         assert!(out
             .html
             .contains("previewUserZoom(available / (base - cropDxNow()), true)"));
-        // macOS Locus must never return to CSS `zoom`: WKWebView resolves
-        // MathJax SVG ex units twice there. Its committed path keeps one
-        // compositor transform and an explicit flow height instead.
+        // Native macOS/Linux Locus must never return to CSS `zoom`: WebKitGTK
+        // can re-lay out lines, while WKWebView resolves MathJax SVG ex units
+        // twice. Their committed path keeps one compositor transform and an
+        // explicit flow height instead.
         assert!(out.html.contains("function usesCompositePageZoom()"));
+        assert!(out
+            .html
+            .contains("root.classList.contains('locus-composite-zoom')"));
         assert!(out
             .html
             .contains("page.style.transform = 'scale(' + pageScaleCss + ')'"));
@@ -4362,6 +4366,9 @@ mod tests {
         assert!(out
             .html
             .contains("compositePageResizeObserver = new ResizeObserver(syncCompositePageHeight)"));
+        assert!(out
+            .html
+            .contains("html.locus-composite-zoom body.page-mode-a4 main#page"));
         assert!(out
             .html
             .contains("html.locus-macos body.page-mode-a4 main#page"));

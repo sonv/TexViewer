@@ -73,12 +73,14 @@
   }
 
   function usesCompositePageZoom() {
-    return document.documentElement.classList.contains('locus-macos');
+    var root = document.documentElement;
+    return root.classList.contains('locus-composite-zoom') ||
+      root.classList.contains('locus-macos');
   }
 
-  // CSS transforms do not participate in layout, so macOS Locus gives the
-  // shell the paper's visual height explicitly. This also runs after patches,
-  // lazy typesetting and font loading, not just after a zoom key.
+  // CSS transforms do not participate in layout, so native Locus compositor
+  // zoom gives the shell the paper's visual height explicitly. This also runs
+  // after patches, lazy typesetting and font loading, not just after a zoom key.
   function syncCompositePageHeight() {
     var page = pageEl();
     var shell = pageShellEl();

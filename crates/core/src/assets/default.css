@@ -581,17 +581,22 @@ body.page-mode-dynamic main#page {
   --page-pad-x-base: 37.8px;
   --page-pad-x: var(--page-pad-x-base);
 }
-/* WKWebView resolves MathJax's ex-sized SVG boxes differently from prose under
-   CSS `zoom`. Locus therefore leaves the page at its natural layout size and
-   compositor-scales the already-rendered paper in viewer.js. Vertical clipping
-   keeps the unscaled layout box from creating a dead scroll strip at scale < 1;
-   horizontal overflow stays visible for page-level chips and sidenotes. Browser
-   and Linux viewers retain the normal CSS-zoom path above. */
+/* Native Locus leaves the page at its natural layout size and compositor-scales
+   the already-rendered paper in viewer.js. This prevents WebKitGTK from
+   re-laying out or rounding lines at each CSS-zoom commit; on macOS it also avoids
+   WKWebView's inconsistent ex-sized MathJax SVG scaling. Vertical clipping keeps
+   the unscaled layout box from creating a dead scroll strip at scale < 1;
+   horizontal overflow stays visible for page-level chips and sidenotes. Normal
+   browser tabs retain the CSS-zoom path above. `locus-macos` remains as a legacy
+   selector for an older macOS shell serving a newly updated page. */
 @media screen {
+  html.locus-composite-zoom body.page-mode-a4 main#page,
+  html.locus-composite-zoom body.page-mode-dynamic main#page,
   html.locus-macos body.page-mode-a4 main#page,
   html.locus-macos body.page-mode-dynamic main#page {
     zoom: 1;
   }
+  html.locus-composite-zoom #page-shell,
   html.locus-macos #page-shell {
     /* Only the unscaled vertical layout box creates a dead strip at zoom < 1.
        Keep horizontal overflow visible: refkey chips and sidenotes deliberately

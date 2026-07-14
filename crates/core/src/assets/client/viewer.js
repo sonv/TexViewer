@@ -3684,9 +3684,9 @@
   }
 
   // Keep the reading boundary immediately below the topbar stationary while
-  // zooming. CSS-zoom engines refine it to the first visible text line because
-  // their committed layout can settle differently; macOS scales an unchanged
-  // compositor surface, so the geometric point is already authoritative.
+  // zooming. CSS-zoom browser engines refine it to the first visible text line
+  // because their committed layout can settle differently; native Locus scales
+  // an unchanged compositor surface, so the geometric point is authoritative.
   // Clamp to a paper edge when that edge is visible. Coordinates live in the
   // page's unzoomed local space so one anchor survives the whole preview burst.
   function captureZoomAnchor(page) {
@@ -3701,8 +3701,8 @@
     viewportY = Math.max(rect.top, Math.min(rect.bottom, viewportY));
     var viewportX = Math.max(rect.left, Math.min(rect.right, vw / 2));
 
-    // A correctly marked macOS shell never commits CSS zoom: it scales one
-    // unchanged compositor surface, so the page-local point at the reading
+    // A correctly marked native Locus shell never commits CSS zoom: it scales
+    // one unchanged compositor surface, so the page-local point at the reading
     // boundary is exact. Do not walk up to 85 caret positions to find a text
     // character there. CSS-zoom engines can still settle lazy/reflowed layout
     // differently, so retain the character + live-element anchor for them.
@@ -3757,7 +3757,7 @@
     // Composite zoom does not reflow text, and a live element rect can jump
     // when content-visibility replaces an offscreen height estimate during
     // the shell resize. Its captured page-local point is the stable authority.
-    // Browser/Linux CSS zoom may reflow dynamic mode, so retain the live
+    // A browser CSS-zoom commit may settle differently, so retain the live
     // element anchor there.
     if (!usesCompositePageZoom() && anchor.element && anchor.element.isConnected &&
         anchor.elementRatioY !== null) {
@@ -3784,10 +3784,10 @@
     }
   }
 
-  // A compositor-only macOS commit has final geometry synchronously: restore
-  // once in the same task, before paint. CSS-zoom engines can expose their
-  // final layout later, so the first rAF restores after invalidation and the
-  // second catches a late layout/scroll-anchor adjustment. A new key burst
+  // A compositor-only native-window commit has final geometry synchronously:
+  // restore once in the same task, before paint. CSS-zoom engines can expose
+  // their final layout later, so the first rAF restores after invalidation and
+  // the second catches a late layout/scroll-anchor adjustment. A new key burst
   // cancels both so an old anchor cannot fight the next preview.
   function scheduleZoomAnchorRestore(page, anchor) {
     cancelZoomAnchorRestore();
@@ -3833,10 +3833,10 @@
     cancelZoomAnchorRestore();
     clearZoomPreview(page);
     var plan = pageScalePlan(currentUserZoom);
-    // Browser/Linux use CSS `zoom`, whose layout box scales automatically.
-    // macOS Locus instead compositor-scales the already-rendered page and
-    // explicitly sizes the shell; this avoids WKWebView's zoom² MathJax SVGs
-    // and does not reflow the text at the end of every zoom burst.
+    // Browser tabs use CSS `zoom`, whose layout box scales automatically.
+    // Native macOS/Linux Locus instead compositor-scales the already-rendered
+    // page and explicitly sizes the shell. This prevents Linux line reflow and
+    // also avoids WKWebView's zoom² MathJax SVGs on macOS.
     // Crop narrows the paper by the padding it removes (CSS drops --page-pad-x
     // to 12px), keeping the text column — and its wrapping — identical. See
     // cropDxNow for the media-query mirroring.
@@ -3911,8 +3911,8 @@
     if (!zoomPreviewAnchor) zoomPreviewAnchor = captureZoomAnchor(page);
     // CSS zoom lays out the entire paper and is expensive on long documents.
     // Transform the already-laid-out paper immediately, then commit once after
-    // the user pauses. macOS keeps that compositor transform as the committed
-    // zoom; browser/Linux replace only the preview with CSS zoom.
+    // the user pauses. Native Locus keeps that compositor transform as the
+    // committed zoom; browser tabs replace only the preview with CSS zoom.
     if (usesCompositePageZoom()) {
       // The committed transform uses a top-left origin. An absolute target
       // scale around the reading point would jump merely from changing that
@@ -4114,7 +4114,7 @@
     if (!lineNumbersVisible) return;
 
     var pageRect = page.getBoundingClientRect();
-    // #page is scaled by CSS zoom or a macOS compositor transform;
+    // #page is scaled by CSS zoom or a native Locus compositor transform;
     // getClientRects returns rendered coords, but a child's `top` is in the
     // page's unscaled local space.
     // Convert measured offsets to local space so the gutter aligns at any scale.

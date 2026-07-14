@@ -14,6 +14,10 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const COMPOSITE_ZOOM_INIT_SCRIPT: &str =
+    "document.documentElement.classList.add('locus-composite-zoom');";
+
 /// Events the webview's JS can send to the window's event loop.
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
@@ -147,9 +151,13 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
                 let _ = proxy.send_event(UserEvent::CloseWindow);
             }
         });
-    // Mark only the macOS native shell. WKWebView double-counts CSS `zoom` for
-    // MathJax's ex-sized SVGs, so the client uses compositor scaling there
-    // instead of changing MathJax output or the browser/Linux zoom path.
+    // Native WebKit shells keep one stable layout surface while zooming. CSS
+    // zoom commits can re-round/reflow lines in WebKitGTK; WKWebView also
+    // double-counts MathJax's ex-sized SVGs. Browser tabs remain on CSS zoom.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let builder = builder.with_initialization_script(COMPOSITE_ZOOM_INIT_SCRIPT);
+    // Retain the old macOS marker so a new app shell serving an older page
+    // still takes that page's compositor path.
     #[cfg(target_os = "macos")]
     let builder = builder
         .with_initialization_script("document.documentElement.classList.add('locus-macos');");
@@ -190,4 +198,14 @@ pub fn run_window(url: &str, doc: &str) -> Result<()> {
             _ => {}
         }
     });
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod tests {
+    use super::COMPOSITE_ZOOM_INIT_SCRIPT;
+
+    #[test]
+    fn native_webkit_shell_marks_compositor_zoom_before_page_scripts() {
+        assert!(COMPOSITE_ZOOM_INIT_SCRIPT.contains("locus-composite-zoom"));
+    }
 }

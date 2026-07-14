@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.23] — 2026-07-14
+
+### Fixed
+
+- **Linux Locus zoom now preserves the rendered line geometry.** The native
+  WebKitGTK window composites the already-laid-out paper, matching the macOS
+  native path, instead of committing CSS `zoom` and allowing WebKitGTK to
+  re-round or reflow lines. Repeated zoom keys therefore keep wrapping and
+  line-number assignments fixed while normal browser tabs retain CSS zoom.
+
 ## [1.0.22] — 2026-07-14
 
 ### Added
