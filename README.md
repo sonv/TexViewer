@@ -552,8 +552,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   beats fitting the page (in a window too narrow for any gutter they
   fall back to an ellipsis). Keys cover the whole document before scrolling:
   a lightweight block-local geometry pass prepares off-screen chips and pins
-  each block's measured flow height without forcing MathJax to render its
-  equations.
+  each block's measured flow height with the same containment as the live
+  page, so section/equation margins remain part of both the anchor position and
+  line flow, without forcing MathJax to render its equations.
 - `lines` toggles typeset line numbers (LaTeX `lineno`-style): every
   *wrapped* visual line of body text gets a number in the left margin,
   prepared across the whole document before scrolling with exact off-screen

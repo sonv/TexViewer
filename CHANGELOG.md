@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.26] — 2026-07-14
+
+### Fixed
+
+- **Pre-measured keys now stay attached to section headings and equations.**
+  Preparing off-screen overlays temporarily made each render block visible but
+  accidentally removed the layout containment supplied by
+  `content-visibility:auto`. Heading and display-math margins then collapsed
+  out of the measured block, caching keys above their visible targets and
+  underestimating the flow used by line numbers. The preparation pass now
+  preserves the same containment as the live macOS/Linux viewer, including
+  through native compositor zoom, without changing MathJax's typesetting mode.
+
 ## [1.0.25] — 2026-07-14
 
 ### Fixed

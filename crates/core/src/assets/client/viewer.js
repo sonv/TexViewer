@@ -3276,8 +3276,20 @@
         (lineNumbersVisible && !lineNumberBlockMetrics.has(blk));
       if (!missing) return;
       targets.push(blk);
-      lifted.push({ blk: blk, contentVisibility: blk.style.contentVisibility });
+      lifted.push({
+        blk: blk,
+        contentVisibility: blk.style.contentVisibility,
+        contain: blk.style.contain,
+      });
       blk.__mpOverlayPrelayoutToken = token;
+      // `content-visibility:auto` implicitly supplies layout/style/paint
+      // containment even while a block is active. Switching it to `visible`
+      // removes that containment, which lets a heading's or display math's
+      // vertical margins collapse through `.blk`. Measuring in that altered
+      // layout cached both anchors and intrinsic heights above their real
+      // positions. Preserve the active block's containment explicitly while
+      // forcing its contents to lay out.
+      blk.style.contain = 'layout style paint';
       blk.style.contentVisibility = 'visible';
     });
     if (!targets.length) return;
@@ -3325,6 +3337,7 @@
           entry.intrinsicHeight.toFixed(3) + 'px'
       );
       entry.blk.style.contentVisibility = entry.contentVisibility;
+      entry.blk.style.contain = entry.contain;
     });
     // contentvisibilityautostatechange is delivered asynchronously in WebKit.
     // Keep the marker through that delivery window so this cheap geometry pass

@@ -4276,6 +4276,14 @@ mod tests {
         assert!(out.html.contains("refkeyBlockMetrics = new WeakMap()"));
         assert!(out.html.contains("lineNumberBlockMetrics = new WeakMap()"));
         assert!(out.html.contains("blk.__mpOverlayPrelayoutToken"));
+        // A forced `content-visibility:visible` pre-layout must retain the
+        // implicit containment supplied by `auto`; otherwise heading and
+        // display-math margins collapse through their blocks and both overlay
+        // caches record positions above the visible content.
+        assert!(out
+            .html
+            .contains("blk.style.contain = 'layout style paint'"));
+        assert!(out.html.contains("entry.blk.style.contain = entry.contain"));
         assert!(out.html.contains("'contain-intrinsic-size',"));
         assert!(!out.html.contains("refkeyEstimateObserver"));
         assert_eq!(
