@@ -4276,6 +4276,7 @@ mod tests {
         assert!(out.html.contains("refkeyBlockMetrics = new WeakMap()"));
         assert!(out.html.contains("lineNumberBlockMetrics = new WeakMap()"));
         assert!(out.html.contains("blk.__mpOverlayPrelayoutToken"));
+        assert!(out.html.contains("'contain-intrinsic-size',"));
         assert!(!out.html.contains("refkeyEstimateObserver"));
         assert_eq!(
             out.html

@@ -551,12 +551,14 @@ a Rust roundtrip unless they are controlling the daemon itself.
   extend past the paper edge into the gutter — reading the whole key
   beats fitting the page (in a window too narrow for any gutter they
   fall back to an ellipsis). Keys cover the whole document before scrolling:
-  a lightweight block-local geometry pass prepares off-screen chips without
-  forcing MathJax to render their equations.
+  a lightweight block-local geometry pass prepares off-screen chips and pins
+  each block's measured flow height without forcing MathJax to render its
+  equations.
 - `lines` toggles typeset line numbers (LaTeX `lineno`-style): every
   *wrapped* visual line of body text gets a number in the left margin,
-  prepared across the whole document before scrolling and recomputed after
-  real layout changes. Display equations are not numbered (MathJax emits SVG
+  prepared across the whole document before scrolling with exact off-screen
+  block heights, then recomputed only after real layout changes. Display
+  equations are not numbered (MathJax emits SVG
   with no text), matching `lineno`'s default; a paragraph with inline math
   still numbers normally. Persisted in
   `localStorage["mathpreview.lineNumbers"]`.

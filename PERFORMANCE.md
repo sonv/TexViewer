@@ -74,6 +74,11 @@ style/layout recalcs over the 23k-element page. Two causes:
 Fix: `main#page .blk { display: block; content-visibility: auto;
 contain-intrinsic-size: auto 180px }` — off-screen blocks skip style, layout,
 and paint entirely; `auto` keeps the real height once a block has rendered.
+The overlay pre-layout is different: it temporarily forces `visible`, so
+WebKit does not populate that `auto` memory. It must persist the measured block
+box as an explicit intrinsic fallback before restoring containment; otherwise
+zoom or scroll replaces a document of 180px estimates with real heights and
+renumbers the already-prepared line layer.
 Overlay clones (margin cards, hover previews, zoom dialog) and print media
 force `content-visibility: visible`. `applyPatch` returns the blocks it
 touched and the per-patch passes (`applyMode`, chip decoration) scope to them;

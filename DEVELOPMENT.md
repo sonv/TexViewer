@@ -160,9 +160,13 @@ Every rule below exists because violating it produced a user-visible bug.
   `content-visibility: auto` blocks ahead of scrolling, so both key and line
   geometry are cached relative to each top-level block. Missing blocks are
   briefly lifted together for one shared layout before the overlays are
-  painted, then containment is restored. The lazy-typeset state-change handler
-  must ignore that synthetic lift: overlay preparation must never opt raw
-  equations into eager MathJax work or override `viewer.typeset-mode`.
+  painted. Before containment is restored, their exact two-axis intrinsic
+  boxes are persisted inline. Merely lifting with `content-visibility:visible`
+  does not populate the `auto` remembered size in WebKit; without the explicit
+  fallback, every skipped block returns to 180px and later zoom/scroll
+  activation shifts all following line numbers. The lazy-typeset state-change
+  handler must ignore that synthetic lift: overlay preparation must never opt
+  raw equations into eager MathJax work or override `viewer.typeset-mode`.
   In-block markup (`.eq-refkey-list`, `[data-refkey]`) is a hidden **data
   carrier only** — texts come from it, geometry never does. The layer is
   rebuilt whole from block-local caches; DOM and MathJax mutations invalidate

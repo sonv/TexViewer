@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [1.0.25] — 2026-07-14
+
+### Fixed
+
+- **Native zoom no longer replaces pre-measured line positions with off-screen
+  height estimates.** The lightweight overlay pass now records each block's
+  exact intrinsic box as well as its internal key and line geometry. Restoring
+  `content-visibility` therefore preserves the full document flow instead of
+  falling back to 180px per block until a macOS or Linux Locus zoom activates
+  it. MathJax remains governed by the selected `local` or `background` mode.
+
 ## [1.0.24] — 2026-07-14
 
 ### Changed

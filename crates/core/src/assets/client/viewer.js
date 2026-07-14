@@ -3293,6 +3293,16 @@
     var chipHeight = chipFontSize * 1.35 + 4;
     var chipHalfHeight = chipHeight / 2;
     var chipStackStep = Math.ceil(chipHeight + 1);
+    // `contain-intrinsic-size: auto 180px` does not learn a remembered size
+    // while we override content-visibility to `visible` (not `auto`). Record
+    // the exact box as an explicit fallback before restoring containment;
+    // otherwise WebKit replaces 180px estimates with real block heights only
+    // when scrolling or zooming activates them, shifting every later line.
+    lifted.forEach(function(entry) {
+      var rect = entry.blk.getBoundingClientRect();
+      entry.intrinsicWidth = Math.max(1, rect.width / scale);
+      entry.intrinsicHeight = Math.max(0, rect.height / scale);
+    });
     targets.forEach(function(blk) {
       if (refkeysVisible) {
         refkeyBlockMetrics.set(
@@ -3305,6 +3315,15 @@
       }
     });
     lifted.forEach(function(entry) {
+      // Use an explicit two-axis fallback instead of `auto <length>`: the
+      // latter prefers WebKit's remembered size, which may still describe the
+      // pre-edit block. A targeted cache invalidation remeasures and replaces
+      // this inline value after content, font, fold, or column-width changes.
+      entry.blk.style.setProperty(
+        'contain-intrinsic-size',
+        entry.intrinsicWidth.toFixed(3) + 'px ' +
+          entry.intrinsicHeight.toFixed(3) + 'px'
+      );
       entry.blk.style.contentVisibility = entry.contentVisibility;
     });
     // contentvisibilityautostatechange is delivered asynchronously in WebKit.
