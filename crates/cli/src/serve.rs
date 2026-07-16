@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "71";
+const WS_PROTOCOL_VERSION: &str = "72";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -65,6 +65,28 @@ macro_rules! elog {
         use std::io::Write as _;
         let _ = writeln!(std::io::stderr(), $($arg)*);
     }};
+}
+
+/// Browser-ready semantics for the editor's active Vim search. The plugin
+/// resolves Vim-only atoms into these flags; the browser still searches the
+/// rendered text, but no longer loses whole-word or case behavior.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+struct EditorSearch {
+    query: String,
+    whole_start: bool,
+    whole_end: bool,
+    case_sensitive: bool,
+}
+
+fn search_sync_payload(search: &EditorSearch) -> String {
+    serde_json::json!({
+        "event": "search-sync",
+        "query": search.query,
+        "whole_start": search.whole_start,
+        "whole_end": search.whole_end,
+        "case_sensitive": search.case_sensitive,
+    })
+    .to_string()
 }
 
 #[derive(Clone)]
@@ -115,11 +137,11 @@ struct AppState {
     /// the *live* value lives here.
     config_paths: Arc<Vec<PathBuf>>,
     viewer_config: Arc<RwLock<mathpreview_core::ResolvedViewerConfig>>,
-    /// The editor's active `/` search pattern (last `POST /search` payload).
+    /// The editor's active `/` search semantics (last `POST /search` payload).
     /// Replayed to each newly-connected WS client so a reloaded tab (or one
     /// opened late) shows the highlight — the broadcast alone would be lost,
     /// and the plugin's dedup won't re-send an unchanged pattern.
-    search_query: Arc<RwLock<String>>,
+    search_query: Arc<RwLock<EditorSearch>>,
     /// Last cursor position received on `POST /cursor`, for jump detection:
     /// the nearest-element follow fallback (cursor on unrendered source, e.g.
     /// the preamble) fires only on a LARGE move — a search wrap, `gg`/`G` — so
@@ -540,6 +562,12 @@ struct SearchRequest {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
+    whole_start: bool,
+    #[serde(default)]
+    whole_end: bool,
+    #[serde(default)]
+    case_sensitive: bool,
+    #[serde(default)]
     clear: Option<bool>,
 }
 
@@ -706,7 +734,7 @@ pub async fn run(
         session_macros: Arc::new(RwLock::new(Vec::new())),
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
-        search_query: Arc::new(RwLock::new(String::new())),
+        search_query: Arc::new(RwLock::new(EditorSearch::default())),
         last_cursor: Arc::new(RwLock::new(None)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
@@ -1297,23 +1325,29 @@ fn source_range_highlight(
 }
 
 /// `POST /search` — mirror the editor's active `/` pattern into the preview as
-/// an hlsearch-style highlight (all matches). Broadcast-only; the browser does
-/// the text matching against the rendered DOM. Empty query / `clear` removes it.
+/// an hlsearch-style highlight (all matches). The plugin has already resolved
+/// Vim's boundary/case atoms into explicit flags; the browser applies them
+/// while matching the rendered DOM. Empty query / `clear` removes it.
 async fn serve_search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> axum::http::StatusCode {
     touch_editor_contact(&state);
-    let query = if req.clear.unwrap_or(false) {
-        String::new()
+    let search = if req.clear.unwrap_or(false) {
+        EditorSearch::default()
     } else {
-        req.query.unwrap_or_default()
+        EditorSearch {
+            query: req.query.unwrap_or_default(),
+            whole_start: req.whole_start,
+            whole_end: req.whole_end,
+            case_sensitive: req.case_sensitive,
+        }
     };
     // Remember it for WS-connect replay: a reloaded tab misses the broadcast,
     // and the plugin's dedup won't re-send an unchanged pattern.
-    *state.search_query.write().await = query.clone();
-    let payload = serde_json::json!({ "event": "search-sync", "query": query });
-    let _ = state.tx.send(payload.to_string());
+    *state.search_query.write().await = search.clone();
+    let payload = search_sync_payload(&search);
+    let _ = state.tx.send(payload);
     axum::http::StatusCode::NO_CONTENT
 }
 
@@ -2788,9 +2822,9 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
     // highlight — it missed the original broadcast, and the plugin's dedup
     // won't re-send an unchanged pattern.
     {
-        let query = state.search_query.read().await.clone();
-        if !query.is_empty() {
-            let payload = serde_json::json!({ "event": "search-sync", "query": query }).to_string();
+        let search = state.search_query.read().await.clone();
+        if !search.query.is_empty() {
+            let payload = search_sync_payload(&search);
             let _ = sender.send(Message::Text(payload)).await;
         }
     }
@@ -3575,8 +3609,8 @@ mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
         is_latest_render_attempt, merge_config_editor_values, origin_is_loopback,
-        serve_buffer_push, watched_event_paths, websocket_needs_reload, AppState, PatchOp,
-        PlanSlot, WS_PROTOCOL_VERSION,
+        search_sync_payload, serve_buffer_push, watched_event_paths, websocket_needs_reload,
+        AppState, EditorSearch, PatchOp, PlanSlot, SearchRequest, WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -3644,6 +3678,32 @@ mod tests {
             "footer.js WS_PROTOCOL_VERSION must equal the server's {WS_PROTOCOL_VERSION:?} — \
              update crates/core/src/assets/client/footer.js"
         );
+    }
+
+    #[test]
+    fn search_sync_payload_preserves_vim_boundary_and_case_semantics() {
+        let search = EditorSearch {
+            query: "f".to_string(),
+            whole_start: true,
+            whole_end: true,
+            case_sensitive: true,
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&search_sync_payload(&search)).unwrap();
+        assert_eq!(payload["event"], "search-sync");
+        assert_eq!(payload["query"], "f");
+        assert_eq!(payload["whole_start"], true);
+        assert_eq!(payload["whole_end"], true);
+        assert_eq!(payload["case_sensitive"], true);
+
+        // Older plugin payloads remain valid and retain the former
+        // case-insensitive substring behavior until the version handshake
+        // upgrades that plugin/browser pair.
+        let old: SearchRequest = serde_json::from_value(serde_json::json!({ "query": "f" }))
+            .expect("legacy search payload parses");
+        assert!(!old.whole_start);
+        assert!(!old.whole_end);
+        assert!(!old.case_sensitive);
     }
 
     #[test]
@@ -4054,7 +4114,7 @@ Third paragraph with $x^2$.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
-            search_query: Arc::new(RwLock::new(String::new())),
+            search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
@@ -4455,7 +4515,7 @@ Third paragraph with $x^2$.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
-            search_query: Arc::new(RwLock::new(String::new())),
+            search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
@@ -4554,7 +4614,7 @@ Third paragraph with $x^2$.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
-            search_query: Arc::new(RwLock::new(String::new())),
+            search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),

@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.0"
+local PLUGIN_VERSION = "2.1.1"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -830,18 +830,46 @@ local function post_sync_json(url, payload, label)
   end)
 end
 
--- Strip the word-boundary / magic atoms that `*` and friends add, so a plain
--- word still matches the rendered text (the browser does a literal search).
--- Escape-aware: `\\v` in a vim pattern is a LITERAL backslash followed by
--- "v", not the very-magic atom — protect escaped pairs before stripping,
--- then restore each as the single literal backslash it matches.
-local function normalize_search_pattern(pattern)
+-- Convert the editor's pattern to the literal query the rendered DOM can
+-- search, while preserving the Vim semantics that affect WHICH occurrences
+-- match. In particular, `*` produces `\<word\>`; dropping those boundaries
+-- made the browser highlight the same letters inside larger words. Escaped
+-- backslash pairs are protected before recognizing Vim atoms so `/\\<` stays
+-- a literal backslash + angle bracket rather than becoming a word boundary.
+local function search_pattern_spec(pattern)
   local s = pattern or ""
   s = s:gsub("\\\\", "\1")
-  s = s:gsub("\\[<>vVcC]", "")
+
+  -- The last explicit case atom wins, matching Vim. Without one, mirror
+  -- 'ignorecase' + 'smartcase' instead of forcing every browser match to
+  -- case-insensitive as the old literal-search path did.
+  local explicit_case = nil
+  for atom in s:gmatch("\\([cC])") do explicit_case = atom end
+
+  s = s:gsub("\\[vVcC]", "")
+  local whole_start = s:sub(1, 2) == "\\<"
+  if whole_start then s = s:sub(3) end
+  local whole_end = s:sub(-2) == "\\>"
+  if whole_end then s = s:sub(1, -3) end
   s = s:gsub("\\[zZ][se]", "")
   s = s:gsub("\1", "\\")
-  return s
+
+  local case_sensitive
+  if explicit_case == "c" then
+    case_sensitive = false
+  elseif explicit_case == "C" then
+    case_sensitive = true
+  else
+    case_sensitive = not vim.o.ignorecase
+      or (vim.o.smartcase and s:find("%u") ~= nil)
+  end
+
+  return {
+    query = s,
+    whole_start = whole_start,
+    whole_end = whole_end,
+    case_sensitive = case_sensitive,
+  }
 end
 
 -- True when search mirroring is enabled and there's a daemon to send to.
@@ -856,16 +884,34 @@ end
 -- it only posts on a change. Reset to nil on (de)activate so a fresh daemon
 -- re-syncs. Called from CursorMoved (n / N / *) and CmdlineLeave (/ ? :noh).
 local last_search_sent = nil
+
+local function same_search_spec(a, b)
+  return a ~= nil and b ~= nil
+    and a.query == b.query
+    and a.whole_start == b.whole_start
+    and a.whole_end == b.whole_end
+    and a.case_sensitive == b.case_sensitive
+end
+
+local function send_search_spec(spec)
+  if same_search_spec(spec, last_search_sent) then return end
+  last_search_sent = spec
+  post_sync_json(config.search_url, json_encode(spec), "search")
+end
+
 local function post_search()
   if not search_sync_enabled() then return end
   local active = vim.o.hlsearch and vim.v.hlsearch == 1
-  local pattern = ""
+  local spec = {
+    query = "",
+    whole_start = false,
+    whole_end = false,
+    case_sensitive = false,
+  }
   if active then
-    pattern = normalize_search_pattern(vim.fn.getreg("/"))
+    spec = search_pattern_spec(vim.fn.getreg("/"))
   end
-  if pattern == last_search_sent then return end
-  last_search_sent = pattern
-  post_sync_json(config.search_url, json_encode({ query = pattern }), "search")
+  send_search_spec(spec)
 end
 
 -- Incremental search-as-you-type (mirrors 'incsearch'): while the `/` or `?`
@@ -879,15 +925,13 @@ local function post_search_preview()
   if not search_sync_enabled() or not vim.o.incsearch then return end
   local t = vim.fn.getcmdtype()
   if t ~= "/" and t ~= "?" then return end -- cmdline already left; CmdlineLeave settles it
-  local pattern = normalize_search_pattern(vim.fn.getcmdline())
-  if pattern == "" then
+  local spec = search_pattern_spec(vim.fn.getcmdline())
+  if spec.query == "" then
     last_search_sent = nil
     post_search()
     return
   end
-  if pattern == last_search_sent then return end
-  last_search_sent = pattern
-  post_sync_json(config.search_url, json_encode({ query = pattern }), "search")
+  send_search_spec(spec)
 end
 
 -- Debounced wrapper for CmdlineChanged, which fires per keystroke. Short

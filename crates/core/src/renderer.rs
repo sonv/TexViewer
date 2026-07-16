@@ -4349,6 +4349,15 @@ mod tests {
         assert!(out.html.contains("clearSearchSession"));
         assert!(out.html.contains("searchPanelIsOpen"));
         assert!(out.html.contains("math-search-glyph-active"));
+        // Editor search must retain Vim's match semantics instead of reducing
+        // `\<f\>` to a browser substring search for every `f`.
+        assert!(out.html.contains("function editorBoundaryMatches"));
+        assert!(out.html.contains("spec.wholeStart"));
+        assert!(out.html.contains("spec.wholeEnd"));
+        assert!(out.html.contains("spec.caseSensitive ? 'gu' : 'giu'"));
+        assert!(out.html.contains("msg.whole_start === true"));
+        assert!(out.html.contains("msg.whole_end === true"));
+        assert!(out.html.contains("msg.case_sensitive === true"));
         // Chips live in a PAGE-LEVEL layer (built by layoutRefkeys) — chips
         // rendered inside the blocks get clipped by paint containment.
         // Guard the layer plumbing and the absence of in-block placement.

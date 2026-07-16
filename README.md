@@ -1019,6 +1019,12 @@ highlight. Linewise (`V`) covers whole rows and blockwise (`Ctrl-V`) is
 treated as its bounding rectangle. This reuses the `sync` and
 `cursor_debounce_ms` settings — no extra configuration.
 
+With `sync_search` enabled (the default), nvim's active `/` or `?` search is
+also highlighted in the preview. Whole-word boundaries from `\<…\>` (including
+patterns created by `*`) and Vim's `ignorecase` / `smartcase` / `\c` / `\C`
+case behavior are preserved; the browser does not broaden them into a generic
+substring search. `:nohlsearch` clears the preview highlight as well.
+
 **`setup()` is optional.** The defaults in `lua/mathpreview/init.lua`
 are fine for the standard case. Override only if you need to:
 
@@ -1034,6 +1040,7 @@ require("mathpreview").setup({
   debounce_ms = 40,
   cursor_debounce_ms = 80,
   sync = true,                            -- false to disable cursor/jump roundtrip
+  sync_search = true,                     -- mirror nvim search match semantics
   -- close_on_exit (default true): quitting nvim tears the preview down —
   -- daemon and browser tab. Set false to deliberately let the
   -- preview outlive nvim (`:MathPreviewStop` still stops it explicitly).

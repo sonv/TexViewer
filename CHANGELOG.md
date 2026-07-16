@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.1] — 2026-07-16
+
+### Fixed
+
+- **Editor search no longer broadens whole-word matches into substrings.** Vim
+  patterns such as `\<f\>` (including those produced by `*`) now carry their
+  start/end word-boundary semantics into the preview, so the standalone word
+  is highlighted without tinting every `f` inside larger words. Search sync
+  now also mirrors `ignorecase`, `smartcase`, `\c`, and `\C` behavior. WebSocket
+  protocol 72 keeps reloaded tabs on the same search semantics.
+
 ## [2.1.0] — 2026-07-14
 
 ### Added

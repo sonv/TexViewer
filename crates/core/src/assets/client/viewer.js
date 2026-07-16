@@ -483,15 +483,54 @@
     return last ? { node: last.node, offset: last.len, idx: nodes.length - 1 } : null;
   }
 
-  function buildTextMatches(query) {
+  var EDITOR_WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
+
+  function codePointAtIndex(text, index) {
+    if (index < 0 || index >= text.length) return '';
+    var cp = text.codePointAt(index);
+    return typeof cp === 'number' ? String.fromCodePoint(cp) : '';
+  }
+
+  function codePointBeforeIndex(text, index) {
+    if (index <= 0) return '';
+    var previous = index - 1;
+    var unit = text.charCodeAt(previous);
+    if (unit >= 0xDC00 && unit <= 0xDFFF && previous > 0) previous--;
+    return codePointAtIndex(text, previous);
+  }
+
+  function editorWordChar(ch) {
+    return !!ch && EDITOR_WORD_CHAR_RE.test(ch);
+  }
+
+  function editorBoundaryMatches(text, start, end, spec) {
+    if (spec.wholeStart &&
+        (!editorWordChar(codePointAtIndex(text, start)) ||
+         editorWordChar(codePointBeforeIndex(text, start)))) {
+      return false;
+    }
+    if (spec.wholeEnd &&
+        (!editorWordChar(codePointBeforeIndex(text, end)) ||
+         editorWordChar(codePointAtIndex(text, end)))) {
+      return false;
+    }
+    return true;
+  }
+
+  function buildTextMatches(query, spec) {
     var q = query || '';
     if (!q) return [];
+    spec = spec || {};
     var flat = collectSearchText();
-    // Case-insensitive regex over the ORIGINAL text (not a toLowerCase copy,
-    // whose length can differ — e.g. İ — and would shift every later offset).
+    // Regex over the ORIGINAL text (not a toLowerCase copy, whose length can
+    // differ — e.g. İ — and would shift every later offset). Case behavior is
+    // supplied by Vim after applying ignorecase/smartcase/\c/\C.
     var re;
     try {
-      re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      re = new RegExp(
+        q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        spec.caseSensitive ? 'gu' : 'giu'
+      );
     } catch (e) {
       return [];
     }
@@ -503,6 +542,9 @@
     // per rebuild. 5000 highlights is already far beyond what's scannable.
     var MAX_TEXT_MATCHES = 5000;
     while (results.length < MAX_TEXT_MATCHES && (m = re.exec(flat.text))) {
+      if (!editorBoundaryMatches(flat.text, m.index, m.index + m[0].length, spec)) {
+        continue;
+      }
       var a = locateFlat(flat.nodes, m.index, false, cursor);
       var b = a && locateFlat(flat.nodes, m.index + m[0].length, true, a.idx);
       if (a && b) {
@@ -825,10 +867,13 @@
   // color from the in-viewer `/` panel. Passive — no navigation, since the
   // cursor-sync already scrolls the preview to the current match. ---
 
-  function editorSearchHighlight(query) {
+  function editorSearchHighlight(query, wholeStart, wholeEnd, caseSensitive) {
     // Keep the pattern verbatim — a leading/trailing space is meaningful in a
     // search (`/ the `); only a whitespace-ONLY pattern means clear.
     editorSearchQuery = (query || '');
+    editorSearchWholeStart = wholeStart === true;
+    editorSearchWholeEnd = wholeEnd === true;
+    editorSearchCaseSensitive = caseSensitive === true;
     if (!editorSearchQuery.trim() || !supportsHighlightApi()) {
       clearEditorSearchHighlight();
       return;
@@ -837,12 +882,19 @@
     // Below the panel search's highlights (hit=1, active=2), so the in-viewer
     // search the user is actively navigating always paints on top.
     hl.priority = 0;
-    buildTextMatches(editorSearchQuery).forEach(function(r) { hl.add(r); });
+    buildTextMatches(editorSearchQuery, {
+      wholeStart: editorSearchWholeStart,
+      wholeEnd: editorSearchWholeEnd,
+      caseSensitive: editorSearchCaseSensitive,
+    }).forEach(function(r) { hl.add(r); });
     CSS.highlights.set('mp-editor-search', hl);
   }
 
   function clearEditorSearchHighlight() {
     editorSearchQuery = '';
+    editorSearchWholeStart = false;
+    editorSearchWholeEnd = false;
+    editorSearchCaseSensitive = false;
     if (supportsHighlightApi()) CSS.highlights.delete('mp-editor-search');
   }
 
@@ -857,7 +909,14 @@
     if (editorSearchRestoreTimer) clearTimeout(editorSearchRestoreTimer);
     editorSearchRestoreTimer = setTimeout(function() {
       editorSearchRestoreTimer = 0;
-      if (editorSearchQuery) editorSearchHighlight(editorSearchQuery);
+      if (editorSearchQuery) {
+        editorSearchHighlight(
+          editorSearchQuery,
+          editorSearchWholeStart,
+          editorSearchWholeEnd,
+          editorSearchCaseSensitive
+        );
+      }
     }, 120);
   }
 

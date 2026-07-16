@@ -64,6 +64,9 @@
   // Editor-driven search: the nvim `/` pattern, pushed by the plugin and
   // highlighted (all matches) in the preview like vim's hlsearch.
   var editorSearchQuery = '';
+  var editorSearchWholeStart = false;
+  var editorSearchWholeEnd = false;
+  var editorSearchCaseSensitive = false;
   var viewerJumpStack = [];
 
   function pageEl() {
