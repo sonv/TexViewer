@@ -93,8 +93,9 @@
           scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, true);
         } else if (msg.event === 'body-updated' && typeof msg.html === 'string') {
           var tStart = performance.now();
-          setStatus('updating', '↻ updating');
           var page = document.getElementById('page');
+          var viewportAnchor = beginLivePatchViewportAnchor(page);
+          setStatus('updating', '↻ updating');
 
           // Detach #page from the live document for the duration of the
           // mutations. Off-document mutations don't trigger layout/style
@@ -171,6 +172,7 @@
           // the whole update, not 300+.
           if (pageNextSibling) pageParent.insertBefore(page, pageNextSibling);
           else pageParent.appendChild(page);
+          settleLivePatchViewportAnchor(page, viewportAnchor);
           page.querySelectorAll('[data-mp-reused-block]').forEach(function(block) {
             block.removeAttribute('data-mp-reused-block');
           });

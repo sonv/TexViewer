@@ -1501,8 +1501,9 @@
   // collisions caused by insertion-before-existing-content edits.
   async function applyPatch(ops, blocksMeta) {
     var tStart = performance.now();
-    setStatus('updating', '↻ patching');
     var page = document.getElementById('page');
+    var viewportAnchor = ops.length ? beginLivePatchViewportAnchor(page) : null;
+    setStatus('updating', '↻ patching');
     var tpl = document.createElement('template');
     var needTypeset = [];
     var reusedMath = 0, totalMath = 0;
@@ -1767,6 +1768,7 @@
         if (pageNextSibling) pageParent.insertBefore(page, pageNextSibling);
         else pageParent.appendChild(page);
       }
+      settleLivePatchViewportAnchor(page, viewportAnchor);
     }
 
     queueTypeset(needTypeset);

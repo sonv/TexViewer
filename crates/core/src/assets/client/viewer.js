@@ -3875,6 +3875,126 @@
     if (dx || dy) window.scrollBy({ left: dx, top: dy, behavior: 'auto' });
   }
 
+  // Near EOF, live edits can make the document one rendered line shorter.
+  // Chromium must then clamp scrollY to the new maxScroll, so even restoring a
+  // text anchor cannot keep the top line still. Hold the paper at its previous
+  // height while the reader remains in the final viewport and explicitly keep
+  // scrollY unchanged through the DOM swap. The small blank reserve disappears
+  // once the reader moves away from EOF; ordinary patches pay no measurement
+  // or traversal cost.
+  var livePatchAnchorPage = null;
+  var livePatchAnchorOriginalOverflow = '';
+  var livePatchFloorPage = null;
+  var livePatchFloorOriginalMinHeight = '';
+  var livePatchFloorHeight = 0;
+  var livePatchAnchorRaf = 0;
+  var livePatchAnchorVerifyRaf = 0;
+  var livePatchAnchorToken = 0;
+
+  function cancelLivePatchAnchorFrames() {
+    if (livePatchAnchorRaf) {
+      cancelAnimationFrame(livePatchAnchorRaf);
+      livePatchAnchorRaf = 0;
+    }
+    if (livePatchAnchorVerifyRaf) {
+      cancelAnimationFrame(livePatchAnchorVerifyRaf);
+      livePatchAnchorVerifyRaf = 0;
+    }
+  }
+
+  function releaseLivePatchAnchor(token) {
+    if (token !== undefined && token !== livePatchAnchorToken) return;
+    cancelLivePatchAnchorFrames();
+    if (livePatchAnchorPage) {
+      livePatchAnchorPage.style.overflowAnchor = livePatchAnchorOriginalOverflow;
+    }
+    livePatchAnchorPage = null;
+    livePatchAnchorOriginalOverflow = '';
+  }
+
+  function clearLivePatchHeightFloor() {
+    releaseLivePatchAnchor();
+    if (livePatchFloorPage) {
+      livePatchFloorPage.style.minHeight = livePatchFloorOriginalMinHeight;
+    }
+    livePatchFloorPage = null;
+    livePatchFloorOriginalMinHeight = '';
+    livePatchFloorHeight = 0;
+  }
+
+  function beginLivePatchViewportAnchor(page) {
+    if (!page || window.scrollY < 0.5) return null;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    var maxScroll = Math.max(0, document.documentElement.scrollHeight - vh);
+    var bottomGap = Math.max(0, maxScroll - window.scrollY);
+    if (bottomGap > vh) {
+      clearLivePatchHeightFloor();
+      return null;
+    }
+
+    if (livePatchFloorPage && livePatchFloorPage !== page) {
+      clearLivePatchHeightFloor();
+    }
+    if (livePatchAnchorPage && livePatchAnchorPage !== page) {
+      releaseLivePatchAnchor();
+    } else {
+      cancelLivePatchAnchorFrames();
+    }
+    if (!livePatchAnchorPage) {
+      livePatchAnchorPage = page;
+      livePatchAnchorOriginalOverflow = page.style.overflowAnchor;
+    }
+    if (!livePatchFloorPage) {
+      livePatchFloorPage = page;
+      livePatchFloorOriginalMinHeight = page.style.minHeight;
+    }
+    livePatchFloorHeight = Math.max(livePatchFloorHeight, page.offsetHeight);
+    page.style.minHeight = livePatchFloorHeight + 'px';
+    // The explicit scroll lock owns this update. Restore native anchoring after
+    // two layout frames; keep only the height floor until the reader moves up.
+    page.style.overflowAnchor = 'none';
+    return {
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      token: ++livePatchAnchorToken,
+    };
+  }
+
+  function restoreLivePatchViewportAnchor(page, anchor) {
+    if (!anchor || anchor.token !== livePatchAnchorToken || !page.isConnected) return;
+    if (Math.abs(anchor.scrollX - window.scrollX) >= 0.5 ||
+        Math.abs(anchor.scrollY - window.scrollY) >= 0.5) {
+      window.scrollTo({ left: anchor.scrollX, top: anchor.scrollY, behavior: 'auto' });
+    }
+  }
+
+  function settleLivePatchViewportAnchor(page, anchor) {
+    if (!anchor) return;
+    restoreLivePatchViewportAnchor(page, anchor);
+    var token = anchor.token;
+    livePatchAnchorRaf = requestAnimationFrame(function() {
+      livePatchAnchorRaf = 0;
+      if (token !== livePatchAnchorToken) return;
+      restoreLivePatchViewportAnchor(page, anchor);
+      livePatchAnchorVerifyRaf = requestAnimationFrame(function() {
+        livePatchAnchorVerifyRaf = 0;
+        if (token !== livePatchAnchorToken) return;
+        restoreLivePatchViewportAnchor(page, anchor);
+        releaseLivePatchAnchor(token);
+      });
+    });
+  }
+
+  // An EOF height floor is only useful while reading there. Once the reader is
+  // more than a viewport above the artificial bottom, removing it cannot
+  // recreate the one-line clamp that it guarded against.
+  window.addEventListener('scroll', function() {
+    if (!livePatchFloorPage || livePatchAnchorPage) return;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    var maxScroll = Math.max(0, document.documentElement.scrollHeight - vh);
+    if (maxScroll - window.scrollY > vh) clearLivePatchHeightFloor();
+  }, { passive: true });
+
   function cancelZoomAnchorRestore() {
     if (zoomAnchorRestoreRaf) {
       cancelAnimationFrame(zoomAnchorRestoreRaf);

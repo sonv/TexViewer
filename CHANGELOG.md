@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.2] — 2026-07-21
+
+### Fixed
+
+- **Live output no longer jitters near the end of a document.** When an edit
+  makes the rendered page one line shorter, the viewer now retains the current
+  top line instead of letting Chromium alternate between scroll anchoring and
+  its end-of-page clamp. The guard is confined to the final viewport and adds
+  no document-wide measurement to the typing path.
+
 ## [2.1.1] — 2026-07-16
 
 ### Fixed

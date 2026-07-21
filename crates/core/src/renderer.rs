@@ -4453,6 +4453,21 @@ mod tests {
         assert!(out
             .html
             .contains("window.scrollBy({ left: dx, top: dy, behavior: 'auto' })"));
+        // Near EOF a live replacement must retain enough page height to keep
+        // the top line fixed when the natural document loses one line.
+        assert!(out.html.contains("function beginLivePatchViewportAnchor"));
+        assert!(out.html.contains("page.style.overflowAnchor = 'none'"));
+        assert!(out
+            .html
+            .contains("page.style.minHeight = livePatchFloorHeight + 'px'"));
+        assert!(out.html.contains("scrollY: window.scrollY"));
+        assert_eq!(
+            out.html
+                .matches("settleLivePatchViewportAnchor(page, viewportAnchor)")
+                .count(),
+            2,
+            "both range patches and full-body updates must settle the EOF anchor"
+        );
         assert!(out.html.contains("previewUserZoom(next, true)"));
         assert!(out
             .html
