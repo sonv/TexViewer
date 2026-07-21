@@ -83,6 +83,8 @@ pub(super) fn wrap_in_shell(
     // string literal (handles quotes / newlines / braces) for __mpConfig.
     let mathjax_config_js = serde_json::to_string(&opts.viewer_config.mathjax_config)
         .unwrap_or_else(|_| "\"\"".to_string());
+    let mathjax_packages_js =
+        serde_json::to_string(&preamble.packages_long).unwrap_or_else(|_| "[]".to_string());
     let keybindings_js = serde_json::to_string(&opts.viewer_config.keybindings)
         .unwrap_or_else(|_| "{}".to_string())
         // This JSON is embedded in a classic script element. Keep bindings
@@ -93,7 +95,7 @@ pub(super) fn wrap_in_shell(
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", wrapEquations: {wrap}, theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
@@ -101,6 +103,7 @@ pub(super) fn wrap_in_shell(
         thm = opts.viewer_config.theorem_numbering.as_str(),
         tsm = opts.viewer_config.typeset_mode.as_str(),
         mjx = mathjax_config_js,
+        mjx_packages = mathjax_packages_js,
         keybindings = keybindings_js,
         // Seeded so applyViewerConfig can detect the FIRST live change (its
         // reload guard treats `undefined` as not-yet-seen; without this seed

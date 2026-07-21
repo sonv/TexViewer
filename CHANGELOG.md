@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.3] — 2026-07-21
+
+### Fixed
+
+- **Included preambles now drive MathJax configuration live.** A local file
+  loaded with `\input` or `\usepackage` is watched recursively, honors unsaved
+  Neovim buffer contents, and invalidates the preamble cache when it changes.
+  Packages such as `mathtools` are enabled automatically, and settings such as
+  `\mathtoolsset{showonlyrefs=true}` now work from `\input{preamble}`. When a
+  live edit adds or removes a MathJax extension, the viewer reloads once so the
+  new extension is initialized; ordinary document edits keep using fast DOM
+  patches.
+
 ## [2.1.2] — 2026-07-21
 
 ### Fixed

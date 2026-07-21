@@ -14,7 +14,6 @@
 //! warning and keep going.
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -244,27 +243,11 @@ pub fn extract_preamble_with_overrides(
     // 2) Paper preamble.
     extractor.scan(&project.preamble.source, &project.preamble.file);
 
-    // Step 3 of DESIGN §6 — scan local .sty / .tex referenced from the preamble.
-    let base = project
-        .preamble
-        .file
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
-    let referenced = collect_referenced_files(&project.preamble.source, base);
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    visited.insert(project.preamble.file.clone());
-    for f in referenced {
-        if !visited.insert(f.clone()) {
-            continue;
-        }
-        match fs::read_to_string(&f) {
-            Ok(src) => extractor.scan(&src, &f),
-            Err(_) => {
-                // Missing local macro files are routine — system-installed
-                // packages won't be on disk, that's fine.
-                continue;
-            }
-        }
+    // Step 3 of DESIGN §6 — scan local .sty / .tex referenced from the
+    // preamble. The project loader owns dependency resolution so these sources
+    // include nested references and unsaved editor-buffer overrides.
+    for file in &project.preamble_files {
+        extractor.scan(&file.source, &file.path);
     }
 
     // 3) User overrides, in cascade order (later wins on name collision).

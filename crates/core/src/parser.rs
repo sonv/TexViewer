@@ -8,7 +8,7 @@
 //! positions survive to every leaf.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -46,22 +46,11 @@ fn env_macros_for_project(project: &Project) -> HashMap<String, EnvMacro> {
     // Referenced files first, the ROOT PREAMBLE last — later sources win, and
     // the root must win: the common pattern is `\usepackage{local}` followed by
     // a `\renewenvironment` override in the document's own preamble.
-    let mut sources: Vec<String> = Vec::new();
-    let base = project
-        .preamble
-        .file
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    visited.insert(project.preamble.file.clone());
-    for f in crate::macros::collect_referenced_files(&project.preamble.source, base) {
-        if !visited.insert(f.clone()) {
-            continue;
-        }
-        if let Ok(src) = std::fs::read_to_string(&f) {
-            sources.push(src);
-        }
-    }
+    let mut sources: Vec<String> = project
+        .preamble_files
+        .iter()
+        .map(|file| file.source.clone())
+        .collect();
     sources.push(project.preamble.source.clone());
     let mut out = HashMap::new();
     for src in &sources {
@@ -2019,6 +2008,7 @@ mod tests {
                 source: String::new(),
                 file: PathBuf::from("t.tex"),
             },
+            preamble_files: vec![],
             files: vec![ProjectFile {
                 path: PathBuf::from("t.tex"),
                 source: src.to_string(),
@@ -2038,6 +2028,7 @@ mod tests {
                 source: preamble.to_string(),
                 file: PathBuf::from("t.tex"),
             },
+            preamble_files: vec![],
             files: vec![ProjectFile {
                 path: PathBuf::from("t.tex"),
                 source: src.to_string(),
@@ -2118,6 +2109,10 @@ mod tests {
                 source: "\\input{incmacros}\n\\renewenvironment{foo}{ROOT}{E}\n".to_string(),
                 file: root_file.clone(),
             },
+            preamble_files: vec![crate::project::PreambleFile {
+                path: inc.clone(),
+                source: std::fs::read_to_string(&inc).unwrap(),
+            }],
             files: vec![ProjectFile {
                 path: root_file,
                 source: String::new(),

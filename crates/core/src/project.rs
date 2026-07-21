@@ -25,6 +25,15 @@ pub struct Preamble {
     pub file: PathBuf,
 }
 
+/// One local `.tex` / `.sty` file referenced by the root preamble. These are
+/// kept separate from body files: they affect macro/package configuration but
+/// must never be parsed as visible document content.
+#[derive(Debug, Clone)]
+pub struct PreambleFile {
+    pub path: PathBuf,
+    pub source: String,
+}
+
 /// One file participating in the project.
 #[derive(Debug, Clone)]
 pub struct ProjectFile {
@@ -43,6 +52,10 @@ pub struct ProjectFile {
 pub struct Project {
     pub root: PathBuf,
     pub preamble: Preamble,
+    /// Local preamble dependencies in discovery order, including nested
+    /// `\input` / `\usepackage` references. Sources honor live buffer
+    /// overrides just like body includes.
+    pub preamble_files: Vec<PreambleFile>,
     /// Files in body-include order. `files[0]` is the root file's body slice
     /// up to the first `\input/\include/\subfile`; subsequent entries are the
     /// included files, recursively. Order matches the order content would
@@ -54,13 +67,11 @@ pub struct Project {
 impl Project {
     pub fn included_files(&self) -> impl Iterator<Item = &Path> {
         let mut seen = HashSet::<PathBuf>::new();
-        self.files.iter().filter_map(move |f| {
-            if seen.insert(f.path.clone()) {
-                Some(f.path.as_path())
-            } else {
-                None
-            }
-        })
+        self.preamble_files
+            .iter()
+            .map(|f| f.path.as_path())
+            .chain(self.files.iter().map(|f| f.path.as_path()))
+            .filter(move |path| seen.insert((*path).to_path_buf()))
     }
 }
 
@@ -105,16 +116,31 @@ fn load_project_with_source_and_overrides(
     };
 
     let mut files = Vec::new();
-    let mut visited = HashSet::new();
     let mut warnings = Vec::new();
 
-    // The root file's body is the first contributor.
+    // Resolve local preamble dependencies separately from body includes. They
+    // participate in package/macro extraction, watching, cache invalidation,
+    // and unsaved-buffer overrides, but not visible body parsing.
     let root_key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut preamble_files = Vec::new();
+    let mut preamble_visited = HashSet::from([root_key.clone()]);
+    let base = root.parent().unwrap_or_else(|| Path::new("."));
+    append_preamble_files(
+        preamble_src,
+        base,
+        &mut preamble_files,
+        &mut preamble_visited,
+        &mut warnings,
+        overrides,
+        0,
+    );
+
+    // The root file's body is the first contributor.
+    let mut visited = HashSet::new();
     visited.insert(root_key);
 
     // Walk body content in source order, replacing include commands with the
     // included file content at the command site.
-    let base = root.parent().unwrap_or_else(|| Path::new("."));
     append_with_includes(
         base,
         root.to_path_buf(),
@@ -131,6 +157,7 @@ fn load_project_with_source_and_overrides(
     Ok(Project {
         root: root.to_path_buf(),
         preamble,
+        preamble_files,
         files,
         warnings,
     })
@@ -151,6 +178,53 @@ fn read_source_with_overrides(
         return Ok(source.clone());
     }
     fs::read_to_string(path)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_preamble_files(
+    src: &str,
+    base: &Path,
+    out: &mut Vec<PreambleFile>,
+    visited: &mut HashSet<PathBuf>,
+    warnings: &mut Vec<String>,
+    overrides: &HashMap<PathBuf, String>,
+    depth: usize,
+) {
+    if depth > 16 {
+        warnings.push(format!(
+            "preamble include depth exceeded at {}",
+            base.display()
+        ));
+        return;
+    }
+    for path in crate::macros::collect_referenced_files(src, base) {
+        let canonical = path.canonicalize().unwrap_or(path);
+        if !visited.insert(canonical.clone()) {
+            continue;
+        }
+        match read_source_with_overrides(&canonical, overrides) {
+            Ok(source) => {
+                out.push(PreambleFile {
+                    path: canonical.clone(),
+                    source: source.clone(),
+                });
+                let child_base = canonical.parent().unwrap_or(base);
+                append_preamble_files(
+                    &source,
+                    child_base,
+                    out,
+                    visited,
+                    warnings,
+                    overrides,
+                    depth + 1,
+                );
+            }
+            Err(e) => warnings.push(format!(
+                "could not read preamble dependency {}: {e}",
+                canonical.display()
+            )),
+        }
+    }
 }
 
 /// Split the root source into (preamble, body), where body is everything
@@ -369,6 +443,51 @@ mod tests {
         assert!(flattened.contains("Before.\nLive child.\n\nAfter."));
         assert!(!flattened.contains("Disk child."));
         assert_eq!(fs::read_to_string(&child).unwrap(), "Disk child.\n");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn nested_preamble_files_honor_live_overrides_and_feed_package_metadata() {
+        let dir = temp_dir("preamble-override");
+        let root = dir.join("main.tex");
+        let preamble = dir.join("preamble.tex");
+        let nested = dir.join("nested.tex");
+        fs::write(
+            &root,
+            "\\documentclass{article}\n\\input{preamble}\n\\begin{document}\nBody.\n\\end{document}\n",
+        )
+        .unwrap();
+        fs::write(&preamble, "\\input{nested}\n\\usepackage{geometry}\n").unwrap();
+        fs::write(&nested, "\\mathtoolsset{showonlyrefs=false}\n").unwrap();
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            preamble.canonicalize().unwrap(),
+            "\\usepackage{mathtools}\n\\input{nested}\n".to_string(),
+        );
+        overrides.insert(
+            nested.canonicalize().unwrap(),
+            "\\mathtoolsset{showonlyrefs=true}\n".to_string(),
+        );
+
+        let project = load_project_with_overrides(&root, &overrides).unwrap();
+        assert_eq!(project.preamble_files.len(), 2);
+        assert!(project.preamble_files[0].source.contains("mathtools"));
+        assert!(project.preamble_files[1]
+            .source
+            .contains("showonlyrefs=true"));
+
+        let extracted = crate::macros::extract_preamble(&project).unwrap();
+        assert!(extracted.packages_short.iter().any(|p| p == "mathtools"));
+        assert!(extracted
+            .packages_long
+            .iter()
+            .any(|p| p == "[tex]/mathtools"));
+        assert!(extracted.show_only_refs);
+
+        let included: Vec<PathBuf> = project.included_files().map(PathBuf::from).collect();
+        assert!(included.contains(&preamble.canonicalize().unwrap()));
+        assert!(included.contains(&nested.canonicalize().unwrap()));
         let _ = fs::remove_dir_all(dir);
     }
 

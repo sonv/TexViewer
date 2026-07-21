@@ -958,6 +958,7 @@ mod tests {
                 source: preamble.to_string(),
                 file: PathBuf::from("t.tex"),
             },
+            preamble_files: vec![],
             files: vec![ProjectFile {
                 path: PathBuf::from("t.tex"),
                 source: src.to_string(),

@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "72";
+const WS_PROTOCOL_VERSION: &str = "73";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -645,10 +645,27 @@ fn is_latest_render_attempt(state: &AppState, seq: u64) -> bool {
 }
 
 fn fnv_hash(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in s.bytes() {
+    fnv_update(0xcbf29ce484222325, s.as_bytes())
+}
+
+fn fnv_update(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
         h ^= b as u64;
         h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Cache fingerprint for every source that contributes preamble metadata.
+/// Including paths as separators makes dependency additions/removals visible
+/// even when two files happen to contain the same bytes.
+fn preamble_fingerprint(project: &project::Project) -> u64 {
+    let mut h = fnv_update(0xcbf29ce484222325, project.preamble.source.as_bytes());
+    for file in &project.preamble_files {
+        h = fnv_update(h, &[0xff]);
+        h = fnv_update(h, file.path.as_os_str().as_encoded_bytes());
+        h = fnv_update(h, &[0]);
+        h = fnv_update(h, file.source.as_bytes());
     }
     h
 }
@@ -2694,12 +2711,11 @@ async fn render_cached(
     };
     t.parse_ms = t0.elapsed().as_millis();
 
-    // Preamble + bib + style — cached on the hash of the preamble source
-    // *and* the override-file fingerprint, so an edit to (or a fresh
-    // `POST /macros/append` against) any layer of the cascade still
-    // invalidates the cache cleanly. Editing only the body keeps both
-    // hashes identical, which is the common-case hit we want.
-    let pre_hash = fnv_hash(&project.preamble.source);
+    // Preamble + bib + style — cached on every root/included preamble source
+    // *and* the override-file fingerprint, so an edit to an `\input` preamble
+    // or a fresh `POST /macros/append` invalidates the cache cleanly. Editing
+    // only the body keeps both hashes identical, which is the common-case hit.
+    let pre_hash = preamble_fingerprint(&project);
     let effective_paths = effective_override_paths(state).await;
     let overrides = load_override_layers(state, &effective_paths).await;
     let overrides_hash = fingerprint_overrides(&effective_paths, &overrides);
@@ -2896,6 +2912,9 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
         "wrap_equations": viewer_config.wrap_equations,
         "mathjax_config": viewer_config.mathjax_config,
+        // MathJax extensions are fixed when the page's <head> initializes.
+        // The client reloads only when this deterministic list changes.
+        "mathjax_packages": &out.preamble.packages_long,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
         "keybindings": viewer_config.keybindings,
         // The EFFECTIVE page margin baked into config_css (config > geometry >
@@ -3609,9 +3628,35 @@ mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
         is_latest_render_attempt, merge_config_editor_values, origin_is_loopback,
-        search_sync_payload, serve_buffer_push, watched_event_paths, websocket_needs_reload,
-        AppState, EditorSearch, PatchOp, PlanSlot, SearchRequest, WS_PROTOCOL_VERSION,
+        preamble_fingerprint, search_sync_payload, serve_buffer_push, watched_event_paths,
+        websocket_needs_reload, AppState, EditorSearch, PatchOp, PlanSlot, SearchRequest,
+        WS_PROTOCOL_VERSION,
     };
+
+    #[test]
+    fn preamble_fingerprint_includes_dependency_contents() {
+        use mathpreview_core::project::{Preamble, PreambleFile, Project};
+
+        let make_project = |source: &str| Project {
+            root: PathBuf::from("main.tex"),
+            preamble: Preamble {
+                source: "\\input{preamble}".to_string(),
+                file: PathBuf::from("main.tex"),
+            },
+            preamble_files: vec![PreambleFile {
+                path: PathBuf::from("preamble.tex"),
+                source: source.to_string(),
+            }],
+            files: vec![],
+            warnings: vec![],
+        };
+
+        let before = preamble_fingerprint(&make_project("\\usepackage{amsmath}"));
+        let after = preamble_fingerprint(&make_project(
+            "\\usepackage{mathtools}\\mathtoolsset{showonlyrefs=true}",
+        ));
+        assert_ne!(before, after);
+    }
 
     #[test]
     fn host_guard_accepts_loopback_only() {

@@ -2833,6 +2833,7 @@ fn read_delim(s: &str, start: usize, open: u8, close: u8) -> Option<(String, usi
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::HtmlOptions;
 
@@ -2855,6 +2856,53 @@ mod tests {
             }
         }
         out
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mathpreview-{name}-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn input_preamble_auto_loads_mathtools_and_applies_showonlyrefs() {
+        let dir = temp_dir("mathtools-input");
+        let root = dir.join("main.tex");
+        let preamble = dir.join("preamble.tex");
+        std::fs::write(
+            &root,
+            "\\documentclass{article}\n\\input{preamble}\n\\begin{document}\n\\begin{equation}\na \\coloneqq b\n\\end{equation}\n\\begin{equation}\nc=d \\label{eq:used}\n\\end{equation}\nSee \\eqref{eq:used}.\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &preamble,
+            "\\usepackage{mathtools}\n\\mathtoolsset{showonlyrefs=true}\n",
+        )
+        .unwrap();
+
+        let out = crate::render_project(&root, &HtmlOptions::default()).unwrap();
+        assert!(out.preamble.packages_short.iter().any(|p| p == "mathtools"));
+        assert!(out
+            .preamble
+            .packages_long
+            .iter()
+            .any(|p| p == "[tex]/mathtools"));
+        assert!(out.preamble.show_only_refs);
+        assert!(out.html.contains(r#"mathjaxPackages: ["[tex]/mathtools"]"#));
+        assert!(out
+            .html
+            .contains(r#"load: ['[tex]/noerrors', "[tex]/ams", "[tex]/mathtools"]"#));
+        assert!(out.body_html.contains(r#"<span class="eq-num">(1)</span>"#));
+        assert!(!out.body_html.contains("(2)"), "{}", out.body_html);
+        assert!(out
+            .included_files
+            .contains(&preamble.canonicalize().unwrap()));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

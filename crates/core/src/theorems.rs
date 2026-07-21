@@ -106,23 +106,12 @@ impl TheoremRegistry {
     /// `svmacro.sty`) are honored.
     pub fn from_project(project: &crate::project::Project) -> Self {
         let mut sources: Vec<String> = vec![project.preamble.source.clone()];
-        let base = project
-            .preamble
-            .file
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let referenced = crate::macros::collect_referenced_files(&project.preamble.source, base);
-        let mut visited: std::collections::HashSet<std::path::PathBuf> =
-            std::collections::HashSet::new();
-        visited.insert(project.preamble.file.clone());
-        for f in referenced {
-            if !visited.insert(f.clone()) {
-                continue;
-            }
-            if let Ok(src) = std::fs::read_to_string(&f) {
-                sources.push(src);
-            }
-        }
+        sources.extend(
+            project
+                .preamble_files
+                .iter()
+                .map(|file| file.source.clone()),
+        );
         Self::from_sources(&sources)
     }
 

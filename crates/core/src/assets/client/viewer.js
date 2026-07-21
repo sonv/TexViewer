@@ -2995,6 +2995,15 @@
         return;
       }
     }
+    if (Array.isArray(cfg.mathjax_packages)) {
+      var nextPackages = JSON.stringify(cfg.mathjax_packages);
+      var wasPackages = JSON.stringify(window.__mpConfig.mathjaxPackages || []);
+      window.__mpConfig.mathjaxPackages = cfg.mathjax_packages.slice();
+      if (wasPackages !== nextPackages) {
+        location.reload();
+        return;
+      }
+    }
     // Typeset mode is pure client behavior (which blocks to render), so it
     // applies live with no reload — switching to 'background' kicks the fill.
     if (typeof cfg.typeset_mode === 'string') {
