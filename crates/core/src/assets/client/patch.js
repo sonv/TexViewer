@@ -984,6 +984,35 @@
     });
   }
 
+  // A live replacement near EOF is applied while viewer.js holds #page at
+  // its previous height, so Chromium cannot clamp the reader's top line. A
+  // newly-created content-visibility block otherwise starts with the generic
+  // 180px fallback; when the old block was taller than a viewport, the
+  // preserved scroll position can then land in the page's blank min-height
+  // floor. Chromium considers the undersized replacement off-screen and never
+  // lays it out until a resize invalidates visibility.
+  //
+  // Carry the outgoing block's cheap outer-box measurement onto its
+  // replacement as the containment fallback. This does not force layout of
+  // the replacement or disable lazy rendering: once the block is active its
+  // real content still determines its size, while skipped blocks retain a
+  // close estimate instead of collapsing to 180px.
+  function snapshotBlockIntrinsicSize(block) {
+    if (!block) return null;
+    var width = block.offsetWidth;
+    var height = block.offsetHeight;
+    if (!(width > 0) || !(height >= 0)) return null;
+    return { width: width, height: height };
+  }
+
+  function seedBlockIntrinsicSize(block, size) {
+    if (!block || !size) return;
+    block.style.setProperty(
+      'contain-intrinsic-size',
+      size.width.toFixed(3) + 'px ' + size.height.toFixed(3) + 'px'
+    );
+  }
+
   function syncReusedBlock(oldBlock, newBlock) {
     oldBlock.id = newBlock.id;
     oldBlock.className = newBlock.className;
@@ -1519,6 +1548,16 @@
     var detachPage = ops.length > 8 || hasRebuild;
     var pageParent = detachPage ? page.parentNode : null;
     var pageNextSibling = detachPage ? page.nextSibling : null;
+    // Once #page is detached its boxes measure zero. Bulk/rebuild patches
+    // therefore snapshot only on that uncommon path, before detachment. The
+    // normal one-range typing path measures just the paired block below.
+    var detachedBlockSizes = null;
+    if (detachPage) {
+      detachedBlockSizes = new WeakMap();
+      pageBlocks(page).forEach(function(block) {
+        detachedBlockSizes.set(block, snapshotBlockIntrinsicSize(block));
+      });
+    }
     if (pageParent) pageParent.removeChild(page);
 
     // PRE-SCAN: index math from every block that any op will drop, into a
@@ -1632,7 +1671,12 @@
           var newFragBlocks = frag.querySelectorAll('article.blk');
           var pairCount = Math.min(removeCount, newFragBlocks.length);
           for (var pp = 0; pp < pairCount; pp++) {
-            transplantSubBlocks(blocks[start + pp], newFragBlocks[pp]);
+            var pairedOldBlock = blocks[start + pp];
+            var pairedSize = detachedBlockSizes
+              ? detachedBlockSizes.get(pairedOldBlock)
+              : snapshotBlockIntrinsicSize(pairedOldBlock);
+            seedBlockIntrinsicSize(newFragBlocks[pp], pairedSize);
+            transplantSubBlocks(pairedOldBlock, newFragBlocks[pp]);
           }
           transplantMath(frag);
           clearReusedSubBlockMarkers(frag);
@@ -1727,10 +1771,23 @@
           // Index the old slice by absolute src index so plan Reuse slots
           // can pull the exact DOM subtree (preserving typeset MathJax).
           var rbOldByIdx = new Map();
+          var rbReusedSources = new Set();
+          (op.plan || []).forEach(function(slot) {
+            if (typeof slot.src === 'number') rbReusedSources.add(slot.src);
+          });
+          var rbReplacementSizes = [];
           for (var s2 = 0; s2 < rbCount; s2++) {
             var rbOld = rbBlocks[rbStart + s2];
             if (rbOld) {
-              rbOldByIdx.set(rbStart + s2, rbOld);
+              var rbAbsoluteIndex = rbStart + s2;
+              rbOldByIdx.set(rbAbsoluteIndex, rbOld);
+              if (!rbReusedSources.has(rbAbsoluteIndex)) {
+                rbReplacementSizes.push(
+                  detachedBlockSizes
+                    ? detachedBlockSizes.get(rbOld)
+                    : snapshotBlockIntrinsicSize(rbOld)
+                );
+              }
               rbOld.remove();
               removedBlocks++;
             }
@@ -1750,6 +1807,7 @@
               tpl.innerHTML = slot.html;
               var children = Array.from(tpl.content.children);
               children.forEach(function(c) {
+                seedBlockIntrinsicSize(c, rbReplacementSizes.shift());
                 transplantMath(c);
                 page.insertBefore(c, rbAnchor);
                 insertedBlocks++;

@@ -4508,6 +4508,22 @@ mod tests {
         assert!(out
             .html
             .contains("page.style.minHeight = livePatchFloorHeight + 'px'"));
+        // Replacement blocks inherit the outgoing outer-box size before
+        // content-visibility can collapse them to the generic 180px estimate.
+        // Otherwise the preserved EOF scroll position can land in a blank
+        // min-height floor until the next browser resize.
+        assert!(out
+            .html
+            .contains("function snapshotBlockIntrinsicSize(block)"));
+        assert!(out
+            .html
+            .contains("function seedBlockIntrinsicSize(block, size)"));
+        assert!(out
+            .html
+            .contains("oldBlockIntrinsicSizes.get(oldReplacementBlocks[bi])"));
+        assert!(out
+            .html
+            .contains("seedBlockIntrinsicSize(newFragBlocks[pp], pairedSize)"));
         assert!(out.html.contains("scrollY: window.scrollY"));
         assert_eq!(
             out.html

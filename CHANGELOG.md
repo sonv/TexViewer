@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.4] — 2026-07-23
+
+### Fixed
+
+- **Live edits no longer blank the page near the end of a tall block.** The
+  viewer now carries each outgoing block's measured containment size into its
+  replacement, preventing Chromium's temporary 180px off-screen estimate from
+  stranding the preserved scroll position in blank space. The normal typing
+  path measures only the block being replaced and keeps lazy off-screen
+  rendering enabled.
+
 ## [2.1.3] — 2026-07-21
 
 ### Fixed

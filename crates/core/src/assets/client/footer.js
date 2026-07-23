@@ -101,6 +101,11 @@
           // mutations. Off-document mutations don't trigger layout/style
           // invalidation, so 300+ node transplants run an order of
           // magnitude faster than they would in-document.
+          var oldBlocks = pageBlocks(page);
+          var oldBlockIntrinsicSizes = new WeakMap();
+          oldBlocks.forEach(function(block) {
+            oldBlockIntrinsicSizes.set(block, snapshotBlockIntrinsicSize(block));
+          });
           var pageParent = page.parentNode;
           var pageNextSibling = page.nextSibling;
           pageParent.removeChild(page);
@@ -109,7 +114,7 @@
           // is much cheaper than diffing every MathJax node when a full update
           // is unavoidable.
           var oldBlocksByHash = new Map();
-          pageBlocks(page).forEach(function(block) {
+          oldBlocks.forEach(function(block) {
             var hash = block.getAttribute('data-blockhash');
             if (!hash) return;
             var arr = oldBlocksByHash.get(hash);
@@ -125,16 +130,38 @@
           var tParse = performance.now();
 
           var reusedBlocks = 0;
+          var reusedOldBlocks = new Set();
           buf.querySelectorAll('.blk[data-blockhash]').forEach(function(newBlock) {
             var pool = oldBlocksByHash.get(newBlock.getAttribute('data-blockhash'));
             if (pool && pool.length > 0) {
               var oldBlock = pool.shift();
               syncReusedBlock(oldBlock, newBlock);
               oldBlock.setAttribute('data-mp-reused-block', '1');
+              reusedOldBlocks.add(oldBlock);
               newBlock.replaceWith(oldBlock);
               reusedBlocks++;
             }
           });
+
+          // Pair changed/inserted blocks with the outgoing changed/removed
+          // blocks in document order. The estimate is deliberately only a
+          // fallback: real layout wins while the block is visible. Preserving
+          // it prevents the EOF height floor from marooning the viewport below
+          // a tall replacement whose default estimate would be only 180px.
+          var oldReplacementBlocks = oldBlocks.filter(function(block) {
+            return !reusedOldBlocks.has(block);
+          });
+          var newReplacementBlocks = pageBlocks(buf).filter(function(block) {
+            return block.getAttribute('data-mp-reused-block') !== '1';
+          });
+          for (var bi = 0;
+               bi < oldReplacementBlocks.length && bi < newReplacementBlocks.length;
+               bi++) {
+            seedBlockIntrinsicSize(
+              newReplacementBlocks[bi],
+              oldBlockIntrinsicSizes.get(oldReplacementBlocks[bi])
+            );
+          }
 
           // For remaining changed blocks, transplant matching old math nodes.
           var needTypeset = [];
