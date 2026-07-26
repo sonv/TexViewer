@@ -86,9 +86,10 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   `\textcolor` and a config-driven `[text-macros]` HTML-template table for
   commands the previewer can't otherwise see. See [Macros in regular
   text](#macros-in-regular-text).
-- **Equation wrapping** of long display math through MathJax line-breaking,
-  plus a raw `mathjax-config` escape hatch to override any MathJax option.
-  See [Configure the
+- **Math that follows the prose:** inline formulas can break at TeX-valid
+  operators, while displays remain unbroken and scroll horizontally only when
+  wider than the page. A raw `mathjax-config` escape hatch can override any
+  MathJax option. See [Configure the
   viewer](#configure-the-viewer).
 - **Fast incremental updates**: each math node carries a content hash, so
   already-typeset SVG is transplanted and only genuinely new expressions
@@ -701,6 +702,11 @@ the selected file. The adjacent
 **MathJax config** tab keeps the generated-config inspector and raw JavaScript
 override with the same save targets.
 
+MathJax follows prose and display conventions separately. Inline formulas may
+break at TeX-valid operators so they can continue naturally onto the next text
+line. Display formulas are not broken into artificial rows; when one is wider
+than the page column, the equation itself can be scrolled horizontally.
+
 `typeset-mode` controls how much of the document is typeset (has its math
 rendered) at once — it is also a structured **Viewer config** option.
 Default `local` typesets only the region around the viewport plus a small
@@ -744,7 +750,7 @@ readable:
 ```toml
 [viewer]
 mathjax-config = '''
-window.MathJax.svg.displayOverflow = 'scroll';   // e.g. scroll instead of wrap
+window.MathJax.svg.displayAlign = 'left';         // e.g. left-align displays
 window.MathJax.tex.macros.RR = '\\mathbb{R}';     // add a macro
 window.MathJax.tex.packages['[+]'].push('color'); // load an extra package
 '''

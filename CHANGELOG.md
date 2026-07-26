@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.7] — 2026-07-26
+
+### Changed
+
+- **Inline and display math now use separate overflow behavior.** MathJax may
+  break inline formulas at TeX-valid operators as the surrounding prose flows.
+  Display formulas remain on one mathematical line and gain a horizontal
+  scroller only when wider than the page column. The retired
+  `wrap-equations` key is still accepted in older TOML files but is ignored.
+
 ## [2.1.6] — 2026-07-26
 
 ### Changed

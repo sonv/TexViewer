@@ -1016,7 +1016,9 @@ body.page-mode-dynamic main#page {
   border-left: 2px solid rgba(91, 62, 162, 0.55);
   background: rgba(91, 62, 162, 0.07);
 }
-.math.inline { white-space: nowrap; }
+/* MathJax 4 inserts <mjx-break> opportunities for inline formulas.  Let those
+   participate in the surrounding paragraph's line layout. */
+.math.inline { white-space: normal; }
 .para {
   margin: 0;
   text-indent: 1.45em;

@@ -2970,19 +2970,8 @@
       window.__mpConfig.keybindings = cfg.keybindings;
       setViewerKeybindings(cfg.keybindings);
     }
-    // Equation wrapping (and any raw MathJax config) is baked into the <head>
-    // at page load — live body pushes can't change it. So when the resolved
-    // value flips, reload the page so the new MathJax config takes effect.
-    // This covers every edit path: config dialog, the .mathpreview.toml file,
-    // and the macros dialog's TOML editor.
-    if (typeof cfg.wrap_equations === 'boolean') {
-      var was = window.__mpConfig.wrapEquations;
-      window.__mpConfig.wrapEquations = cfg.wrap_equations;
-      if (was !== undefined && was !== cfg.wrap_equations) {
-        location.reload();
-        return;
-      }
-    }
+    // Raw MathJax config is baked into the <head> at page load, so a live
+    // change must reload before it can take effect.
     if (typeof cfg.mathjax_config === 'string') {
       var wasMjx = window.__mpConfig.mathjaxConfig;
       window.__mpConfig.mathjaxConfig = cfg.mathjax_config;

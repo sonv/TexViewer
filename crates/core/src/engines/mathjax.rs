@@ -51,11 +51,7 @@ impl MathEngine for MathJaxEngine {
         preamble: &ExtractedPreamble,
         viewer: &crate::config::ResolvedViewerConfig,
     ) -> String {
-        let config = mathjax_config(
-            preamble,
-            mathjax_local_font_path(&self.script_url),
-            viewer.wrap_equations,
-        );
+        let config = mathjax_config(preamble, mathjax_local_font_path(&self.script_url));
         let url = escape_attr(&self.script_url);
         // User-supplied `mathjax-config` JS runs after the generated config and
         // before the (async) library load, so it can mutate `window.MathJax`.
@@ -77,11 +73,7 @@ impl MathEngine for MathJaxEngine {
     }
 }
 
-fn mathjax_config(
-    preamble: &ExtractedPreamble,
-    local_font_path: Option<String>,
-    wrap_equations: bool,
-) -> String {
+fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>) -> String {
     let mut macros = String::new();
     let mut first = true;
     let mut write_entry =
@@ -125,16 +117,6 @@ fn mathjax_config(
         .as_deref()
         .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))
         .unwrap_or_default();
-    let overflow = if wrap_equations {
-        // The client adapter renders each equation standalone via tex2svg, so
-        // it measures the column and passes `containerWidth` for displays.
-        // Keep inline math indivisible: prose may wrap around an inline atom,
-        // but MathJax should not split the atom internally.
-        "displayOverflow: 'linebreak',\n    linebreaks: { inline: false }  // display width = column (adapter passes containerWidth)"
-    } else {
-        "displayOverflow: 'overflow'"
-    };
-
     format!(
         r#"window.MathJax = {{
   tex: {{
@@ -166,13 +148,11 @@ fn mathjax_config(
     // `local` inlines each math's paths into its own <defs>, making the
     // returned SVG self-contained.
     fontCache: 'local',
-    // `wrap-equations` (config). When on (default): auto-break long display
-    // equations at low-priority operators when the container is narrower than
-    // the rendered math. Inline math stays indivisible so the surrounding
-    // prose, rather than the formula itself, decides where a line breaks.
-    // When off: let long display math overflow and scroll horizontally
-    // (mjx-container has `overflow-x: auto`), matching a non-breqn PDF.
-    {overflow}
+    // Match MathJax 4's intended split: the browser may break inline math at
+    // TeX-valid operators as prose flows, while display math remains one line.
+    // Wide displays get a horizontal scroller instead of inserted math rows.
+    displayOverflow: 'scroll',
+    linebreaks: {{ inline: true }}
   }},
   // `tex-svg.js` in MathJax 4 bakes in the contextual menu + a11y
   // pipeline (Speech Rule Engine), which fires off `sre/speech-worker.js`
@@ -192,7 +172,6 @@ fn mathjax_config(
         packages_long = package_long.join(", "),
         loader_paths = loader_paths,
         macros = macros,
-        overflow = overflow,
     )
 }
 
@@ -245,7 +224,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrapping_is_display_only() {
+    fn inline_math_breaks_and_wide_displays_scroll() {
         let preamble = ExtractedPreamble {
             macros: Vec::new(),
             packages_short: Vec::new(),
@@ -263,24 +242,18 @@ mod tests {
             show_only_refs: false,
             geometry_margin_mm: None,
         };
-        let wrapped = mathjax_config(&preamble, None, true);
+        let config = mathjax_config(&preamble, None);
         assert!(
-            wrapped.contains("displayOverflow: 'linebreak'"),
-            "enabled equation wrapping must keep MathJax display line-breaking"
+            config.contains("displayOverflow: 'scroll'"),
+            "wide displays must use MathJax's horizontal scrolling mode"
         );
         assert!(
-            wrapped.contains("linebreaks: { inline: false }"),
-            "inline math must remain an indivisible TeX atom"
+            config.contains("linebreaks: { inline: true }"),
+            "inline math must allow browser-based MathJax line breaking"
         );
         assert!(
-            ADAPTER_JS.contains("if (wrap && display)"),
-            "only displays may receive a containerWidth line-break hint"
-        );
-
-        let unwrapped = mathjax_config(&preamble, None, false);
-        assert!(
-            unwrapped.contains("displayOverflow: 'overflow'"),
-            "disabled equation wrapping must preserve display overflow"
+            ADAPTER_JS.contains("opts.containerWidth = cw"),
+            "standalone conversions need the paragraph width for inline breaks and display scroll"
         );
     }
 

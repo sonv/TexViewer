@@ -2940,6 +2940,12 @@ mod tests {
     }
 
     #[test]
+    fn default_css_allows_mathjax_inline_breaks() {
+        assert!(super::shell::DEFAULT_CSS.contains(".math.inline { white-space: normal; }"));
+        assert!(!super::shell::DEFAULT_CSS.contains(".math.inline { white-space: nowrap; }"));
+    }
+
+    #[test]
     fn inline_math_separated_by_blank_line_renders_as_paragraphs() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),

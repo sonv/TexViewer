@@ -275,10 +275,12 @@ pub struct ViewerConfig {
     /// as `default-page-mode`. `"system"` follows the OS
     /// `prefers-color-scheme`.
     pub default_theme: Option<Theme>,
-    /// Wrap long display equations in the preview (MathJax automatic line
-    /// breaking). Default `true`. Set `false` to let long math overflow and
-    /// scroll horizontally instead, matching a non-`breqn` PDF more closely.
-    pub wrap_equations: Option<bool>,
+    /// Removed: display equations now stay unbroken and scroll when wider than
+    /// the column, while inline math uses MathJax's browser-based line breaking.
+    /// Keep accepting `wrap-equations` so older configs don't fail wholesale
+    /// under `deny_unknown_fields`; its value is intentionally ignored.
+    #[serde(default, rename = "wrap-equations", skip_serializing)]
+    pub _removed_wrap_equations: Option<bool>,
     /// Raw JavaScript spliced into the page right after the generated
     /// `window.MathJax = {…}` config and before the MathJax library loads.
     /// Mutate `window.MathJax` here to override anything (output options,
@@ -443,7 +445,6 @@ pub struct ResolvedViewerConfig {
     pub default_page_mode: PageMode,
     pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
-    pub wrap_equations: bool,
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
     pub typeset_mode: TypesetMode,
@@ -488,7 +489,6 @@ impl Default for ResolvedConfig {
                 default_page_mode: PageMode::A4,
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
-                wrap_equations: true,
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
                 typeset_mode: TypesetMode::Local,
@@ -547,10 +547,6 @@ impl Config {
                     .source_jump
                     .trigger
                     .unwrap_or(defaults.viewer.source_jump_trigger),
-                wrap_equations: self
-                    .viewer
-                    .wrap_equations
-                    .unwrap_or(defaults.viewer.wrap_equations),
                 mathjax_config: self.viewer.mathjax_config.unwrap_or_default(),
                 theorem_numbering: self
                     .viewer
@@ -629,9 +625,6 @@ impl ViewerConfig {
         }
         if other.default_theme.is_some() {
             self.default_theme = other.default_theme;
-        }
-        if other.wrap_equations.is_some() {
-            self.wrap_equations = other.wrap_equations;
         }
         if other.mathjax_config.is_some() {
             self.mathjax_config = other.mathjax_config;
@@ -914,12 +907,22 @@ weird-extra-field = "oops"
         // reject the whole file and silently drop every other setting to
         // defaults; the shim field keeps such a config parsing.
         let cfg = Config::parse(
-            "[viewer]\nwrap-equations = false\npage-guides = true\n",
+            "[viewer]\nfont-size = 19\npage-guides = true\n",
             Path::new("t.toml"),
         )
         .expect("a leftover page-guides key must not fail the whole config");
         // The real settings alongside it are honored, not lost to defaults.
-        assert!(!cfg.resolve().viewer.wrap_equations);
+        assert_eq!(cfg.resolve().viewer.font_size, 19);
+    }
+
+    #[test]
+    fn removed_wrap_equations_key_is_accepted_and_ignored() {
+        let cfg = Config::parse(
+            "[viewer]\nfont-size = 19\nwrap-equations = false\n",
+            Path::new("t.toml"),
+        )
+        .expect("a leftover wrap-equations key must not fail the whole config");
+        assert_eq!(cfg.resolve().viewer.font_size, 19);
     }
 
     #[test]

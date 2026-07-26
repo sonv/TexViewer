@@ -421,7 +421,6 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "default_page_mode": viewer_config.default_page_mode.as_str(),
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
-            "wrap_equations": viewer_config.wrap_equations,
             "mathjax_config": viewer_config.mathjax_config,
             "keybindings": viewer_config.keybindings,
             "page_margin_mm": mathpreview_core::effective_page_margin_mm(
@@ -2910,7 +2909,6 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "default_page_mode": viewer_config.default_page_mode.as_str(),
         "default_theme": viewer_config.default_theme.as_str(),
         "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
-        "wrap_equations": viewer_config.wrap_equations,
         "mathjax_config": viewer_config.mathjax_config,
         // MathJax extensions are fixed when the page's <head> initializes.
         // The client reloads only when this deterministic list changes.
@@ -3781,6 +3779,7 @@ mod tests {
         let local = r#"# Keep this project-local explanation.
 [viewer]
 font-size = 16
+wrap-equations = false
 mathjax-config = "window.MathJax.svg.displayOverflow = 'scroll';"
 
 [text-macros]
@@ -3795,14 +3794,11 @@ toggle-theme = "T"
                 "viewer.default-page-mode".to_string(),
                 serde_json::json!("dynamic"),
             ),
-            (
-                "viewer.wrap-equations".to_string(),
-                serde_json::json!(false),
-            ),
         ]);
 
         let merged = merge_config_editor_values(local, &values, &label).unwrap();
         assert!(merged.contains("# Keep this project-local explanation."));
+        assert!(merged.contains("wrap-equations = false"));
         assert!(merged.contains("mathjax-config = \"window.MathJax"));
         assert!(merged.contains("SV = \"<strong>#1</strong>\""));
         assert!(merged.contains("toggle-theme = \"T\""));
@@ -3812,7 +3808,6 @@ toggle-theme = "T"
             .resolve();
         assert_eq!(resolved.viewer.font_size, 21);
         assert_eq!(resolved.viewer.default_page_mode.as_str(), "dynamic");
-        assert!(!resolved.viewer.wrap_equations);
         assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
     }
 

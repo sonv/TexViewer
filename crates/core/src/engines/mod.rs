@@ -27,7 +27,7 @@ pub trait MathEngine: std::fmt::Debug {
     /// inline `window.MathJax = {...}` config plus the `<script src=…>` tag.
     /// Future PDF.js / Texpresso engines emit their own loader scripts here.
     /// `viewer` carries the resolved viewer settings the engine may need
-    /// (`wrap-equations`, raw `mathjax-config`, …).
+    /// (raw `mathjax-config`, etc.).
     fn head_html(
         &self,
         preamble: &ExtractedPreamble,
