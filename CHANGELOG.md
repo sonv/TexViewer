@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.5] — 2026-07-26
+
+### Fixed
+
+- **Inline math no longer breaks apart awkwardly.** MathJax now keeps each
+  inline formula as one TeX atom and lets the surrounding prose choose the
+  line break. The existing display-equation behavior is retained: long
+  displays wrap automatically by default, or overflow horizontally when
+  `wrap-equations = false`.
+
 ## [2.1.4] — 2026-07-23
 
 ### Fixed

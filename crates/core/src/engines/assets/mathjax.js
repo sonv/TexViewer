@@ -60,9 +60,11 @@
     try { window.MathJax.typesetClear(mathSourceNodes(nodes)); }
     catch (e) { console.warn('mathpreview engine clear:', e); }
   }
-  // Available width (CSS px) the math can use, for MathJax line-breaking.
-  // tex2svg renders each equation standalone, so we must tell it the column
-  // width or `displayOverflow: 'linebreak'` has nothing to break against.
+  // Available width (CSS px) a display can use for MathJax line-breaking.
+  // tex2svg renders each equation standalone, so we must tell displays the
+  // column width or `displayOverflow: 'linebreak'` has nothing to break
+  // against. Inline math deliberately receives no width hint: TeX treats it
+  // as one unbreakable atom while the surrounding prose wraps around it.
   // clientWidth is the padding-box width (excludes horizontal overflow), so
   // it reports the column even when the old (unwrapped) SVG overflows. Walk a
   // few ancestors in case the source span itself is inline (width 0).
@@ -115,8 +117,9 @@
   function typeset(nodes) {
     var sources = mathSourceNodes(nodes);
     if (window.MathJax.tex2svgPromise) {
-      // Skip the width hint entirely when wrapping is off, so nothing changes
-      // for the overflow/scroll path.
+      // Width hints belong only to wrappable displays. Inline math remains a
+      // single TeX atom, and wrapping-off keeps the display overflow/scroll
+      // path unchanged.
       var wrap = !(window.__mpConfig && window.__mpConfig.wrapEquations === false);
       return sources.reduce(function(chain, source) {
         return chain.then(function() {
@@ -124,8 +127,9 @@
           return Promise.resolve();
         }
         var mm = contextEmEx(source);
-        var opts = { display: sourceDisplay(source), em: mm.em, ex: mm.ex };
-        if (wrap) {
+        var display = sourceDisplay(source);
+        var opts = { display: display, em: mm.em, ex: mm.ex };
+        if (wrap && display) {
           var cw = availWidth(source);
           if (cw) opts.containerWidth = cw;
         }

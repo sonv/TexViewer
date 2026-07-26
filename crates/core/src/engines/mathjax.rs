@@ -126,12 +126,11 @@ fn mathjax_config(
         .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))
         .unwrap_or_default();
     let overflow = if wrap_equations {
-        // Just `displayOverflow: 'linebreak'`. We don't set `linebreaks`
-        // (inline/width default to {inline:true, width:'100%'} already) — the
-        // break *width* isn't a config value here: each equation is rendered
-        // standalone via tex2svg, so the client adapter (assets/mathjax.js)
-        // measures the column and passes it as `containerWidth` per call.
-        "displayOverflow: 'linebreak'  // break width = column (adapter passes containerWidth)"
+        // The client adapter renders each equation standalone via tex2svg, so
+        // it measures the column and passes `containerWidth` for displays.
+        // Keep inline math indivisible: prose may wrap around an inline atom,
+        // but MathJax should not split the atom internally.
+        "displayOverflow: 'linebreak',\n    linebreaks: { inline: false }  // display width = column (adapter passes containerWidth)"
     } else {
         "displayOverflow: 'overflow'"
     };
@@ -169,9 +168,9 @@ fn mathjax_config(
     fontCache: 'local',
     // `wrap-equations` (config). When on (default): auto-break long display
     // equations at low-priority operators when the container is narrower than
-    // the rendered math — with MathJax 4's improved heuristics this also wraps
-    // inline math that overflows its paragraph (narrow margins / sidenote
-    // chips). When off: let long math overflow and scroll horizontally
+    // the rendered math. Inline math stays indivisible so the surrounding
+    // prose, rather than the formula itself, decides where a line breaks.
+    // When off: let long display math overflow and scroll horizontally
     // (mjx-container has `overflow-x: auto`), matching a non-breqn PDF.
     {overflow}
   }},
@@ -244,6 +243,46 @@ const EXTRA_CSS: &str = include_str!("assets/mathjax.css");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapping_is_display_only() {
+        let preamble = ExtractedPreamble {
+            macros: Vec::new(),
+            packages_short: Vec::new(),
+            packages_long: Vec::new(),
+            unmapped_packages: Vec::new(),
+            warnings: Vec::new(),
+            raw_preamble: String::new(),
+            title: None,
+            title_short: None,
+            author: None,
+            authors: Vec::new(),
+            author_details: Vec::new(),
+            date: None,
+            sidenote_wrappers: Vec::new(),
+            show_only_refs: false,
+            geometry_margin_mm: None,
+        };
+        let wrapped = mathjax_config(&preamble, None, true);
+        assert!(
+            wrapped.contains("displayOverflow: 'linebreak'"),
+            "enabled equation wrapping must keep MathJax display line-breaking"
+        );
+        assert!(
+            wrapped.contains("linebreaks: { inline: false }"),
+            "inline math must remain an indivisible TeX atom"
+        );
+        assert!(
+            ADAPTER_JS.contains("if (wrap && display)"),
+            "only displays may receive a containerWidth line-break hint"
+        );
+
+        let unwrapped = mathjax_config(&preamble, None, false);
+        assert!(
+            unwrapped.contains("displayOverflow: 'overflow'"),
+            "disabled equation wrapping must preserve display overflow"
+        );
+    }
 
     #[test]
     fn full_width_displays_are_block_level() {
