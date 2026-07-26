@@ -555,6 +555,7 @@ pub(super) fn write_float_placeholder(
     env: &str,
     body: &str,
     labels: &LabelTable,
+    rendered_asset: Option<&str>,
 ) {
     let kind = if env.trim_end_matches('*') == "table" {
         "Table"
@@ -578,9 +579,13 @@ pub(super) fn write_float_placeholder(
         .as_deref()
         .map(|c| render_latex_text_with_math(c.trim(), labels))
         .unwrap_or_else(|| "content omitted from preview".to_string());
-    let asset_html = asset
-        .as_ref()
-        .map(|call| render_float_asset(&call.arg, call.optional.as_deref()))
+    let asset_html = rendered_asset
+        .map(str::to_string)
+        .or_else(|| {
+            asset
+                .as_ref()
+                .map(|call| render_float_asset(&call.arg, call.optional.as_deref()))
+        })
         .unwrap_or_default();
     writeln!(
         out,

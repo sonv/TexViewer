@@ -8,6 +8,7 @@ default-page-mode = "a4"
 default-theme = "system"
 theorem-numbering = "auto"
 typeset-mode = "local"
+# render-tikz = true # Trusted projects only; runs local TeX with shell escape disabled.
 # page-margin = 17 # Uncomment to pin the A4 margin in mm; omitted follows geometry.
 
 [viewer.source-jump]

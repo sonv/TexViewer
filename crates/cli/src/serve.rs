@@ -40,7 +40,7 @@ use futures_util::{SinkExt, StreamExt};
 use notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::new_debouncer;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
 use mathpreview_core::{
     bibtex::{self, BibEntry, BibStyle},
@@ -152,6 +152,9 @@ struct AppState {
     /// when nothing changed. Invalidated by mtime on the next render
     /// the file is touched.
     file_content_cache: Arc<RwLock<HashMap<PathBuf, CachedFile>>>,
+    /// Lazily compiled TikZ SVGs. A mutex intentionally serializes TeX jobs:
+    /// loading a page with many diagrams must not fork a compiler storm.
+    tikz_cache: Arc<Mutex<HashMap<String, TikzCacheEntry>>>,
     /// Ring buffer of recent server log entries surfaced in the
     /// viewer's "log" dialog. Capped at `LOG_BUFFER_CAP` newest
     /// entries. Std `Mutex` rather than tokio's so the file-watcher
@@ -180,6 +183,15 @@ struct AppState {
 }
 
 const LOG_BUFFER_CAP: usize = 400;
+const TIKZ_CACHE_CAP: usize = 32;
+const TIKZ_COMPILE_TIMEOUT: Duration = Duration::from_secs(20);
+const TIKZ_CONVERT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone)]
+struct TikzCacheEntry {
+    svg: Vec<u8>,
+    success: bool,
+}
 
 /// Grace window after a `/jump` long-poll returns: if the editor re-issued
 /// its poll within this window we still treat it as attached, covering the
@@ -421,6 +433,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "default_page_mode": viewer_config.default_page_mode.as_str(),
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
+            "render_tikz": viewer_config.render_tikz,
             "mathjax_config": viewer_config.mathjax_config,
             "keybindings": viewer_config.keybindings,
             "page_margin_mm": mathpreview_core::effective_page_margin_mm(
@@ -753,6 +766,7 @@ pub async fn run(
         search_query: Arc::new(RwLock::new(EditorSearch::default())),
         last_cursor: Arc::new(RwLock::new(None)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+        tikz_cache: Arc::new(Mutex::new(HashMap::new())),
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         debug_logging: Arc::new(AtomicBool::new(false)),
         last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
@@ -779,6 +793,7 @@ pub async fn run(
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/assets/*path", get(serve_asset))
+        .route("/tikz/*path", get(serve_tikz))
         .route("/vendor/mathjax/*path", get(serve_vendor_mathjax))
         .route("/vendor/newcm-text/*path", get(serve_vendor_newcm_text))
         .route("/ws", get(serve_ws))
@@ -998,6 +1013,240 @@ async fn serve_asset(
         }
         Err(status) => status.into_response(),
     }
+}
+
+fn tikz_hash_from_path(path: &str) -> Option<&str> {
+    let hash = path.strip_suffix(".svg")?;
+    (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hash)
+}
+
+fn tikz_svg_response(entry: TikzCacheEntry) -> Response {
+    let mut response = Body::from(entry.svg).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("image/svg+xml"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if entry.success {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-store, max-age=0"
+        }),
+    );
+    response
+}
+
+async fn serve_tikz(State(state): State<AppState>, AxumPath(path): AxumPath<String>) -> Response {
+    if !state.viewer_config.read().await.render_tikz {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(hash) = tikz_hash_from_path(&path).map(str::to_string) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let (asset, root_dir) = {
+        let current = state.current.read().await;
+        let Some(asset) = current.tikz_assets.get(&hash).cloned() else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let root_dir = current
+            .root_file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        (asset, root_dir)
+    };
+
+    // Hold the cache mutex across compilation on purpose. TikZ jobs are
+    // relatively expensive; serial execution avoids a compiler storm when a
+    // page with several lazy images becomes visible at once and also dedupes
+    // simultaneous requests for the same hash.
+    let mut cache = state.tikz_cache.lock().await;
+    if let Some(entry) = cache.get(&hash).cloned() {
+        return tikz_svg_response(entry);
+    }
+
+    let entry = match compile_tikz_svg(&asset, &root_dir, &hash).await {
+        Ok(svg) => {
+            log_event_verbose(&state, "info", format!("TikZ {hash}: compiled SVG"));
+            TikzCacheEntry { svg, success: true }
+        }
+        Err(error) => {
+            log_event(&state, "error", format!("TikZ {hash}: {error}"));
+            TikzCacheEntry {
+                svg: tikz_error_svg(&error),
+                success: false,
+            }
+        }
+    };
+    // Successful SVGs are immutable and safe to retain. Do not retain error
+    // placeholders: installing a missing engine/package and refreshing should
+    // retry without requiring a daemon restart.
+    if entry.success {
+        if cache.len() >= TIKZ_CACHE_CAP {
+            if let Some(oldest) = cache.keys().find(|key| *key != &hash).cloned() {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(hash, entry.clone());
+    }
+    tikz_svg_response(entry)
+}
+
+struct TikzWorkDir(PathBuf);
+
+impl Drop for TikzWorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn select_tikz_engine(preamble: &str) -> &'static str {
+    let compact_magic = preamble
+        .lines()
+        .filter(|line| line.trim_start().starts_with('%'))
+        .map(|line| line.to_ascii_lowercase().replace([' ', '\t'], ""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if compact_magic.contains("!texprogram=xelatex") {
+        "xelatex"
+    } else if compact_magic.contains("!texprogram=lualatex")
+        || preamble.contains(r"\usepackage{fontspec}")
+        || preamble.contains(r"\usepackage[") && preamble.contains("]{fontspec}")
+        || preamble.contains(r"\setmainfont")
+    {
+        "lualatex"
+    } else {
+        "pdflatex"
+    }
+}
+
+fn tikz_document(asset: &mathpreview_core::renderer::TikzAsset) -> String {
+    let class = if asset.preamble.contains(r"\documentclass") {
+        ""
+    } else {
+        "\\documentclass{article}\n"
+    };
+    format!(
+        "{class}{}\n\\usepackage[active,tightpage]{{preview}}\n\
+         \\PreviewEnvironment{{{}}}\n\\pagestyle{{empty}}\n\
+         \\begin{{document}}\n\\begin{{{}}}{}\n\\end{{{}}}\n\\end{{document}}\n",
+        asset.preamble, asset.environment, asset.environment, asset.body, asset.environment,
+    )
+}
+
+async fn command_output_with_timeout(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+    label: &str,
+) -> std::result::Result<std::process::Output, String> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| format!("{label} timed out after {}s", timeout.as_secs()))?
+        .map_err(|e| format!("could not start {label}: {e}"))
+}
+
+async fn compile_tikz_svg(
+    asset: &mathpreview_core::renderer::TikzAsset,
+    root_dir: &Path,
+    hash: &str,
+) -> std::result::Result<Vec<u8>, String> {
+    let work_path =
+        std::env::temp_dir().join(format!("mathpreview-tikz-{}-{hash}", std::process::id()));
+    if work_path.exists() {
+        std::fs::remove_dir_all(&work_path)
+            .map_err(|e| format!("clearing stale TikZ work directory: {e}"))?;
+    }
+    std::fs::create_dir_all(&work_path)
+        .map_err(|e| format!("creating TikZ work directory: {e}"))?;
+    let work = TikzWorkDir(work_path);
+    let tex_path = work.0.join("diagram.tex");
+    let pdf_path = work.0.join("diagram.pdf");
+    let svg_path = work.0.join("diagram.svg");
+    tokio::fs::write(&tex_path, tikz_document(asset))
+        .await
+        .map_err(|e| format!("writing isolated TikZ document: {e}"))?;
+
+    let engine = select_tikz_engine(&asset.preamble);
+    let mut tex = tokio::process::Command::new(engine);
+    tex.args([
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        "-no-shell-escape",
+    ])
+    .arg(format!("-output-directory={}", work.0.display()))
+    .arg(&tex_path)
+    .current_dir(root_dir)
+    .stdin(Stdio::null());
+    let tex_output = command_output_with_timeout(tex, TIKZ_COMPILE_TIMEOUT, engine).await?;
+    if !tex_output.status.success() {
+        return Err(format!(
+            "{engine} failed:\n{}",
+            tail_log(&tex_output.stdout, &tex_output.stderr)
+        ));
+    }
+    if !pdf_path.is_file() {
+        return Err(format!("{engine} succeeded but produced no diagram.pdf"));
+    }
+
+    let mut converter = tokio::process::Command::new("dvisvgm");
+    converter
+        .args(["--pdf", "--page=1", "--no-fonts", "--exact-bbox"])
+        .arg(format!("--output={}", svg_path.display()))
+        .arg(&pdf_path)
+        .current_dir(root_dir)
+        .stdin(Stdio::null());
+    let converted = command_output_with_timeout(converter, TIKZ_CONVERT_TIMEOUT, "dvisvgm").await?;
+    if !converted.status.success() {
+        return Err(format!(
+            "dvisvgm failed:\n{}",
+            tail_log(&converted.stdout, &converted.stderr)
+        ));
+    }
+    let svg = tokio::fs::read(&svg_path)
+        .await
+        .map_err(|e| format!("reading generated TikZ SVG: {e}"))?;
+    let lower = String::from_utf8_lossy(&svg).to_ascii_lowercase();
+    if [
+        "<script",
+        "javascript:",
+        "onload=",
+        "onerror=",
+        "href=\"http",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return Err("generated SVG contained active or remote content".to_string());
+    }
+    Ok(svg)
+}
+
+fn xml_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn tikz_error_svg(error: &str) -> Vec<u8> {
+    let summary = error
+        .lines()
+        .find(|line| line.trim_start().starts_with('!'))
+        .or_else(|| error.lines().rev().find(|line| !line.trim().is_empty()))
+        .unwrap_or("TikZ compilation failed")
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(140)
+        .collect::<String>();
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="760" height="92" viewBox="0 0 760 92" role="img" aria-label="TikZ preview unavailable"><rect x="1" y="1" width="758" height="90" rx="5" fill="#fff7f7" stroke="#c92a2a" stroke-dasharray="5 4"/><text x="18" y="34" font-family="system-ui,sans-serif" font-size="16" font-weight="600" fill="#a61e1e">TikZ preview unavailable</text><text x="18" y="62" font-family="ui-monospace,monospace" font-size="12" fill="#5f2120">{}</text></svg>"##,
+        xml_escape(&summary),
+    )
+    .into_bytes()
 }
 
 /// Vendored MathJax 4 bundle, embedded into the binary at compile time
@@ -2803,6 +3052,7 @@ async fn render_cached(
     let mut render_opts = state.opts.clone();
     render_opts.viewer_config = live_viewer_config;
     render_opts.text_macros = live_text_macros;
+    render_opts.latex_preamble = Some(project.preamble.source.clone());
     let rendered = renderer::render(
         &body,
         &preamble,
@@ -2823,6 +3073,7 @@ async fn render_cached(
         root_file: root.to_path_buf(),
         preamble,
         included_files,
+        tikz_assets: rendered.tikz_assets,
     };
     Ok((out, t))
 }
@@ -3626,10 +3877,54 @@ mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
         is_latest_render_attempt, merge_config_editor_values, origin_is_loopback,
-        preamble_fingerprint, search_sync_payload, serve_buffer_push, watched_event_paths,
+        preamble_fingerprint, search_sync_payload, select_tikz_engine, serve_buffer_push,
+        tikz_document, tikz_error_svg, tikz_hash_from_path, watched_event_paths,
         websocket_needs_reload, AppState, EditorSearch, PatchOp, PlanSlot, SearchRequest,
         WS_PROTOCOL_VERSION,
     };
+
+    #[test]
+    fn tikz_asset_paths_and_documents_are_bounded_and_isolated() {
+        assert_eq!(
+            tikz_hash_from_path("0123456789abcdef.svg"),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(tikz_hash_from_path("../diagram.svg"), None);
+        assert_eq!(tikz_hash_from_path("not-hex-hash.svg"), None);
+
+        let asset = mathpreview_core::renderer::TikzAsset {
+            environment: "tikzpicture".to_string(),
+            body: "[scale=2]\n\\draw (0,0) -- (1,1);".to_string(),
+            preamble: "\\documentclass{article}\n\\usepackage{tikz}".to_string(),
+        };
+        let document = tikz_document(&asset);
+        assert_eq!(document.matches(r"\documentclass").count(), 1);
+        assert!(document.contains(r"\usepackage[active,tightpage]{preview}"));
+        assert!(document.contains(r"\PreviewEnvironment{tikzpicture}"));
+        assert!(document.contains(r"\begin{tikzpicture}[scale=2]"));
+        assert!(document.contains(r"\end{tikzpicture}"));
+    }
+
+    #[test]
+    fn tikz_engine_selection_and_error_svg_are_safe() {
+        assert_eq!(
+            select_tikz_engine("% !TEX program = xelatex\n\\documentclass{article}"),
+            "xelatex"
+        );
+        assert_eq!(
+            select_tikz_engine("\\documentclass{article}\n\\usepackage{fontspec}"),
+            "lualatex"
+        );
+        assert_eq!(select_tikz_engine("\\documentclass{article}"), "pdflatex");
+
+        let svg = String::from_utf8(tikz_error_svg(
+            "pdflatex failed:\n! Undefined control sequence <script>alert(1)</script>",
+        ))
+        .unwrap();
+        assert!(svg.contains("TikZ preview unavailable"));
+        assert!(svg.contains("&lt;script&gt;"));
+        assert!(!svg.contains("<script>"));
+    }
 
     #[test]
     fn preamble_fingerprint_includes_dependency_contents() {
@@ -3695,7 +3990,7 @@ mod tests {
         atomic::{AtomicBool, AtomicU64},
         mpsc as std_mpsc, Arc,
     };
-    use tokio::sync::{broadcast, Notify, RwLock};
+    use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
     #[test]
     fn websocket_protocol_accepts_current_shell_version() {
@@ -4136,6 +4431,7 @@ Third paragraph with $x^2$.
                     geometry_margin_mm: None,
                 },
                 included_files: Vec::new(),
+                tikz_assets: HashMap::new(),
             })),
             tx,
             watched: Arc::new(RwLock::new(HashSet::new())),
@@ -4157,6 +4453,7 @@ Third paragraph with $x^2$.
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            tikz_cache: Arc::new(Mutex::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
@@ -4537,6 +4834,7 @@ Third paragraph with $x^2$.
                 root_file: root_canon.clone(),
                 preamble: empty_preamble(),
                 included_files: vec![child_canon.clone()],
+                tikz_assets: HashMap::new(),
             })),
             tx,
             watched: Arc::new(RwLock::new(watched_set)),
@@ -4558,6 +4856,7 @@ Third paragraph with $x^2$.
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            tikz_cache: Arc::new(Mutex::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
@@ -4636,6 +4935,7 @@ Third paragraph with $x^2$.
                 root_file: root,
                 preamble: empty_preamble(),
                 included_files: Vec::new(),
+                tikz_assets: HashMap::new(),
             })),
             tx,
             watched: Arc::new(RwLock::new(watched_set)),
@@ -4657,6 +4957,7 @@ Third paragraph with $x^2$.
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            tikz_cache: Arc::new(Mutex::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),

@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.8] — 2026-07-26
+
+### Added
+
+- **Trusted projects can opt in to native TikZ previews.** Set
+  `render-tikz = true` under `[viewer]` to render `tikzpicture` and `tikzcd`
+  environments—including diagrams inside figures and tables—as lazy,
+  horizontally scrollable SVGs. The live server compiles each unique diagram
+  once with the document's own preamble and local TeX engine, converts it with
+  `dvisvgm`, and caches the result. The option is off by default; compilation
+  is serialized, time-limited, isolated in a temporary directory, and uses
+  `-no-shell-escape`. Failures remain visible in the page and viewer log.
+
 ## [2.1.7] — 2026-07-26
 
 ### Changed

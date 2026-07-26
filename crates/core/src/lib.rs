@@ -106,12 +106,13 @@ fn finish_render(
     // Inject the resolved root path so the topbar can show "title — path".
     // Done as a clone to avoid asking callers to mutate the &HtmlOptions
     // they passed in.
-    let opts = if opts.source_path.is_none() {
+    let opts = {
         let mut owned = opts.clone();
-        owned.source_path = Some(root.clone());
+        if owned.source_path.is_none() {
+            owned.source_path = Some(root.clone());
+        }
+        owned.latex_preamble = Some(project.preamble.source.clone());
         owned
-    } else {
-        opts.clone()
     };
     let rendered = renderer::render(&body, &preamble, &labels, &bib, bib_style, &mut sync, &opts);
     Ok(RenderOutput {
@@ -122,5 +123,6 @@ fn finish_render(
         root_file: root,
         preamble,
         included_files: project.included_files().map(PathBuf::from).collect(),
+        tikz_assets: rendered.tikz_assets,
     })
 }

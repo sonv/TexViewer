@@ -65,6 +65,13 @@ pub struct HtmlOptions {
     /// keybindings, …). Loaded from the TOML config cascade by the daemon; static
     /// `render` callers get the built-in defaults.
     pub viewer_config: crate::config::ResolvedViewerConfig,
+    /// Base URL for on-demand TikZ SVG assets. The live server sets this to
+    /// `/tikz/`; standalone HTML leaves it unset so it never emits dead
+    /// server-relative image URLs.
+    pub tikz_asset_base: Option<String>,
+    /// Exact root-document preamble used to compile isolated TikZ diagrams.
+    /// Populated internally after the project loader splits the document.
+    pub latex_preamble: Option<String>,
     /// Inline text-mode macro → HTML template map from the TOML config's
     /// `[text-macros]` table. Applied to body text by `render_inline_latex`.
     /// Empty for static `render` callers.
@@ -80,9 +87,21 @@ impl Default for HtmlOptions {
             inline_css: true,
             macro_overrides: Vec::new(),
             viewer_config: crate::config::ResolvedConfig::default().viewer,
+            tikz_asset_base: None,
+            latex_preamble: None,
             text_macros: std::collections::HashMap::new(),
         }
     }
+}
+
+/// One TikZ environment that the live server can compile into an SVG.
+/// The URL hash covers all three fields, so a body, option, or preamble edit
+/// produces a fresh immutable asset URL.
+#[derive(Debug, Clone)]
+pub struct TikzAsset {
+    pub environment: String,
+    pub body: String,
+    pub preamble: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +119,10 @@ pub struct RenderOutput {
     pub root_file: PathBuf,
     pub preamble: ExtractedPreamble,
     pub included_files: Vec<PathBuf>,
+    /// On-demand TikZ sources keyed by the hash embedded in their image URLs.
+    /// Internal server state, never part of the WebSocket/debug JSON payload.
+    #[serde(skip)]
+    pub tikz_assets: HashMap<String, TikzAsset>,
 }
 
 /// Both forms of the rendered output, returned together so `render_project`
@@ -109,6 +132,7 @@ pub struct RenderedHtml {
     pub full: String,
     pub body: String,
     pub blocks: Vec<RenderedBlock>,
+    pub tikz_assets: HashMap<String, TikzAsset>,
 }
 
 /// One top-level block wrapped in `<article class="blk">`, ready for the
@@ -192,6 +216,10 @@ pub fn render(
         source_anchors: Vec::new(),
         chunk_depth: 0,
         pending_sub: None,
+        tikz_assets: HashMap::new(),
+        render_tikz: opts.viewer_config.render_tikz,
+        tikz_asset_base: opts.tikz_asset_base.as_deref(),
+        latex_preamble: opts.latex_preamble.as_deref().unwrap_or(""),
     };
 
     // Top-level inline runs become paragraph blocks. Structural nodes
@@ -332,7 +360,12 @@ pub fn render(
 
     let body: String = blocks.iter().map(|b| b.html.as_str()).collect();
     let full = wrap_in_shell(&body, preamble, opts);
-    RenderedHtml { full, body, blocks }
+    RenderedHtml {
+        full,
+        body,
+        blocks,
+        tikz_assets: ctx.tikz_assets,
+    }
 }
 
 fn front_matter_order(nodes: &[Node]) -> Vec<&Node> {
@@ -1013,6 +1046,13 @@ struct RenderCtx<'a> {
     /// Sub-block structure captured by the most recent outermost
     /// `write_chunked_children`, consumed by the next `push_block`.
     pending_sub: Option<PendingSub>,
+    /// TikZ sources referenced by this render, keyed by their immutable URL
+    /// hash. The live server consumes these lazily when the browser asks for an
+    /// SVG, so ordinary document renders never spawn TeX.
+    tikz_assets: HashMap<String, TikzAsset>,
+    render_tikz: bool,
+    tikz_asset_base: Option<&'a str>,
+    latex_preamble: &'a str,
 }
 
 /// Sub-block capture in progress, with body-interior byte offsets into the
@@ -1060,6 +1100,85 @@ fn record_sync(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>, 
         label.map(str::to_string),
         kind,
     );
+}
+
+fn is_tikz_environment(env: &str) -> bool {
+    matches!(env, "tikzpicture" | "tikzcd")
+}
+
+/// Return the first TikZ environment nested inside an otherwise-opaque float.
+/// The parser deliberately keeps `figure` bodies verbatim, so recover the
+/// diagram here without trying to parse arbitrary LaTeX float contents.
+fn first_nested_tikz(source: &str) -> Option<(String, String)> {
+    ["tikzpicture", "tikzcd"]
+        .into_iter()
+        .filter_map(|env| {
+            let begin = format!(r"\begin{{{env}}}");
+            let start = source.find(&begin)?;
+            let body_start = start + begin.len();
+            let end = format!(r"\end{{{env}}}");
+            let mut cursor = body_start;
+            let mut depth = 1usize;
+            while cursor <= source.len() {
+                let next_begin = source[cursor..].find(&begin).map(|i| cursor + i);
+                let next_end = source[cursor..].find(&end).map(|i| cursor + i);
+                match (next_begin, next_end) {
+                    (_, None) => return None,
+                    (Some(b), Some(e)) if b < e => {
+                        depth += 1;
+                        cursor = b + begin.len();
+                    }
+                    (_, Some(e)) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some((
+                                start,
+                                env.to_string(),
+                                source[body_start..e].to_string(),
+                            ));
+                        }
+                        cursor = e + end.len();
+                    }
+                }
+            }
+            None
+        })
+        .min_by_key(|(start, _, _)| *start)
+        .map(|(_, env, body)| (env, body))
+}
+
+fn tikz_html(env: &str, body: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> String {
+    let hash = fnv_hash(&format!(
+        "tikz-svg-v1\0{env}\0{body}\0{}",
+        ctx.latex_preamble
+    ));
+    ctx.tikz_assets.insert(
+        hash.clone(),
+        TikzAsset {
+            environment: env.to_string(),
+            body: body.to_string(),
+            preamble: ctx.latex_preamble.to_string(),
+        },
+    );
+
+    let id = ctx.idgen.next("tikz");
+    record(ctx, &id, span, None);
+    let content = if !ctx.render_tikz {
+        r#"<div class="tikz-placeholder"><strong>TikZ preview disabled.</strong> Enable <code>render-tikz = true</code> for this trusted project.</div>"#.to_string()
+    } else if let Some(base) = ctx.tikz_asset_base {
+        format!(
+            r#"<img class="tikz-image" src="{src}" alt="TikZ diagram" loading="lazy" decoding="async">"#,
+            src = escape_attr(&format!("{base}{hash}.svg")),
+        )
+    } else {
+        r#"<div class="tikz-placeholder"><strong>TikZ preview needs live server mode.</strong> Standalone HTML cannot compile local TeX assets.</div>"#.to_string()
+    };
+    format!(
+        r#"<div class="tikz-diagram" id="{id}" data-src="{src}" data-tikz-hash="{hash}" tabindex="0" title="TikZ diagram">{content}</div>"#,
+        id = escape_attr(&id),
+        src = escape_attr(&data_src(span)),
+        hash = escape_attr(&hash),
+    )
 }
 
 fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
@@ -1548,7 +1667,15 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         }
         NodeKind::OpaqueEnv { env, body } => {
             match env.as_str() {
-                "figure" | "table" => write_float_placeholder(out, env, body, ctx.labels),
+                tikz if is_tikz_environment(tikz) => {
+                    out.push_str(&tikz_html(tikz, body, &n.span, ctx));
+                }
+                "figure" | "figure*" | "table" | "table*" => {
+                    let tikz_asset = first_nested_tikz(body).map(|(tikz_env, tikz_body)| {
+                        tikz_html(&tikz_env, &tikz_body, &n.span, ctx)
+                    });
+                    write_float_placeholder(out, env, body, ctx.labels, tikz_asset.as_deref());
+                }
                 _ => {
                     // Best-effort: render verbatim text content so the reader still
                     // sees the words. Math inside opaque envs won't be typeset.
@@ -4001,6 +4128,76 @@ mod tests {
             .body_html
             .contains(r#"<div class="opaque-env" data-env="figure""#));
         assert!(!out.body_html.contains(r#"\includegraphics"#));
+    }
+
+    #[test]
+    fn tikz_environments_become_lazy_svg_assets_when_enabled() {
+        let mut opts = HtmlOptions::default();
+        opts.viewer_config.render_tikz = true;
+        opts.tikz_asset_base = Some("/tikz/".to_string());
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\documentclass{article}\n\\usepackage{tikz}\n\\begin{document}\n\\begin{tikzpicture}[scale=2]\n\\draw (0,0) -- (1,1);\n\\end{tikzpicture}\n\\end{document}\n"
+                .to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert_eq!(out.tikz_assets.len(), 1);
+        let (hash, asset) = out.tikz_assets.iter().next().unwrap();
+        assert_eq!(asset.environment, "tikzpicture");
+        assert!(asset.body.starts_with("[scale=2]"));
+        assert!(asset.preamble.contains(r"\usepackage{tikz}"));
+        assert!(out.body_html.contains(r#"class="tikz-diagram""#));
+        assert!(out
+            .body_html
+            .contains(&format!(r#"src="/tikz/{hash}.svg""#)));
+        assert!(!out.body_html.contains(r#"class="opaque-env""#));
+        assert!(!out.body_html.contains(r#"class="math "#));
+    }
+
+    #[test]
+    fn tikz_inside_figure_keeps_caption_and_has_safe_disabled_placeholder() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\documentclass{article}\n\\usepackage{tikz}\n\\begin{document}\n\\begin{figure}\n\\centering\n\\begin{tikzpicture}\n\\draw (0,0) circle (1cm);\n\\end{tikzpicture}\n\\caption{A circle.}\\label{fig:circle}\n\\end{figure}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(out.tikz_assets.len(), 1);
+        assert!(out
+            .body_html
+            .contains(r#"class="float-placeholder float-figure""#));
+        assert!(out.body_html.contains("A circle."));
+        assert!(out.body_html.contains("TikZ preview disabled."));
+        assert!(out.body_html.contains("render-tikz = true"));
+        assert!(!out.body_html.contains(r#"\draw"#));
+    }
+
+    #[test]
+    fn tikzcd_is_lazy_and_static_render_never_emits_a_dead_asset_url() {
+        let mut opts = HtmlOptions::default();
+        opts.viewer_config.render_tikz = true;
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\documentclass{article}\n\\usepackage{tikz-cd}\n\\begin{document}\n\\begin{tikzcd}\nA \\arrow[r] & B\n\\end{tikzcd}\n\\end{document}\n"
+                .to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert_eq!(out.tikz_assets.len(), 1);
+        assert_eq!(
+            out.tikz_assets.values().next().unwrap().environment,
+            "tikzcd"
+        );
+        assert!(out
+            .body_html
+            .contains("TikZ preview needs live server mode."));
+        assert!(!out.body_html.contains(r#"src="/tikz/"#));
+        assert!(!out.body_html.contains(r#"\arrow"#));
     }
 
     #[test]

@@ -281,6 +281,11 @@ pub struct ViewerConfig {
     /// under `deny_unknown_fields`; its value is intentionally ignored.
     #[serde(default, rename = "wrap-equations", skip_serializing)]
     pub _removed_wrap_equations: Option<bool>,
+    /// Compile `tikzpicture` / `tikzcd` environments with a local TeX engine
+    /// and show the resulting SVG in the live viewer. Off by default because
+    /// TeX compilation executes document code; enable only for trusted
+    /// projects. The daemon always disables shell escape for these jobs.
+    pub render_tikz: Option<bool>,
     /// Raw JavaScript spliced into the page right after the generated
     /// `window.MathJax = {…}` config and before the MathJax library loads.
     /// Mutate `window.MathJax` here to override anything (output options,
@@ -445,6 +450,7 @@ pub struct ResolvedViewerConfig {
     pub default_page_mode: PageMode,
     pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
+    pub render_tikz: bool,
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
     pub typeset_mode: TypesetMode,
@@ -489,6 +495,7 @@ impl Default for ResolvedConfig {
                 default_page_mode: PageMode::A4,
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
+                render_tikz: false,
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
                 typeset_mode: TypesetMode::Local,
@@ -547,6 +554,10 @@ impl Config {
                     .source_jump
                     .trigger
                     .unwrap_or(defaults.viewer.source_jump_trigger),
+                render_tikz: self
+                    .viewer
+                    .render_tikz
+                    .unwrap_or(defaults.viewer.render_tikz),
                 mathjax_config: self.viewer.mathjax_config.unwrap_or_default(),
                 theorem_numbering: self
                     .viewer
@@ -625,6 +636,9 @@ impl ViewerConfig {
         }
         if other.default_theme.is_some() {
             self.default_theme = other.default_theme;
+        }
+        if other.render_tikz.is_some() {
+            self.render_tikz = other.render_tikz;
         }
         if other.mathjax_config.is_some() {
             self.mathjax_config = other.mathjax_config;
@@ -724,6 +738,7 @@ mod tests {
         assert_eq!(cfg.viewer.font_size, 18);
         assert_eq!(cfg.viewer.ui_font_size, 12);
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
+        assert!(!cfg.viewer.render_tikz);
     }
 
     #[test]
@@ -771,6 +786,7 @@ mod tests {
 [viewer]
 font-size = 22
 ui-font-size = 15
+render-tikz = true
 
 [viewer.source-jump]
 trigger = "double-click"
@@ -779,6 +795,7 @@ trigger = "double-click"
         let resolved = cfg.resolve();
         assert_eq!(resolved.viewer.font_size, 22);
         assert_eq!(resolved.viewer.ui_font_size, 15);
+        assert!(resolved.viewer.render_tikz);
         assert_eq!(
             resolved.viewer.source_jump_trigger,
             SourceJumpTrigger::DoubleClick

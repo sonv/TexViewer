@@ -1142,6 +1142,8 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
      page blank (a long proof after a lemma is the classic case). Letting them
      flow matches how LaTeX paginates. */
   figure, table, .math.display, mjx-container { break-inside: avoid; }
+  .tikz-diagram { overflow: visible; }
+  .tikz-image { max-width: 100%; }
   .sec-h0, .sec-h1, .sec-h2, .sec-h3, .sec-h4 { break-after: avoid; }
   /* When a boxed theorem/proof does split across a page, repeat its border and
      padding on each fragment instead of dropping them at the break. */
@@ -1151,6 +1153,37 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
   }
 }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
+.tikz-diagram {
+  display: block;
+  max-width: 100%;
+  margin: 0.8em auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+.tikz-diagram:focus {
+  outline: 2px solid rgba(91, 62, 162, 0.5);
+  outline-offset: 3px;
+}
+.tikz-image {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+  background: #fff;
+}
+.tikz-placeholder {
+  padding: 0.7em 0.9em;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  background: var(--paper);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 0.82em;
+  text-align: left;
+}
+.tikz-placeholder code { color: var(--fg); }
 /* `quote` / `quotation`: an indented block quotation. Body is parsed normally,
    so math, refs, and nested blocks render inside. */
 blockquote.quote { margin: 0.8em 1.6em; padding-left: 0.85em; border-left: 3px solid var(--border-strong); }

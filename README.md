@@ -91,6 +91,11 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   wider than the page. A raw `mathjax-config` escape hatch can override any
   MathJax option. See [Configure the
   viewer](#configure-the-viewer).
+- **Optional native TikZ previews:** trusted projects can opt in to lazy,
+  cached SVG rendering of `tikzpicture` and `tikzcd`, including diagrams
+  nested in `figure` or `table`. The viewer uses the project's real TeX
+  preamble and a local TeX installation instead of asking MathJax to interpret
+  TikZ.
 - **Fast incremental updates**: each math node carries a content hash, so
   already-typeset SVG is transplanted and only genuinely new expressions
   are typeset; the parser caches the preamble; and the server diffs
@@ -627,6 +632,7 @@ overrides, applied per field with last-wins semantics:
 font-size = 18                  # body text size in CSS pixels
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
 typeset-mode = "local"          # | "background" — see below
+# render-tikz = true             # trusted projects only; invokes local TeX
 # page-margin = 25              # A4 horizontal margin in mm; omit to follow the
                                 # document's \usepackage[margin=…]{geometry}
 
@@ -706,6 +712,17 @@ MathJax follows prose and display conventions separately. Inline formulas may
 break at TeX-valid operators so they can continue naturally onto the next text
 line. Display formulas are not broken into artificial rows; when one is wider
 than the page column, the equation itself can be scrolled horizontally.
+
+`render-tikz = true` enables native previews for `tikzpicture` and `tikzcd`
+in trusted projects. It is deliberately off by default because it runs the
+project's preamble through a local TeX engine. The server chooses XeLaTeX or
+LuaLaTeX when the preamble requests one (or uses `fontspec`), otherwise
+pdfLaTeX, then converts the first PDF page to a path-only SVG with `dvisvgm`.
+Compilation is lazy, serialized, cached, time-limited, isolated in a temporary
+directory, and always uses `-no-shell-escape`. Compiler failures appear as a
+small diagram placeholder and in the viewer log. One-shot HTML rendering does
+not invoke TeX; it leaves an explicit placeholder because there is no live
+server to serve the SVG.
 
 `typeset-mode` controls how much of the document is typeset (has its math
 rendered) at once — it is also a structured **Viewer config** option.

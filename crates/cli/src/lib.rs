@@ -44,6 +44,7 @@ pub fn build_serve_opts(
         engine: Engine::MathJax(MathJaxEngine::new(url)),
         macro_overrides,
         viewer_config,
+        tikz_asset_base: Some("/tikz/".to_string()),
         text_macros,
         ..HtmlOptions::default()
     };
