@@ -2714,8 +2714,6 @@
     if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
     var tsMode = document.getElementById('config-typeset-mode');
     if (tsMode) tsMode.value = cfg.typesetMode || 'local';
-    var wrap = document.getElementById('config-wrap-equations');
-    if (wrap) wrap.checked = cfg.wrapEquations !== false;
     var mjx = document.getElementById('config-mathjax-config');
     if (mjx) {
       mjx.value = cfg.mathjaxConfig || '';
@@ -2867,8 +2865,6 @@
       if (thmNum) values['viewer.theorem-numbering'] = thmNum;
       var typesetMode = document.getElementById('config-typeset-mode').value;
       if (typesetMode) values['viewer.typeset-mode'] = typesetMode;
-      var wrap = document.getElementById('config-wrap-equations');
-      if (wrap) values['viewer.wrap-equations'] = !!wrap.checked;
       var writePayload = {
         scope: sc.scope,
         content: editor.value || '',

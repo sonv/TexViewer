@@ -382,8 +382,6 @@ pub(super) fn wrap_in_shell(
             <option value="background">Background (fill the rest while idle)</option>
           </select>
         </label>
-        <label class="config-checkbox"><input type="checkbox" id="config-wrap-equations">
-          Wrap long equations (off = scroll horizontally)</label>
       </fieldset>
       <label class="config-editor-label" for="config-viewer-toml">
         TOML editor (advanced settings and keybindings)

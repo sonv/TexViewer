@@ -1637,12 +1637,6 @@ body.margin-left-expanded aside#margin-left .margin-card.expanded {
   gap: 8px;
   font-size: 12px;
 }
-.config-fields label.config-checkbox {
-  display: flex;
-  gap: 6px;
-  cursor: pointer;
-}
-.config-fields label.config-checkbox input { width: auto; }
 .config-fields label.config-textarea-label {
   display: block;
   font-size: 11px;

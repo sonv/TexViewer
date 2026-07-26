@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.6] — 2026-07-26
+
+### Changed
+
+- **The equation-wrapping checkbox has been removed from the config dialog.**
+  Long display equations keep the default MathJax wrapping behavior without
+  presenting a routine wrap-versus-scroll choice. Existing
+  `wrap-equations = false` entries remain accepted for backward compatibility,
+  and advanced MathJax overrides remain available in the MathJax config tab.
+
 ## [2.1.5] — 2026-07-26
 
 ### Fixed

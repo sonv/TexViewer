@@ -86,9 +86,9 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   `\textcolor` and a config-driven `[text-macros]` HTML-template table for
   commands the previewer can't otherwise see. See [Macros in regular
   text](#macros-in-regular-text).
-- **Equation wrapping** of long display math, on by default (MathJax
-  line-breaking) and toggleable, plus a raw `mathjax-config` escape hatch
-  to override any MathJax option. See [Configure the
+- **Equation wrapping** of long display math through MathJax line-breaking,
+  plus a raw `mathjax-config` escape hatch to override any MathJax option.
+  See [Configure the
   viewer](#configure-the-viewer).
 - **Fast incremental updates**: each math node carries a content hash, so
   already-typeset SVG is transplanted and only genuinely new expressions
@@ -624,8 +624,6 @@ overrides, applied per field with last-wins semantics:
 # ~/.config/mathpreview/config.toml — applies to every paper
 [viewer]
 font-size = 18                  # body text size in CSS pixels
-wrap-equations = true           # wrap long display math (MathJax line-breaking);
-                                # set false to let it overflow + scroll instead
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
 typeset-mode = "local"          # | "background" — see below
 # page-margin = 25              # A4 horizontal margin in mm; omit to follow the
@@ -703,14 +701,6 @@ the selected file. The adjacent
 **MathJax config** tab keeps the generated-config inspector and raw JavaScript
 override with the same save targets.
 
-`wrap-equations` toggles MathJax's automatic line-breaking of long display
-equations in the preview. Default `true` (the preview wraps overlong math at
-low-priority operators so it fits the column). Set `false` if you'd rather the
-math overflow and scroll horizontally — closer to how a non-`breqn` PDF
-typesets it on one line. It's also a checkbox in the **config** toolbar dialog.
-This affects the **preview only** — it can't change how `latexmk` breaks lines
-in the PDF.
-
 `typeset-mode` controls how much of the document is typeset (has its math
 rendered) at once — it is also a structured **Viewer config** option.
 Default `local` typesets only the region around the viewport plus a small
@@ -744,8 +734,8 @@ the viewer can't evaluate, so it falls back to a default) or a package it can't
 resolve. Put it in the project's `.mathpreview.toml` so it applies to that paper
 only; it takes effect on the next render (save the file, or `:MathPreviewRestart`).
 
-**Raw MathJax config.** For anything `wrap-equations` doesn't cover, drop a
-snippet of JavaScript in `mathjax-config`; it runs right after the generated
+**Raw MathJax config.** To customize MathJax output, drop a snippet of
+JavaScript in `mathjax-config`; it runs right after the generated
 `window.MathJax = {…}` and before the library loads, so you can override any
 MathJax option. **Mutate** `window.MathJax` — don't reassign it (the client
 relies on the generated config). A TOML multi-line literal string keeps the JS
@@ -760,13 +750,9 @@ window.MathJax.tex.packages['[+]'].push('color'); // load an extra package
 '''
 ```
 
-Both `wrap-equations` and `mathjax-config` live in the MathJax `<head>`, so a
-change reloads the preview tab automatically (the daemon signals it) — however
-you edit them: the **Viewer config** tab's wrapping checkbox/TOML editor, the
-**MathJax config** tab's raw override box, the `.mathpreview.toml` file, or the
-macros dialog's Text→HTML editor. The MathJax tab's read-only view shows
-everything in effect — macros, packages, output options — so you can see what
-to mutate.
+`mathjax-config` lives in the MathJax `<head>`, so changing it reloads the
+preview tab automatically. The MathJax tab's read-only view shows everything
+in effect — macros, packages, output options — so you can see what to mutate.
 
 Drop a `.mathpreview.toml` in the project root to override per-paper:
 

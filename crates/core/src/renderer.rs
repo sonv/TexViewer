@@ -2919,7 +2919,9 @@ mod tests {
         assert!(out.html.contains(r#"id="config-font-size""#));
         assert!(out.html.contains(r#"id="config-source-jump-trigger""#));
         assert!(out.html.contains(r#"id="config-typeset-mode""#));
-        assert!(out.html.contains(r#"id="config-wrap-equations""#));
+        assert!(!out.html.contains(r#"id="config-wrap-equations""#));
+        assert!(!out.html.contains("Wrap long equations"));
+        assert!(!out.html.contains("wrap-equations ="));
         assert!(out.html.contains(r#"id="config-viewer-toml""#));
         let controls = out.html.find(r#"id="config-font-size""#).unwrap();
         let editor = out.html.find(r#"id="config-viewer-toml""#).unwrap();

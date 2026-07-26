@@ -6,7 +6,6 @@ font-size = 18
 ui-font-size = 12
 default-page-mode = "a4"
 default-theme = "system"
-wrap-equations = true
 theorem-numbering = "auto"
 typeset-mode = "local"
 # page-margin = 17 # Uncomment to pin the A4 margin in mm; omitted follows geometry.
