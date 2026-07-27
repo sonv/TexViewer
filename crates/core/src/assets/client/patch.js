@@ -279,6 +279,10 @@
       loadViewerConfigForScope(true);
       return;
     }
+    if (e.target && e.target.id === 'config-render-tikz') {
+      e.target.dataset.dirty = 'true';
+      return;
+    }
     if (e.target && e.target.name === 'config-mode') {
       syncConfigMode(false);
       return;
@@ -922,6 +926,304 @@
   var TYPESET_SMALL_IDLE_MS = 35;
   var TYPESET_BUSY_RETRY_MS = 80;
 
+  // Native TikZ is much slower than MathJax, so diagrams are fetched one at a
+  // time after the visible math queue has drained. Each content hash owns one
+  // fetch for the lifetime of the page. Its SVG is retained as a blob URL:
+  // scrolling away and back — or receiving a DOM patch containing the same
+  // diagram — reuses the already-loaded bytes without asking the server to
+  // run TeX again.
+  var TIKZ_WINDOW = '150% 0px';
+  var tikzStates = new Map();
+  var tikzVisibleQueue = new Set();
+  var tikzIdleQueue = new Set();
+  var tikzVisibleObserver = null;
+  var tikzWindowObserver = null;
+  var tikzObserved = new Set();
+  var tikzDrainTimer = 0;
+  var tikzIdleHandle = 0;
+  var tikzBusy = false;
+  // Give MathJax a bounded head start. A blocked/broken MathJax asset must not
+  // prevent native TikZ—which has no MathJax dependency—from ever rendering.
+  var tikzMathStartupDeadline = performance.now() + 7000;
+
+  function tikzStateFor(diagram) {
+    if (!diagram || !diagram.isConnected) return null;
+    var hash = diagram.getAttribute('data-tikz-hash') || '';
+    var image = diagram.querySelector('.tikz-image[data-tikz-src]');
+    var src = image && image.getAttribute('data-tikz-src');
+    if (!/^[0-9a-fA-F]{16}$/.test(hash) || !src) return null;
+    var state = tikzStates.get(hash);
+    if (!state) {
+      state = { hash: hash, src: src, status: 'new', priority: 'idle', objectUrl: '' };
+      tikzStates.set(hash, state);
+    }
+    return state;
+  }
+
+  function liveTikzDiagrams(hash) {
+    var page = pageEl();
+    if (!page) return [];
+    return Array.from(
+      page.querySelectorAll('.tikz-diagram[data-tikz-hash="' + hash + '"]')
+    );
+  }
+
+  function finishShowingTikz(diagram, image) {
+    image.hidden = false;
+    image.removeAttribute('data-tikz-loading');
+    var pending = diagram.querySelector('.tikz-pending');
+    if (pending) pending.hidden = true;
+    diagram.removeAttribute('aria-busy');
+    var block = diagram.closest('main#page > .blk');
+    if (block) invalidateOverlayMetrics([block], false);
+    scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
+  }
+
+  function showLoadedTikz(diagram, state) {
+    var image = diagram.querySelector('.tikz-image[data-tikz-src]');
+    if (!image || !state.objectUrl) return;
+    if (image.getAttribute('src') === state.objectUrl) {
+      if (image.complete && image.naturalWidth > 0) finishShowingTikz(diagram, image);
+      return;
+    }
+    image.setAttribute('data-tikz-loading', '1');
+    image.addEventListener('load', function() {
+      finishShowingTikz(diagram, image);
+    }, { once: true });
+    image.addEventListener('error', function() {
+      showTikzFailure(diagram);
+    }, { once: true });
+    image.src = state.objectUrl;
+  }
+
+  function showTikzFailure(diagram) {
+    var image = diagram.querySelector('.tikz-image[data-tikz-src]');
+    if (image) image.removeAttribute('data-tikz-loading');
+    var pending = diagram.querySelector('.tikz-pending');
+    if (pending) {
+      pending.hidden = false;
+      pending.textContent = 'TikZ diagram could not be loaded. Reload to try again.';
+    }
+    diagram.removeAttribute('aria-busy');
+  }
+
+  function unobserveTikz(diagram) {
+    if (tikzVisibleObserver) tikzVisibleObserver.unobserve(diagram);
+    if (tikzWindowObserver) tikzWindowObserver.unobserve(diagram);
+    tikzObserved.delete(diagram);
+  }
+
+  function queueTikz(diagram, priority) {
+    var state = tikzStateFor(diagram);
+    if (!state) return;
+    if (state.status === 'loaded') {
+      unobserveTikz(diagram);
+      showLoadedTikz(diagram, state);
+      return;
+    }
+    if (state.status === 'failed' || state.status === 'loading') {
+      unobserveTikz(diagram);
+      if (state.status === 'failed') showTikzFailure(diagram);
+      return;
+    }
+    state.status = 'queued';
+    if (priority === 'visible') {
+      state.priority = 'visible';
+      tikzIdleQueue.delete(state.hash);
+      tikzVisibleQueue.add(state.hash);
+      liveTikzDiagrams(state.hash).forEach(unobserveTikz);
+      scheduleTikzDrain(0);
+    } else if (state.priority !== 'visible') {
+      state.priority = 'idle';
+      tikzIdleQueue.add(state.hash);
+      if (tikzWindowObserver) tikzWindowObserver.unobserve(diagram);
+      scheduleTikzIdle();
+    }
+  }
+
+  function ensureTikzObservers() {
+    if (tikzVisibleObserver || typeof IntersectionObserver === 'undefined') return;
+    tikzVisibleObserver = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) queueTikz(entry.target, 'visible');
+      });
+    });
+    tikzWindowObserver = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) queueTikz(entry.target, 'idle');
+      });
+    }, { rootMargin: TIKZ_WINDOW });
+  }
+
+  function collectTikzDiagrams(root) {
+    if (!root || root.nodeType !== 1) return [];
+    var diagrams = [];
+    if (root.matches && root.matches('.tikz-diagram[data-tikz-hash]')) {
+      diagrams.push(root);
+    }
+    if (root.querySelectorAll) {
+      root.querySelectorAll('.tikz-diagram[data-tikz-hash]').forEach(function(diagram) {
+        diagrams.push(diagram);
+      });
+    }
+    return diagrams;
+  }
+
+  function observeTikz(root) {
+    ensureTikzObservers();
+    collectTikzDiagrams(root).forEach(function(diagram) {
+      var state = tikzStateFor(diagram);
+      if (!state) return;
+      if (state.status === 'loaded') {
+        showLoadedTikz(diagram, state);
+      } else if (state.status === 'failed') {
+        showTikzFailure(diagram);
+      } else if (typeof IntersectionObserver === 'undefined') {
+        queueTikz(diagram, 'idle');
+      } else {
+        // A near-viewport diagram may already be in the idle queue. Keep the
+        // exact-viewport observer armed so it can still be promoted.
+        tikzObserved.add(diagram);
+        tikzVisibleObserver.observe(diagram);
+        if (state.status === 'new') tikzWindowObserver.observe(diagram);
+      }
+    });
+  }
+
+  function pruneTikzStates() {
+    var page = pageEl();
+    if (!page) return;
+    Array.from(tikzObserved).forEach(function(diagram) {
+      if (!diagram.isConnected || !page.contains(diagram)) unobserveTikz(diagram);
+    });
+    var liveHashes = new Set();
+    collectTikzDiagrams(page).forEach(function(diagram) {
+      var hash = diagram.getAttribute('data-tikz-hash') || '';
+      if (hash) liveHashes.add(hash);
+    });
+    tikzStates.forEach(function(state, hash) {
+      if (liveHashes.has(hash) || state.status === 'loading') return;
+      tikzVisibleQueue.delete(hash);
+      tikzIdleQueue.delete(hash);
+      if (state.objectUrl) window.URL.revokeObjectURL(state.objectUrl);
+      tikzStates.delete(hash);
+    });
+  }
+
+  function startTikzScheduler() {
+    var page = pageEl();
+    if (page) observeTikz(page);
+  }
+
+  function visibleMathHasTikzPriority() {
+    var mathStartupPending = !initialTypesetQueued &&
+      performance.now() < tikzMathStartupDeadline;
+    return mathStartupPending || !!printFlushPromise || typesetBusy ||
+      !!typesetTimer || pendingTypeset.size > 0;
+  }
+
+  function idleMathHasTikzPriority() {
+    return visibleMathHasTikzPriority() || windowQueue.size > 0;
+  }
+
+  function nextTikzState(queue, priority) {
+    while (queue.size) {
+      var hash = queue.values().next().value;
+      queue.delete(hash);
+      var state = tikzStates.get(hash);
+      if (state && state.status === 'queued' && state.priority === priority) return state;
+    }
+    return null;
+  }
+
+  function scheduleTikzDrain(delay) {
+    if (tikzDrainTimer) return;
+    tikzDrainTimer = setTimeout(drainVisibleTikz, delay);
+  }
+
+  function drainVisibleTikz() {
+    tikzDrainTimer = 0;
+    if (!tikzVisibleQueue.size) {
+      scheduleTikzIdle();
+      return;
+    }
+    if (tikzBusy || visibleMathHasTikzPriority()) {
+      scheduleTikzDrain(TYPESET_BUSY_RETRY_MS);
+      return;
+    }
+    var state = nextTikzState(tikzVisibleQueue, 'visible');
+    if (state) loadTikzState(state);
+    else scheduleTikzIdle();
+  }
+
+  function scheduleTikzIdle() {
+    if (tikzIdleHandle || !tikzIdleQueue.size) return;
+    var run = function() {
+      tikzIdleHandle = 0;
+      drainIdleTikz();
+    };
+    if (window.requestIdleCallback) {
+      tikzIdleHandle = window.requestIdleCallback(run, { timeout: 1500 });
+    } else {
+      tikzIdleHandle = setTimeout(run, 500);
+    }
+  }
+
+  function drainIdleTikz() {
+    if (tikzVisibleQueue.size) {
+      scheduleTikzDrain(0);
+      return;
+    }
+    if (tikzBusy || idleMathHasTikzPriority()) {
+      // requestIdleCallback can fire repeatedly while MathJax awaits a
+      // promise. Add a small backoff instead of spinning idle callbacks.
+      tikzIdleHandle = setTimeout(function() {
+        tikzIdleHandle = 0;
+        scheduleTikzIdle();
+      }, TYPESET_BUSY_RETRY_MS);
+      return;
+    }
+    var state = nextTikzState(tikzIdleQueue, 'idle');
+    if (state) loadTikzState(state);
+  }
+
+  function loadTikzState(state) {
+    var diagrams = liveTikzDiagrams(state.hash);
+    if (!diagrams.length) {
+      state.status = 'new';
+      state.priority = 'idle';
+      if (tikzVisibleQueue.size) scheduleTikzDrain(0);
+      else scheduleTikzIdle();
+      return;
+    }
+    diagrams.forEach(unobserveTikz);
+    state.status = 'loading';
+    tikzBusy = true;
+    fetch(state.src, { cache: 'force-cache' })
+      .then(function(response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.blob();
+      })
+      .then(function(svg) {
+        state.objectUrl = window.URL.createObjectURL(svg);
+        state.status = 'loaded';
+        liveTikzDiagrams(state.hash).forEach(function(diagram) {
+          showLoadedTikz(diagram, state);
+        });
+      })
+      .catch(function(error) {
+        console.error('mathpreview TikZ:', error);
+        state.status = 'failed';
+        liveTikzDiagrams(state.hash).forEach(showTikzFailure);
+      })
+      .finally(function() {
+        tikzBusy = false;
+        pruneTikzStates();
+        if (tikzVisibleQueue.size) scheduleTikzDrain(0);
+        else scheduleTikzIdle();
+      });
+  }
+
   function clearRemovedMath(nodes) {
     if (!nodes.length || !window.__mpEngine) return;
     window.__mpEngine.typesetClear(nodes);
@@ -1371,8 +1673,13 @@
   async function drainWindowTypeset() {
     windowDrainTimer = 0;
     if (!windowQueue.size) return;
-    // Yield to the print flush and to an in-progress typeset batch.
-    if (printFlushPromise || typesetBusy) { scheduleWindowDrain(150); return; }
+    // Yield to the print flush, an in-progress typeset batch, and visible
+    // native diagrams. The exact-visible math queue above still runs first;
+    // this queue is the wider 150%-viewport look-ahead buffer.
+    if (printFlushPromise || typesetBusy || tikzVisibleQueue.size || tikzBusy) {
+      scheduleWindowDrain(150);
+      return;
+    }
     var blk = windowQueue.values().next().value;
     windowQueue.delete(blk);
     if (blk && blk.isConnected) {
@@ -1831,6 +2138,9 @@
 
     queueTypeset(needTypeset);
     queueUntypesetMath(page);
+    pruneTikzStates();
+    if (hasRebuild) observeTikz(page);
+    else touchedRoots.forEach(observeTikz);
 
     var total = Math.round(performance.now() - tStart);
     setStatus('live',

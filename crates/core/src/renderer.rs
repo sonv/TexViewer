@@ -1163,18 +1163,21 @@ fn tikz_html(env: &str, body: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> Str
 
     let id = ctx.idgen.next("tikz");
     record(ctx, &id, span, None);
-    let content = if !ctx.render_tikz {
-        r#"<div class="tikz-placeholder"><strong>TikZ preview disabled.</strong> Enable <code>render-tikz = true</code> for this trusted project.</div>"#.to_string()
+    let (content, busy_attr) = if !ctx.render_tikz {
+        (r#"<div class="tikz-placeholder"><strong>TikZ preview disabled.</strong> Enable <code>render-tikz = true</code> for this trusted project.</div>"#.to_string(), "")
     } else if let Some(base) = ctx.tikz_asset_base {
-        format!(
-            r#"<img class="tikz-image" src="{src}" alt="TikZ diagram" loading="lazy" decoding="async">"#,
-            src = escape_attr(&format!("{base}{hash}.svg")),
+        (
+            format!(
+                r#"<div class="tikz-placeholder tikz-pending">Diagram queued for rendering…</div><img class="tikz-image" data-tikz-src="{src}" alt="TikZ diagram" decoding="async" hidden>"#,
+                src = escape_attr(&format!("{base}{hash}.svg")),
+            ),
+            r#" aria-busy="true""#,
         )
     } else {
-        r#"<div class="tikz-placeholder"><strong>TikZ preview needs live server mode.</strong> Standalone HTML cannot compile local TeX assets.</div>"#.to_string()
+        (r#"<div class="tikz-placeholder"><strong>TikZ preview needs live server mode.</strong> Standalone HTML cannot compile local TeX assets.</div>"#.to_string(), "")
     };
     format!(
-        r#"<div class="tikz-diagram" id="{id}" data-src="{src}" data-tikz-hash="{hash}" tabindex="0" title="TikZ diagram">{content}</div>"#,
+        r#"<div class="tikz-diagram" id="{id}" data-src="{src}" data-tikz-hash="{hash}" tabindex="0" title="TikZ diagram"{busy_attr}>{content}</div>"#,
         id = escape_attr(&id),
         src = escape_attr(&data_src(span)),
         hash = escape_attr(&hash),
@@ -3046,6 +3049,15 @@ mod tests {
         assert!(out.html.contains(r#"id="config-font-size""#));
         assert!(out.html.contains(r#"id="config-source-jump-trigger""#));
         assert!(out.html.contains(r#"id="config-typeset-mode""#));
+        assert!(out.html.contains(r#"id="config-render-tikz""#));
+        assert!(out
+            .html
+            .contains("Render TikZ diagrams (trusted projects only)"));
+        assert!(out.html.contains("renderTikz: false"));
+        assert!(out.html.contains("renderTikz.dataset.dirty === 'true'"));
+        assert!(out
+            .html
+            .contains("values['viewer.render-tikz'] = renderTikz.checked"));
         assert!(!out.html.contains(r#"id="config-wrap-equations""#));
         assert!(!out.html.contains("Wrap long equations"));
         assert!(!out.html.contains("wrap-equations ="));
@@ -4151,7 +4163,10 @@ mod tests {
         assert!(out.body_html.contains(r#"class="tikz-diagram""#));
         assert!(out
             .body_html
-            .contains(&format!(r#"src="/tikz/{hash}.svg""#)));
+            .contains(&format!(r#"data-tikz-src="/tikz/{hash}.svg""#)));
+        assert!(!out
+            .body_html
+            .contains(&format!(r#" src="/tikz/{hash}.svg""#)));
         assert!(!out.body_html.contains(r#"class="opaque-env""#));
         assert!(!out.body_html.contains(r#"class="math "#));
     }
@@ -4534,6 +4549,14 @@ mod tests {
         assert!(out.html.contains("queueUntypesetMath"));
         assert!(out.html.contains("MutationObserver"));
         assert!(out.html.contains("scheduleTypesetFlush"));
+        assert!(out.html.contains("startTikzScheduler"));
+        assert!(out.html.contains("var tikzStates = new Map()"));
+        assert!(out.html.contains("window.URL.createObjectURL(svg)"));
+        assert!(out
+            .html
+            .contains("window.URL.revokeObjectURL(state.objectUrl)"));
+        assert!(out.html.contains("tikzMathStartupDeadline"));
+        assert!(out.html.contains("visibleMathHasTikzPriority"));
         assert!(out.html.contains("tex2svgPromise"));
         assert!(out.html.contains("mjx-container"));
         assert!(out.html.contains("oldEl.innerHTML = newEl.innerHTML"));

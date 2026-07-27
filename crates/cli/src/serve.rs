@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "73";
+const WS_PROTOCOL_VERSION: &str = "74";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -1130,7 +1130,7 @@ fn tikz_document(asset: &mathpreview_core::renderer::TikzAsset) -> String {
     format!(
         "{class}{}\n\\usepackage[active,tightpage]{{preview}}\n\
          \\PreviewEnvironment{{{}}}\n\\pagestyle{{empty}}\n\
-         \\begin{{document}}\n\\begin{{{}}}{}\n\\end{{{}}}\n\\end{{document}}\n",
+         \\begin{{document}}\n\\begin{{{}}}{}\\end{{{}}}\n\\end{{document}}\n",
         asset.preamble, asset.environment, asset.environment, asset.body, asset.environment,
     )
 }
@@ -2259,14 +2259,30 @@ async fn serve_config_write(
             .into_response();
     }
     // Refresh the live viewer config (text-macros reload per render anyway).
-    if let Ok((resolved, _)) = mathpreview_core::load_and_merge_config(state.config_paths.as_ref()) {
+    if let Ok((resolved, _)) = mathpreview_core::load_and_merge_config(state.config_paths.as_ref())
+    {
         *state.viewer_config.write().await = resolved.viewer;
     }
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        log_event(&state, "warn", format!("config-write re-render failed: {e:#}"));
+        log_event(
+            &state,
+            "warn",
+            format!("config-write re-render failed: {e:#}"),
+        );
     }
-    log_event(&state, "info", format!("config: wrote {}", target.display()));
-    Json(serde_json::json!({ "file": target })).into_response()
+    let target_canonical = target.canonicalize().ok();
+    let active = state.config_paths.iter().any(|path| {
+        path == &target
+            || target_canonical
+                .as_ref()
+                .is_some_and(|target_path| path.canonicalize().ok().as_ref() == Some(target_path))
+    });
+    log_event(
+        &state,
+        "info",
+        format!("config: wrote {}", target.display()),
+    );
+    Json(serde_json::json!({ "file": target, "active": active })).into_response()
 }
 
 fn validate_config_file(content: &str, label: &Path) -> Result<(), String> {
@@ -3165,6 +3181,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         // The client reloads only when this deterministic list changes.
         "mathjax_packages": &out.preamble.packages_long,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
+        "render_tikz": viewer_config.render_tikz,
         "keybindings": viewer_config.keybindings,
         // The EFFECTIVE page margin baked into config_css (config > geometry >
         // default). The margin lives in the <head>, so a live change can only
@@ -3903,6 +3920,16 @@ mod tests {
         assert!(document.contains(r"\PreviewEnvironment{tikzpicture}"));
         assert!(document.contains(r"\begin{tikzpicture}[scale=2]"));
         assert!(document.contains(r"\end{tikzpicture}"));
+        assert!(!document.contains("\n\n\\end{tikzpicture}"));
+
+        let tikzcd = mathpreview_core::renderer::TikzAsset {
+            environment: "tikzcd".to_string(),
+            body: "\nA \\arrow[r] & B\n".to_string(),
+            preamble: "\\documentclass{article}\n\\usepackage{tikz-cd}".to_string(),
+        };
+        let tikzcd_document = tikz_document(&tikzcd);
+        assert!(tikzcd_document.contains("A \\arrow[r] & B\n\\end{tikzcd}"));
+        assert!(!tikzcd_document.contains("\n\n\\end{tikzcd}"));
     }
 
     #[test]

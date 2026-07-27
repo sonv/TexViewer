@@ -13,6 +13,27 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.9] — 2026-07-27
+
+### Changed
+
+- **TikZ rendering now waits for visible math and runs once per diagram.**
+  Visible diagrams take priority over nearby ones, while off-screen work waits
+  for browser idle time. Each diagram hash keeps its loaded SVG for the page
+  session, so scrolling away and back—or receiving the same diagram in a live
+  patch—does not invoke TeX again. The viewer config's common options now also
+  include a **Render TikZ diagrams** checkbox, labeled for trusted projects;
+  it only writes after an intentional toggle, so switching config scopes
+  cannot accidentally copy an inherited trusted-project setting. Obsolete
+  diagram blobs are released after live edits, and TikZ still proceeds if
+  MathJax fails to initialize.
+
+### Fixed
+
+- **`tikzcd` diagrams no longer fail from an injected blank alignment row.**
+  The native compiler now closes the environment directly after its captured
+  body, preserving the source's own final newline without adding a second one.
+
 ## [2.1.8] — 2026-07-26
 
 ### Added

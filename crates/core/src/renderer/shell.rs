@@ -95,12 +95,13 @@ pub(super) fn wrap_in_shell(
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", typesetMode: "{tsm}", mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
         thm = opts.viewer_config.theorem_numbering.as_str(),
         tsm = opts.viewer_config.typeset_mode.as_str(),
+        tikz = opts.viewer_config.render_tikz,
         mjx = mathjax_config_js,
         mjx_packages = mathjax_packages_js,
         keybindings = keybindings_js,
@@ -380,6 +381,11 @@ pub(super) fn wrap_in_shell(
             <option value="local">Local (around the view — lowest memory)</option>
             <option value="background">Background (fill the rest while idle)</option>
           </select>
+        </label>
+        <label class="config-checkbox"
+               title="Runs the document preamble through a local TeX engine. Enable only for projects you trust.">
+          Render TikZ diagrams (trusted projects only)
+          <input type="checkbox" id="config-render-tikz">
         </label>
       </fieldset>
       <label class="config-editor-label" for="config-viewer-toml">

@@ -1173,6 +1173,7 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
   margin: 0 auto;
   background: #fff;
 }
+.tikz-image[hidden] { display: none; }
 .tikz-placeholder {
   padding: 0.7em 0.9em;
   border: 1px dashed var(--border);
@@ -1681,6 +1682,9 @@ body.margin-left-expanded aside#margin-left .margin-card.expanded {
 .config-fields label.config-textarea-label textarea {
   margin-top: 5px;
   color: var(--fg);
+}
+.config-fields label.config-checkbox input {
+  justify-self: start;
 }
 .config-mjx-current {
   margin-bottom: 8px;

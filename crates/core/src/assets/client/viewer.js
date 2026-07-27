@@ -2714,6 +2714,15 @@
     if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
     var tsMode = document.getElementById('config-typeset-mode');
     if (tsMode) tsMode.value = cfg.typesetMode || 'local';
+    var renderTikz = document.getElementById('config-render-tikz');
+    if (renderTikz) {
+      renderTikz.checked = cfg.renderTikz === true;
+      // The displayed value is the effective cascade, not necessarily the
+      // selected file's own value. Only write this trust-sensitive option
+      // after an intentional toggle so changing Save-to scope cannot copy an
+      // inherited enablement into another config file.
+      renderTikz.dataset.dirty = 'false';
+    }
     var mjx = document.getElementById('config-mathjax-config');
     if (mjx) {
       mjx.value = cfg.mathjaxConfig || '';
@@ -2865,6 +2874,10 @@
       if (thmNum) values['viewer.theorem-numbering'] = thmNum;
       var typesetMode = document.getElementById('config-typeset-mode').value;
       if (typesetMode) values['viewer.typeset-mode'] = typesetMode;
+      var renderTikz = document.getElementById('config-render-tikz');
+      if (renderTikz && renderTikz.dataset.dirty === 'true') {
+        values['viewer.render-tikz'] = renderTikz.checked;
+      }
       var writePayload = {
         scope: sc.scope,
         content: editor.value || '',
@@ -2887,7 +2900,13 @@
         }
         var writtenFile = writeBody && writeBody.file ? writeBody.file : '(file)';
         editor.dataset.loadedScope = sc.scope + ':' + (sc.path || '');
-        setStatus('live', '● wrote viewer config → ' + writtenFile);
+        setStatus(
+          'live',
+          writeBody && writeBody.active === false
+            ? '● wrote viewer config → ' + writtenFile +
+              ' (saved only; add it with --config to apply)'
+            : '● wrote viewer config → ' + writtenFile
+        );
         closeConfigDialog();
       } catch (e) {
         setConfigFeedback(String(e && e.message || e), false);
@@ -2994,6 +3013,9 @@
     if (typeof cfg.typeset_mode === 'string') {
       setTypesetMode(cfg.typeset_mode);
     }
+    if (typeof cfg.render_tikz === 'boolean') {
+      window.__mpConfig.renderTikz = cfg.render_tikz;
+    }
     // The page margin is baked into config_css in the <head> (screen padding
     // + @page print margin), which a body patch can't touch — reload when the
     // effective value flips. null (default/no override) is a valid value, so
@@ -3033,6 +3055,7 @@
     row('source-jump trigger', vc.source_jump_trigger);
     row('default page mode', vc.default_page_mode);
     row('default theme', vc.default_theme);
+    row('render TikZ', vc.render_tikz ? 'on' : 'off');
     row('WS protocol', snapshot.ws_protocol);
     section('editor template');
     lines.push(escapeHtml(snapshot.editor_cmd || '(none)'));
