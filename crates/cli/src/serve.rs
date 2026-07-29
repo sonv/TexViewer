@@ -2863,7 +2863,8 @@ async fn serve_buffer_push(
     let t0 = std::time::Instant::now();
     let body_len = body.len();
     let seq = begin_render_attempt(&state);
-    if !is_buffer_renderable(&body) {
+    let cursor = buffer_cursor_from_headers(&headers);
+    if !is_buffer_renderable(&body, cursor) {
         elog!(
             "mathpreview: buffer-push #{seq} {} bytes — incomplete, deferring",
             body_len
@@ -3633,7 +3634,18 @@ fn lcs_align(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<(usize, usize)
 /// mid-expression? Conservative — when in doubt, return true and let the
 /// parser/MathJax handle it. Skipping when not renderable preserves the
 /// previous rendered output rather than flashing a broken one.
-fn is_buffer_renderable(source: &str) -> bool {
+fn is_buffer_renderable(source: &str, cursor: Option<(usize, usize)>) -> bool {
+    // MathJax keeps TeX definitions between tex2svgPromise calls. If the
+    // exact transient control word `\def` reaches it while the user is still
+    // typing a longer macro such as `\defeq`, TeX may consume and redefine
+    // the equation's `\end` (or the next existing macro), poisoning every
+    // later typeset until reload. The plugin sends the caret with the buffer,
+    // which lets us defer only an unfinished definition at the edit position.
+    // Stable, intentional `\def` definitions and literal text remain valid.
+    if cursor.is_some_and(|(line, col)| cursor_has_unfinished_def_in_math(source, line, col)) {
+        return false;
+    }
+
     let bytes = source.as_bytes();
     // Track distinct math-delimiter parities. `$$` and `$` are NOT the same
     // delimiter — typing `$$` should leave us in unbalanced display state,
@@ -3683,6 +3695,376 @@ fn is_buffer_renderable(source: &str) -> bool {
         i += 1;
     }
     !in_inline && !in_display
+}
+
+/// Optional `line:column` caret attached by the nvim plugin to `/buffer`.
+/// Both coordinates are 1-based; the column is a byte column, matching
+/// `nvim_win_get_cursor`.
+fn buffer_cursor_from_headers(headers: &axum::http::HeaderMap) -> Option<(usize, usize)> {
+    let raw = headers.get("x-mathpreview-cursor")?.to_str().ok()?;
+    let (line, col) = raw.split_once(':')?;
+    let line = line.parse::<usize>().ok()?;
+    let col = col.parse::<usize>().ok()?;
+    (line > 0 && col > 0).then_some((line, col))
+}
+
+/// True when the edit-time caret is inside rendered math and the prefix up to
+/// that caret contains an exact `\def` whose replacement body is not complete
+/// yet. Looking only at the prefix is deliberate: in `\def\label{x}`, the
+/// source after a newly typed bare `\def` may make the whole buffer look like a
+/// valid definition even though those tokens were already present and would
+/// be redefined accidentally.
+fn cursor_has_unfinished_def_in_math(source: &str, line: usize, col: usize) -> bool {
+    let Some(limit) = source_offset_at_cursor(source, line, col) else {
+        return false;
+    };
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    let mut in_comment = false;
+    let mut verb_delimiter = None;
+    let mut in_inline = false;
+    let mut in_display = false;
+    let mut math_env_depth = 0usize;
+
+    while i < limit {
+        let byte = bytes[i];
+        if byte == b'\n' {
+            in_comment = false;
+            verb_delimiter = None;
+            i += 1;
+            continue;
+        }
+        if in_comment {
+            i += 1;
+            continue;
+        }
+        if let Some(delimiter) = verb_delimiter {
+            if byte == delimiter {
+                verb_delimiter = None;
+            }
+            i += 1;
+            continue;
+        }
+        if byte == b'%' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        if byte == b'$' {
+            if bytes.get(i + 1) == Some(&b'$') {
+                in_display = !in_display;
+                i += 2;
+            } else {
+                in_inline = !in_inline;
+                i += 1;
+            }
+            continue;
+        }
+        if byte != b'\\' || i + 1 >= limit {
+            i += 1;
+            continue;
+        }
+
+        let next = bytes[i + 1];
+        match next {
+            b'(' => in_inline = true,
+            b')' => in_inline = false,
+            b'[' => in_display = true,
+            b']' => in_display = false,
+            _ => {}
+        }
+        if !next.is_ascii_alphabetic() {
+            i += 2;
+            continue;
+        }
+
+        let mut command_end = i + 2;
+        while command_end < bytes.len() && bytes[command_end].is_ascii_alphabetic() {
+            command_end += 1;
+        }
+        let command = &bytes[i + 1..command_end];
+
+        if command == b"verb" {
+            let delimiter_at = command_end + usize::from(bytes.get(command_end) == Some(&b'*'));
+            if delimiter_at < limit {
+                verb_delimiter = Some(bytes[delimiter_at]);
+                i = delimiter_at + 1;
+            } else {
+                i = limit;
+            }
+            continue;
+        }
+
+        if matches!(command, b"begin" | b"end") {
+            if let Some((env, after_env)) = braced_environment_name(bytes, command_end) {
+                if command == b"begin" && is_literal_environment(env) && after_env <= limit {
+                    let close = [b"\\end{".as_slice(), env, b"}".as_slice()].concat();
+                    if let Some(offset) = find_bytes(&bytes[after_env..limit], &close) {
+                        i = after_env + offset + close.len();
+                        continue;
+                    }
+                    return false;
+                }
+                if after_env <= limit && is_math_environment(env) {
+                    if command == b"begin" {
+                        math_env_depth += 1;
+                    } else {
+                        math_env_depth = math_env_depth.saturating_sub(1);
+                    }
+                }
+                i = after_env.min(limit);
+                continue;
+            }
+        }
+
+        let in_math = math_env_depth > 0 || in_inline || in_display;
+        if command == b"def" && command_end <= limit && in_math {
+            match definition_prefix_state(bytes, command_end, limit) {
+                DefinitionPrefix::Incomplete => return true,
+                DefinitionPrefix::OpenReplacement { at, depth } => {
+                    if replacement_closes_before_math_end(bytes, at, depth) {
+                        return false;
+                    }
+                    return true;
+                }
+                DefinitionPrefix::Complete(after) => {
+                    i = after;
+                    continue;
+                }
+                DefinitionPrefix::Invalid => {}
+            }
+        }
+        i = command_end.min(limit);
+    }
+    false
+}
+
+fn source_offset_at_cursor(source: &str, line: usize, col: usize) -> Option<usize> {
+    if line == 0 || col == 0 {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut line_start = 0usize;
+    for _ in 1..line {
+        let newline = bytes[line_start..].iter().position(|byte| *byte == b'\n')?;
+        line_start += newline + 1;
+    }
+    let line_len = bytes[line_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(bytes.len() - line_start);
+    Some(line_start + col.min(line_len))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum DefinitionPrefix {
+    Incomplete,
+    OpenReplacement { at: usize, depth: usize },
+    Complete(usize),
+    Invalid,
+}
+
+fn definition_prefix_state(bytes: &[u8], mut i: usize, limit: usize) -> DefinitionPrefix {
+    skip_prefix_space_and_comments(bytes, &mut i, limit);
+    if i >= limit {
+        return DefinitionPrefix::Incomplete;
+    }
+    if bytes[i] != b'\\' {
+        return DefinitionPrefix::Invalid;
+    }
+    i += 1;
+    if i >= limit {
+        return DefinitionPrefix::Incomplete;
+    }
+    if bytes[i].is_ascii_alphabetic() {
+        while i < limit && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+    } else {
+        i += 1;
+    }
+
+    // TeX's parameter text runs until the opening brace of the replacement.
+    loop {
+        skip_prefix_space_and_comments(bytes, &mut i, limit);
+        if i >= limit {
+            return DefinitionPrefix::Incomplete;
+        }
+        match bytes[i] {
+            b'{' => {
+                i += 1;
+                break;
+            }
+            b'\\' => {
+                i += 1;
+                if i < limit && bytes[i].is_ascii_alphabetic() {
+                    while i < limit && bytes[i].is_ascii_alphabetic() {
+                        i += 1;
+                    }
+                } else if i < limit {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    let mut depth = 1usize;
+    while i < limit {
+        match bytes[i] {
+            b'%' => {
+                while i < limit && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                i += 1;
+                if i < limit && bytes[i].is_ascii_alphabetic() {
+                    while i < limit && bytes[i].is_ascii_alphabetic() {
+                        i += 1;
+                    }
+                } else if i < limit {
+                    i += 1;
+                }
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return DefinitionPrefix::Complete(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    DefinitionPrefix::OpenReplacement { at: i, depth }
+}
+
+fn skip_prefix_space_and_comments(bytes: &[u8], i: &mut usize, limit: usize) {
+    loop {
+        while *i < limit && bytes[*i].is_ascii_whitespace() {
+            *i += 1;
+        }
+        if *i >= limit || bytes[*i] != b'%' {
+            return;
+        }
+        while *i < limit && bytes[*i] != b'\n' {
+            *i += 1;
+        }
+    }
+}
+
+/// When the caret is editing inside a replacement body, accept an already
+/// balanced definition whose closing brace is still to the right. Stop at the
+/// surrounding math terminator so braces in later prose cannot make an
+/// actually incomplete definition appear safe.
+fn replacement_closes_before_math_end(bytes: &[u8], mut i: usize, mut depth: usize) -> bool {
+    let mut in_comment = false;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'\n' {
+            in_comment = false;
+            i += 1;
+            continue;
+        }
+        if in_comment {
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'%' => {
+                in_comment = true;
+                i += 1;
+            }
+            b'$' => return false,
+            b'\\' if i + 1 < bytes.len() => {
+                if matches!(bytes[i + 1], b')' | b']') {
+                    return false;
+                }
+                if bytes[i + 1].is_ascii_alphabetic() {
+                    let mut command_end = i + 2;
+                    while command_end < bytes.len() && bytes[command_end].is_ascii_alphabetic() {
+                        command_end += 1;
+                    }
+                    if &bytes[i + 1..command_end] == b"end"
+                        && braced_environment_name(bytes, command_end)
+                            .is_some_and(|(env, _)| is_math_environment(env))
+                    {
+                        return false;
+                    }
+                    i = command_end;
+                } else {
+                    i += 2;
+                }
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+fn braced_environment_name(bytes: &[u8], mut i: usize) -> Option<(&[u8], usize)> {
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    let start = i + 1;
+    let close = bytes[start..].iter().position(|byte| *byte == b'}')?;
+    Some((&bytes[start..start + close], start + close + 1))
+}
+
+fn is_math_environment(env: &[u8]) -> bool {
+    matches!(
+        env,
+        b"equation"
+            | b"equation*"
+            | b"align"
+            | b"align*"
+            | b"gather"
+            | b"gather*"
+            | b"multline"
+            | b"multline*"
+            | b"displaymath"
+            | b"eqnarray"
+            | b"eqnarray*"
+            | b"alignat"
+            | b"alignat*"
+            | b"split"
+    )
+}
+
+fn is_literal_environment(env: &[u8]) -> bool {
+    matches!(
+        env,
+        b"verbatim" | b"verbatim*" | b"Verbatim" | b"lstlisting" | b"minted"
+    )
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    (!needle.is_empty())
+        .then(|| {
+            haystack
+                .windows(needle.len())
+                .position(|window| window == needle)
+        })
+        .flatten()
 }
 
 fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>) {
@@ -4134,11 +4516,93 @@ toggle-theme = "T"
     }
 
     #[test]
-    fn buffer_guard_only_defers_unclosed_math() {
-        assert!(is_buffer_renderable(r"\begin{document}\section{A"));
-        assert!(is_buffer_renderable(r"\begin{document}\begin{proof} text"));
-        assert!(!is_buffer_renderable(r"\begin{document} $x"));
-        assert!(!is_buffer_renderable(r"\begin{document} \[x"));
+    fn buffer_guard_defers_unclosed_math_and_unfinished_def_at_cursor() {
+        assert!(is_buffer_renderable(r"\begin{document}\section{A", None));
+        assert!(is_buffer_renderable(
+            r"\begin{document}\begin{proof} text",
+            None
+        ));
+        assert!(!is_buffer_renderable(r"\begin{document} $x", None));
+        assert!(!is_buffer_renderable(r"\begin{document} \[x", None));
+
+        let bare_def =
+            "\\begin{document}\n\\begin{equation}\na \\def\n\\end{equation}\n\\end{document}";
+        assert!(!is_buffer_renderable(bare_def, Some((3, 6))));
+        assert!(!is_buffer_renderable(bare_def, Some((3, 7))));
+
+        let before_macro = r"\begin{document}
+\begin{equation}
+a \def\label{x}
+\end{equation}
+\end{document}";
+        assert!(!is_buffer_renderable(before_macro, Some((3, 6))));
+
+        let longer_macro = r"\begin{document}
+\begin{equation}
+a \defeq b
+\end{equation}
+\end{document}";
+        assert!(is_buffer_renderable(longer_macro, Some((3, 8))));
+
+        let partial_definition = r"\begin{document}
+\begin{equation}
+\def\foo#1
+\end{equation}
+\end{document}";
+        assert!(!is_buffer_renderable(
+            partial_definition,
+            Some((3, r"\def\foo#1".len()))
+        ));
+
+        let open_replacement = r"\begin{document}
+\begin{equation}
+\def\foo#1{#1+1
+\end{equation}
+\end{document}";
+        assert!(!is_buffer_renderable(
+            open_replacement,
+            Some((3, r"\def\foo#1{#1+1".len()))
+        ));
+
+        let complete_definition = r"\begin{document}
+\begin{equation}
+\def\foo#1{#1+1}\foo{2}
+\end{equation}
+\end{document}";
+        assert!(is_buffer_renderable(
+            complete_definition,
+            Some((3, r"\def\foo#1{#1+1}".len()))
+        ));
+
+        let edit_inside_complete_definition =
+            r"\begin{document}$\def\foo#1{#1+1}\foo{2}$\end{document}";
+        let edit_col = edit_inside_complete_definition.find('+').unwrap() + 1;
+        assert!(is_buffer_renderable(
+            edit_inside_complete_definition,
+            Some((1, edit_col))
+        ));
+
+        // Literal/comment examples remain renderable even with the caret on
+        // the exact bytes `\def`.
+        let inline_literal = r"\begin{document}\verb|\def\foo{|\end{document}";
+        let inline_literal_col = inline_literal.find(r"\def").unwrap() + 4;
+        assert!(is_buffer_renderable(
+            inline_literal,
+            Some((1, inline_literal_col))
+        ));
+
+        let block_literal =
+            "\\begin{document}\n\\begin{verbatim}\n\\def\\foo{\n\\end{verbatim}\n\\end{document}";
+        assert!(is_buffer_renderable(block_literal, Some((3, 4))));
+
+        let commented =
+            "\\begin{document}\n\\begin{equation}\n% \\def\nx=1\n\\end{equation}\n\\end{document}";
+        assert!(is_buffer_renderable(commented, Some((3, 6))));
+
+        assert!(is_buffer_renderable(
+            r"\begin{document}\\def\end{document}",
+            Some((1, 21))
+        ));
     }
 
     #[test]

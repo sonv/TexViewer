@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.9"
+local PLUGIN_VERSION = "2.1.10"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -744,7 +744,7 @@ local function current_root()
   return path, nil
 end
 
-local function push_buffer()
+local function push_buffer(edit_buf, edit_cursor)
   if not daemon_job then return end
   local buf = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(buf)
@@ -754,9 +754,14 @@ local function push_buffer()
   end
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local body = table.concat(lines, "\n")
+  -- TextChanged captures the caret that produced this exact buffer state.
+  -- Sampling only after the debounce lets a quick cursor move detach the
+  -- caret from the dangerous transient token it just inserted.
+  local cursor = edit_buf == buf and edit_cursor or vim.api.nvim_win_get_cursor(0)
   local args = {
     "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "5",
     "--header", "X-Mathpreview-Path: " .. path,
+    "--header", ("X-Mathpreview-Cursor: %d:%d"):format(cursor[1], cursor[2] + 1),
     "--data-binary", "@-",
     "-X", "POST",
     config.url,
@@ -1197,12 +1202,13 @@ local function stop_jump_poll()
   jump_poll_gen = jump_poll_gen + 1
 end
 
-local function debounced_push()
+local function debounced_push(buf)
   if not daemon_job then return end
   if timer then timer:stop(); timer:close() end
+  local edit_cursor = vim.api.nvim_win_get_cursor(0)
   timer = uv.new_timer()
   timer:start(config.debounce_ms, 0, vim.schedule_wrap(function()
-    push_buffer()
+    push_buffer(buf, edit_cursor)
     if timer then timer:close(); timer = nil end
   end))
 end
@@ -1365,7 +1371,7 @@ local function attach_autocmds()
     callback = function(args)
       if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
         last_text_change[args.buf] = uv.now()
-        debounced_push()
+        debounced_push(args.buf)
       end
     end,
   })

@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.10] — 2026-07-29
+
+### Fixed
+
+- **Typing commands that begin with `\def` no longer poisons live MathJax.**
+  The editor now sends the caret captured with each buffer change, allowing the
+  server to defer only an unfinished TeX definition inside rendered math.
+  Transient `\def` states preserve the previous equation, while longer commands
+  such as `\defeq`, completed definitions, comments, and verbatim text continue
+  rendering normally without a page reload.
+
 ## [2.1.9] — 2026-07-27
 
 ### Changed
