@@ -540,9 +540,11 @@ fn starts_generated_id_attr(rest: &str) -> bool {
     // IdGen::next) also lets this stripper match them without ever matching a
     // label-derived id like `thm-2-1` (from `\label{thm:2.1}`), which must
     // NOT be stripped: label ids are stable, meaningful content.
-    const IDGEN_PREFIXES: [&str; 13] = [
+    const IDGEN_PREFIXES: [&str; 15] = [
         r#" id="quote-"#,
         r#" id="callout-"#,
+        r#" id="letter-"#,
+        r#" id="letter-part-"#,
         r#" id="unsupported-env-"#,
         r#" id="sn-"#,
         r#" id="im-"#,
@@ -1753,6 +1755,142 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             write_chunked_children(out, &n.children, ctx);
             out.push_str("</div>\n");
         }
+        NodeKind::Letter { recipient } => {
+            let address = ctx
+                .preamble
+                .letter_address
+                .as_deref()
+                .filter(|value| !value.trim().is_empty());
+            let date = ctx
+                .preamble
+                .date
+                .as_deref()
+                .filter(|value| !value.trim().is_empty());
+            let has_address = address.is_some();
+            let id = ctx.idgen.next("letter");
+            record_container(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<section class="letter{}" id="{id}" data-src="{src}">"#,
+                if has_address {
+                    " letter-has-address"
+                } else {
+                    ""
+                },
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+
+            if address.is_some() || date.is_some() {
+                out.push_str(r#"<header class="letter-head"><div class="letter-from">"#);
+                if let Some(address) = address {
+                    write!(
+                        out,
+                        r#"<div class="letter-address">{}</div>"#,
+                        render_latex_text_with_math(address, ctx.labels),
+                    )
+                    .unwrap();
+                }
+                if let Some(date) = date {
+                    write!(
+                        out,
+                        r#"<div class="letter-date">{}</div>"#,
+                        render_latex_text_with_math(date, ctx.labels),
+                    )
+                    .unwrap();
+                }
+                out.push_str("</div></header>");
+            }
+
+            if !recipient.trim().is_empty() {
+                write!(
+                    out,
+                    r#"<div class="letter-recipient">{}</div>"#,
+                    render_latex_text_with_math(recipient, ctx.labels),
+                )
+                .unwrap();
+            }
+
+            out.push_str(r#"<div class="letter-body">"#);
+            write_chunked_children(out, &n.children, ctx);
+            out.push_str("</div>");
+
+            if !has_address {
+                let location = ctx
+                    .preamble
+                    .letter_location
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty());
+                let telephone = ctx
+                    .preamble
+                    .letter_telephone
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty());
+                if location.is_some() || telephone.is_some() {
+                    out.push_str(r#"<footer class="letter-contact">"#);
+                    if let Some(location) = location {
+                        write!(
+                            out,
+                            r#"<div class="letter-location">{}</div>"#,
+                            render_latex_text_with_math(location, ctx.labels),
+                        )
+                        .unwrap();
+                    }
+                    if let Some(telephone) = telephone {
+                        write!(
+                            out,
+                            r#"<div class="letter-telephone">{}</div>"#,
+                            render_latex_text_with_math(telephone, ctx.labels),
+                        )
+                        .unwrap();
+                    }
+                    out.push_str("</footer>");
+                }
+            }
+            out.push_str("</section>\n");
+        }
+        NodeKind::LetterOpening { text } => {
+            let id = ctx.idgen.next("letter-part");
+            record(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<div class="letter-opening" id="{id}" data-src="{src}">{text}</div>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                text = render_latex_text_with_math(text, ctx.labels),
+            )
+            .unwrap();
+        }
+        NodeKind::LetterClosing { text } => {
+            let signature = ctx
+                .preamble
+                .letter_signature
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    ctx.preamble
+                        .letter_name
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                });
+            let id = ctx.idgen.next("letter-part");
+            record(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<div class="letter-closing" id="{id}" data-src="{src}"><div class="letter-closing-text">{text}</div>{signature}</div>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                text = render_latex_text_with_math(text, ctx.labels),
+                signature = signature
+                    .map(|value| format!(
+                        r#"<div class="letter-signature">{}</div>"#,
+                        render_latex_text_with_math(value, ctx.labels),
+                    ))
+                    .unwrap_or_default(),
+            )
+            .unwrap();
+        }
         NodeKind::Callout { env, class, title } => {
             let id = ctx.idgen.next("callout");
             record_container(ctx, &id, &n.span, None);
@@ -2090,6 +2228,9 @@ fn is_chunked_block_child(node: &Node) -> bool {
             | NodeKind::List { .. }
             | NodeKind::OpaqueEnv { .. }
             | NodeKind::UnsupportedEnvBoundary { .. }
+            | NodeKind::Letter { .. }
+            | NodeKind::LetterOpening { .. }
+            | NodeKind::LetterClosing { .. }
     )
 }
 
@@ -3487,6 +3628,133 @@ mod tests {
     }
 
     #[test]
+    fn native_letter_renders_standard_address_and_closing_geometry() {
+        let dir = temp_dir("native-letter");
+        let root = dir.join("letter.tex");
+        std::fs::write(
+            &root,
+            concat!(
+                "\\documentclass{letter}\n",
+                "\\newcommand{\\sendername}{Ada Lovelace}\n",
+                "\\newcommand{\\senderaddress}{Ada Lovelace\\\\12 St James's Square\\\\London}\n",
+                "\\newcommand{\\letterdate}{July 30, 2026}\n",
+                "\\address{\\senderaddress}\n",
+                "\\signature{\\sendername}\n",
+                "\\date{Wrong date}\n",
+                "\\date{\\letterdate}\n",
+                "\\begin{document}\n",
+                "\\begin{letter}{Charles Babbage\\\\London}\n",
+                "\\opening{Dear Charles,}\n\n",
+                "The engine satisfies $e^{i\\pi}+1=0$.\n\n",
+                "\\closing{Yours sincerely,}\n",
+                "\\end{letter}\n",
+                "\\end{document}\n",
+            ),
+        )
+        .unwrap();
+
+        let out = crate::render_project(&root, &HtmlOptions::default()).unwrap();
+        let body = out.body_html;
+        assert!(
+            body.contains(r#"class="letter letter-has-address""#),
+            "{body}"
+        );
+        for class in [
+            "letter-address",
+            "letter-date",
+            "letter-recipient",
+            "letter-opening",
+            "letter-body",
+            "letter-closing",
+            "letter-signature",
+        ] {
+            assert!(
+                body.contains(&format!(r#"class="{class}""#)),
+                "missing {class}: {body}"
+            );
+        }
+        let order: Vec<usize> = [
+            "letter-address",
+            "letter-date",
+            "letter-recipient",
+            "letter-opening",
+            r#"class="math inline""#,
+            "letter-closing",
+            "letter-signature",
+        ]
+        .iter()
+        .map(|needle| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("missing {needle}: {body}"))
+        })
+        .collect();
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "letter parts out of order: {body}"
+        );
+        assert!(body.matches("<br>").count() >= 3, "{body}");
+        assert_eq!(body.matches(r#"class="math inline"#).count(), 1);
+        assert!(!body.contains("Wrong date"), "{body}");
+        assert!(!body.contains(r"\senderaddress"), "{body}");
+        assert!(!body.contains(r"\sendername"), "{body}");
+        assert!(!body.contains("unsupported-env-boundary"), "{body}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_letter_name_falls_back_for_signature_without_address() {
+        let body = render_body(concat!(
+            "\\name{Fallback Name}\n",
+            "\\date{}\n",
+            "\\begin{document}\n",
+            "\\begin{letter}{Recipient}\n",
+            "\\opening{Hello,}\n",
+            "Body.\n",
+            "\\closing{Regards,}\n",
+            "\\end{letter}\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"class="letter""#), "{body}");
+        assert!(!body.contains("letter-has-address"), "{body}");
+        assert!(!body.contains("letter-address"), "{body}");
+        assert!(!body.contains("letter-date"), "{body}");
+        assert!(
+            body.contains(r#"<div class="letter-signature">Fallback Name</div>"#),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn native_letter_does_not_use_article_author_as_signature() {
+        let body = render_body(concat!(
+            "\\author{Paper Author}\n",
+            "\\begin{document}\n",
+            "\\begin{letter}{Recipient}\n",
+            "\\opening{Hello,}\n",
+            "Body.\n",
+            "\\closing{Regards,}\n",
+            "\\end{letter}\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"class="letter-closing""#), "{body}");
+        assert!(!body.contains(r#"class="letter-signature""#), "{body}");
+        assert!(!body.contains("Paper Author"), "{body}");
+    }
+
+    #[test]
+    fn native_letter_css_and_live_patch_target_match_the_renderer() {
+        let css = super::shell::DEFAULT_CSS;
+        assert!(css.contains(".letter-from {"));
+        assert!(css.contains("width: max-content;"));
+        assert!(css.contains(".letter-body > .source-space {"));
+        assert!(css.contains(".letter-closing {\n  width: 50%;"));
+        assert!(css.contains(".letter-has-address .letter-closing"));
+        assert!(css.contains(".letter-body .para-indent-marker { display: none; }"));
+        assert!(super::shell::CLIENT_JS.contains("blockquote.quote, .letter-body"));
+    }
+
+    #[test]
     fn preview_macro_override_can_replace_letter_environment() {
         let dir = temp_dir("letter-environment-override");
         let root = dir.join("letter.tex");
@@ -3530,6 +3798,10 @@ mod tests {
         assert!(
             body.contains(r#"<blockquote class="quote"#),
             "replacement wrapper missing: {body}"
+        );
+        assert!(
+            !body.contains(r#"<section class="letter"#),
+            "explicit preview override lost precedence: {body}"
         );
         for expected in [
             "To: Charles Babbage",

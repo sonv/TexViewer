@@ -5070,6 +5070,24 @@ Third paragraph with $x^2$.
 \\end{document}
 ";
 
+    const LETTER_WITH_PARAGRAPHS: &str = "\
+\\documentclass{letter}
+\\address{Ada Lovelace\\\\London}
+\\signature{Ada Lovelace}
+\\date{July 30, 2026}
+\\begin{document}
+\\begin{letter}{Charles Babbage\\\\London}
+\\opening{Dear Charles,}
+
+First paragraph with math $a+b$.
+
+Second paragraph here.
+
+\\closing{Yours sincerely,}
+\\end{letter}
+\\end{document}
+";
+
     fn render_src(src: &str) -> RenderOutput {
         mathpreview_core::render_project_from_source(
             &PathBuf::from("main.tex"),
@@ -5121,6 +5139,28 @@ Third paragraph with $x^2$.
             !html.contains("Third paragraph"),
             "unchanged trailing paragraph must not be re-sent: {html}"
         );
+    }
+
+    #[test]
+    fn letter_body_edit_emits_blocksub_for_live_client() {
+        let old = render_src(LETTER_WITH_PARAGRAPHS);
+        let new = render_src(
+            &LETTER_WITH_PARAGRAPHS.replace("Second paragraph here.", "Second paragraph edited."),
+        );
+        assert_eq!(old.blocks.len(), 1, "letter should be one retained block");
+        assert!(
+            old.blocks[0].sub_blocks.is_some(),
+            "letter body should capture sub-block structure"
+        );
+
+        let ops = diff_blocks(&old.blocks, &new.blocks);
+        assert_eq!(ops.len(), 1, "expected one op, got {ops:?}");
+        let PatchOp::BlockSub { html, .. } = &ops[0] else {
+            panic!("expected BlockSub, got {:?}", ops[0]);
+        };
+        assert!(html.contains("edited"), "{html}");
+        assert!(!html.contains("First paragraph"), "{html}");
+        assert!(!html.contains("letter-address"), "{html}");
     }
 
     /// Changing the proof's head (`\\begin{proof}[of ...]`) alters the
@@ -5206,6 +5246,11 @@ Third paragraph with $x^2$.
                     authors: Vec::new(),
                     author_details: Vec::new(),
                     date: None,
+                    letter_name: None,
+                    letter_address: None,
+                    letter_signature: None,
+                    letter_location: None,
+                    letter_telephone: None,
                     sidenote_wrappers: Vec::new(),
                     show_only_refs: false,
                     geometry_margin_mm: None,
@@ -5568,6 +5613,11 @@ Third paragraph with $x^2$.
             authors: Vec::new(),
             author_details: Vec::new(),
             date: None,
+            letter_name: None,
+            letter_address: None,
+            letter_signature: None,
+            letter_location: None,
+            letter_telephone: None,
             sidenote_wrappers: Vec::new(),
             show_only_refs: false,
             geometry_margin_mm: None,

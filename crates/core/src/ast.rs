@@ -159,6 +159,14 @@ pub enum NodeKind {
     /// `center`, `flushleft`, and `flushright` retain their TeX alignment while
     /// their body is parsed normally, so nested math and references still work.
     Alignment { kind: TextAlignment },
+    /// A standard `letter` document-class letter. The retained container lets
+    /// the renderer reproduce the address/date/recipient/closing geometry
+    /// while its body remains ordinary parsed TeX.
+    Letter { recipient: String },
+    /// `\opening{...}` inside a native `letter`.
+    LetterOpening { text: String },
+    /// `\closing{...}` inside a native `letter`.
+    LetterClosing { text: String },
     /// `\begin{abstract}` ... `\end{abstract}` rendered as front matter.
     Abstract,
     /// `\command[opt]{arg}{arg}` passed through opaquely.

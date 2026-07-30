@@ -1235,6 +1235,77 @@ blockquote.quote > :last-child { margin-bottom: 0; }
 .text-alignment.align-center { text-align: center; hyphens: none; }
 .text-alignment.align-flush-left { text-align: left; hyphens: none; }
 .text-alignment.align-flush-right { text-align: right; hyphens: none; }
+/* Native `letter.cls` layout. The ordinary page padding supplies the outer
+   paper margin; this narrower inner measure reproduces the class's larger
+   letter margins. Sender lines are left-aligned as one intrinsic-width block
+   anchored at the right, rather than individually flush-right. */
+.letter {
+  width: 80%;
+  max-width: 44em;
+  margin: 0 auto;
+  padding: 4.2em 0 2em;
+  text-align: left;
+}
+.letter-head { margin: 0; }
+.letter-from {
+  width: max-content;
+  max-width: 100%;
+  margin-left: auto;
+  text-align: left;
+  hyphens: none;
+}
+.letter-address,
+.letter-recipient,
+.letter-opening,
+.letter-closing,
+.letter-contact { text-align: left; }
+.letter-date { margin-top: 1.45em; }
+.letter-recipient {
+  margin-top: 2.45em;
+  hyphens: none;
+}
+.letter-body {
+  margin-top: 2.15em;
+  text-align: justify;
+  text-justify: inter-word;
+}
+.letter-body > .proof-para {
+  display: block;
+  text-indent: 0;
+}
+.letter-body > .para-break { height: 0.7em; }
+.letter-body > .source-space {
+  display: block;
+  height: 0;
+  line-height: 0;
+}
+.letter-body .para-indent-marker { display: none; }
+.letter-opening { margin: 0; }
+.letter-opening + .proof-para { margin-top: 0.7em; }
+.letter-closing {
+  width: 50%;
+  margin-top: 0.4em;
+}
+.letter-has-address .letter-closing {
+  margin-left: auto;
+}
+.letter-signature { margin-top: 4.2em; }
+.letter-contact {
+  margin-top: 2.2em;
+  color: var(--muted);
+}
+.letter-telephone { margin-top: 0.35em; }
+@media (max-width: 720px) {
+  .letter {
+    width: 100%;
+    padding-top: 2em;
+  }
+}
+@media screen {
+  body.page-crop .letter {
+    padding-top: 0;
+  }
+}
 .float-placeholder { margin: 1em 0; text-align: center; color: var(--muted); }
 .float-placeholder figcaption { font-size: 0.95em; line-height: 1.35; }
 .float-kind { font-weight: 700; color: var(--fg); }

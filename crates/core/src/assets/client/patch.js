@@ -2022,11 +2022,11 @@
           var bsBlock = bsBlocks[op.index || 0];
           // Every chunk-capable block type's body container (must match the
           // server's write_chunked_children callers: proof, theorem, callout,
-          // quote). Document order finds the OUTERMOST container first, which
+          // quote, letter). Document order finds the OUTERMOST container first, which
           // is the one the server chunked. A miss here would silently drop the
           // edit and leave the block stale until the next full update.
           var bsBody = bsBlock && bsBlock.querySelector
-            ? bsBlock.querySelector('.proof-body, .thm-body, .callout-body, blockquote.quote')
+            ? bsBlock.querySelector('.proof-body, .thm-body, .callout-body, blockquote.quote, .letter-body')
             : null;
           if (!bsBody && bsBlock) {
             console.warn('mathpreview: no sub-diff container in', bsBlock.id, '- block left stale');

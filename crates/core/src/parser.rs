@@ -1846,6 +1846,37 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                // `letter.cls` permits comments/newlines between these control
+                // words and their braced arguments. The generic unknown-command
+                // path deliberately stops at `%`, so preserve the full logical
+                // call here; `parse_letter` promotes it after parsing the body.
+                if matches!(cmd.as_str(), "opening" | "closing") {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    self.advance_to(cmd_name_end);
+                    let saved = (self.byte, self.line, self.col);
+                    self.skip_tex_argument_space();
+                    let raw = if self.peek_byte() == Some(b'{') {
+                        self.balanced_brace_arg()
+                            .map(|arg| format!(r"\{cmd}{{{arg}}}"))
+                    } else {
+                        None
+                    };
+                    if raw.is_none() {
+                        self.byte = saved.0;
+                        self.line = saved.1;
+                        self.col = saved.2;
+                    }
+                    out.push(Node {
+                        kind: NodeKind::OpaqueCmd {
+                            name: cmd.clone(),
+                            raw: raw.unwrap_or_else(|| format!(r"\{cmd}")),
+                        },
+                        span: self.span_from(cmd_start),
+                        children: vec![],
+                    });
+                    continue;
+                }
+
                 // Old-style font-switch commands (`\bf`, `\em`, `\it`,
                 // `\tt`, `\sc` and their long forms) take no argument —
                 // they change the font for the rest of the enclosing
@@ -2129,6 +2160,15 @@ impl<'a> Parser<'a> {
             ENV_EXPANSION_ACTIVE.with(|active| active.set(active.get() + 1));
             self.parse_user_env(out, start, &env, &def);
             ENV_EXPANSION_ACTIVE.with(|active| active.set(active.get().saturating_sub(1)));
+            return;
+        }
+
+        // `letter.cls` has meaningful page geometry that a flattened
+        // `\newenvironment` approximation cannot reproduce. Keep explicit
+        // preview overrides authoritative; otherwise retain a native letter
+        // container and parse its message body normally.
+        if env == "letter" {
+            self.parse_letter(out, start, env);
             return;
         }
 
@@ -2430,6 +2470,40 @@ impl<'a> Parser<'a> {
         self.advance(format!("\\end{{{env}}}").len());
         out.push(Node {
             kind: NodeKind::Abstract,
+            span: self.span_from(start),
+            children,
+        });
+    }
+
+    fn parse_letter(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
+        // A half-typed `\begin{letter}` must not consume `\opening` as an
+        // undelimited recipient. The class requires a braced address, so only
+        // take that exact shape and leave any other token in the body.
+        self.skip_tex_argument_space();
+        let recipient = if self.peek_byte() == Some(b'{') {
+            self.balanced_brace_arg().unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let (body_end, end_after) = self
+            .find_matching_end_lexical(&env)
+            .unwrap_or((self.bytes.len(), self.bytes.len()));
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
+        sub.parse_block_into(&mut children, None);
+        promote_letter_commands(&mut children);
+
+        self.advance_to(end_after);
+        out.push(Node {
+            kind: NodeKind::Letter { recipient },
             span: self.span_from(start),
             children,
         });
@@ -3273,6 +3347,186 @@ pub fn has_balanced_math_delimiters(source: &str, preamble: &str) -> bool {
         i += 1;
     }
     !in_inline && !in_display
+}
+
+/// Return the last lexically live braced value for each requested control
+/// word. Stored definitions, false conditional branches, comments, and
+/// literal/code payloads are skipped as inert TeX input. Keys omit the leading
+/// backslash; an explicit empty group is retained as `Some("")` by callers.
+pub(crate) fn last_live_braced_command_values(
+    source: &str,
+    commands: &[&str],
+) -> HashMap<String, String> {
+    let src = crate::macros::strip_line_comments(source);
+    let bytes = src.as_bytes();
+    let literals = scan_literal_declarations(source);
+    let mut values = HashMap::new();
+    let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            i = resume;
+            continue;
+        }
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+
+        let word_start = i + 1;
+        let mut word_end = word_start;
+        while word_end < bytes.len()
+            && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+        {
+            word_end += 1;
+        }
+        if word_end == word_start {
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        let word = &src[word_start..word_end];
+
+        if word == "iffalse" {
+            i = false_branch_resume(&src, word_end);
+            continue;
+        }
+        if word == "iftrue" {
+            if let Some(bounds) = conditional_bounds(&src, word_end) {
+                if let Some(else_start) = bounds.else_start {
+                    hidden_ranges.push((else_start, bounds.fi_end));
+                }
+            }
+            i = word_end;
+            continue;
+        }
+        if let Some(end) = skip_command_macro_declaration(&src, i) {
+            i = end;
+            continue;
+        }
+        if let Some(keyword_end) = environment_keyword_end(&src, i) {
+            i = parse_env_macro(&src, keyword_end)
+                .map(|(_, _, end)| end)
+                .unwrap_or(keyword_end);
+            continue;
+        }
+        if let Some((_, end)) = literal_environment_declaration_at(&src, word, word_end) {
+            i = end;
+            continue;
+        }
+        if let Some((_, end)) = inline_literal_declaration_at(&src, word, word_end) {
+            i = end;
+            continue;
+        }
+        if is_static_inline_literal_command(word) || literals.commands.contains(word) {
+            i = inline_literal_payload_with_dynamic(
+                &src,
+                word,
+                word_end,
+                literals.commands.contains(word),
+            )
+            .map(|(_, end)| end)
+            .unwrap_or(bytes.len());
+            continue;
+        }
+        if word == "string" {
+            i = tex_token_end(&src, skip_tex_space_and_comments(&src, word_end));
+            continue;
+        }
+        if matches!(word, "detokenize" | "unexpanded") {
+            i = read_braced(&src, skip_tex_space_and_comments(&src, word_end))
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if word == "begin" {
+            if let Some(token) = environment_token_at(&src, i) {
+                if token.kind == EnvironmentTokenKind::Begin
+                    && (environment_is_literal_with(&token.name, &literals.environments)
+                        || SKIP_ENVS.contains(&token.name.as_str()))
+                {
+                    i = if (token.name != "alltt"
+                        && environment_is_literal_with(&token.name, &literals.environments))
+                        || SKIP_ENVS.contains(&token.name.as_str())
+                    {
+                        literal_environment_bounds(&src, token.end, &token.name)
+                            .map(|(_, end)| end)
+                            .unwrap_or(bytes.len())
+                    } else {
+                        find_matching_end_lexical_in(&src, token.end, &token.name)
+                            .map(|(_, end)| end)
+                            .unwrap_or(bytes.len())
+                    };
+                    continue;
+                }
+                i = token.end;
+                continue;
+            }
+        }
+
+        if commands.contains(&word) {
+            if let Some((value, end)) =
+                read_braced(&src, skip_tex_space_and_comments(&src, word_end))
+            {
+                values.insert(word.to_string(), value);
+                i = end;
+                continue;
+            }
+        }
+        i = word_end;
+    }
+
+    values
+}
+
+fn promote_letter_commands(nodes: &mut [Node]) {
+    // Unsupported environments flatten their children between boundary
+    // markers. Do not let an `\opening` inside one of those nested wrappers
+    // take over the surrounding letter's structure.
+    let mut unsupported_depth = 0usize;
+    for node in nodes {
+        match &node.kind {
+            NodeKind::UnsupportedEnvBoundary {
+                boundary: EnvironmentBoundary::Begin,
+                ..
+            } => {
+                unsupported_depth += 1;
+                continue;
+            }
+            NodeKind::UnsupportedEnvBoundary {
+                boundary: EnvironmentBoundary::End | EnvironmentBoundary::MissingEnd,
+                ..
+            } => {
+                unsupported_depth = unsupported_depth.saturating_sub(1);
+                continue;
+            }
+            _ => {}
+        }
+        if unsupported_depth != 0 {
+            continue;
+        }
+
+        let replacement = match &node.kind {
+            NodeKind::OpaqueCmd { name, raw } if name == "opening" => {
+                letter_command_arg(raw, name).map(|text| NodeKind::LetterOpening { text })
+            }
+            NodeKind::OpaqueCmd { name, raw } if name == "closing" => {
+                letter_command_arg(raw, name).map(|text| NodeKind::LetterClosing { text })
+            }
+            _ => None,
+        };
+        if let Some(kind) = replacement {
+            node.kind = kind;
+        }
+    }
+}
+
+fn letter_command_arg(raw: &str, name: &str) -> Option<String> {
+    let prefix = format!(r"\{name}");
+    if !raw.starts_with(&prefix) {
+        return None;
+    }
+    read_braced(raw, skip_tex_space_and_comments(raw, prefix.len())).map(|(arg, _)| arg)
 }
 
 fn section_level(cmd: &str) -> Option<u8> {
@@ -4403,14 +4657,14 @@ After $y$.
     #[test]
     fn inline_literal_commands_stay_inert_inside_unsupported_environment() {
         let n = parse(concat!(
-            "\\begin{letter}\n",
+            "\\begin{mystery}\n",
             "\\verb|literal $x$ \\begin{tikzpicture}|\n",
-            r"\Verb[formatcom=\itshape]|also $v$ \end{letter}|",
+            r"\Verb[formatcom=\itshape]|also $v$ \end{mystery}|",
             "\n",
-            "\\lstinline|listed $y$ \\end{letter}|\n",
-            "\\mintinline{python}{minted $z$ \\end{letter}}\n",
+            "\\lstinline|listed $y$ \\end{mystery}|\n",
+            "\\mintinline{python}{minted $z$ \\end{mystery}}\n",
             "After $live$.\n",
-            "\\end{letter}\n",
+            "\\end{mystery}\n",
         ));
         let literals: Vec<&str> = n
             .iter()
@@ -4441,11 +4695,11 @@ After $y$.
         let n = parse_with_preamble(
             "\\newmintinline[py]{python}{}\n\\newmint[code]{python}{}\n",
             concat!(
-                "\\begin{letter}\n",
-                "\\py{literal $x$ \\end{letter}}\n",
-                "\\code|listed $y$ \\end{letter}|\n",
+                "\\begin{mystery}\n",
+                "\\py{literal $x$ \\end{mystery}}\n",
+                "\\code|listed $y$ \\end{mystery}|\n",
                 "After $live$.\n",
-                "\\end{letter}\n",
+                "\\end{mystery}\n",
             ),
         );
         let literals: Vec<&str> = n
@@ -4466,6 +4720,88 @@ After $y$.
             })
             .collect();
         assert_eq!(math, ["live"]);
+    }
+
+    #[test]
+    fn native_letter_retains_structure_and_parses_message_body() {
+        let n = parse(concat!(
+            "\\begin{letter}{Charles Babbage\\\\London}\n",
+            "\\opening{Dear Charles,}\n",
+            "\\verb|\\end{letter}| still inside.\n",
+            "The engine satisfies $e^{i\\pi}+1=0$.\n",
+            "\\closing{Yours sincerely,}\n",
+            "\\end{letter}\n",
+        ));
+        let letter = n
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Letter { .. }))
+            .expect("native letter");
+        assert!(matches!(
+            &letter.kind,
+            NodeKind::Letter { recipient } if recipient == r"Charles Babbage\\London"
+        ));
+        assert!(letter.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::LetterOpening { text } if text == "Dear Charles,"
+        )));
+        assert!(letter.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::InlineMath(body) if body == r"e^{i\pi}+1=0"
+        )));
+        assert!(letter.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::LetterClosing { text } if text == "Yours sincerely,"
+        )));
+        assert!(!letter.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::UnsupportedEnvBoundary { env, .. } if env == "letter"
+        )));
+    }
+
+    #[test]
+    fn incomplete_letter_recipient_does_not_swallow_opening() {
+        let n = parse("\\begin{letter}\\opening{Dear reader,}\nBody $x$.");
+        let letter = n
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Letter { .. }))
+            .expect("native letter");
+        assert!(matches!(
+            &letter.kind,
+            NodeKind::Letter { recipient } if recipient.is_empty()
+        ));
+        assert!(letter
+            .children
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::LetterOpening { .. })));
+        assert!(letter
+            .children
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+    }
+
+    #[test]
+    fn native_letter_commands_accept_comments_before_arguments() {
+        let n = parse(concat!(
+            "\\begin{letter}{Recipient}\n",
+            "\\opening% greeting note\n",
+            "{Dear reader,}\n",
+            "Body.\n",
+            "\\closing% closing note\n",
+            "{Regards,}\n",
+            "\\end{letter}\n",
+        ));
+        let letter = n
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Letter { .. }))
+            .expect("native letter");
+        assert!(letter.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::LetterOpening { text } if text == "Dear reader,"
+        )));
+        assert!(letter.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::LetterClosing { text } if text == "Regards,"
+        )));
     }
 
     #[test]
@@ -4719,6 +5055,66 @@ After $y$.
             r"\newenvironment{mystery} live $x",
             "",
         ));
+    }
+
+    #[test]
+    fn live_braced_values_ignore_stored_definitions_and_literal_payloads() {
+        let values = last_live_braced_command_values(
+            concat!(
+                "\\date{Live date}\n",
+                "\\address{Live address}\n",
+                "\\newcommand{\\stored}{\\date{Stored date}\\address{Stored address}}\n",
+                "\\def\\alsoStored{\\signature{Stored signature}}\n",
+                "\\newenvironment{storedenv}{\\name{Stored name}}{\\location{Stored location}}\n",
+                "\\verb|\\date{Literal date}|\n",
+                "\\detokenize{\\address{Literal address}}\n",
+                "\\begin{verbatim}\n",
+                "\\telephone{Literal telephone}\n",
+                "\\end{verbatim}\n",
+            ),
+            &[
+                "date",
+                "name",
+                "address",
+                "signature",
+                "location",
+                "telephone",
+            ],
+        );
+
+        assert_eq!(values.get("date").map(String::as_str), Some("Live date"));
+        assert_eq!(
+            values.get("address").map(String::as_str),
+            Some("Live address")
+        );
+        for absent in ["name", "signature", "location", "telephone"] {
+            assert!(!values.contains_key(absent), "{absent} leaked: {values:?}");
+        }
+    }
+
+    #[test]
+    fn live_braced_values_follow_conditionals_and_preserve_empty_setters() {
+        let values = last_live_braced_command_values(
+            concat!(
+                "\\date{First date}\n",
+                "\\iffalse\\date{Hidden date}\\else\\name{Visible name}\\fi\n",
+                "\\iftrue\\address{Visible address}\\else\\address{Hidden address}\\fi\n",
+                "\\signature{Before empty}\n",
+                "\\iffalse\\signature{Hidden signature}\\fi\n",
+                "\\signature{}\n",
+                "\\date% continued setter\n",
+                "{Last date}\n",
+            ),
+            &["date", "name", "address", "signature"],
+        );
+
+        assert_eq!(values.get("date").map(String::as_str), Some("Last date"));
+        assert_eq!(values.get("name").map(String::as_str), Some("Visible name"));
+        assert_eq!(
+            values.get("address").map(String::as_str),
+            Some("Visible address")
+        );
+        assert_eq!(values.get("signature").map(String::as_str), Some(""));
     }
 
     // Recursively true if any node's rendered-ish text contains `needle`.

@@ -69,6 +69,22 @@ pub struct ExtractedPreamble {
     pub author_details: Vec<FrontMatterAuthor>,
     /// `\date{…}` body.
     pub date: Option<String>,
+    /// `letter.cls` sender name (`\name{...}`). This is kept separate from
+    /// article/AMS authors because a letter need not declare `\author`.
+    #[serde(default)]
+    pub letter_name: Option<String>,
+    /// `letter.cls` return-address block (`\address{...}`).
+    #[serde(default)]
+    pub letter_address: Option<String>,
+    /// `letter.cls` closing signature (`\signature{...}`).
+    #[serde(default)]
+    pub letter_signature: Option<String>,
+    /// Optional `letter.cls` location metadata.
+    #[serde(default)]
+    pub letter_location: Option<String>,
+    /// Optional `letter.cls` telephone metadata.
+    #[serde(default)]
+    pub letter_telephone: Option<String>,
     /// User macro names whose body wraps `\sidenote[...]{...}` — e.g.
     /// `\SV`, `\AB`, `\GI`, or any author-defined review/annotation
     /// command following the same `\newcommand{\X}[2][]{\sidenote[...]{...}}`
@@ -591,7 +607,26 @@ impl Extractor {
         let author_details = extract_front_matter_authors(&metadata_src);
         let authors: Vec<String> = author_details.iter().map(|a| a.name.clone()).collect();
         let author = authors.first().cloned();
-        let date = extract_brace_arg(&metadata_src, r"\date");
+        // Setter-style front matter is last-definition-wins in TeX. Keep the
+        // raw LaTeX so the renderer can expand user macros such as
+        // `\address{\senderaddress}` after installing the extracted macros.
+        let setters = crate::parser::last_live_braced_command_values(
+            &self.raw,
+            &[
+                "date",
+                "name",
+                "address",
+                "signature",
+                "location",
+                "telephone",
+            ],
+        );
+        let date = setters.get("date").cloned();
+        let letter_name = setters.get("name").cloned();
+        let letter_address = setters.get("address").cloned();
+        let letter_signature = setters.get("signature").cloned();
+        let letter_location = setters.get("location").cloned();
+        let letter_telephone = setters.get("telephone").cloned();
         // Any extracted user macro whose body wraps `\sidenote[...]{...}`
         // (svmacro.sty's `\SV` / `\AB` and any author-defined equivalent
         // like `\GI`) is a sidenote wrapper — the renderer treats them
@@ -617,6 +652,11 @@ impl Extractor {
             authors,
             author_details,
             date,
+            letter_name,
+            letter_address,
+            letter_signature,
+            letter_location,
+            letter_telephone,
             sidenote_wrappers,
             show_only_refs,
             geometry_margin_mm,
@@ -889,50 +929,6 @@ fn read_bracket_arg(src: &str, start: usize) -> Option<(String, usize)> {
         }
     }
     None
-}
-
-/// Find the first `\<cmd>{...}` and return the brace-balanced contents.
-fn extract_brace_arg(src: &str, cmd: &str) -> Option<String> {
-    extract_brace_args(src, cmd).into_iter().next()
-}
-
-/// Find every `\<cmd>{...}` and return brace-balanced contents. Supports a
-/// single LaTeX optional argument before the required brace arg, e.g.
-/// `\author[short]{long}`.
-fn extract_brace_args(src: &str, cmd: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let bytes = src.as_bytes();
-    let needle = cmd.as_bytes();
-    let mut i = 0;
-    while i + needle.len() < bytes.len() {
-        if &bytes[i..i + needle.len()] == needle {
-            // Ensure next char isn't alphabetic (i.e. \title vs \titlepage).
-            let after = bytes.get(i + needle.len()).copied().unwrap_or(b' ');
-            if !after.is_ascii_alphabetic() {
-                let mut j = i + needle.len();
-                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < bytes.len() && bytes[j] == b'[' {
-                    if let Some(next) = skip_bracket_arg(src, j) {
-                        j = next;
-                        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                            j += 1;
-                        }
-                    }
-                }
-                if j < bytes.len() && bytes[j] == b'{' {
-                    if let Some((arg, next)) = read_brace_arg(src, j) {
-                        out.push(arg);
-                        i = next;
-                        continue;
-                    }
-                }
-            }
-        }
-        i += 1;
-    }
-    out
 }
 
 fn skip_bracket_arg(src: &str, start: usize) -> Option<usize> {
@@ -1858,6 +1854,38 @@ mod tests {
         let p = preamble(r#"\title{Just the Long Title}"#);
         assert_eq!(p.title.as_deref(), Some("Just the Long Title"));
         assert_eq!(p.title_short, None);
+    }
+
+    #[test]
+    fn letter_metadata_is_separate_and_last_setter_wins() {
+        let p = preamble(concat!(
+            "\\author{Article Author}\n",
+            "\\address{First address}\n",
+            "\\name{Ada Lovelace}\n",
+            "\\address{Ada Lovelace\\\\12 St James's Square\\\\London}\n",
+            "\\signature{A. Lovelace}\n",
+            "\\date{Wrong date}\n",
+            "\\date{July 30, 2026}\n",
+            "\\location{London}\n",
+            "\\telephone{12345}\n",
+            "\\newcommand{\\storedmetadata}{\\date{Stored date}\\address{Stored address}}\n",
+            "\\newenvironment{storedmetadataenv}{\\signature{Stored signature}}{\\name{Stored name}}\n",
+            "\\iffalse\n",
+            "\\date{Hidden date}\n",
+            "\\location{Hidden location}\n",
+            "\\telephone{Hidden telephone}\n",
+            "\\fi\n",
+        ));
+        assert_eq!(p.author.as_deref(), Some("Article Author"));
+        assert_eq!(p.letter_name.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(
+            p.letter_address.as_deref(),
+            Some(r"Ada Lovelace\\12 St James's Square\\London")
+        );
+        assert_eq!(p.letter_signature.as_deref(), Some("A. Lovelace"));
+        assert_eq!(p.date.as_deref(), Some("July 30, 2026"));
+        assert_eq!(p.letter_location.as_deref(), Some("London"));
+        assert_eq!(p.letter_telephone.as_deref(), Some("12345"));
     }
 
     #[test]

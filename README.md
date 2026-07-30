@@ -57,6 +57,9 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 - **`\title` / `\author` / `\date` / `\maketitle`** produce a centered
   title block. Repeated authors, `\and`, `\address`, `\curraddr`,
   `\email`, and `abstract` are handled for AMS-style front matter.
+- **Native `letter` layout** keeps the sender/address block anchored at the
+  right while its lines remain left-aligned, then places the recipient and
+  message on the main left edge and the closing/signature in the right half.
 - **Lists** (enumerate / itemize / description / paralist variants) parse
   to `<ol>` / `<ul>` / `<dl>` with each `\item` recursively re-parsed.
 - **Role-tagged theorems** (`[role=main|supporting|standard|omitted]`)
@@ -827,17 +830,24 @@ A typical file:
 \newcommand{\given}{\mid}
 ```
 
-The same override files can provide preview-only replacements for environments
-defined by a document class or system package. Without a replacement, the
-viewer marks an unknown non-literal environment's begin/end boundaries in red
-and still parses its body as ordinary TeX. A replacement removes that
-diagnostic and supplies a closer approximation of the environment's intended
-layout. For example, a standard `letter` document can label and group its
-recipient without changing the real PDF:
+The standard `letter` environment is handled natively. The viewer lays out
+`\address` and `\date` as a left-aligned sender block anchored at the right,
+keeps the recipient, `\opening`, and message on the main left edge, and places
+`\closing` plus `\signature` on the right half of the letter, while continuing
+to parse prose and math normally. An older preview-only
+`\renewenvironment{letter}` workaround is still authoritative when present;
+remove that override to use the native layout.
+
+The same override files can provide preview-only replacements for other
+environments defined by a document class or system package. Without a
+replacement, the viewer marks an unknown non-literal environment's begin/end
+boundaries in red and still parses its body as ordinary TeX. A replacement
+removes that diagnostic and supplies a closer approximation of the
+environment's intended layout. For example:
 
 ```tex
 % .mathpreview-macros.tex
-\renewenvironment{letter}[1]
+\renewenvironment{recommendation}[1]
   {\begin{quote}\textbf{To: #1}\\}
   {\end{quote}}
 ```
@@ -846,12 +856,11 @@ recipient without changing the real PDF:
 including an optional first-argument default. The replacement's begin/end code
 and the original body are parsed normally, so nested environments, references,
 and math still render. These are deliberately preview approximations: class
-state such as `letter.cls` signatures/addresses or `exam.cls` counters, points,
-choice markers, and answer modes is not recreated automatically. Because the
-viewer cannot infer an unknown environment's argument signature, any optional
-or braced arguments after its begin marker are also rendered as ordinary
-content; define a replacement when those arguments should instead be consumed
-or reformatted.
+state such as `exam.cls` counters, points, choice markers, and answer modes is
+not recreated automatically. Because the viewer cannot infer an unknown
+environment's argument signature, any optional or braced arguments after its
+begin marker are also rendered as ordinary content; define a replacement when
+those arguments should instead be consumed or reformatted.
 
 For an exam, prose and math are visible automatically between the red
 unsupported-environment markers. Empty replacements can suppress those markers
@@ -867,11 +876,10 @@ Commands inside those environments keep the viewer's generic meaning:
 `\question[5]` will not acquire exam numbering or points, choice markers are
 not synthesized, and `\part` is still interpreted as a document-level heading.
 Environment replacements apply before the generic unsupported-environment
-fallback. Built-in semantic environments keep their native behavior, and raw
-or code-like environments remain opaque even if a replacement has the same
-name. An explicit replacement can deliberately override an otherwise opaque
-float, TikZ, or specialized display-math environment when you want preview-only
-semantics instead.
+fallback and native environment handling. An explicit replacement can
+deliberately override a built-in semantic environment, otherwise opaque float,
+TikZ diagram, or specialized display-math environment when you want
+preview-only semantics instead.
 
 You can also add overrides without leaving the viewer: click the
 `macros` button in the toolbar. The chosen scope's existing

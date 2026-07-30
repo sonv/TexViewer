@@ -13,6 +13,30 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.13] — 2026-07-30
+
+### Added
+
+- **Standard `letter` documents now have a native preview layout.** Sender
+  address lines stay left-aligned inside a block anchored at the right;
+  recipient, opening, and message share the main left edge; and the closing
+  plus signature use the letter's half-width closing column. Preamble
+  `\name`, `\address`, `\signature`, `\date`, `\location`, and `\telephone`
+  values expand ordinary user macros, while letter names and signatures stay
+  separate from article author metadata.
+
+### Fixed
+
+- **Letter paragraphs keep LaTeX-like spacing and indentation.** Invisible
+  source anchors no longer add blank visual lines, message paragraphs have
+  zero first-line indent with `letter.cls`-style separation, and crop mode
+  preserves the same letter measure instead of widening it.
+- **Letter edits use the existing sub-block live patch path.** Editing one
+  message paragraph leaves the sender and recipient scaffolding in place.
+  Explicit preview-only `\newenvironment` / `\renewenvironment` replacements
+  still take precedence when a project intentionally supplies its own letter
+  approximation.
+
 ## [2.1.12] — 2026-07-30
 
 ### Changed
