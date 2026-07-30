@@ -822,17 +822,51 @@ A typical file:
 \newcommand{\given}{\mid}
 ```
 
+The same override files can provide preview-only replacements for environments
+defined by a document class or system package. This is useful when the viewer
+cannot inspect that package and would otherwise show the environment as an
+opaque block. For example, a standard `letter` document can expose its
+recipient, prose, and math without changing the real PDF:
+
+```tex
+% .mathpreview-macros.tex
+\renewenvironment{letter}[1]
+  {\begin{quote}\textbf{To: #1}\\}
+  {\end{quote}}
+```
+
+`\newenvironment` and `\renewenvironment` support up to nine arguments,
+including an optional first-argument default. The replacement's begin/end code
+and the original body are parsed normally, so nested environments, references,
+and math still render. These are deliberately preview approximations: class
+state such as `letter.cls` signatures/addresses or `exam.cls` counters, points,
+choice markers, and answer modes is not recreated automatically. For an exam,
+empty replacements can at least expose the prose and math:
+
+```tex
+\renewenvironment{questions}{}{}
+\renewenvironment{parts}{}{}
+\renewenvironment{choices}{}{}
+```
+
+Commands inside those environments keep the viewer's generic meaning:
+`\question[5]` will not acquire exam numbering or points, choice markers are
+not synthesized, and `\part` is still interpreted as a document-level heading.
+Environment replacements apply to otherwise-opaque environments; the viewer's
+dedicated renderers for recognized environments keep precedence.
+
 You can also add overrides without leaving the viewer: click the
 `macros` button in the toolbar. The chosen scope's existing
-`\newcommand` file **loads into the editor** so you can see and edit
-what's already there; add or change lines, pick **Project** or
-**Global**, and Save — the daemon validates the lines and writes the
-file back (so re-saving never duplicates), then the page re-renders.
+command macros and environment replacements **load into the editor** so you can
+see and edit what's already there; add or change definitions, pick **Project**
+or **Global**, and Save — the daemon validates them and writes the file back
+(so re-saving never duplicates), then the page re-renders.
 (A *Type* toggle switches to **Text → HTML** for writing a
 `[text-macros]` template instead — see [Macros in regular
 text](#macros-in-regular-text).) Edits to the file made directly in
 your editor live-reload the same way — the file watcher tracks all
-override paths.
+override paths. If the file changes in nvim while the dialog is still open, a
+dialog Save stops with a conflict instead of overwriting the newer disk copy.
 
 The override's signature has to match how the macro is called in the
 body. `\DeclarePairedDelimiter[..size..]{..body..}` calls become plain

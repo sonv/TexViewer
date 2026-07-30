@@ -3062,6 +3062,21 @@ mod tests {
         assert!(!out.html.contains("Wrap long equations"));
         assert!(!out.html.contains("wrap-equations ="));
         assert!(out.html.contains(r#"id="config-viewer-toml""#));
+        assert!(out.html.contains("Macros and environments"));
+        assert!(out.html.contains(r"\newenvironment"));
+        assert!(out
+            .html
+            .contains("Enter a \\\\newcommand or \\\\newenvironment definition first."));
+        assert!(out.html.contains("markMacroEditorDirty(e.target)"));
+        assert!(out.html.contains("seq !== macroLoadSeq"));
+        assert!(out
+            .html
+            .contains("(input.dataset.editRevision || '0') !== editRevision"));
+        assert!(out
+            .html
+            .contains("expected_content: input.dataset.loadedScope === scopeKey"));
+        assert!(out.html.contains("input.dataset.saving === 'true'"));
+        assert!(out.html.contains("input.dataset.dirty = 'false'"));
         let controls = out.html.find(r#"id="config-font-size""#).unwrap();
         let editor = out.html.find(r#"id="config-viewer-toml""#).unwrap();
         assert!(
@@ -3246,6 +3261,67 @@ mod tests {
             !text_content(&body).contains("$x^2 = y$"),
             "raw math leaked: {body}"
         );
+    }
+
+    #[test]
+    fn preview_macro_override_can_replace_letter_environment() {
+        let dir = temp_dir("letter-environment-override");
+        let root = dir.join("letter.tex");
+        let overrides = dir.join(".mathpreview-macros.tex");
+        std::fs::write(
+            &root,
+            concat!(
+                "\\documentclass{letter}\n",
+                "\\begin{document}\n",
+                "\\begin{letter}{Charles Babbage\\\\London}\n",
+                "\\opening{Dear Charles,}\n\n",
+                "The engine satisfies $e^{i\\pi}+1=0$.\n\n",
+                "\\closing{Yours sincerely,}\n",
+                "\\end{letter}\n",
+                "\\end{document}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &overrides,
+            concat!(
+                "\\renewenvironment{letter}[1]",
+                "{\\begin{quote}\\textbf{To: #1}\\\\}",
+                "{\\end{quote}}\n",
+            ),
+        )
+        .unwrap();
+
+        let opts = HtmlOptions {
+            macro_overrides: vec![overrides],
+            ..HtmlOptions::default()
+        };
+        let out = crate::render_project(&root, &opts).unwrap();
+        let body = out.body_html;
+        let text = text_content(&body);
+
+        assert!(
+            !body.contains(r#"opaque-env" data-env="letter"#),
+            "letter stayed opaque: {body}"
+        );
+        assert!(
+            body.contains(r#"<blockquote class="quote"#),
+            "replacement wrapper missing: {body}"
+        );
+        for expected in [
+            "To: Charles Babbage",
+            "Dear Charles,",
+            "The engine satisfies",
+            "Yours sincerely,",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}: {body}");
+        }
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "letter math did not render: {body}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

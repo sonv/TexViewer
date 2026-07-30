@@ -139,22 +139,25 @@ pub fn resolve_override_path(root_dir: &Path, scope: MacrosScope) -> Option<Path
     }
 }
 
-/// Validate a single override line as a parseable `\newcommand`-shaped
-/// definition. Returns the extracted macro's name on success, or an
-/// error describing why the line was rejected. Used by the macros
-/// dialog to surface "this looks malformed" before writing to disk.
+/// Validate a single override line as either a command macro or a simple
+/// environment replacement. Returns the definition's name on success, or an
+/// error describing why the line was rejected. Used by the macros dialog to
+/// surface "this looks malformed" before writing to disk.
 pub fn validate_override_line(line: &str) -> Result<String> {
+    if crate::parser::is_environment_definition_start(line) {
+        return crate::parser::validate_environment_override_line(line)
+            .map_err(|e| anyhow::anyhow!("rejected environment line: {e}"));
+    }
+
     let mut e = Extractor::new();
     e.scan(line, Path::new("<dialog>"));
     let preamble = e.finish();
     if let Some(m) = preamble.macros.into_iter().next() {
         Ok(m.name)
     } else {
-        let detail = preamble
-            .warnings
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "expected a \\newcommand-shaped definition".to_string());
+        let detail = preamble.warnings.into_iter().next().unwrap_or_else(|| {
+            "expected a \\newcommand or \\newenvironment definition".to_string()
+        });
         Err(anyhow::anyhow!("rejected macro line: {detail}"))
     }
 }
@@ -1680,6 +1683,24 @@ mod tests {
     fn validate_override_accepts_well_formed_newcommand() {
         let name = validate_override_line(r"\newcommand{\foo}{bar}").unwrap();
         assert_eq!(name, "foo");
+    }
+
+    #[test]
+    fn validate_override_accepts_environment_replacement() {
+        let name = validate_override_line(
+            r"\renewenvironment{letter}[1]{\begin{quote}\textbf{#1}}{\end{quote}}",
+        )
+        .unwrap();
+        assert_eq!(name, "letter");
+    }
+
+    #[test]
+    fn validate_override_rejects_malformed_environment_replacement() {
+        let err = validate_override_line(r"\newenvironment{letter}[10]{}{}").unwrap_err();
+        assert!(
+            err.to_string().contains("rejected environment"),
+            "got: {err}"
+        );
     }
 
     #[test]

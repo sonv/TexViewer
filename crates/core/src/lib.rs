@@ -90,7 +90,7 @@ fn finish_render(
     // Config override (`[viewer] theorem-numbering`): force continuous/section
     // numbering when the `\newtheorem` declarations aren't visible to detection.
     thms.apply_numbering_scheme(opts.viewer_config.theorem_numbering);
-    let mut body = parser::parse_body(&project, &thms)?;
+    let mut body = parser::parse_body_with_overrides(&project, &thms, &overrides)?;
     // mathtools `showonlyrefs`: collect every referenced key up front so the
     // numbering pass can suppress numbers on unreferenced equations. The scan
     // covers every body file (include order) and skips comments itself.

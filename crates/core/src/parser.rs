@@ -7,13 +7,14 @@
 //! `\omitref`. Everything else passes through as opaque tokens. Source
 //! positions survive to every leaf.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span, TextAlignment};
+use crate::macros::MacroOverride;
 use crate::project::Project;
 use crate::theorems::TheoremRegistry;
 
@@ -36,27 +37,45 @@ thread_local! {
     /// env name. Thread-local (like the renderer's macro table) so every
     /// sub-parser sees them without threading a reference through `new_at`.
     static ENV_MACROS: RefCell<HashMap<String, EnvMacro>> = RefCell::new(HashMap::new());
+    /// Shared expansion budget for one outermost user environment. The depth
+    /// cap alone
+    /// does not bound a recursive definition that emits two copies of itself
+    /// at each level (exponential fan-out), so every custom-environment
+    /// expansion also consumes from this global budget.
+    static ENV_EXPANSIONS_LEFT: Cell<usize> = const { Cell::new(MAX_USER_ENV_EXPANSIONS) };
+    /// Number of active user-environment expansions. The work budget resets
+    /// for each outermost use, so a long document with many ordinary uses does
+    /// not exhaust one document-global allowance.
+    static ENV_EXPANSION_ACTIVE: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Gather `\newenvironment` definitions from the whole project — the root
-/// preamble plus every local `.sty` / `.tex` it `\usepackage`s / `\input`s (the
-/// same files the macro and theorem extractors read), so a definition in an
-/// included file is honored, not just one in the root preamble.
-fn env_macros_for_project(project: &Project) -> HashMap<String, EnvMacro> {
-    // Referenced files first, the ROOT PREAMBLE last — later sources win, and
-    // the root must win: the common pattern is `\usepackage{local}` followed by
-    // a `\renewenvironment` override in the document's own preamble.
-    let mut sources: Vec<String> = project
-        .preamble_files
-        .iter()
-        .map(|file| file.source.clone())
-        .collect();
-    sources.push(project.preamble.source.clone());
+const MAX_USER_ENV_EXPANSIONS: usize = 1024;
+
+/// Gather `\newenvironment` definitions from the whole project and the
+/// preview-only macro override cascade. Referenced files come first, then the
+/// root preamble (so a document-local `\renewenvironment` wins), then viewer
+/// overrides such as `.mathpreview-macros.tex` (so users can approximate a
+/// class-provided environment without changing the real PDF).
+fn env_macros_for_project(
+    project: &Project,
+    overrides: &[MacroOverride],
+) -> HashMap<String, EnvMacro> {
     let mut out = HashMap::new();
-    for src in &sources {
-        out.extend(extract_env_macros(src));
+    for file in &project.preamble_files {
+        out.extend(extract_env_macros(&file.source));
+    }
+    out.extend(extract_env_macros(&project.preamble.source));
+    for override_layer in overrides {
+        out.extend(extract_env_macros(&override_layer.source));
     }
     out
+}
+
+struct EnvDeclaration {
+    name: String,
+    def: EnvMacro,
+    start_line: usize,
+    end_line: usize,
 }
 
 /// Scan `\newenvironment` / `\renewenvironment` declarations out of one source
@@ -65,48 +84,331 @@ fn env_macros_for_project(project: &Project) -> HashMap<String, EnvMacro> {
 /// standard multi-line style — must parse, and a commented-out definition must
 /// not be honored (nor shadow a live one).
 fn extract_env_macros(raw: &str) -> HashMap<String, EnvMacro> {
-    static RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\\(?:re)?newenvironment\*?").unwrap());
-    let src = &crate::macros::strip_line_comments(raw);
     let mut out = HashMap::new();
-    for m in RE.find_iter(src) {
-        let mut p = skip_ascii_ws(src, m.end());
-        let Some((name, np)) = read_braced(src, p) else {
-            continue;
-        };
-        p = skip_ascii_ws(src, np);
-        let mut nargs = 0u8;
-        let mut default = None;
-        if let Some((n, np)) = read_bracketed(src, p) {
-            nargs = n.trim().parse().unwrap_or(0);
-            p = skip_ascii_ws(src, np);
-            if let Some((d, np2)) = read_bracketed(src, p) {
-                default = Some(d);
-                p = skip_ascii_ws(src, np2);
-            }
-        }
-        let Some((begin, np)) = read_braced(src, p) else {
-            continue;
-        };
-        p = skip_ascii_ws(src, np);
-        let Some((end, _)) = read_braced(src, p) else {
-            continue;
-        };
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        out.insert(
-            name,
-            EnvMacro {
-                begin: begin.trim().to_string(),
-                end: end.trim().to_string(),
-                nargs,
-                default,
-            },
-        );
+    for declaration in scan_env_declarations(raw, false).unwrap_or_default() {
+        out.insert(declaration.name, declaration.def);
     }
     out
+}
+
+/// Byte immediately after an environment-definition command at `start`,
+/// including its optional star. Parsing the whole control word (rather than
+/// prefix-matching text) keeps `\newenvironmenthelper` from being mistaken for
+/// a declaration.
+fn environment_keyword_end(src: &str, start: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'\\') {
+        return None;
+    }
+    let mut end = start + 1;
+    while end < bytes.len() && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@') {
+        end += 1;
+    }
+    if !matches!(&src[start + 1..end], "newenvironment" | "renewenvironment") {
+        return None;
+    }
+    if bytes.get(end) == Some(&b'*') {
+        end += 1;
+    }
+    Some(end)
+}
+
+fn skip_command_name_arg(src: &str, mut p: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    p = skip_ascii_ws(src, p);
+    if bytes.get(p) == Some(&b'{') {
+        let (_, next) = read_braced(src, p)?;
+        p = next;
+    } else if bytes.get(p) == Some(&b'\\') {
+        p += 1;
+        if bytes
+            .get(p)
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'@')
+        {
+            while p < bytes.len() && (bytes[p].is_ascii_alphabetic() || bytes[p] == b'@') {
+                p += 1;
+            }
+        } else {
+            p += usize::from(p < bytes.len());
+        }
+    } else {
+        return None;
+    }
+    Some(p)
+}
+
+fn skip_braced_groups(src: &str, mut p: usize, count: usize) -> Option<usize> {
+    for _ in 0..count {
+        p = skip_ascii_ws(src, p);
+        let (_, next) = read_braced(src, p)?;
+        p = next;
+    }
+    Some(p)
+}
+
+/// Skip declarations whose braced bodies are stored as command definitions,
+/// not executed while the preamble is scanned. Otherwise a literal
+/// `\newenvironment` inside (say) `\def\factory{...}` would be activated.
+fn skip_command_macro_declaration(src: &str, start: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'\\') {
+        return None;
+    }
+    let mut p = start + 1;
+    while p < bytes.len() && (bytes[p].is_ascii_alphabetic() || bytes[p] == b'@') {
+        p += 1;
+    }
+    let keyword = &src[start + 1..p];
+    if bytes.get(p) == Some(&b'*') {
+        p += 1;
+    }
+
+    if matches!(
+        keyword,
+        "newcommand" | "renewcommand" | "providecommand" | "DeclareRobustCommand"
+    ) {
+        p = skip_command_name_arg(src, p)?;
+        p = skip_ascii_ws(src, p);
+        if let Some((_, next)) = read_bracketed(src, p) {
+            p = skip_ascii_ws(src, next);
+            if let Some((_, next)) = read_bracketed(src, p) {
+                p = next;
+            }
+        }
+        return skip_braced_groups(src, p, 1);
+    }
+
+    if matches!(
+        keyword,
+        "NewDocumentCommand" | "RenewDocumentCommand" | "ProvideDocumentCommand"
+    ) {
+        p = skip_command_name_arg(src, p)?;
+        return skip_braced_groups(src, p, 2);
+    }
+
+    if matches!(keyword, "def" | "edef" | "gdef" | "xdef") {
+        p = skip_ascii_ws(src, p);
+        if bytes.get(p) != Some(&b'\\') {
+            return None;
+        }
+        p += 1;
+        if bytes
+            .get(p)
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'@')
+        {
+            while p < bytes.len() && (bytes[p].is_ascii_alphabetic() || bytes[p] == b'@') {
+                p += 1;
+            }
+        } else {
+            p += usize::from(p < bytes.len());
+        }
+        while p < bytes.len() {
+            if bytes[p] == b'\\' && p + 1 < bytes.len() {
+                p += 2;
+            } else if bytes[p] == b'{' {
+                return skip_braced_groups(src, p, 1);
+            } else {
+                p += 1;
+            }
+        }
+        return None;
+    }
+
+    if keyword == "DeclareMathOperator" {
+        p = skip_command_name_arg(src, p)?;
+        return skip_braced_groups(src, p, 1);
+    }
+
+    if matches!(keyword, "DeclarePairedDelimiter" | "newdelim") {
+        p = skip_command_name_arg(src, p)?;
+        return skip_braced_groups(src, p, 2);
+    }
+
+    None
+}
+
+fn advance_env_scan(bytes: &[u8], i: &mut usize, line: &mut usize, to: usize) {
+    let to = to.min(bytes.len());
+    *line += bytes[*i..to].iter().filter(|b| **b == b'\n').count();
+    *i = to;
+}
+
+/// Lex environment definitions while skipping command-macro declarations as
+/// units. This preserves definitions inside immediately executed wrappers such
+/// as `\AtBeginDocument{...}`, while text inside a `\newcommand` replacement
+/// cannot become an accidental live environment. In strict mode a malformed
+/// declaration is an error (used by the macro editor); normal preamble
+/// extraction remains best-effort and simply ignores it.
+fn scan_env_declarations(raw: &str, strict: bool) -> Result<Vec<EnvDeclaration>> {
+    let src = crate::macros::strip_line_comments(raw);
+    let bytes = src.as_bytes();
+    let mut declarations = Vec::new();
+    let mut i = 0usize;
+    let mut line = 1usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if let Some(end) = skip_command_macro_declaration(&src, i) {
+                    advance_env_scan(bytes, &mut i, &mut line, end);
+                    continue;
+                }
+                if let Some(keyword_end) = environment_keyword_end(&src, i) {
+                    let start_line = line;
+                    match parse_env_macro(&src, keyword_end) {
+                        Some((name, def, declaration_end)) => {
+                            let end_line = line
+                                + bytes[i..declaration_end]
+                                    .iter()
+                                    .filter(|b| **b == b'\n')
+                                    .count();
+                            declarations.push(EnvDeclaration {
+                                name,
+                                def,
+                                start_line,
+                                end_line,
+                            });
+                            advance_env_scan(bytes, &mut i, &mut line, declaration_end);
+                            continue;
+                        }
+                        None if strict => {
+                            anyhow::bail!("line {start_line}: malformed environment definition");
+                        }
+                        None => {}
+                    }
+                }
+                // Skip an escaped control symbol / first control-word byte so
+                // it is not reconsidered as another command start.
+                let next = (i + 2).min(bytes.len());
+                advance_env_scan(bytes, &mut i, &mut line, next);
+            }
+            _ => {
+                let next = i + 1;
+                advance_env_scan(bytes, &mut i, &mut line, next);
+            }
+        }
+    }
+    Ok(declarations)
+}
+
+/// Parse one declaration after its `\newenvironment` / `\renewenvironment`
+/// keyword. Returns the name, definition, and byte immediately after the end
+/// replacement. LaTeX environment definitions have at most nine arguments.
+fn parse_env_macro(src: &str, keyword_end: usize) -> Option<(String, EnvMacro, usize)> {
+    let mut p = skip_ascii_ws(src, keyword_end);
+    let (name, np) = read_braced(src, p)?;
+    p = skip_ascii_ws(src, np);
+    let mut nargs = 0u8;
+    let mut default = None;
+    if let Some((n, np)) = read_bracketed(src, p) {
+        nargs = n.trim().parse().ok()?;
+        if nargs > 9 {
+            return None;
+        }
+        p = skip_ascii_ws(src, np);
+        if let Some((d, np2)) = read_bracketed(src, p) {
+            if nargs == 0 {
+                return None;
+            }
+            default = Some(d);
+            p = skip_ascii_ws(src, np2);
+        }
+    }
+    let (begin, np) = read_braced(src, p)?;
+    p = skip_ascii_ws(src, np);
+    let (end, declaration_end) = read_braced(src, p)?;
+    if !env_parameters_valid(&begin, nargs) || !env_parameters_valid(&end, nargs) {
+        return None;
+    }
+    if default
+        .as_deref()
+        .is_some_and(|value| !env_default_valid(value))
+    {
+        return None;
+    }
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some((
+        name,
+        EnvMacro {
+            begin: begin.trim().to_string(),
+            end: end.trim().to_string(),
+            nargs,
+            default,
+        },
+        declaration_end,
+    ))
+}
+
+fn env_parameters_valid(template: &str, nargs: u8) -> bool {
+    let bytes = template.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'#' => i += 2,
+            b'#' if i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() => {
+                let parameter = bytes[i + 1] - b'0';
+                if parameter == 0 || parameter > nargs {
+                    return false;
+                }
+                i += 2;
+            }
+            b'#' => return false,
+            _ => i += 1,
+        }
+    }
+    true
+}
+
+fn env_default_valid(default: &str) -> bool {
+    let bytes = default.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'#' => return false,
+            _ => i += 1,
+        }
+    }
+    true
+}
+
+/// Whether a trimmed command-shaped line starts a real environment
+/// declaration (not merely a longer control word with the same prefix).
+pub fn is_environment_definition_start(line: &str) -> bool {
+    let stripped = crate::macros::strip_line_comments(line);
+    let src = stripped.trim_start();
+    environment_keyword_end(src, 0).is_some()
+}
+
+/// Validate one complete environment replacement, as used by the macro
+/// editor's single-definition append path.
+pub fn validate_environment_override_line(line: &str) -> Result<String> {
+    let stripped = crate::macros::strip_line_comments(line);
+    let src = stripped.trim();
+    let Some(keyword_end) = environment_keyword_end(src, 0) else {
+        anyhow::bail!("expected a \\newenvironment or \\renewenvironment definition");
+    };
+    let Some((name, _, end)) = parse_env_macro(src, keyword_end) else {
+        anyhow::bail!("malformed environment definition");
+    };
+    if !src[end..].trim().is_empty() {
+        anyhow::bail!("unexpected text after environment definition");
+    }
+    Ok(name)
+}
+
+/// Validate every environment declaration in an override file, including
+/// balanced definitions split across lines. Returns inclusive, one-based line
+/// ranges occupied by declarations, allowing the dialog validator to avoid
+/// treating replacement-body commands as standalone macro definitions.
+pub fn validate_environment_override_source(source: &str) -> Result<Vec<(usize, usize)>> {
+    Ok(scan_env_declarations(source, true)?
+        .into_iter()
+        .map(|declaration| (declaration.start_line, declaration.end_line))
+        .collect())
 }
 
 fn skip_ascii_ws(src: &str, mut i: usize) -> usize {
@@ -199,6 +501,16 @@ fn substitute_env_args(template: &str, args: &[String]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut i = 0;
     while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            // `\#` is a literal hash command, not a parameter marker. Preserve
+            // the escaped character as one unit; a doubled backslash naturally
+            // leaves a following `#1` available for substitution.
+            out.push('\\');
+            let ch = template[i + 1..].chars().next().unwrap();
+            out.push(ch);
+            i += 1 + ch.len_utf8();
+            continue;
+        }
         if bytes[i] == b'#' && i + 1 < bytes.len() {
             let c = bytes[i + 1];
             if c == b'#' {
@@ -209,7 +521,20 @@ fn substitute_env_args(template: &str, args: &[String]) -> String {
             if c.is_ascii_digit() {
                 let idx = (c - b'0') as usize;
                 if idx >= 1 && idx <= args.len() {
-                    out.push_str(&args[idx - 1]);
+                    let arg = &args[idx - 1];
+                    if ends_with_control_word(&out)
+                        && arg.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                    {
+                        out.push(' ');
+                    }
+                    out.push_str(arg);
+                    if ends_with_control_word(arg)
+                        && template.as_bytes()[i + 2..]
+                            .first()
+                            .is_some_and(u8::is_ascii_alphabetic)
+                    {
+                        out.push(' ');
+                    }
                 }
                 i += 2;
                 continue;
@@ -310,10 +635,24 @@ fn callout_for(env: &str) -> Option<(&'static str, &'static str, bool)> {
 /// Parse every project file's body into a flat node list, preserving include
 /// order.
 pub fn parse_body(project: &Project, thms: &TheoremRegistry) -> Result<Vec<Node>> {
+    parse_body_with_overrides(project, thms, &[])
+}
+
+/// Parse a project body while also applying preview-only macro override layers.
+/// This is the render-path entry point; [`parse_body`] remains the no-overrides
+/// convenience used by parser/numbering callers.
+pub fn parse_body_with_overrides(
+    project: &Project,
+    thms: &TheoremRegistry,
+    overrides: &[MacroOverride],
+) -> Result<Vec<Node>> {
     // User `\newenvironment` definitions for this parse (thread-local; read by
     // parse_environment when it meets an otherwise-unknown environment). Scans
-    // the root preamble AND its `\input`/`\usepackage`d files.
-    ENV_MACROS.with(|m| *m.borrow_mut() = env_macros_for_project(project));
+    // the root preamble, its `\input`/`\usepackage`d files, and viewer-only
+    // macro override files.
+    ENV_MACROS.with(|m| *m.borrow_mut() = env_macros_for_project(project, overrides));
+    ENV_EXPANSIONS_LEFT.with(|budget| budget.set(MAX_USER_ENV_EXPANSIONS));
+    ENV_EXPANSION_ACTIVE.with(|active| active.set(0));
     let mut nodes = Vec::new();
     for f in &project.files {
         let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0);
@@ -974,7 +1313,26 @@ impl<'a> Parser<'a> {
         // body being dumped verbatim as an opaque block.
         let user_def = ENV_MACROS.with(|m| m.borrow().get(&env).cloned());
         if let Some(def) = user_def {
+            let outermost = ENV_EXPANSION_ACTIVE.with(|active| active.get() == 0);
+            if outermost {
+                ENV_EXPANSIONS_LEFT.with(|budget| budget.set(MAX_USER_ENV_EXPANSIONS));
+            }
+            let has_budget = ENV_EXPANSIONS_LEFT.with(|budget| {
+                let remaining = budget.get();
+                if remaining == 0 {
+                    false
+                } else {
+                    budget.set(remaining - 1);
+                    true
+                }
+            });
+            if !has_budget {
+                self.capture_opaque_env(out, start, env);
+                return;
+            }
+            ENV_EXPANSION_ACTIVE.with(|active| active.set(active.get() + 1));
             self.parse_user_env(out, start, &env, &def);
+            ENV_EXPANSION_ACTIVE.with(|active| active.set(active.get().saturating_sub(1)));
             return;
         }
 
@@ -993,6 +1351,7 @@ impl<'a> Parser<'a> {
         if def.nargs > 0 {
             let mut remaining = def.nargs;
             if def.default.is_some() {
+                self.skip_tex_argument_space();
                 let a = self
                     .optional_arg()
                     .or_else(|| def.default.clone())
@@ -1001,7 +1360,7 @@ impl<'a> Parser<'a> {
                 remaining = remaining.saturating_sub(1);
             }
             for _ in 0..remaining {
-                args.push(self.balanced_brace_arg().unwrap_or_default());
+                args.push(self.required_macro_arg().unwrap_or_default());
             }
         }
         let body_end = self.find_matching_end(env);
@@ -1522,6 +1881,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// TeX removes comments before macro argument scanning. Skip whitespace
+    /// and any `%...newline` runs so a continued environment invocation takes
+    /// its real next token as the argument; `\%` is unaffected because the
+    /// current byte is then a backslash.
+    fn skip_tex_argument_space(&mut self) {
+        loop {
+            self.skip_ws_inline();
+            if self.peek_byte() != Some(b'%') {
+                break;
+            }
+            while !self.at_end() && self.peek_byte() != Some(b'\n') {
+                self.advance(1);
+            }
+        }
+    }
+
     fn skip_optional_arg(&mut self) -> Option<String> {
         self.optional_arg()
     }
@@ -1587,6 +1962,42 @@ impl<'a> Parser<'a> {
             i += 1;
         }
         None
+    }
+
+    /// Read one undelimited TeX macro argument: a balanced braced group, one
+    /// control-sequence token, or one character token. Whitespace before an
+    /// undelimited argument is ignored.
+    fn required_macro_arg(&mut self) -> Option<String> {
+        self.skip_tex_argument_space();
+        if self.peek_byte() == Some(b'{') {
+            return self.balanced_brace_arg();
+        }
+        if self.at_end() {
+            return None;
+        }
+        let start = self.byte;
+        if self.peek_byte() == Some(b'\\') {
+            let mut end = start + 1;
+            if self
+                .bytes
+                .get(end)
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'@')
+            {
+                while end < self.bytes.len()
+                    && (self.bytes[end].is_ascii_alphabetic() || self.bytes[end] == b'@')
+                {
+                    end += 1;
+                }
+            } else if end < self.bytes.len() {
+                let ch = self.src[end..].chars().next().unwrap();
+                end += ch.len_utf8();
+            }
+            self.advance_to(end);
+            return Some(self.src[start..end].to_string());
+        }
+        let ch = self.src[start..].chars().next().unwrap();
+        self.advance(ch.len_utf8());
+        Some(ch.to_string())
     }
 
     fn brace_group_raw(&mut self) -> Option<String> {
@@ -2041,6 +2452,34 @@ mod tests {
         parse_body(&project, &thms).unwrap()
     }
 
+    fn parse_with_env_overrides(preamble: &str, overrides: &[&str], src: &str) -> Vec<Node> {
+        let project = Project {
+            root: PathBuf::from("t.tex"),
+            preamble: Preamble {
+                source: preamble.to_string(),
+                file: PathBuf::from("t.tex"),
+            },
+            preamble_files: vec![],
+            files: vec![ProjectFile {
+                path: PathBuf::from("t.tex"),
+                source: src.to_string(),
+                start: Pos::ZERO,
+                is_root_body: true,
+            }],
+            warnings: vec![],
+        };
+        let layers: Vec<MacroOverride> = overrides
+            .iter()
+            .enumerate()
+            .map(|(i, source)| MacroOverride {
+                label: PathBuf::from(format!("override-{i}.tex")),
+                source: (*source).to_string(),
+            })
+            .collect();
+        let thms = TheoremRegistry::from_preamble(&project.preamble.source);
+        parse_body_with_overrides(&project, &thms, &layers).unwrap()
+    }
+
     #[test]
     fn commented_out_newenvironment_is_ignored() {
         let m = extract_env_macros("% \\newenvironment{dead}{X}{Y}\n");
@@ -2071,6 +2510,107 @@ mod tests {
         let c = m.get("cont").expect("%-continued definition parsed");
         assert_eq!(c.begin, "B");
         assert_eq!(c.end, "E");
+    }
+
+    #[test]
+    fn environment_scanner_ignores_prefixes_and_nested_definition_text() {
+        let m = extract_env_macros(concat!(
+            "\\newcommand{\\newenvironmenthelper}{still a command}\n",
+            "\\newcommand{\\factory}{\\newenvironment{hidden}{}{}}\n",
+            "\\def\\factory{\\newenvironment{hiddenDef}{}{}}\n",
+            "\\NewDocumentCommand{\\factory}{m}{\\newenvironment{hiddenX}{}{}}\n",
+            "\\DeclareMathOperator{\\factory}{\\newenvironment{hiddenOp}{}{}}\n",
+            "\\DeclarePairedDelimiter{\\factory}",
+            "{\\newenvironment{hiddenPair}{}{}}{)}\n",
+        ));
+        assert!(m.is_empty(), "nested text was treated as a declaration");
+    }
+
+    #[test]
+    fn environment_scanner_honors_immediately_executed_wrappers() {
+        let m = extract_env_macros("\\AtBeginDocument{\\newenvironment{wrapped}{BEGIN}{END}}\n");
+        assert!(m.contains_key("wrapped"));
+    }
+
+    #[test]
+    fn environment_substitution_preserves_escaped_hashes() {
+        assert_eq!(
+            substitute_env_args(r"\#1 / #1 / ##", &["Ada".to_string()]),
+            r"\#1 / Ada / #"
+        );
+        assert_eq!(
+            substitute_env_args(r"#1X", &[r"\recipient".to_string()]),
+            r"\recipient X"
+        );
+        assert_eq!(
+            substitute_env_args(r"\prefix#1", &["X".to_string()]),
+            r"\prefix X"
+        );
+    }
+
+    #[test]
+    fn recursive_fanout_environment_stops_at_the_expansion_budget() {
+        let nodes = parse_with_preamble(
+            concat!(
+                "\\newenvironment{fanout}{",
+                "\\begin{fanout}a\\end{fanout}",
+                "\\begin{fanout}b\\end{fanout}",
+                "}{}\n",
+            ),
+            "\\begin{fanout}root\\end{fanout}\n",
+        );
+        assert!(
+            nodes.iter().any(
+                |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "fanout")
+            ),
+            "recursive expansion did not fall back to an opaque environment"
+        );
+        assert!(
+            nodes.len() <= MAX_USER_ENV_EXPANSIONS * 2 + 1,
+            "recursive expansion escaped its work bound: {} nodes",
+            nodes.len()
+        );
+    }
+
+    #[test]
+    fn expansion_budget_resets_for_each_outermost_environment() {
+        let src = "\\begin{simple}x\\end{simple}\n".repeat(MAX_USER_ENV_EXPANSIONS + 1);
+        let nodes = parse_with_preamble("\\newenvironment{simple}{}{}\n", &src);
+        assert!(
+            !nodes.iter().any(
+                |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "simple")
+            ),
+            "ordinary sequential uses exhausted the recursion budget"
+        );
+    }
+
+    #[test]
+    fn user_environment_accepts_single_token_mandatory_argument() {
+        let nodes = parse_with_preamble(
+            "\\newenvironment{tagged}[1]{To #1: }{}\n",
+            "\\begin{tagged}XBody\\end{tagged}\n",
+        );
+        assert!(tree_has_text(&nodes, "To X:"));
+        assert!(tree_has_text(&nodes, "Body"));
+    }
+
+    #[test]
+    fn user_environment_argument_skips_tex_comment_continuation() {
+        let nodes = parse_with_preamble(
+            "\\newenvironment{tagged}[1]{To #1: }{}\n",
+            "\\begin{tagged}% continued\n  {Address}Body\\end{tagged}\n",
+        );
+        assert!(tree_has_text(&nodes, "To Address:"));
+        assert!(tree_has_text(&nodes, "Body"));
+    }
+
+    #[test]
+    fn environment_default_cannot_reference_parameters() {
+        assert!(validate_environment_override_line("\\newenvironment{bad}[1][#1]{#1}{}").is_err());
+        assert!(validate_environment_override_line("\\newenvironment{bad}[1][##]{#1}{}").is_err());
+        assert!(
+            validate_environment_override_line("\\newenvironment{literal}[1][\\#]{#1}{}").is_ok()
+        );
     }
 
     #[test]
@@ -2121,9 +2661,48 @@ mod tests {
             }],
             warnings: vec![],
         };
-        let m = env_macros_for_project(&project);
+        let m = env_macros_for_project(&project, &[]);
         let _ = std::fs::remove_dir_all(&tmp);
         assert_eq!(m.get("foo").expect("foo defined").begin, "ROOT");
+    }
+
+    #[test]
+    fn later_preview_env_override_wins_and_substitutes_optional_default() {
+        let nodes = parse_with_env_overrides(
+            "\\newenvironment{memo}[2][Source]{SOURCE #1/#2:}{}\n",
+            &[
+                "\\renewenvironment{memo}[2][Global]{GLOBAL #1/#2:}{}\n",
+                "\\renewenvironment{memo}[2][Recommendation]{VIEW #1/#2:}{ END}\n",
+            ],
+            concat!(
+                "\\begin{memo}{Ada}Body $x$.\\end{memo}\n",
+                "\\begin{memo}[Confidential]{Emmy}More.\\end{memo}\n",
+            ),
+        );
+        for expected in [
+            "VIEW Recommendation/Ada:",
+            "VIEW Confidential/Emmy:",
+            "Body",
+            "More",
+            "END",
+        ] {
+            assert!(
+                tree_has_text(&nodes, expected),
+                "missing {expected:?}: {nodes:#?}"
+            );
+        }
+        for shadowed in ["SOURCE", "GLOBAL"] {
+            assert!(
+                !tree_has_text(&nodes, shadowed),
+                "lower-priority definition leaked: {nodes:#?}"
+            );
+        }
+        assert!(
+            nodes
+                .iter()
+                .any(|node| matches!(&node.kind, NodeKind::InlineMath(s) if s == "x")),
+            "math inside overridden environment was not parsed: {nodes:#?}"
+        );
     }
 
     #[test]

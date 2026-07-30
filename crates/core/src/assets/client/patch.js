@@ -258,6 +258,12 @@
   document.addEventListener('mousedown', function(e) {
     clearSelectedMath();
   });
+  document.addEventListener('input', function(e) {
+    if (e.target && (e.target.id === 'macros-dialog-input' ||
+                     e.target.id === 'macros-toml-input')) {
+      markMacroEditorDirty(e.target);
+    }
+  });
   // Macros dialog wiring: file picker + scope radio change.
   document.addEventListener('change', function(e) {
     if (e.target && e.target.id === 'macros-dialog-file') {
@@ -272,6 +278,13 @@
       syncMacrosCustomPathEnabled();
       // Switching scope shows that file's existing contents.
       reloadActiveScopeFile(true);
+      return;
+    }
+    if (e.target && e.target.id === 'macros-dialog-custom-path') {
+      // Do not overwrite text imported/typed before the path was chosen. A
+      // clean editor loads the target; a dirty one is protected at Save by
+      // the server's expected-content check.
+      reloadActiveScopeFile(false);
       return;
     }
     if (e.target && e.target.name === 'config-scope') {

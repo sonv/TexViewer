@@ -1491,7 +1491,7 @@ body.margin-left-expanded aside#margin-left .margin-card.expanded {
 }
 
 /* Macros override dialog — toolbar `macros` button opens this <dialog>
-   to append a new \newcommand to either the global or project file.
+   to edit command macros or environment replacements in the selected file.
    Plain centered modal; no need for the size/position acrobatics the
    floating margin column does. */
 .macros-dialog {

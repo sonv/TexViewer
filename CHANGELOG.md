@@ -13,6 +13,32 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.11] — 2026-07-30
+
+### Added
+
+- **Preview-only environment replacements now work from macro override files.**
+  Put a `\newenvironment` or `\renewenvironment` definition in
+  `.mathpreview-macros.tex`, the global macros file, or a custom override to
+  approximate otherwise-opaque class-provided environments without changing
+  the real PDF. The existing argument/default substitution and nested parsing
+  apply, and later override layers win. This makes `letter` documents usable
+  with a small recipient/body wrapper; class-specific state such as signatures
+  and exam counters remains an approximation.
+- **The viewer's macros dialog now accepts environment replacements**, including
+  balanced definitions split across lines, and describes both supported TeX
+  override forms.
+
+### Fixed
+
+- **Whole-file macro/config edits no longer overwrite a newer external edit.**
+  Saves carry the file contents originally loaded by the dialog and stop with a
+  conflict if nvim changed the target meanwhile. Scope/path reads are ordered,
+  and text typed while a Save is in flight remains open as unsaved work.
+- **Pathological recursive environment replacements are bounded per outer
+  expansion**, without making later ordinary environments in a long document
+  fall back to opaque boxes.
+
 ## [2.1.10] — 2026-07-29
 
 ### Fixed

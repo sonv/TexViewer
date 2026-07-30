@@ -2204,6 +2204,27 @@
   function macrosDialogEl() { return document.getElementById('macros-dialog'); }
   function macrosDialogInputEl() { return document.getElementById('macros-dialog-input'); }
   function macrosDialogFeedbackEl() { return document.getElementById('macros-dialog-feedback'); }
+  var macroLoadSeq = 0;
+
+  function markMacroEditorDirty(input) {
+    if (!input) return;
+    var revision = parseInt(input.dataset.editRevision || '0', 10);
+    input.dataset.editRevision = String(revision + 1);
+    input.dataset.dirty = 'true';
+  }
+
+  function macroEditorScopeKey(mode, sc) {
+    return mode + ':' + sc.scope + ':' + (sc.path || '');
+  }
+
+  function clearMacroEditorForLoad(input) {
+    var revision = parseInt(input.dataset.editRevision || '0', 10);
+    input.dataset.editRevision = String(revision + 1);
+    input.dataset.dirty = 'false';
+    input.dataset.loadedScope = '';
+    input._loadedContent = '';
+    input.value = '';
+  }
 
   function setMacrosDialogFeedback(msg, ok) {
     var fb = macrosDialogFeedbackEl();
@@ -2219,8 +2240,7 @@
     syncMacrosMode();
     syncMacrosCustomPathEnabled();
     // Pre-fill the editor with the active mode's file so you edit rather than
-    // start blank. Only when empty, so reopening after a cancel doesn't
-    // clobber unsubmitted text.
+    // start blank. Preserve actual unsaved edits across Cancel/reopen.
     reloadActiveScopeFile();
     dlg.showModal();
     setTimeout(function() {
@@ -2247,15 +2267,24 @@
   }
 
   // Load the current scope's macros file into the editor (TeX mode only).
-  // Skips when the textarea already has unsaved text (unless `force`), or for
+  // Skips when the textarea has unsaved edits (unless `force`), or for
   // a custom scope with no path yet. Failures are silent.
   async function loadMacrosForScope(force) {
     if (currentMacroMode() !== 'tex') return;
     var input = macrosDialogInputEl();
     if (!input) return;
-    if (!force && (input.value || '').trim()) return;
+    var seq = ++macroLoadSeq;
     var sc = currentScopeSelection();
-    if (sc.scope === 'custom' && !sc.path) return;
+    var scopeKey = macroEditorScopeKey('tex', sc);
+    if (!force && input.dataset.dirty === 'true') return;
+    if (sc.scope === 'custom' && !sc.path) {
+      if (force || input.dataset.loadedScope !== scopeKey) {
+        clearMacroEditorForLoad(input);
+      }
+      return;
+    }
+    if (force) clearMacroEditorForLoad(input);
+    var editRevision = input.dataset.editRevision || '0';
     try {
       var payload = { scope: sc.scope };
       if (sc.path) payload.path = sc.path;
@@ -2267,7 +2296,17 @@
       });
       if (!res.ok) return;
       var body = await res.json();
-      input.value = (body && body.content) || '';
+      // Do not let a slow read for an older target, or text entered while this
+      // read was in flight, overwrite the current editor.
+      if (seq !== macroLoadSeq ||
+          currentMacroMode() !== 'tex' ||
+          macroEditorScopeKey('tex', currentScopeSelection()) !== scopeKey ||
+          (input.dataset.editRevision || '0') !== editRevision) return;
+      var content = (body && body.content) || '';
+      input.value = content;
+      input.dataset.dirty = 'false';
+      input.dataset.loadedScope = scopeKey;
+      input._loadedContent = content;
       if (body && body.exists) {
         setMacrosDialogFeedback('Loaded existing macros — Save replaces the file.', true);
       }
@@ -2275,14 +2314,23 @@
   }
 
   // Text→HTML mode: load the config TOML file into its editor (same
-  // empty/force rules as the TeX loader).
+  // dirty/force rules as the TeX loader).
   async function loadTomlForScope(force) {
     if (currentMacroMode() !== 'html') return;
     var input = document.getElementById('macros-toml-input');
     if (!input) return;
-    if (!force && (input.value || '').trim()) return;
+    var seq = ++macroLoadSeq;
     var sc = currentScopeSelection();
-    if (sc.scope === 'custom' && !sc.path) return;
+    var scopeKey = macroEditorScopeKey('html', sc);
+    if (!force && input.dataset.dirty === 'true') return;
+    if (sc.scope === 'custom' && !sc.path) {
+      if (force || input.dataset.loadedScope !== scopeKey) {
+        clearMacroEditorForLoad(input);
+      }
+      return;
+    }
+    if (force) clearMacroEditorForLoad(input);
+    var editRevision = input.dataset.editRevision || '0';
     try {
       var payload = { scope: sc.scope };
       if (sc.path) payload.path = sc.path;
@@ -2294,7 +2342,15 @@
       });
       if (!res.ok) return;
       var body = await res.json();
-      input.value = (body && body.content) || '';
+      if (seq !== macroLoadSeq ||
+          currentMacroMode() !== 'html' ||
+          macroEditorScopeKey('html', currentScopeSelection()) !== scopeKey ||
+          (input.dataset.editRevision || '0') !== editRevision) return;
+      var content = (body && body.content) || '';
+      input.value = content;
+      input.dataset.dirty = 'false';
+      input.dataset.loadedScope = scopeKey;
+      input._loadedContent = content;
       if (body && body.exists) {
         setMacrosDialogFeedback('Loaded config — Save replaces the file.', true);
       }
@@ -2307,7 +2363,8 @@
     else loadMacrosForScope(force);
   }
 
-  // Toggle the dialog between "TeX macro" (\newcommand → .tex) and
+  // Toggle the dialog between TeX overrides (\newcommand /
+  // \newenvironment → .tex) and
   // "Text → HTML" (a [text-macros] template → .toml), and swap the scope
   // filenames / custom-path placeholder to match.
   function syncMacrosMode() {
@@ -2419,6 +2476,7 @@
         input.value = input.value
           ? input.value.replace(/\s+$/, '') + '\n' + text
           : text;
+        markMacroEditorDirty(input);
       }
       // Pre-populate the custom-path input so "Save" with scope=custom
       // writes back to the same file they just loaded — common
@@ -2463,15 +2521,35 @@
     if (!input) return;
     var line = (input.value || '').trim();
     if (!line) {
-      setMacrosDialogFeedback('Enter a \\newcommand line first.', false);
+      setMacrosDialogFeedback(
+        'Enter a \\newcommand or \\newenvironment definition first.',
+        false
+      );
       return;
     }
     var sc = macrosDialogScope();
     if (!sc) return;
+    var scopeKey = macroEditorScopeKey('tex', sc);
+    if (input.dataset.loadedScope !== scopeKey &&
+        input.dataset.dirty !== 'true') {
+      setMacrosDialogFeedback('Loading the selected target before Save…', true);
+      reloadActiveScopeFile(false);
+      return;
+    }
+    var editRevision = input.dataset.editRevision || '0';
     // The editor holds the whole file (we pre-load it), so save replaces
     // rather than appends — otherwise re-saving would duplicate every line.
-    var payload = { scope: sc.scope, line: line, replace: true };
+    var payload = {
+      scope: sc.scope,
+      line: line,
+      replace: true,
+      expected_content: input.dataset.loadedScope === scopeKey
+        ? (input._loadedContent || '')
+        : ''
+    };
     if (sc.path) payload.path = sc.path;
+    if (input.dataset.saving === 'true') return;
+    input.dataset.saving = 'true';
     setMacrosDialogFeedback('Saving…', true);
     try {
       var res = await fetch('/macros/append', {
@@ -2488,10 +2566,27 @@
       }
       var file = body && body.file ? ' → ' + body.file : '';
       setStatus('live', '● saved macros' + file);
-      // Keep the editor content (it now matches the file on disk).
-      closeMacrosDialog();
+      var sameTarget = currentMacroMode() === 'tex' &&
+        macroEditorScopeKey('tex', currentScopeSelection()) === scopeKey;
+      if (sameTarget) {
+        input.dataset.loadedScope = scopeKey;
+        input._loadedContent = (body && body.content) || (line + '\n');
+      }
+      if (sameTarget &&
+          (input.dataset.editRevision || '0') === editRevision) {
+        // A later reopen reads the file again, including external edits.
+        input.dataset.dirty = 'false';
+        closeMacrosDialog();
+      } else {
+        setMacrosDialogFeedback(
+          'Saved the submitted version; newer edits or another target remain open.',
+          true
+        );
+      }
     } catch (e) {
       setMacrosDialogFeedback(String(e && e.message || e), false);
+    } finally {
+      input.dataset.saving = 'false';
     }
   }
 
@@ -2502,8 +2597,24 @@
     if (!input) return;
     var sc = macrosDialogScope();
     if (!sc) return;
-    var payload = { scope: sc.scope, content: input.value || '' };
+    var scopeKey = macroEditorScopeKey('html', sc);
+    if (input.dataset.loadedScope !== scopeKey &&
+        input.dataset.dirty !== 'true') {
+      setMacrosDialogFeedback('Loading the selected target before Save…', true);
+      reloadActiveScopeFile(false);
+      return;
+    }
+    var editRevision = input.dataset.editRevision || '0';
+    var payload = {
+      scope: sc.scope,
+      content: input.value || '',
+      expected_content: input.dataset.loadedScope === scopeKey
+        ? (input._loadedContent || '')
+        : ''
+    };
     if (sc.path) payload.path = sc.path;
+    if (input.dataset.saving === 'true') return;
+    input.dataset.saving = 'true';
     setMacrosDialogFeedback('Saving…', true);
     try {
       var res = await fetch('/config/write', {
@@ -2520,10 +2631,26 @@
       }
       var file = body && body.file ? ' → ' + body.file : '';
       setStatus('live', '● saved config' + file);
-      // Keep the editor content (it now matches the file on disk).
-      closeMacrosDialog();
+      var sameTarget = currentMacroMode() === 'html' &&
+        macroEditorScopeKey('html', currentScopeSelection()) === scopeKey;
+      if (sameTarget) {
+        input.dataset.loadedScope = scopeKey;
+        input._loadedContent = (body && body.content) || payload.content;
+      }
+      if (sameTarget &&
+          (input.dataset.editRevision || '0') === editRevision) {
+        input.dataset.dirty = 'false';
+        closeMacrosDialog();
+      } else {
+        setMacrosDialogFeedback(
+          'Saved the submitted version; newer edits or another target remain open.',
+          true
+        );
+      }
     } catch (e) {
       setMacrosDialogFeedback(String(e && e.message || e), false);
+    } finally {
+      input.dataset.saving = 'false';
     }
   }
 
@@ -2596,6 +2723,7 @@
       return;
     }
     editor.value = insertUnderTextMacros(editor.value, name + ' = ' + tomlQuote(tpl));
+    markMacroEditorDirty(editor);
     nameEl.value = '';
     tplEl.value = '';
     setMacrosDialogFeedback('Added \\' + name + ' to the editor — click Save to write it.', true);

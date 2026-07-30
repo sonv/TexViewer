@@ -152,6 +152,10 @@ struct AppState {
     /// when nothing changed. Invalidated by mtime on the next render
     /// the file is touched.
     file_content_cache: Arc<RwLock<HashMap<PathBuf, CachedFile>>>,
+    /// Serializes read/compare/write mutations from the macros and config
+    /// endpoints. Without this, two dialog tabs carrying the same optimistic
+    /// baseline can both pass their checks and silently last-writer-win.
+    file_save_lock: Arc<Mutex<()>>,
     /// Lazily compiled TikZ SVGs. A mutex intentionally serializes TeX jobs:
     /// loading a page with many diagrams must not fork a compiler storm.
     tikz_cache: Arc<Mutex<HashMap<String, TikzCacheEntry>>>,
@@ -766,6 +770,7 @@ pub async fn run(
         search_query: Arc::new(RwLock::new(EditorSearch::default())),
         last_cursor: Arc::new(RwLock::new(None)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+        file_save_lock: Arc::new(Mutex::new(())),
         tikz_cache: Arc::new(Mutex::new(HashMap::new())),
         log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         debug_logging: Arc::new(AtomicBool::new(false)),
@@ -1874,6 +1879,11 @@ struct MacrosAppendRequest {
     /// the existing macros for editing.
     #[serde(default)]
     replace: bool,
+    /// File contents observed by the dialog's last `/macros/read`. When
+    /// present on a whole-file replacement, reject the save if another editor
+    /// changed the target in the meantime.
+    #[serde(default)]
+    expected_content: Option<String>,
 }
 
 /// Request body for `POST /macros/read` — returns the current contents of the
@@ -1903,6 +1913,7 @@ async fn serve_macros_read(
             return (code, Json(serde_json::json!({ "error": msg }))).into_response();
         }
     };
+    let _save_guard = state.file_save_lock.lock().await;
     let (content, exists) = match std::fs::read_to_string(&target) {
         Ok(s) => (s, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
@@ -1918,17 +1929,28 @@ async fn serve_macros_read(
         .into_response()
 }
 
-/// Validate every command-shaped line in `content` (lines starting with `\`);
+/// Validate complete environment declarations first, then every remaining
+/// command-shaped line (lines starting with `\`). Lines inside a balanced,
+/// possibly multiline environment declaration are already covered as one unit;
 /// blank lines and `%` comments pass through. Returns the first rejection.
 fn validate_override_content(content: &str) -> Result<(), String> {
+    let environment_lines = mathpreview_core::parser::validate_environment_override_source(content)
+        .map_err(|e| e.to_string())?;
     for (i, raw) in content.lines().enumerate() {
+        let line_number = i + 1;
+        if environment_lines
+            .iter()
+            .any(|(start, end)| *start <= line_number && line_number <= *end)
+        {
+            continue;
+        }
         let line = raw.trim();
         if line.is_empty() || line.starts_with('%') {
             continue;
         }
         if line.starts_with('\\') {
             if let Err(e) = mathpreview_core::validate_override_line(line) {
-                return Err(format!("line {}: {e}", i + 1));
+                return Err(format!("line {line_number}: {e}"));
             }
         }
     }
@@ -1945,10 +1967,10 @@ fn write_macro_content(target: &Path, content: &str) -> std::io::Result<()> {
     std::fs::write(target, body)
 }
 
-/// `POST /macros/append` — append a `\newcommand` definition to the
-/// global or project macros override file. Validates the line through
-/// the extractor before writing so typos surface immediately; creates
-/// parent directories + the file itself if either is missing.
+/// `POST /macros/append` — append a command macro or environment replacement
+/// to the global or project macro override file. Validates the definition
+/// before writing so typos surface immediately; creates parent directories +
+/// the file itself if either is missing.
 ///
 /// After a successful write the daemon re-renders the current document
 /// and broadcasts the result — same path the file watcher uses on save,
@@ -2002,6 +2024,36 @@ async fn serve_macros_append(
         }
     };
 
+    let save_guard = state.file_save_lock.lock().await;
+    if req.replace {
+        if let Some(expected) = req.expected_content.as_deref() {
+            let actual = match std::fs::read_to_string(&target) {
+                Ok(content) => content,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": e.to_string() })),
+                    )
+                        .into_response();
+                }
+            };
+            if actual != expected {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": format!(
+                            "{} changed on disk; save stopped to preserve the newer file",
+                            target.display()
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let saved_content = format!("{}\n", content.trim_end_matches(['\n', '\r']));
     let write_result = if req.replace {
         write_macro_content(&target, content)
     } else {
@@ -2015,10 +2067,26 @@ async fn serve_macros_append(
         )
             .into_response();
     }
+    drop(save_guard);
+
+    // A newly-saved Custom file is also an instruction to use that file as a
+    // live override. Project/global targets are already in the startup
+    // discovery list; custom targets need to join the session cascade before
+    // this rerender so Save has the same immediate effect as "Use as override".
+    if req.scope == "custom" {
+        let mut session = state.session_macros.write().await;
+        if !session.iter().any(|path| path == &target) {
+            session.push(target.clone());
+        }
+    }
 
     // Trigger a re-render so the change is picked up live.
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        log_event(&state, "warn", format!("macros write re-render failed: {e:#}"));
+        log_event(
+            &state,
+            "warn",
+            format!("macros write re-render failed: {e:#}"),
+        );
     }
 
     let verb = if req.replace { "wrote" } else { "appended" };
@@ -2031,6 +2099,7 @@ async fn serve_macros_append(
         "name": macro_name,
         "file": target,
         "replaced": req.replace,
+        "content": req.replace.then_some(saved_content),
     }))
     .into_response()
 }
@@ -2077,6 +2146,7 @@ async fn serve_config_set(
         }
     };
 
+    let save_guard = state.file_save_lock.lock().await;
     let existing = match std::fs::read_to_string(&target) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -2132,6 +2202,7 @@ async fn serve_config_set(
         )
             .into_response();
     }
+    drop(save_guard);
 
     // Re-read the config cascade from disk so the live `viewer_config`
     // reflects the value we just wrote. Failures here are non-fatal:
@@ -2171,6 +2242,10 @@ struct ConfigFileRequest {
     /// Whole-file contents, for `/config/write` only.
     #[serde(default)]
     content: String,
+    /// File contents observed by the editor's last `/config/read`. Whole-file
+    /// writes carrying this value fail rather than overwrite a newer disk edit.
+    #[serde(default)]
+    expected_content: Option<String>,
     /// Structured viewer controls merged into `content` before validation.
     /// This keeps the convenient form and the advanced TOML editor on one
     /// atomic, comment-preserving save path.
@@ -2195,6 +2270,7 @@ async fn serve_config_read(
             return (code, Json(serde_json::json!({ "error": msg }))).into_response();
         }
     };
+    let _save_guard = state.file_save_lock.lock().await;
     let (content, exists) = match std::fs::read_to_string(&target) {
         Ok(s) => (s, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
@@ -2251,13 +2327,40 @@ async fn serve_config_write(
         }
     }
     let body = format!("{}\n", merged_content.trim_end_matches(['\n', '\r']));
-    if let Err(e) = std::fs::write(&target, body) {
+    let save_guard = state.file_save_lock.lock().await;
+    if let Some(expected) = req.expected_content.as_deref() {
+        let actual = match std::fs::read_to_string(&target) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+        if actual != expected {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "{} changed on disk; save stopped to preserve the newer file",
+                        target.display()
+                    )
+                })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(e) = std::fs::write(&target, &body) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("write {} failed: {e}", target.display()) })),
         )
             .into_response();
     }
+    drop(save_guard);
     // Refresh the live viewer config (text-macros reload per render anyway).
     if let Ok((resolved, _)) = mathpreview_core::load_and_merge_config(state.config_paths.as_ref())
     {
@@ -2282,7 +2385,7 @@ async fn serve_config_write(
         "info",
         format!("config: wrote {}", target.display()),
     );
-    Json(serde_json::json!({ "file": target, "active": active })).into_response()
+    Json(serde_json::json!({ "file": target, "active": active, "content": body })).into_response()
 }
 
 fn validate_config_file(content: &str, label: &Path) -> Result<(), String> {
@@ -3014,7 +3117,7 @@ async fn render_cached(
     let thms = TheoremRegistry::from_project(&project);
 
     let t2 = std::time::Instant::now();
-    let mut body = parser::parse_body(&project, &thms)?;
+    let mut body = parser::parse_body_with_overrides(&project, &thms, &overrides)?;
     t.body_parse_ms = t2.elapsed().as_millis();
 
     let t3 = std::time::Instant::now();
@@ -4277,10 +4380,27 @@ mod tests {
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
         is_latest_render_attempt, merge_config_editor_values, origin_is_loopback,
         preamble_fingerprint, search_sync_payload, select_tikz_engine, serve_buffer_push,
-        tikz_document, tikz_error_svg, tikz_hash_from_path, watched_event_paths,
-        websocket_needs_reload, AppState, EditorSearch, PatchOp, PlanSlot, SearchRequest,
-        WS_PROTOCOL_VERSION,
+        tikz_document, tikz_error_svg, tikz_hash_from_path, validate_override_content,
+        watched_event_paths, websocket_needs_reload, AppState, EditorSearch, PatchOp, PlanSlot,
+        SearchRequest, WS_PROTOCOL_VERSION,
     };
+
+    #[test]
+    fn macro_editor_accepts_environment_replacements() {
+        assert!(validate_override_content(concat!(
+            "\\newcommand{\\hello}{Hello}\n",
+            "\\newcommand{\\newenvironmenthelper}{still a command}\n",
+            "\\renewenvironment{letter}[1]{%\n",
+            "  \\begin{quote}\n",
+            "  \\textbf{#1}\n",
+            "}{%\n",
+            "  \\end{quote}\n",
+            "}\n",
+        ))
+        .is_ok());
+        assert!(validate_override_content("\\newenvironment{letter}[10]{}{}\n").is_err());
+        assert!(validate_override_content("\\newenvironment{letter}{#1}{}\n").is_err());
+    }
 
     #[test]
     fn tikz_asset_paths_and_documents_are_bounded_and_isolated() {
@@ -4944,6 +5064,7 @@ Third paragraph with $x^2$.
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            file_save_lock: Arc::new(Mutex::new(())),
             tikz_cache: Arc::new(Mutex::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
@@ -5347,6 +5468,7 @@ Third paragraph with $x^2$.
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            file_save_lock: Arc::new(Mutex::new(())),
             tikz_cache: Arc::new(Mutex::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),
@@ -5448,6 +5570,7 @@ Third paragraph with $x^2$.
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            file_save_lock: Arc::new(Mutex::new(())),
             tikz_cache: Arc::new(Mutex::new(HashMap::new())),
             log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             debug_logging: Arc::new(AtomicBool::new(false)),

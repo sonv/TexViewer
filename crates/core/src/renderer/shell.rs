@@ -248,7 +248,7 @@ pub(super) fn wrap_in_shell(
 </dialog>
 <dialog class="macros-dialog" id="macros-dialog">
   <form method="dialog" class="macros-dialog-form" id="macros-dialog-form">
-    <h2 class="macros-dialog-title">Add a macro</h2>
+    <h2 class="macros-dialog-title">Macros and environments</h2>
     <div class="macros-dialog-body">
       <div class="macros-dialog-sidebar">
         <div class="macros-tabs" role="tablist" aria-orientation="vertical" aria-label="Which file to edit">
@@ -261,7 +261,7 @@ pub(super) fn wrap_in_shell(
         <fieldset class="macros-dialog-mode">
           <legend>Type</legend>
           <label><input type="radio" name="macro-mode" value="tex" checked>
-            TeX macro (<code>\newcommand</code>)</label>
+            TeX override (<code>\newcommand</code> / <code>\newenvironment</code>)</label>
           <label><input type="radio" name="macro-mode" value="html">
             Text → HTML</label>
         </fieldset>
@@ -272,11 +272,11 @@ pub(super) fn wrap_in_shell(
         </div>
         <div id="macros-mode-tex">
           <p class="macros-dialog-hint">
-            The chosen file's existing <code>\newcommand</code> lines load here for
-            editing — <em>Save</em> writes the whole box back (it replaces the
-            file, so re-saving won't duplicate). The viewer re-renders immediately.
-            Or use <em>Use as override</em> to add a file as a live, watched layer
-            without copying its text.
+            The chosen file's existing command macros and preview-only environment
+            replacements load here for editing. <em>Save</em> writes the whole box
+            back (it replaces the file, so re-saving won't duplicate). The viewer
+            re-renders immediately. Or use <em>Use as override</em> to add a file
+            as a live, watched layer without copying its text.
           </p>
           <div class="macros-dialog-load">
             <button type="button" class="macros-dialog-loadbtn" id="macros-dialog-loadbtn">Load file…</button>
@@ -285,7 +285,7 @@ pub(super) fn wrap_in_shell(
           </div>
           <textarea class="macros-dialog-input" id="macros-dialog-input" rows="10"
                     spellcheck="false" autocomplete="off"
-                    placeholder="\newcommand{{\st}}{{\mid}}"></textarea>
+                    placeholder="\newcommand{{\st}}{{\mid}}&#10;\renewenvironment{{letter}}[1]{{\begin{{quote}}#1}}{{\end{{quote}}}}"></textarea>
         </div>
         <div id="macros-mode-html" hidden>
           <p class="macros-dialog-hint">
