@@ -13,6 +13,39 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.12] — 2026-07-30
+
+### Changed
+
+- **Unknown non-literal environments now keep their contents previewable.**
+  The viewer marks the unsupported `\begin{...}` and `\end{...}` in red, then
+  parses the body as ordinary TeX so prose, math, references, and nested
+  environments remain useful. Preview-only `\newenvironment` /
+  `\renewenvironment` definitions still take precedence and remove the
+  diagnostic by supplying the missing semantics.
+- **Raw/code environments, floats, and diagram environments retain their safe
+  specialized handling.** Verbatim-like input is never reinterpreted as TeX;
+  `figure`, `table`, specialized display math, and the supported
+  `tikzpicture`, `tikzcd`, `circuitikz`, and `forest` diagrams continue through
+  their dedicated renderers.
+
+### Fixed
+
+- **Unsupported-environment matching no longer stops at a fake `\end`.**
+  Commented text, escaped control symbols, inline `\verb`, and literal
+  environments are skipped while balancing nested environments. If the real
+  closing boundary is still missing during an edit, the remaining source stays
+  inert and a visible missing-end diagnostic is shown.
+- **Environment scanning now distinguishes executable TeX from stored or
+  literal input.** Definitions in false conditional branches or macro
+  replacement bodies no longer activate accidentally; comment, `alltt`,
+  MathJax display, and TikZ-family boundaries ignore inert fake closers; and
+  optional/modern `tcolorbox` listing declarations remain safely opaque.
+- **The transient `\def` edit guard now covers user-defined wrappers.** A bare
+  definition prefix is deferred even when a custom environment or macro would
+  expand it into MathJax later, while complete definitions and literal/code
+  input continue to render normally.
+
 ## [2.1.11] — 2026-07-30
 
 ### Added

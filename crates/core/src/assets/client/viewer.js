@@ -4417,7 +4417,7 @@
   /// client rects would land at misleading y-coordinates.
   var LINENO_SKIP = '.lineno-layer, .sidenote, .margin-col,' +
     ' .margin-card, .refkey-chip, .eq-refkey-chip, .proof-body.folded,' +
-    ' .para-indent-marker';
+    ' .para-indent-marker, .unsupported-env-boundary';
   function linenoSkip(node, page) {
     var el = node.parentNode;
     while (el && el !== page) {

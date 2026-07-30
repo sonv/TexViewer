@@ -41,6 +41,8 @@
   --supporting: #2b6cb0;
   --standard: #888;
   --omitted: #b25800;
+  --diagnostic-error: #b42318;
+  --diagnostic-error-bg: rgba(180, 35, 24, 0.08);
   /* Per-type accent for theorem-like boxes (color-coded by statement type). */
   --thm-c-theorem: #2f6fd0;
   --thm-c-lemma: #2f9e44;
@@ -1105,6 +1107,9 @@ main#page .blk {
   content-visibility: auto;
   contain-intrinsic-size: auto 180px;
 }
+main#page .blk:has(> .unsupported-env-boundary) {
+  contain-intrinsic-size: auto 36px;
+}
 /* Clones of blocks inside overlays must render unconditionally. */
 .margin-card-body .blk,
 .hover-preview .blk,
@@ -1153,6 +1158,42 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
   }
 }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
+.inline-literal { font: 0.9em/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.unsupported-env-boundary {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.1em 0.65em;
+  margin: 0.38em 0;
+  padding: 0.12em 0.48em;
+  border: 1px dashed var(--diagnostic-error);
+  border-left-width: 3px;
+  border-radius: 3px;
+  color: var(--diagnostic-error);
+  background: var(--diagnostic-error-bg);
+  font: 0.72em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+  break-inside: avoid;
+}
+.unsupported-env-boundary code {
+  min-width: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.unsupported-env-label {
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 0.88em;
+  font-weight: 600;
+}
+.unsupported-env-boundary.source-range { background: rgba(91, 62, 162, 0.16); }
+.unsupported-env-missing-end { border-style: solid; }
+.unsupported-env-missing { font-weight: 700; }
 .tikz-diagram {
   display: block;
   max-width: 100%;
@@ -2279,6 +2320,8 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   --supporting: #7eb3e4;
   --standard: #8a8a8a;
   --omitted: #d29257;
+  --diagnostic-error: #ff8a80;
+  --diagnostic-error-bg: rgba(255, 138, 128, 0.12);
   /* Per-type accent for theorem-like boxes, brightened for the dark theme. */
   --thm-c-theorem: #5a93e0;
   --thm-c-lemma: #5bc46f;
@@ -2357,6 +2400,14 @@ body.theme-dark .math.display.mp-math-active svg { outline-color: rgba(179, 157,
 body.theme-dark .source-space.source-active::after { border-left-color: rgba(179, 157, 232, 0.55); background: rgba(179, 157, 232, 0.10); }
 body.theme-dark .math.math-search-hit { background: rgba(216, 151, 0, 0.16); }
 body.theme-dark .math.math-search-active { outline-color: rgba(216, 151, 0, 0.85); background: rgba(216, 151, 0, 0.22); }
+@media print {
+  /* Browsers print the paper on white even when the viewer is dark. Keep
+     unsupported-environment diagnostics visible and readable on that paper. */
+  .theme-dark {
+    --diagnostic-error: #b42318;
+    --diagnostic-error-bg: rgba(180, 35, 24, 0.08);
+  }
+}
 /* PDF previews are external bitmaps with a white page — keep their
    white surround so the page edge stays crisp instead of bleeding into
    the dark theme background. */

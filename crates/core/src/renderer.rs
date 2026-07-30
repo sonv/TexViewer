@@ -13,7 +13,9 @@ use serde::Serialize;
 
 use std::collections::HashMap;
 
-use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Span, TextAlignment};
+use crate::ast::{
+    EnvironmentBoundary, ListKind, Node, NodeKind, Pos, RefKind, Span, TextAlignment,
+};
 use crate::bibtex::{BibEntry, BibStyle};
 use crate::engines::Engine;
 use crate::macros::ExtractedPreamble;
@@ -375,11 +377,26 @@ fn front_matter_order(nodes: &[Node]) -> Vec<&Node> {
     else {
         return nodes.iter().collect();
     };
+    let mut unsupported_depth = 0usize;
     let delayed_abstracts: Vec<usize> = nodes
         .iter()
         .enumerate()
         .filter_map(|(index, node)| {
-            (index < title_index && matches!(node.kind, NodeKind::Abstract)).then_some(index)
+            match &node.kind {
+                NodeKind::UnsupportedEnvBoundary {
+                    boundary: EnvironmentBoundary::Begin,
+                    ..
+                } => unsupported_depth += 1,
+                NodeKind::UnsupportedEnvBoundary {
+                    boundary: EnvironmentBoundary::End | EnvironmentBoundary::MissingEnd,
+                    ..
+                } => unsupported_depth = unsupported_depth.saturating_sub(1),
+                _ => {}
+            }
+            (index < title_index
+                && unsupported_depth == 0
+                && matches!(node.kind, NodeKind::Abstract))
+            .then_some(index)
         })
         .collect();
     if delayed_abstracts.is_empty() {
@@ -523,9 +540,10 @@ fn starts_generated_id_attr(rest: &str) -> bool {
     // IdGen::next) also lets this stripper match them without ever matching a
     // label-derived id like `thm-2-1` (from `\label{thm:2.1}`), which must
     // NOT be stripped: label ids are stable, meaningful content.
-    const IDGEN_PREFIXES: [&str; 12] = [
+    const IDGEN_PREFIXES: [&str; 13] = [
         r#" id="quote-"#,
         r#" id="callout-"#,
+        r#" id="unsupported-env-"#,
         r#" id="sn-"#,
         r#" id="im-"#,
         r#" id="dm-"#,
@@ -1103,48 +1121,17 @@ fn record_sync(ctx: &mut RenderCtx, id: &str, span: &Span, label: Option<&str>, 
 }
 
 fn is_tikz_environment(env: &str) -> bool {
-    matches!(env, "tikzpicture" | "tikzcd")
+    matches!(env, "tikzpicture" | "tikzcd" | "circuitikz" | "forest")
 }
 
 /// Return the first TikZ environment nested inside an otherwise-opaque float.
 /// The parser deliberately keeps `figure` bodies verbatim, so recover the
 /// diagram here without trying to parse arbitrary LaTeX float contents.
 fn first_nested_tikz(source: &str) -> Option<(String, String)> {
-    ["tikzpicture", "tikzcd"]
-        .into_iter()
-        .filter_map(|env| {
-            let begin = format!(r"\begin{{{env}}}");
-            let start = source.find(&begin)?;
-            let body_start = start + begin.len();
-            let end = format!(r"\end{{{env}}}");
-            let mut cursor = body_start;
-            let mut depth = 1usize;
-            while cursor <= source.len() {
-                let next_begin = source[cursor..].find(&begin).map(|i| cursor + i);
-                let next_end = source[cursor..].find(&end).map(|i| cursor + i);
-                match (next_begin, next_end) {
-                    (_, None) => return None,
-                    (Some(b), Some(e)) if b < e => {
-                        depth += 1;
-                        cursor = b + begin.len();
-                    }
-                    (_, Some(e)) => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some((
-                                start,
-                                env.to_string(),
-                                source[body_start..e].to_string(),
-                            ));
-                        }
-                        cursor = e + end.len();
-                    }
-                }
-            }
-            None
-        })
-        .min_by_key(|(start, _, _)| *start)
-        .map(|(_, env, body)| (env, body))
+    crate::parser::first_supported_environment(
+        source,
+        &["tikzpicture", "tikzcd", "circuitikz", "forest"],
+    )
 }
 
 fn tikz_html(env: &str, body: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> String {
@@ -1692,6 +1679,46 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 }
             }
         }
+        NodeKind::UnsupportedEnvBoundary { env, boundary } => {
+            let id = ctx.idgen.next("unsupported-env");
+            record(ctx, &id, &n.span, None);
+            let (class, latex, aria) = match boundary {
+                EnvironmentBoundary::Begin => (
+                    "begin",
+                    format!(r"\begin{{{env}}}"),
+                    format!(
+                        "Unsupported LaTeX environment begins: {env}; contents are shown without environment formatting"
+                    ),
+                ),
+                EnvironmentBoundary::End => (
+                    "end",
+                    format!(r"\end{{{env}}}"),
+                    format!("Unsupported LaTeX environment ends: {env}"),
+                ),
+                EnvironmentBoundary::MissingEnd => (
+                    "missing-end",
+                    format!(r"\end{{{env}}}"),
+                    format!("Missing end of unsupported LaTeX environment: {env}"),
+                ),
+            };
+            let missing = if matches!(boundary, EnvironmentBoundary::MissingEnd) {
+                r#"<span class="unsupported-env-missing" aria-hidden="true"> missing</span>"#
+            } else {
+                ""
+            };
+            writeln!(
+                out,
+                r#"<div class="unsupported-env-boundary unsupported-env-{class}" id="{id}" data-env="{env}" data-src="{src}" role="note" aria-label="{aria}" title="MathPreview does not handle this environment"><code aria-hidden="true">{latex}</code>{missing}<span class="unsupported-env-label" aria-hidden="true">unsupported</span></div>"#,
+                class = class,
+                id = escape_attr(&id),
+                env = escape_attr(env),
+                src = escape_attr(&data_src(&n.span)),
+                aria = escape_attr(&aria),
+                latex = escape_html(&latex),
+                missing = missing,
+            )
+            .unwrap();
+        }
         NodeKind::Quote { env } => {
             let id = ctx.idgen.next("quote");
             record_container(ctx, &id, &n.span, None);
@@ -1755,6 +1782,18 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 "today" => out.push_str("(today)"),
                 "LaTeX" => out.push_str("LaTeX"),
                 "TeX" => out.push_str("TeX"),
+                "inline-literal" => {
+                    let id = ctx.idgen.next("srcw");
+                    record(ctx, &id, &n.span, None);
+                    write!(
+                        out,
+                        r#"<code class="inline-literal" id="{id}" data-src="{src}">{payload}</code>"#,
+                        id = escape_attr(&id),
+                        src = escape_attr(&data_src(&n.span)),
+                        payload = escape_html(raw),
+                    )
+                    .unwrap();
+                }
                 "step" => {
                     ctx.step_counter += 1;
                     write_flow_marker(
@@ -2046,7 +2085,11 @@ fn is_inline_like_node(node: &Node) -> bool {
 fn is_chunked_block_child(node: &Node) -> bool {
     matches!(
         &node.kind,
-        NodeKind::DisplayMath { .. } | NodeKind::Subequations { .. } | NodeKind::List { .. }
+        NodeKind::DisplayMath { .. }
+            | NodeKind::Subequations { .. }
+            | NodeKind::List { .. }
+            | NodeKind::OpaqueEnv { .. }
+            | NodeKind::UnsupportedEnvBoundary { .. }
     )
 }
 
@@ -3202,6 +3245,186 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_environment_marks_boundaries_and_renders_body_normally() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{mystery}\n",
+            "Readable $E=mc^2$ with \\ref{eq:x}.\n",
+            "\\end{mystery}\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"class="unsupported-env-boundary unsupported-env-begin""#),
+            "begin diagnostic missing: {body}"
+        );
+        assert!(
+            body.contains(r#"class="unsupported-env-boundary unsupported-env-end""#),
+            "end diagnostic missing: {body}"
+        );
+        assert!(body.contains(r#"<code aria-hidden="true">\begin{mystery}</code>"#));
+        assert!(body.contains(r#"<code aria-hidden="true">\end{mystery}</code>"#));
+        assert!(body.contains("contents are shown without environment formatting"));
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "body math stayed raw: {body}"
+        );
+        assert!(
+            body.contains(r#"class="ref""#),
+            "body reference did not render: {body}"
+        );
+        assert!(
+            !body.contains(r#"opaque-env" data-env="mystery"#),
+            "supported fallback stayed opaque: {body}"
+        );
+    }
+
+    #[test]
+    fn unsupported_environment_marker_is_a_block_chunk_inside_proof() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{proof}\n",
+            "Before.\n",
+            "\\begin{mystery}Inside $x$.\\end{mystery}\n",
+            "After.\n",
+            "\\end{proof}\n",
+            "\\end{document}\n",
+        ));
+        let begin = body
+            .find(r#"class="unsupported-env-boundary unsupported-env-begin""#)
+            .expect("begin diagnostic");
+        let before = &body[..begin];
+        let last_para_open = before.rfind(r#"<span class="proof-para""#);
+        let last_para_close = before.rfind("</span>");
+        assert!(
+            last_para_open.is_none() || last_para_close > last_para_open,
+            "diagnostic was nested inside proof-para: {body}"
+        );
+        assert!(body.contains(r#"class="math inline"#));
+    }
+
+    #[test]
+    fn unclosed_unsupported_environment_keeps_opaque_remainder_outside_proof_paragraph() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{proof}\n",
+            "Before.\n",
+            "\\begin{mystery}Raw $x$ remains inert.\n",
+            "\\end{proof}\n",
+            "\\end{document}\n",
+        ));
+        let opaque = body
+            .find(r#"class="opaque-env" data-env="mystery""#)
+            .expect("opaque malformed remainder");
+        let before = &body[..opaque];
+        let last_para_open = before.rfind(r#"<span class="proof-para""#);
+        let last_para_close = before.rfind("</span>");
+        assert!(
+            last_para_open.is_none() || last_para_close > last_para_open,
+            "opaque block was nested inside proof-para: {body}"
+        );
+        assert!(body.contains("unsupported-env-missing-end"));
+        assert!(!body.contains(r#"class="math inline"#));
+    }
+
+    #[test]
+    fn unsupported_boundaries_keep_nested_abstract_in_source_order() {
+        let body = render_body(concat!(
+            "\\title{Title}\n",
+            "\\begin{document}\n",
+            "\\begin{mystery}\n",
+            "\\begin{abstract}Nested abstract.\\end{abstract}\n",
+            "\\end{mystery}\n",
+            "\\maketitle\n",
+            "\\end{document}\n",
+        ));
+        let begin = body.find("unsupported-env-begin").expect("begin marker");
+        let abstract_pos = body.find("paper-abstract").expect("abstract");
+        let end = body.find("unsupported-env-end").expect("end marker");
+        assert!(
+            begin < abstract_pos && abstract_pos < end,
+            "front-matter reordering moved abstract outside diagnostics: {body}"
+        );
+    }
+
+    #[test]
+    fn unclosed_unsupported_environment_renders_missing_end_without_parsing_body() {
+        let body = render_body(
+            "\\begin{document}\n\\begin{mystery}Raw $x$ remains inert.\n\\end{document}\n",
+        );
+        assert!(
+            body.contains(r#"unsupported-env-missing-end"#),
+            "missing-end diagnostic absent: {body}"
+        );
+        assert!(body.contains(r#"<span class="unsupported-env-missing""#));
+        assert!(
+            !body.contains(r#"class="math inline"#),
+            "malformed body was parsed: {body}"
+        );
+        assert!(body.contains("$x$"), "inert remainder disappeared: {body}");
+    }
+
+    #[test]
+    fn unsupported_environment_name_is_escaped_in_text_and_attributes() {
+        let env = r#"odd"><img src=x onerror=alert(1)>"#;
+        let body = render_body(&format!("\\begin{{{env}}}Safe.\\end{{{env}}}"));
+        assert!(
+            !body.contains("<img"),
+            "environment name injected HTML: {body}"
+        );
+        assert!(body.contains(r#"data-env="odd&quot;&gt;&lt;img"#));
+        assert!(body.contains(r#"\begin{odd"#));
+        assert!(body.contains("&lt;img"));
+    }
+
+    #[test]
+    fn unsupported_environment_diagnostics_are_styled_and_skipped_by_line_numbers() {
+        let css = super::shell::DEFAULT_CSS;
+        assert!(css.contains(".unsupported-env-boundary {"));
+        assert!(css.contains(".blk:has(> .unsupported-env-boundary)"));
+        assert!(css.contains("border-left-width: 3px;"));
+        assert!(!css.contains(".unsupported-env-label {\n  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;\n  font-size: 0.88em;\n  font-weight: 600;\n  opacity:"));
+        assert!(css.contains(".unsupported-env-boundary.source-range"));
+        assert!(css.contains("--diagnostic-error: #b42318;"));
+        assert!(css.contains("--diagnostic-error: #ff8a80;"));
+        assert!(css.contains(
+            "@media print {\n  /* Browsers print the paper on white even when the viewer is dark."
+        ));
+        assert!(super::shell::CLIENT_JS.contains(".unsupported-env-boundary';"));
+    }
+
+    #[test]
+    fn unsupported_environment_marker_diff_ignores_shifted_generated_id() {
+        let old = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\begin{mystery}Body.\\end{mystery}\n\\end{document}\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let new = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nInserted paragraph.\n\n\\begin{mystery}Body.\\end{mystery}\n\\end{document}\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let marker = |output: &crate::RenderOutput| {
+            let block = output
+                .blocks
+                .iter()
+                .find(|block| block.html.contains("unsupported-env-begin"))
+                .expect("unsupported begin marker block");
+            (block.html.clone(), block.diff_hash.clone())
+        };
+        let (old_html, old_diff_hash) = marker(&old);
+        let (new_html, new_diff_hash) = marker(&new);
+        assert_ne!(old_html, new_html);
+        assert_eq!(
+            old_diff_hash, new_diff_hash,
+            "generated marker id or source metadata changed the semantic diff hash"
+        );
+    }
+
+    #[test]
     fn tex_control_space_renders_as_html_interword_space() {
         let body = render_body("\\begin{document}\nLeft\\ right.\n\\end{document}\n");
         let text = text_content(&body);
@@ -4268,6 +4491,36 @@ mod tests {
     }
 
     #[test]
+    fn float_nested_diagram_discovery_ignores_commented_fake_begin() {
+        let mut opts = HtmlOptions::default();
+        opts.viewer_config.render_tikz = true;
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\documentclass{article}\n",
+                "\\usepackage{circuitikz}\n",
+                "\\begin{document}\n",
+                "\\begin{figure}\n",
+                "% \\begin{tikzpicture}\\draw (9,9)--(8,8);\\end{tikzpicture}\n",
+                "\\begin{circuitikz}\n",
+                "\\draw (0,0)--(1,1);\n",
+                "\\end{circuitikz}\n",
+                "\\end{figure}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert_eq!(out.tikz_assets.len(), 1);
+        let asset = out.tikz_assets.values().next().unwrap();
+        assert_eq!(asset.environment, "circuitikz");
+        assert!(asset.body.contains(r"\draw (0,0)--(1,1);"));
+        assert!(!asset.body.contains("(9,9)"));
+    }
+
+    #[test]
     fn tikzcd_is_lazy_and_static_render_never_emits_a_dead_asset_url() {
         let mut opts = HtmlOptions::default();
         opts.viewer_config.render_tikz = true;
@@ -4289,6 +4542,29 @@ mod tests {
             .contains("TikZ preview needs live server mode."));
         assert!(!out.body_html.contains(r#"src="/tikz/"#));
         assert!(!out.body_html.contains(r#"\arrow"#));
+    }
+
+    #[test]
+    fn forest_is_sent_to_the_lazy_native_diagram_renderer() {
+        let mut opts = HtmlOptions::default();
+        opts.viewer_config.render_tikz = true;
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\documentclass{article}\n\\usepackage{forest}\n\\begin{document}\n\\begin{forest}\n[A [B] [C]]\n\\end{forest}\n\\end{document}\n"
+                .to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert_eq!(out.tikz_assets.len(), 1);
+        assert_eq!(
+            out.tikz_assets.values().next().unwrap().environment,
+            "forest"
+        );
+        assert!(!out
+            .body_html
+            .contains(r#"class="unsupported-env-boundary""#));
+        assert!(!out.body_html.contains("[A [B] [C]]"));
     }
 
     #[test]

@@ -92,10 +92,15 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   MathJax option. See [Configure the
   viewer](#configure-the-viewer).
 - **Optional native TikZ previews:** trusted projects can opt in to lazy,
-  cached SVG rendering of `tikzpicture` and `tikzcd`, including diagrams
-  nested in `figure` or `table`. The viewer uses the project's real TeX
-  preamble and a local TeX installation instead of asking MathJax to interpret
-  TikZ.
+  cached SVG rendering of `tikzpicture`, `tikzcd`, `circuitikz`, and `forest`,
+  including diagrams nested in `figure` or `table`. The viewer uses the
+  project's real TeX preamble and a local TeX installation instead of asking
+  MathJax to interpret TikZ.
+- **Useful fallback for unsupported environments:** an unrecognized
+  non-literal `\begin{...}` / `\end{...}` pair is marked in red while its body
+  is parsed normally. Prose, math, references, and nested environments remain
+  visible instead of collapsing into an opaque source block. Raw/code
+  environments, floats, and diagrams keep their safe specialized handling.
 - **Fast incremental updates**: each math node carries a content hash, so
   already-typeset SVG is transplanted and only genuinely new expressions
   are typeset; the parser caches the preamble; and the server diffs
@@ -713,16 +718,16 @@ break at TeX-valid operators so they can continue naturally onto the next text
 line. Display formulas are not broken into artificial rows; when one is wider
 than the page column, the equation itself can be scrolled horizontally.
 
-`render-tikz = true` enables native previews for `tikzpicture` and `tikzcd`
-in trusted projects. It is deliberately off by default because it runs the
-project's preamble through a local TeX engine. The server chooses XeLaTeX or
-LuaLaTeX when the preamble requests one (or uses `fontspec`), otherwise
-pdfLaTeX, then converts the first PDF page to a path-only SVG with `dvisvgm`.
-Compilation is lazy, serialized, cached, time-limited, isolated in a temporary
-directory, and always uses `-no-shell-escape`. Compiler failures appear as a
-small diagram placeholder and in the viewer log. One-shot HTML rendering does
-not invoke TeX; it leaves an explicit placeholder because there is no live
-server to serve the SVG.
+`render-tikz = true` enables native previews for `tikzpicture`, `tikzcd`,
+`circuitikz`, and `forest` in trusted projects. It is deliberately off by
+default because it runs the project's preamble through a local TeX engine. The
+server chooses XeLaTeX or LuaLaTeX when the preamble requests one (or uses
+`fontspec`), otherwise pdfLaTeX, then converts the first PDF page to a
+path-only SVG with `dvisvgm`. Compilation is lazy, serialized, cached,
+time-limited, isolated in a temporary directory, and always uses
+`-no-shell-escape`. Compiler failures appear as a small diagram placeholder
+and in the viewer log. One-shot HTML rendering does not invoke TeX; it leaves
+an explicit placeholder because there is no live server to serve the SVG.
 
 `typeset-mode` controls how much of the document is typeset (has its math
 rendered) at once — it is also a structured **Viewer config** option.
@@ -823,10 +828,12 @@ A typical file:
 ```
 
 The same override files can provide preview-only replacements for environments
-defined by a document class or system package. This is useful when the viewer
-cannot inspect that package and would otherwise show the environment as an
-opaque block. For example, a standard `letter` document can expose its
-recipient, prose, and math without changing the real PDF:
+defined by a document class or system package. Without a replacement, the
+viewer marks an unknown non-literal environment's begin/end boundaries in red
+and still parses its body as ordinary TeX. A replacement removes that
+diagnostic and supplies a closer approximation of the environment's intended
+layout. For example, a standard `letter` document can label and group its
+recipient without changing the real PDF:
 
 ```tex
 % .mathpreview-macros.tex
@@ -840,8 +847,15 @@ including an optional first-argument default. The replacement's begin/end code
 and the original body are parsed normally, so nested environments, references,
 and math still render. These are deliberately preview approximations: class
 state such as `letter.cls` signatures/addresses or `exam.cls` counters, points,
-choice markers, and answer modes is not recreated automatically. For an exam,
-empty replacements can at least expose the prose and math:
+choice markers, and answer modes is not recreated automatically. Because the
+viewer cannot infer an unknown environment's argument signature, any optional
+or braced arguments after its begin marker are also rendered as ordinary
+content; define a replacement when those arguments should instead be consumed
+or reformatted.
+
+For an exam, prose and math are visible automatically between the red
+unsupported-environment markers. Empty replacements can suppress those markers
+for wrapper environments whose bodies need no additional layout:
 
 ```tex
 \renewenvironment{questions}{}{}
@@ -852,8 +866,12 @@ empty replacements can at least expose the prose and math:
 Commands inside those environments keep the viewer's generic meaning:
 `\question[5]` will not acquire exam numbering or points, choice markers are
 not synthesized, and `\part` is still interpreted as a document-level heading.
-Environment replacements apply to otherwise-opaque environments; the viewer's
-dedicated renderers for recognized environments keep precedence.
+Environment replacements apply before the generic unsupported-environment
+fallback. Built-in semantic environments keep their native behavior, and raw
+or code-like environments remain opaque even if a replacement has the same
+name. An explicit replacement can deliberately override an otherwise opaque
+float, TikZ, or specialized display-math environment when you want preview-only
+semantics instead.
 
 You can also add overrides without leaving the viewer: click the
 `macros` button in the toolbar. The chosen scope's existing

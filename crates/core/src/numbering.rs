@@ -12,8 +12,9 @@
 //!   `Theorem 2.3`. With no section, you get `1, 2, 3, …`.
 //! * Numbered display math is section-scoped, printed as `{section}.{n}`.
 //!   Single-display environments (`equation`, `multline`) get one number.
-//!   Row environments (`align`, `gather`, `alignat`, `eqnarray`) get one
-//!   number per top-level row unless that row has `\notag` / `\nonumber`.
+//!   Row environments (`align`, `gather`, `alignat`, `flalign`, `xalignat`,
+//!   `eqnarray`) get one number per top-level row unless that row has `\notag`
+//!   / `\nonumber`.
 //!   Starred forms (`equation*` etc.) are unnumbered.
 
 use std::collections::{HashMap, HashSet};
@@ -932,12 +933,23 @@ fn is_numbered_math_env(env: &str) -> bool {
     !env.ends_with('*')
         && matches!(
             env,
-            "equation" | "align" | "gather" | "multline" | "alignat" | "eqnarray"
+            "equation"
+                | "align"
+                | "gather"
+                | "multline"
+                | "alignat"
+                | "flalign"
+                | "xalignat"
+                | "eqnarray"
         )
 }
 
 fn is_multirow_numbered_math_env(env: &str) -> bool {
-    !env.ends_with('*') && matches!(env, "align" | "gather" | "alignat" | "eqnarray")
+    !env.ends_with('*')
+        && matches!(
+            env,
+            "align" | "gather" | "alignat" | "flalign" | "xalignat" | "eqnarray"
+        )
 }
 
 fn is_float_env(env: &str) -> bool {
@@ -1161,6 +1173,30 @@ mod tests {
                 Some("1.3".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn extended_ams_alignment_environments_number_their_rows() {
+        let mut ns = nodes(
+            "\\section{S}\n\
+             \\begin{flalign}\n\
+             a &= b && \\label{eq:f1}\\\\\n\
+             c &= d && \\label{eq:f2}\n\
+             \\end{flalign}\n\
+             \\begin{xalignat}{2}\n\
+             e &= f &\\quad g &= h \\label{eq:x1}\\\\\n\
+             i &= j & k &= l \\label{eq:x2}\n\
+             \\end{xalignat}\n\
+             \\begin{xxalignat}{2}m&=n&o&=p\\label{eq:xx}\\end{xxalignat}\n\
+             \\begin{equation}\\label{eq:after}q=r\\end{equation}\n",
+        );
+        let labels = assign(&mut ns);
+        assert_eq!(labels.number.get("eq:f1").unwrap(), "1.1");
+        assert_eq!(labels.number.get("eq:f2").unwrap(), "1.2");
+        assert_eq!(labels.number.get("eq:x1").unwrap(), "1.3");
+        assert_eq!(labels.number.get("eq:x2").unwrap(), "1.4");
+        assert!(!labels.number.contains_key("eq:xx"));
+        assert_eq!(labels.number.get("eq:after").unwrap(), "1.5");
     }
 
     #[test]

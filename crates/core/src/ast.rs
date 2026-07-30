@@ -66,6 +66,15 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+/// Which diagnostic marker represents an otherwise-unsupported environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnvironmentBoundary {
+    Begin,
+    End,
+    MissingEnd,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     /// Top-level document body.
@@ -122,8 +131,17 @@ pub enum NodeKind {
     Ref { kind: RefKind, key: String },
     /// `\cite{a,b,c}` etc.
     Cite { keys: Vec<String> },
-    /// Other `\begin{env}` ... `\end{env}` passed through opaquely.
+    /// A raw/special `\begin{env}` ... `\end{env}` whose body must not be
+    /// parsed as ordinary TeX (verbatim/code, floats, TikZ, or a recursion
+    /// safety fallback).
     OpaqueEnv { env: String, body: String },
+    /// Visible diagnostic boundary for an otherwise-unsupported environment.
+    /// The body is parsed normally and flattened between its Begin and End
+    /// markers so math, references, and nested structure remain useful.
+    UnsupportedEnvBoundary {
+        env: String,
+        boundary: EnvironmentBoundary,
+    },
     /// A recognized annotation / callout box (`\begin{todo}[title]` … etc.).
     /// Unlike `OpaqueEnv`, the body is parsed into `children` so math and nested
     /// content render. `title` is the resolved `[title]` (or a default); `class`

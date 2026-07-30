@@ -2967,7 +2967,11 @@ async fn serve_buffer_push(
     let body_len = body.len();
     let seq = begin_render_attempt(&state);
     let cursor = buffer_cursor_from_headers(&headers);
-    if !is_buffer_renderable(&body, cursor) {
+    let preamble_context = {
+        let current = state.current.read().await;
+        current.preamble.raw_preamble.clone()
+    };
+    if !is_buffer_renderable_with_preamble(&body, cursor, &preamble_context) {
         elog!(
             "mathpreview: buffer-push #{seq} {} bytes — incomplete, deferring",
             body_len
@@ -3737,67 +3741,39 @@ fn lcs_align(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<(usize, usize)
 /// mid-expression? Conservative — when in doubt, return true and let the
 /// parser/MathJax handle it. Skipping when not renderable preserves the
 /// previous rendered output rather than flashing a broken one.
+#[cfg(test)]
 fn is_buffer_renderable(source: &str, cursor: Option<(usize, usize)>) -> bool {
+    is_buffer_renderable_with_preamble(source, cursor, "")
+}
+
+fn is_buffer_renderable_with_preamble(
+    source: &str,
+    cursor: Option<(usize, usize)>,
+    preamble: &str,
+) -> bool {
+    let mut literal_envs = mathpreview_core::parser::declared_literal_environments(preamble);
+    literal_envs.extend(mathpreview_core::parser::declared_literal_environments(
+        source,
+    ));
+    let mut literal_commands = mathpreview_core::parser::declared_inline_literal_commands(preamble);
+    literal_commands.extend(mathpreview_core::parser::declared_inline_literal_commands(
+        source,
+    ));
+
     // MathJax keeps TeX definitions between tex2svgPromise calls. If the
-    // exact transient control word `\def` reaches it while the user is still
-    // typing a longer macro such as `\defeq`, TeX may consume and redefine
-    // the equation's `\end` (or the next existing macro), poisoning every
-    // later typeset until reload. The plugin sends the caret with the buffer,
-    // which lets us defer only an unfinished definition at the edit position.
-    // Stable, intentional `\def` definitions and literal text remain valid.
-    if cursor.is_some_and(|(line, col)| cursor_has_unfinished_def_in_math(source, line, col)) {
+    // exact transient control word `\def` reaches a later macro/environment
+    // expansion while the user is still typing a longer command such as
+    // `\defeq`, TeX may consume and redefine the next existing macro. The
+    // plugin sends the caret with the buffer, so defer only an unfinished
+    // definition at the edit position. Stable, intentional definitions and
+    // literal text remain valid.
+    if cursor.is_some_and(|(line, col)| {
+        cursor_has_unfinished_def_in_math(source, line, col, &literal_envs, &literal_commands)
+    }) {
         return false;
     }
 
-    let bytes = source.as_bytes();
-    // Track distinct math-delimiter parities. `$$` and `$` are NOT the same
-    // delimiter — typing `$$` should leave us in unbalanced display state,
-    // not balanced because two `$`s.
-    let mut in_inline = false;
-    let mut in_display = false;
-    let mut in_comment = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\n' {
-            in_comment = false;
-            i += 1;
-            continue;
-        }
-        if in_comment {
-            i += 1;
-            continue;
-        }
-        if b == b'\\' && i + 1 < bytes.len() {
-            let next = bytes[i + 1];
-            if next == b'(' || next == b')' {
-                in_inline = !in_inline;
-                i += 2;
-                continue;
-            }
-            if next == b'[' || next == b']' {
-                in_display = !in_display;
-                i += 2;
-                continue;
-            }
-            i += 2;
-            continue;
-        }
-        match b {
-            b'%' => in_comment = true,
-            b'$' => {
-                if bytes.get(i + 1) == Some(&b'$') {
-                    in_display = !in_display;
-                    i += 2;
-                    continue;
-                }
-                in_inline = !in_inline;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    !in_inline && !in_display
+    mathpreview_core::parser::has_balanced_math_delimiters(source, preamble)
 }
 
 /// Optional `line:column` caret attached by the nvim plugin to `/buffer`.
@@ -3811,40 +3787,35 @@ fn buffer_cursor_from_headers(headers: &axum::http::HeaderMap) -> Option<(usize,
     (line > 0 && col > 0).then_some((line, col))
 }
 
-/// True when the edit-time caret is inside rendered math and the prefix up to
-/// that caret contains an exact `\def` whose replacement body is not complete
-/// yet. Looking only at the prefix is deliberate: in `\def\label{x}`, the
-/// source after a newly typed bare `\def` may make the whole buffer look like a
-/// valid definition even though those tokens were already present and would
-/// be redefined accidentally.
-fn cursor_has_unfinished_def_in_math(source: &str, line: usize, col: usize) -> bool {
+/// True when the prefix up to the edit-time caret contains an executable exact
+/// `\def` whose replacement body is not complete yet. Looking only at the
+/// prefix is deliberate: in `\def\label{x}`, the source after a newly typed
+/// bare `\def` may make the whole buffer look like a valid definition even
+/// though those tokens were already present and would be redefined
+/// accidentally. Guarding outside literal input also covers user macros and
+/// environments that later expand the token into MathJax input.
+fn cursor_has_unfinished_def_in_math(
+    source: &str,
+    line: usize,
+    col: usize,
+    literal_envs: &HashSet<String>,
+    literal_commands: &HashSet<String>,
+) -> bool {
     let Some(limit) = source_offset_at_cursor(source, line, col) else {
         return false;
     };
     let bytes = source.as_bytes();
     let mut i = 0usize;
     let mut in_comment = false;
-    let mut verb_delimiter = None;
-    let mut in_inline = false;
-    let mut in_display = false;
-    let mut math_env_depth = 0usize;
 
     while i < limit {
         let byte = bytes[i];
         if byte == b'\n' {
             in_comment = false;
-            verb_delimiter = None;
             i += 1;
             continue;
         }
         if in_comment {
-            i += 1;
-            continue;
-        }
-        if let Some(delimiter) = verb_delimiter {
-            if byte == delimiter {
-                verb_delimiter = None;
-            }
             i += 1;
             continue;
         }
@@ -3853,29 +3824,12 @@ fn cursor_has_unfinished_def_in_math(source: &str, line: usize, col: usize) -> b
             i += 1;
             continue;
         }
-        if byte == b'$' {
-            if bytes.get(i + 1) == Some(&b'$') {
-                in_display = !in_display;
-                i += 2;
-            } else {
-                in_inline = !in_inline;
-                i += 1;
-            }
-            continue;
-        }
         if byte != b'\\' || i + 1 >= limit {
             i += 1;
             continue;
         }
 
         let next = bytes[i + 1];
-        match next {
-            b'(' => in_inline = true,
-            b')' => in_inline = false,
-            b'[' => in_display = true,
-            b']' => in_display = false,
-            _ => {}
-        }
         if !next.is_ascii_alphabetic() {
             i += 2;
             continue;
@@ -3887,41 +3841,30 @@ fn cursor_has_unfinished_def_in_math(source: &str, line: usize, col: usize) -> b
         }
         let command = &bytes[i + 1..command_end];
 
-        if command == b"verb" {
-            let delimiter_at = command_end + usize::from(bytes.get(command_end) == Some(&b'*'));
-            if delimiter_at < limit {
-                verb_delimiter = Some(bytes[delimiter_at]);
-                i = delimiter_at + 1;
-            } else {
-                i = limit;
-            }
+        if is_inline_literal_command(command, literal_commands) {
+            i = inline_literal_end(bytes, command, command_end, literal_commands)
+                .unwrap_or(bytes.len());
             continue;
         }
 
         if matches!(command, b"begin" | b"end") {
             if let Some((env, after_env)) = braced_environment_name(bytes, command_end) {
-                if command == b"begin" && is_literal_environment(env) && after_env <= limit {
-                    let close = [b"\\end{".as_slice(), env, b"}".as_slice()].concat();
-                    if let Some(offset) = find_bytes(&bytes[after_env..limit], &close) {
-                        i = after_env + offset + close.len();
+                if command == b"begin"
+                    && is_literal_environment(env, literal_envs)
+                    && after_env <= limit
+                {
+                    if let Some(end) = literal_environment_end(source, after_env, env, limit) {
+                        i = end;
                         continue;
                     }
                     return false;
-                }
-                if after_env <= limit && is_math_environment(env) {
-                    if command == b"begin" {
-                        math_env_depth += 1;
-                    } else {
-                        math_env_depth = math_env_depth.saturating_sub(1);
-                    }
                 }
                 i = after_env.min(limit);
                 continue;
             }
         }
 
-        let in_math = math_env_depth > 0 || in_inline || in_display;
-        if command == b"def" && command_end <= limit && in_math {
+        if command == b"def" && command_end <= limit {
             match definition_prefix_state(bytes, command_end, limit) {
                 DefinitionPrefix::Incomplete => return true,
                 DefinitionPrefix::OpenReplacement { at, depth } => {
@@ -4063,8 +4006,8 @@ fn skip_prefix_space_and_comments(bytes: &[u8], i: &mut usize, limit: usize) {
 
 /// When the caret is editing inside a replacement body, accept an already
 /// balanced definition whose closing brace is still to the right. Stop at the
-/// surrounding math terminator so braces in later prose cannot make an
-/// actually incomplete definition appear safe.
+/// surrounding environment or math delimiter so braces in later input cannot
+/// make an actually incomplete definition appear safe.
 fn replacement_closes_before_math_end(bytes: &[u8], mut i: usize, mut depth: usize) -> bool {
     let mut in_comment = false;
     while i < bytes.len() {
@@ -4094,8 +4037,7 @@ fn replacement_closes_before_math_end(bytes: &[u8], mut i: usize, mut depth: usi
                         command_end += 1;
                     }
                     if &bytes[i + 1..command_end] == b"end"
-                        && braced_environment_name(bytes, command_end)
-                            .is_some_and(|(env, _)| is_math_environment(env))
+                        && braced_environment_name(bytes, command_end).is_some()
                     {
                         return false;
                     }
@@ -4133,41 +4075,144 @@ fn braced_environment_name(bytes: &[u8], mut i: usize) -> Option<(&[u8], usize)>
     Some((&bytes[start..start + close], start + close + 1))
 }
 
-fn is_math_environment(env: &[u8]) -> bool {
+fn is_literal_environment(env: &[u8], dynamic: &HashSet<String>) -> bool {
     matches!(
         env,
-        b"equation"
-            | b"equation*"
-            | b"align"
-            | b"align*"
-            | b"gather"
-            | b"gather*"
-            | b"multline"
-            | b"multline*"
-            | b"displaymath"
-            | b"eqnarray"
-            | b"eqnarray*"
-            | b"alignat"
-            | b"alignat*"
-            | b"split"
-    )
+        b"verbatim"
+            | b"verbatim*"
+            | b"Verbatim"
+            | b"Verbatim*"
+            | b"BVerbatim"
+            | b"LVerbatim"
+            | b"SaveVerbatim"
+            | b"VerbatimOut"
+            | b"VerbatimOut*"
+            | b"alltt"
+            | b"semiverbatim"
+            | b"lstlisting"
+            | b"minted"
+            | b"filecontents"
+            | b"filecontents*"
+            | b"luacode"
+            | b"luacode*"
+            | b"pycode"
+            | b"pyblock"
+            | b"python"
+            | b"python*"
+            | b"sageblock"
+            | b"sagesilent"
+            | b"asy"
+            | b"asydef"
+            | b"tcblisting"
+            | b"comment"
+    ) || std::str::from_utf8(env).is_ok_and(|name| dynamic.contains(name))
 }
 
-fn is_literal_environment(env: &[u8]) -> bool {
+fn is_inline_literal_command(command: &[u8], dynamic: &HashSet<String>) -> bool {
     matches!(
-        env,
-        b"verbatim" | b"verbatim*" | b"Verbatim" | b"lstlisting" | b"minted"
-    )
+        command,
+        b"verb" | b"Verb" | b"lstinline" | b"mintinline" | b"mint"
+    ) || std::str::from_utf8(command).is_ok_and(|name| dynamic.contains(name))
 }
 
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    (!needle.is_empty())
-        .then(|| {
-            haystack
-                .windows(needle.len())
-                .position(|window| window == needle)
-        })
-        .flatten()
+fn skip_ascii_ws_bytes(bytes: &[u8], mut i: usize) -> usize {
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    i
+}
+
+fn delimited_group_end(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+    if bytes.get(start) != Some(&open) {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == open {
+            depth += 1;
+        } else if bytes[i] == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i + 1);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn inline_literal_end(
+    bytes: &[u8],
+    command: &[u8],
+    mut after_word: usize,
+    dynamic_commands: &HashSet<String>,
+) -> Option<usize> {
+    if bytes.get(after_word) == Some(&b'*') {
+        after_word += 1;
+    }
+    let dynamic = std::str::from_utf8(command).is_ok_and(|name| dynamic_commands.contains(name));
+    if dynamic || matches!(command, b"Verb" | b"lstinline" | b"mintinline" | b"mint") {
+        after_word = skip_ascii_ws_bytes(bytes, after_word);
+        if bytes.get(after_word) == Some(&b'[') {
+            after_word =
+                skip_ascii_ws_bytes(bytes, delimited_group_end(bytes, after_word, b'[', b']')?);
+        }
+    }
+    if matches!(command, b"mintinline" | b"mint") {
+        after_word =
+            skip_ascii_ws_bytes(bytes, delimited_group_end(bytes, after_word, b'{', b'}')?);
+    }
+    if (dynamic || matches!(command, b"lstinline" | b"mintinline" | b"mint"))
+        && bytes.get(after_word) == Some(&b'{')
+    {
+        return delimited_group_end(bytes, after_word, b'{', b'}');
+    }
+    let delimiter = *bytes.get(after_word)?;
+    if delimiter.is_ascii_whitespace() {
+        return None;
+    }
+    bytes[after_word + 1..]
+        .iter()
+        .position(|byte| *byte == delimiter)
+        .map(|offset| after_word + 1 + offset + 1)
+        .or(Some(bytes.len()))
+}
+
+fn literal_environment_end(source: &str, from: usize, env: &[u8], limit: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let limit = limit.min(bytes.len());
+    let mut close = b"\\end{".to_vec();
+    close.extend_from_slice(env);
+    close.push(b'}');
+    // Unlike verbatim-family environments, `alltt` permits its closing
+    // command inline. Use the core lexical matcher so inert fake closers in
+    // comments, definitions, and stringified input do not end it early.
+    if env == b"alltt" {
+        let env = std::str::from_utf8(env).ok()?;
+        return mathpreview_core::parser::matching_environment_end_before(source, from, env, limit);
+    }
+    let mut line_start = from.min(limit);
+    while line_start < limit {
+        let line_end = bytes[line_start..limit]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| line_start + offset)
+            .unwrap_or(limit);
+        let mut token_start = line_start;
+        while token_start < line_end && matches!(bytes[token_start], b' ' | b'\t' | b'\r') {
+            token_start += 1;
+        }
+        if bytes[token_start..line_end].starts_with(&close) {
+            return Some(token_start + close.len());
+        }
+        line_start = line_end.saturating_add(1);
+    }
+    None
 }
 
 fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>) {
@@ -4378,11 +4423,11 @@ fn watched_event_paths(
 mod tests {
     use super::{
         begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
-        is_latest_render_attempt, merge_config_editor_values, origin_is_loopback,
-        preamble_fingerprint, search_sync_payload, select_tikz_engine, serve_buffer_push,
-        tikz_document, tikz_error_svg, tikz_hash_from_path, validate_override_content,
-        watched_event_paths, websocket_needs_reload, AppState, EditorSearch, PatchOp, PlanSlot,
-        SearchRequest, WS_PROTOCOL_VERSION,
+        is_buffer_renderable_with_preamble, is_latest_render_attempt, merge_config_editor_values,
+        origin_is_loopback, preamble_fingerprint, search_sync_payload, select_tikz_engine,
+        serve_buffer_push, tikz_document, tikz_error_svg, tikz_hash_from_path,
+        validate_override_content, watched_event_paths, websocket_needs_reload, AppState,
+        EditorSearch, PatchOp, PlanSlot, SearchRequest, WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -4644,11 +4689,64 @@ toggle-theme = "T"
         ));
         assert!(!is_buffer_renderable(r"\begin{document} $x", None));
         assert!(!is_buffer_renderable(r"\begin{document} \[x", None));
+        for inert_math in [
+            r"\begin{document}\newcommand{\dollar}{$}Visible.\end{document}",
+            r"\begin{document}\def\dollar{$}Visible.\end{document}",
+            "\\begin{document}\\newcommand% note\n{\\dollar}{$}Visible.\\end{document}",
+            "\\begin{document}\\def% note\n\\dollar{$}Visible.\\end{document}",
+            r"\begin{document}\iffalse $ \fi Visible.\end{document}",
+            r"\begin{document}\iftrue Visible.\else $ \fi\end{document}",
+            r"\begin{document}\string$ Visible.\end{document}",
+            r"\begin{document}\detokenize{$} Visible.\end{document}",
+            r"\begin{document}\begin{alltt}raw $\end{alltt}Visible.\end{document}",
+        ] {
+            assert!(
+                is_buffer_renderable(inert_math, None),
+                "inert math delimiter deferred the preview: {inert_math:?}"
+            );
+        }
+        let alltt_fake_closers = concat!(
+            "\\begin{document}\n",
+            "\\begin{alltt}\n",
+            "% \\end{alltt}\n",
+            "\\\\end{alltt}\n",
+            "\\string\\end{alltt}\n",
+            "\\def\\saved{\\end{alltt}}\n",
+            "\\def\n",
+            "\\end{alltt}\n",
+            "\\end{document}",
+        );
+        assert!(is_buffer_renderable(
+            alltt_fake_closers,
+            Some((7, r"\def".len())),
+        ));
 
         let bare_def =
             "\\begin{document}\n\\begin{equation}\na \\def\n\\end{equation}\n\\end{document}";
         assert!(!is_buffer_renderable(bare_def, Some((3, 6))));
         assert!(!is_buffer_renderable(bare_def, Some((3, 7))));
+
+        for env in ["math", "empheq", "flalign", "xalignat", "xxalignat"] {
+            let source = format!(
+                "\\begin{{document}}\n\\begin{{{env}}}\na \\def\n\\end{{{env}}}\n\\end{{document}}"
+            );
+            assert!(
+                !is_buffer_renderable(&source, Some((3, 6))),
+                "unfinished definition in {env} was not deferred"
+            );
+        }
+        let custom_math = concat!(
+            "\\begin{document}\n",
+            "\\begin{myeq}\n",
+            "\\def\n",
+            "\\end{myeq}\n",
+            "\\end{document}",
+        );
+        assert!(!is_buffer_renderable_with_preamble(
+            custom_math,
+            Some((3, 4)),
+            "\\newenvironment{myeq}{\\begin{equation}}{\\end{equation}}\n",
+        ));
 
         let before_macro = r"\begin{document}
 \begin{equation}
@@ -4710,10 +4808,81 @@ a \defeq b
             inline_literal,
             Some((1, inline_literal_col))
         ));
+        for literal in [
+            r"\Verb|$ \def|",
+            r"\lstinline|$ \def|",
+            r"\mintinline{python}|$ \def|",
+            r"\mint{python}|$ \def|",
+        ] {
+            let source = format!(r"\begin{{document}}{literal}\end{{document}}");
+            let col = source.find(r"\def").unwrap() + 4;
+            assert!(
+                is_buffer_renderable(&source, Some((1, col))),
+                "inline literal triggered the edit guard: {literal}"
+            );
+        }
 
         let block_literal =
             "\\begin{document}\n\\begin{verbatim}\n\\def\\foo{\n\\end{verbatim}\n\\end{document}";
         assert!(is_buffer_renderable(block_literal, Some((3, 4))));
+        for env in ["semiverbatim", "luacode", "VerbatimOut"] {
+            let source = format!(
+                "\\begin{{document}}\n\\begin{{{env}}}\n$ \\def\n\\end{{{env}}}\n\\end{{document}}"
+            );
+            assert!(
+                is_buffer_renderable(&source, Some((3, 6))),
+                "literal {env} triggered the unfinished-definition guard"
+            );
+        }
+        let comment_literal = concat!(
+            "\\begin{document}\n",
+            "\\begin{comment}\n",
+            "$ \\def\n",
+            "\\end{comment}\n",
+            "Visible edit.\n",
+            "\\end{document}",
+        );
+        assert!(is_buffer_renderable(
+            comment_literal,
+            Some((5, "Visible edit.".len())),
+        ));
+
+        let declared_literals = concat!(
+            "\\begin{document}\n",
+            "\\py|$ \\def|\n",
+            "\\begin{Transcript}\n",
+            "$ \\def\n",
+            "\\end{Transcript}\n",
+            "\\end{document}",
+        );
+        let literal_preamble = concat!(
+            "\\newmintinline[py]{python}{}\n",
+            "\\DefineVerbatimEnvironment{Transcript}{Verbatim}{}\n",
+        );
+        let py_col = declared_literals
+            .lines()
+            .nth(1)
+            .unwrap()
+            .find(r"\def")
+            .unwrap()
+            + 4;
+        let transcript_col = declared_literals
+            .lines()
+            .nth(3)
+            .unwrap()
+            .find(r"\def")
+            .unwrap()
+            + 4;
+        assert!(is_buffer_renderable_with_preamble(
+            declared_literals,
+            Some((2, py_col)),
+            literal_preamble,
+        ));
+        assert!(is_buffer_renderable_with_preamble(
+            declared_literals,
+            Some((4, transcript_col)),
+            literal_preamble,
+        ));
 
         let commented =
             "\\begin{document}\n\\begin{equation}\n% \\def\nx=1\n\\end{equation}\n\\end{document}";

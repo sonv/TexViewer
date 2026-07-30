@@ -281,9 +281,9 @@ pub struct ViewerConfig {
     /// under `deny_unknown_fields`; its value is intentionally ignored.
     #[serde(default, rename = "wrap-equations", skip_serializing)]
     pub _removed_wrap_equations: Option<bool>,
-    /// Compile `tikzpicture` / `tikzcd` environments with a local TeX engine
-    /// and show the resulting SVG in the live viewer. Off by default because
-    /// TeX compilation executes document code; enable only for trusted
+    /// Compile supported TikZ-family diagram environments with a local TeX
+    /// engine and show the resulting SVG in the live viewer. Off by default
+    /// because TeX compilation executes document code; enable only for trusted
     /// projects. The daemon always disables shell escape for these jobs.
     pub render_tikz: Option<bool>,
     /// Raw JavaScript spliced into the page right after the generated

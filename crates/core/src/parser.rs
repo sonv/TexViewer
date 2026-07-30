@@ -8,12 +8,14 @@
 //! positions survive to every leaf.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::ast::{ListKind, Node, NodeKind, Pos, RefKind, Role, Span, TextAlignment};
+use crate::ast::{
+    EnvironmentBoundary, ListKind, Node, NodeKind, Pos, RefKind, Role, Span, TextAlignment,
+};
 use crate::macros::MacroOverride;
 use crate::project::Project;
 use crate::theorems::TheoremRegistry;
@@ -37,6 +39,12 @@ thread_local! {
     /// env name. Thread-local (like the renderer's macro table) so every
     /// sub-parser sees them without threading a reference through `new_at`.
     static ENV_MACROS: RefCell<HashMap<String, EnvMacro>> = RefCell::new(HashMap::new());
+    /// Package/user declarations that make otherwise-unknown environments
+    /// literal. Their bodies must never be recursively interpreted as TeX.
+    static DYNAMIC_LITERAL_ENVS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Minted declarations that create user-named inline literal commands.
+    static DYNAMIC_INLINE_LITERAL_COMMANDS: RefCell<HashSet<String>> =
+        RefCell::new(HashSet::new());
     /// Shared expansion budget for one outermost user environment. The depth
     /// cap alone
     /// does not bound a recursive definition that emits two copies of itself
@@ -67,6 +75,247 @@ fn env_macros_for_project(
     out.extend(extract_env_macros(&project.preamble.source));
     for override_layer in overrides {
         out.extend(extract_env_macros(&override_layer.source));
+    }
+    out
+}
+
+fn literal_envs_for_project(project: &Project, overrides: &[MacroOverride]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for file in &project.preamble_files {
+        out.extend(declared_literal_environments(&file.source));
+    }
+    out.extend(declared_literal_environments(&project.preamble.source));
+    for override_layer in overrides {
+        out.extend(declared_literal_environments(&override_layer.source));
+    }
+    out
+}
+
+fn literal_commands_for_project(project: &Project, overrides: &[MacroOverride]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for file in &project.preamble_files {
+        out.extend(declared_inline_literal_commands(&file.source));
+    }
+    out.extend(declared_inline_literal_commands(&project.preamble.source));
+    for override_layer in overrides {
+        out.extend(declared_inline_literal_commands(&override_layer.source));
+    }
+    out
+}
+
+/// Discover package declarations that create verbatim/code environments.
+/// Exposed for the live edit guard so it skips exactly the same literal input
+/// before deciding whether a transient buffer is safe to render.
+pub fn declared_literal_environments(raw: &str) -> HashSet<String> {
+    scan_literal_declarations(raw).environments
+}
+
+/// Discover minted declarations that create user-named inline literal macros.
+pub fn declared_inline_literal_commands(raw: &str) -> HashSet<String> {
+    scan_literal_declarations(raw).commands
+}
+
+#[derive(Default)]
+struct LiteralDeclarations {
+    environments: HashSet<String>,
+    commands: HashSet<String>,
+}
+
+/// Read a declaration that creates a line-oriented literal environment,
+/// returning its public name and the byte after the stored declaration
+/// arguments. Consuming the complete declaration matters: commands appearing
+/// in option or begin/end-code groups are stored tokens, not live preamble
+/// input.
+fn literal_environment_declaration_at(
+    src: &str,
+    command: &str,
+    after_word: usize,
+) -> Option<(String, usize)> {
+    let mut p = skip_ascii_ws(src, after_word);
+    if matches!(
+        command,
+        "newtcblisting"
+            | "renewtcblisting"
+            | "DeclareTCBListing"
+            | "NewTCBListing"
+            | "RenewTCBListing"
+            | "ProvideTCBListing"
+    ) {
+        if let Some((_, end)) = read_bracketed(src, p) {
+            p = skip_ascii_ws(src, end);
+        }
+    }
+
+    if command == "newminted" {
+        let custom = read_bracketed(src, p).map(|(name, end)| {
+            p = skip_ascii_ws(src, end);
+            name
+        });
+        let (language, end) = read_braced(src, p)?;
+        p = skip_ascii_ws(src, end);
+        if let Some((_, end)) = read_braced(src, p) {
+            p = end;
+        }
+        let name = custom
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("{}code", language.trim()));
+        return (!name.trim().is_empty()).then(|| (name.trim().to_string(), p));
+    }
+
+    let (name, end) = read_braced(src, p)?;
+    p = skip_ascii_ws(src, end);
+    match command {
+        "DefineVerbatimEnvironment"
+        | "CustomVerbatimEnvironment"
+        | "RecustomVerbatimEnvironment" => {
+            for _ in 0..2 {
+                let (_, end) = read_braced(src, p)?;
+                p = skip_ascii_ws(src, end);
+            }
+        }
+        "lstnewenvironment" => {
+            for _ in 0..2 {
+                if let Some((_, end)) = read_bracketed(src, p) {
+                    p = skip_ascii_ws(src, end);
+                }
+            }
+            for _ in 0..2 {
+                let (_, end) = read_braced(src, p)?;
+                p = skip_ascii_ws(src, end);
+            }
+        }
+        "newtcblisting" | "renewtcblisting" => {
+            for _ in 0..2 {
+                if let Some((_, end)) = read_bracketed(src, p) {
+                    p = skip_ascii_ws(src, end);
+                }
+            }
+            let (_, end) = read_braced(src, p)?;
+            p = end;
+        }
+        "DeclareTCBListing" | "NewTCBListing" | "RenewTCBListing" | "ProvideTCBListing" => {
+            for _ in 0..2 {
+                let (_, end) = read_braced(src, p)?;
+                p = skip_ascii_ws(src, end);
+            }
+        }
+        _ => return None,
+    }
+    (!name.trim().is_empty()).then(|| (name.trim().to_string(), p))
+}
+
+fn inline_literal_declaration_at(
+    src: &str,
+    command: &str,
+    after_word: usize,
+) -> Option<(String, usize)> {
+    if !matches!(command, "newmint" | "newmintinline") {
+        return None;
+    }
+    let mut p = skip_ascii_ws(src, after_word);
+    let custom = read_bracketed(src, p).map(|(name, end)| {
+        p = skip_ascii_ws(src, end);
+        name
+    });
+    let (language, end) = read_braced(src, p)?;
+    p = skip_ascii_ws(src, end);
+    if let Some((_, end)) = read_braced(src, p) {
+        p = end;
+    }
+    let default = if command == "newmintinline" {
+        format!("{}inline", language.trim())
+    } else {
+        language.trim().to_string()
+    };
+    let name = custom
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(default);
+    let name = name.trim().trim_start_matches('\\');
+    (!name.is_empty()).then(|| (name.to_string(), p))
+}
+
+/// Scan only executable preamble input. False branches, stored command
+/// replacements, and literal/code bodies cannot create live declarations.
+fn scan_literal_declarations(raw: &str) -> LiteralDeclarations {
+    let src = crate::macros::strip_line_comments(raw);
+    let bytes = src.as_bytes();
+    let mut out = LiteralDeclarations::default();
+    let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(pos) = hidden_ranges
+            .iter()
+            .position(|(start, end)| i >= *start && i < *end)
+        {
+            i = hidden_ranges.swap_remove(pos).1;
+            continue;
+        }
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'@') {
+            i += 1;
+        }
+        let command = &src[start + 1..i];
+        if command == "iffalse" {
+            if let Some(bounds) = conditional_bounds(&src, i) {
+                i = bounds.else_end.unwrap_or(bounds.fi_end);
+                continue;
+            }
+        } else if command == "iftrue" {
+            if let Some(bounds) = conditional_bounds(&src, i) {
+                if let Some(else_start) = bounds.else_start {
+                    hidden_ranges.push((else_start, bounds.fi_end));
+                }
+            }
+            continue;
+        }
+        if let Some(end) = skip_command_macro_declaration(&src, start) {
+            i = end;
+            continue;
+        }
+        if is_static_inline_literal_command(command) || out.commands.contains(command) {
+            let dynamic = out.commands.contains(command);
+            i = inline_literal_payload_with_dynamic(&src, command, i, dynamic)
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if command == "begin" {
+            if let Some(token) = environment_token_at(&src, start) {
+                if token.kind == EnvironmentTokenKind::Begin
+                    && (environment_is_literal_with(&token.name, &out.environments)
+                        || SKIP_ENVS.contains(&token.name.as_str()))
+                {
+                    i = if (token.name != "alltt"
+                        && environment_is_literal_with(&token.name, &out.environments))
+                        || SKIP_ENVS.contains(&token.name.as_str())
+                    {
+                        literal_environment_bounds(&src, token.end, &token.name)
+                            .map(|(_, end)| end)
+                            .unwrap_or(bytes.len())
+                    } else {
+                        find_matching_end_lexical_in(&src, token.end, &token.name)
+                            .map(|(_, end)| end)
+                            .unwrap_or(bytes.len())
+                    };
+                    continue;
+                }
+            }
+        }
+        if let Some((name, end)) = literal_environment_declaration_at(&src, command, i) {
+            out.environments.insert(name);
+            i = end;
+            continue;
+        }
+        if let Some((name, end)) = inline_literal_declaration_at(&src, command, i) {
+            out.commands.insert(name);
+            i = end;
+            continue;
+        }
     }
     out
 }
@@ -115,7 +364,7 @@ fn environment_keyword_end(src: &str, start: usize) -> Option<usize> {
 
 fn skip_command_name_arg(src: &str, mut p: usize) -> Option<usize> {
     let bytes = src.as_bytes();
-    p = skip_ascii_ws(src, p);
+    p = skip_tex_space_and_comments(src, p);
     if bytes.get(p) == Some(&b'{') {
         let (_, next) = read_braced(src, p)?;
         p = next;
@@ -139,7 +388,7 @@ fn skip_command_name_arg(src: &str, mut p: usize) -> Option<usize> {
 
 fn skip_braced_groups(src: &str, mut p: usize, count: usize) -> Option<usize> {
     for _ in 0..count {
-        p = skip_ascii_ws(src, p);
+        p = skip_tex_space_and_comments(src, p);
         let (_, next) = read_braced(src, p)?;
         p = next;
     }
@@ -168,9 +417,9 @@ fn skip_command_macro_declaration(src: &str, start: usize) -> Option<usize> {
         "newcommand" | "renewcommand" | "providecommand" | "DeclareRobustCommand"
     ) {
         p = skip_command_name_arg(src, p)?;
-        p = skip_ascii_ws(src, p);
+        p = skip_tex_space_and_comments(src, p);
         if let Some((_, next)) = read_bracketed(src, p) {
-            p = skip_ascii_ws(src, next);
+            p = skip_tex_space_and_comments(src, next);
             if let Some((_, next)) = read_bracketed(src, p) {
                 p = next;
             }
@@ -187,7 +436,7 @@ fn skip_command_macro_declaration(src: &str, start: usize) -> Option<usize> {
     }
 
     if matches!(keyword, "def" | "edef" | "gdef" | "xdef") {
-        p = skip_ascii_ws(src, p);
+        p = skip_tex_space_and_comments(src, p);
         if bytes.get(p) != Some(&b'\\') {
             return None;
         }
@@ -205,6 +454,10 @@ fn skip_command_macro_declaration(src: &str, start: usize) -> Option<usize> {
         while p < bytes.len() {
             if bytes[p] == b'\\' && p + 1 < bytes.len() {
                 p += 2;
+            } else if bytes[p] == b'%' {
+                while p < bytes.len() && bytes[p] != b'\n' {
+                    p += 1;
+                }
             } else if bytes[p] == b'{' {
                 return skip_braced_groups(src, p, 1);
             } else {
@@ -242,15 +495,81 @@ fn advance_env_scan(bytes: &[u8], i: &mut usize, line: &mut usize, to: usize) {
 fn scan_env_declarations(raw: &str, strict: bool) -> Result<Vec<EnvDeclaration>> {
     let src = crate::macros::strip_line_comments(raw);
     let bytes = src.as_bytes();
+    let literals = scan_literal_declarations(raw);
     let mut declarations = Vec::new();
+    let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
     let mut i = 0usize;
     let mut line = 1usize;
     while i < bytes.len() {
+        if let Some(pos) = hidden_ranges
+            .iter()
+            .position(|(start, end)| i >= *start && i < *end)
+        {
+            let end = hidden_ranges.swap_remove(pos).1;
+            advance_env_scan(bytes, &mut i, &mut line, end);
+            continue;
+        }
         match bytes[i] {
             b'\\' => {
+                let mut word_end = i + 1;
+                while word_end < bytes.len()
+                    && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+                {
+                    word_end += 1;
+                }
+                let word = &src[i + 1..word_end];
+                if word == "iffalse" {
+                    let resume = false_branch_resume(&src, word_end);
+                    advance_env_scan(bytes, &mut i, &mut line, resume);
+                    continue;
+                }
+                if word == "iftrue" {
+                    if let Some(bounds) = conditional_bounds(&src, word_end) {
+                        if let Some(else_start) = bounds.else_start {
+                            hidden_ranges.push((else_start, bounds.fi_end));
+                        }
+                    }
+                    advance_env_scan(bytes, &mut i, &mut line, word_end);
+                    continue;
+                }
                 if let Some(end) = skip_command_macro_declaration(&src, i) {
                     advance_env_scan(bytes, &mut i, &mut line, end);
                     continue;
+                }
+                if is_static_inline_literal_command(word) || literals.commands.contains(word) {
+                    let end = inline_literal_payload_with_dynamic(
+                        &src,
+                        word,
+                        word_end,
+                        literals.commands.contains(word),
+                    )
+                    .map(|(_, end)| end)
+                    .unwrap_or(bytes.len());
+                    advance_env_scan(bytes, &mut i, &mut line, end);
+                    continue;
+                }
+                if word == "begin" {
+                    if let Some(token) = environment_token_at(&src, i) {
+                        if token.kind == EnvironmentTokenKind::Begin
+                            && (environment_is_literal_with(&token.name, &literals.environments)
+                                || SKIP_ENVS.contains(&token.name.as_str()))
+                        {
+                            let end = if (token.name != "alltt"
+                                && environment_is_literal_with(&token.name, &literals.environments))
+                                || SKIP_ENVS.contains(&token.name.as_str())
+                            {
+                                literal_environment_bounds(&src, token.end, &token.name)
+                                    .map(|(_, end)| end)
+                                    .unwrap_or(bytes.len())
+                            } else {
+                                find_matching_end_lexical_in(&src, token.end, &token.name)
+                                    .map(|(_, end)| end)
+                                    .unwrap_or(bytes.len())
+                            };
+                            advance_env_scan(bytes, &mut i, &mut line, end);
+                            continue;
+                        }
+                    }
                 }
                 if let Some(keyword_end) = environment_keyword_end(&src, i) {
                     let start_line = line;
@@ -294,9 +613,9 @@ fn scan_env_declarations(raw: &str, strict: bool) -> Result<Vec<EnvDeclaration>>
 /// keyword. Returns the name, definition, and byte immediately after the end
 /// replacement. LaTeX environment definitions have at most nine arguments.
 fn parse_env_macro(src: &str, keyword_end: usize) -> Option<(String, EnvMacro, usize)> {
-    let mut p = skip_ascii_ws(src, keyword_end);
+    let mut p = skip_tex_space_and_comments(src, keyword_end);
     let (name, np) = read_braced(src, p)?;
-    p = skip_ascii_ws(src, np);
+    p = skip_tex_space_and_comments(src, np);
     let mut nargs = 0u8;
     let mut default = None;
     if let Some((n, np)) = read_bracketed(src, p) {
@@ -304,17 +623,17 @@ fn parse_env_macro(src: &str, keyword_end: usize) -> Option<(String, EnvMacro, u
         if nargs > 9 {
             return None;
         }
-        p = skip_ascii_ws(src, np);
+        p = skip_tex_space_and_comments(src, np);
         if let Some((d, np2)) = read_bracketed(src, p) {
             if nargs == 0 {
                 return None;
             }
             default = Some(d);
-            p = skip_ascii_ws(src, np2);
+            p = skip_tex_space_and_comments(src, np2);
         }
     }
     let (begin, np) = read_braced(src, p)?;
-    p = skip_ascii_ws(src, np);
+    p = skip_tex_space_and_comments(src, np);
     let (end, declaration_end) = read_braced(src, p)?;
     if !env_parameters_valid(&begin, nargs) || !env_parameters_valid(&end, nargs) {
         return None;
@@ -444,6 +763,187 @@ fn read_braced(src: &str, from: usize) -> Option<(String, usize)> {
     None
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EnvironmentTokenKind {
+    Begin,
+    End,
+}
+
+struct EnvironmentToken {
+    kind: EnvironmentTokenKind,
+    name: String,
+    end: usize,
+}
+
+const MAX_ENVIRONMENT_NAME_BYTES: usize = 256;
+
+fn skip_tex_space_and_comments(src: &str, mut i: usize) -> usize {
+    let bytes = src.as_bytes();
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'%') {
+            return i;
+        }
+        while i < bytes.len() && bytes[i] != b'\n' {
+            i += 1;
+        }
+    }
+}
+
+fn read_environment_name(src: &str, from: usize) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(from) != Some(&b'{') {
+        return None;
+    }
+    let limit = (from + 1 + MAX_ENVIRONMENT_NAME_BYTES).min(bytes.len());
+    let mut i = from + 1;
+    while i < limit {
+        match bytes[i] {
+            b'}' => return Some((src[from + 1..i].trim().to_string(), i + 1)),
+            // Environment names are not nested groups. Reject immediately so
+            // repeated malformed `\begin{` tokens cannot each rescan to EOF.
+            b'{' => return None,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Recognize `\begin{env}` / `\end{env}` at `start`, including TeX-legal
+/// whitespace and `%` comments between the control word and its argument.
+fn environment_token_at(src: &str, start: usize) -> Option<EnvironmentToken> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'\\') {
+        return None;
+    }
+    let mut word_end = start + 1;
+    while word_end < bytes.len()
+        && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+    {
+        word_end += 1;
+    }
+    let kind = match &src[start + 1..word_end] {
+        "begin" => EnvironmentTokenKind::Begin,
+        "end" => EnvironmentTokenKind::End,
+        _ => return None,
+    };
+    let arg_start = skip_tex_space_and_comments(src, word_end);
+    let (name, end) = read_environment_name(src, arg_start)?;
+    Some(EnvironmentToken { kind, name, end })
+}
+
+/// Read one inline verbatim command. The payload must stay inert both while
+/// matching an outer environment and while recursively parsing its body.
+fn inline_literal_payload(src: &str, command: &str, after_word: usize) -> Option<(String, usize)> {
+    let base = command.trim_end_matches('*');
+    let dynamic = DYNAMIC_INLINE_LITERAL_COMMANDS.with(|commands| commands.borrow().contains(base));
+    inline_literal_payload_with_dynamic(src, command, after_word, dynamic)
+}
+
+fn inline_literal_payload_with_dynamic(
+    src: &str,
+    command: &str,
+    mut after_word: usize,
+    dynamic: bool,
+) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(after_word) == Some(&b'*') {
+        after_word += 1;
+    }
+    let base = command.trim_end_matches('*');
+    if dynamic || matches!(base, "Verb" | "lstinline" | "mintinline" | "mint") {
+        after_word = skip_ascii_ws(src, after_word);
+        if let Some((_, end)) = read_bracketed(src, after_word) {
+            after_word = skip_ascii_ws(src, end);
+        }
+    }
+    if matches!(base, "mintinline" | "mint") {
+        let (_, end) = read_braced(src, after_word)?;
+        after_word = skip_ascii_ws(src, end);
+    }
+    if (dynamic || matches!(base, "lstinline" | "mintinline" | "mint"))
+        && bytes.get(after_word) == Some(&b'{')
+    {
+        return read_braced(src, after_word);
+    }
+    let delimiter = *bytes.get(after_word)?;
+    if delimiter.is_ascii_whitespace() {
+        return None;
+    }
+    let payload_start = after_word + 1;
+    let mut i = after_word + 1;
+    while i < bytes.len() {
+        if bytes[i] == delimiter {
+            return Some((src[payload_start..i].to_string(), i + 1));
+        }
+        i += 1;
+    }
+    Some((src[payload_start..].to_string(), bytes.len()))
+}
+
+fn is_static_inline_literal_command(command: &str) -> bool {
+    matches!(
+        command.trim_end_matches('*'),
+        "verb" | "Verb" | "lstinline" | "mintinline" | "mint"
+    )
+}
+
+fn is_inline_literal_command(command: &str) -> bool {
+    let base = command.trim_end_matches('*');
+    is_static_inline_literal_command(base)
+        || DYNAMIC_INLINE_LITERAL_COMMANDS.with(|commands| commands.borrow().contains(base))
+}
+
+fn tex_token_end(src: &str, start: usize) -> usize {
+    let bytes = src.as_bytes();
+    if start >= bytes.len() {
+        return bytes.len();
+    }
+    if bytes[start] != b'\\' {
+        let width = src[start..].chars().next().map(char::len_utf8).unwrap_or(0);
+        return (start + width).min(bytes.len());
+    }
+    let mut end = start + 1;
+    if bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'@')
+    {
+        while end < bytes.len() && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@') {
+            end += 1;
+        }
+        end
+    } else {
+        (end + 1).min(bytes.len())
+    }
+}
+
+/// Literal environments terminate only at a boundary command beginning a
+/// source line (apart from indentation). This avoids treating example text
+/// such as `print("\\end{verbatim}")` as the real closer. Returns the start of
+/// the closing command and the byte immediately after it.
+fn literal_environment_bounds(src: &str, from: usize, env: &str) -> Option<(usize, usize)> {
+    let close = format!("\\end{{{env}}}");
+    let bytes = src.as_bytes();
+    let mut line_start = from;
+    while line_start < bytes.len() {
+        let line_end = src[line_start..]
+            .find('\n')
+            .map(|offset| line_start + offset)
+            .unwrap_or(bytes.len());
+        let mut token_start = line_start;
+        while token_start < line_end && matches!(bytes[token_start], b' ' | b'\t' | b'\r') {
+            token_start += 1;
+        }
+        if src[token_start..line_end].starts_with(&close) {
+            return Some((token_start, token_start + close.len()));
+        }
+        line_start = line_end.saturating_add(1);
+    }
+    None
+}
+
 /// If `src[from]` is `[`, return the optional-arg text and the index past `]`.
 fn read_bracketed(src: &str, from: usize) -> Option<(String, usize)> {
     let b = src.as_bytes();
@@ -561,6 +1061,11 @@ const MATH_ENVS: &[&str] = &[
     "eqnarray*",
     "alignat",
     "alignat*",
+    "flalign",
+    "flalign*",
+    "xalignat",
+    "xalignat*",
+    "xxalignat",
     "split",
 ];
 
@@ -568,6 +1073,88 @@ const MATH_ENVS: &[&str] = &[
 /// `comment` package's `comment` env (and its common aliases). Matches how
 /// LaTeX drops them, rather than showing the body as a muted opaque block.
 const SKIP_ENVS: &[&str] = &["comment"];
+
+/// Environments that must keep their body verbatim or feed a dedicated
+/// renderer. User `\newenvironment` replacements are checked first, so an
+/// explicit preview override can still opt one of these into normal parsing.
+///
+/// Everything else takes the transparent unsupported-environment path: visible
+/// `\begin`/`\end` diagnostics with an ordinarily parsed body.
+const SPECIAL_OPAQUE_ENVS: &[&str] = &[
+    // Viewer-specialized floats and diagrams.
+    "figure",
+    "figure*",
+    "table",
+    "table*",
+    "tikzpicture",
+    "tikzcd",
+    "circuitikz",
+    "forest",
+    // Structured/package math that the ordinary prose parser cannot preserve
+    // and the bundled MathJax configuration does not necessarily implement.
+    "dmath",
+    "dmath*",
+    "dgroup",
+    "dgroup*",
+    "dseries",
+    "dseries*",
+    "IEEEeqnarray",
+    "IEEEeqnarray*",
+    "array",
+    "tabular",
+    "tabular*",
+    "tabularx",
+    "longtable",
+];
+
+const LITERAL_ENVS: &[&str] = &[
+    // Literal/code environments whose contents may intentionally resemble TeX.
+    "verbatim",
+    "verbatim*",
+    "Verbatim",
+    "Verbatim*",
+    "BVerbatim",
+    "LVerbatim",
+    "SaveVerbatim",
+    "VerbatimOut",
+    "VerbatimOut*",
+    "alltt",
+    "semiverbatim",
+    "lstlisting",
+    "minted",
+    "filecontents",
+    "filecontents*",
+    "luacode",
+    "luacode*",
+    "pycode",
+    "pyblock",
+    "python",
+    "python*",
+    "sageblock",
+    "sagesilent",
+    "asy",
+    "asydef",
+    "tcblisting",
+];
+
+fn environment_is_literal(env: &str) -> bool {
+    LITERAL_ENVS.contains(&env) || DYNAMIC_LITERAL_ENVS.with(|envs| envs.borrow().contains(env))
+}
+
+fn environment_is_literal_with(env: &str, dynamic: &HashSet<String>) -> bool {
+    LITERAL_ENVS.contains(&env) || dynamic.contains(env)
+}
+
+/// True verbatim/listing environments require their closing command to begin
+/// a source line. `alltt` is intentionally excluded: it keeps content opaque
+/// in the preview but TeX permits an inline `\end{alltt}`.
+fn environment_is_line_delimited_literal(env: &str) -> bool {
+    environment_is_literal(env) && env != "alltt"
+}
+
+fn environment_is_special_opaque(env: &str) -> bool {
+    SPECIAL_OPAQUE_ENVS.contains(&env)
+}
 
 /// TeX conditional primitives that pair with `\fi`. Used to balance nested
 /// conditionals when skipping an `\iffalse … \fi` block. Deliberately excludes
@@ -595,6 +1182,105 @@ const IF_OPENERS: &[&str] = &[
     "ifcsname",
     "iffontchar",
 ];
+
+#[derive(Clone, Copy)]
+struct ConditionalBounds {
+    else_start: Option<usize>,
+    else_end: Option<usize>,
+    fi_start: usize,
+    fi_end: usize,
+}
+
+/// Locate the top-level `\else` and matching `\fi` for a known primitive
+/// conditional. Stored macro bodies, comments, inline literals, and true
+/// verbatim/listing environments stay inert while balancing.
+fn conditional_bounds(src: &str, mut i: usize) -> Option<ConditionalBounds> {
+    let bytes = src.as_bytes();
+    let mut depth: i32 = 1;
+    let mut else_start = None;
+    let mut else_end = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'\\' {
+            let name_start = i + 1;
+            let mut end = name_start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@') {
+                end += 1;
+            }
+            if end == name_start {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            let name = &src[name_start..end];
+            if let Some(declaration_end) = skip_command_macro_declaration(src, i) {
+                i = declaration_end;
+                continue;
+            }
+            if is_inline_literal_command(name) {
+                i = inline_literal_payload(src, name, end)
+                    .map(|(_, payload_end)| payload_end)
+                    .unwrap_or(bytes.len());
+                continue;
+            }
+            if name == "string" {
+                i = tex_token_end(src, skip_tex_space_and_comments(src, end));
+                continue;
+            }
+            if matches!(name, "detokenize" | "unexpanded") {
+                i = read_braced(src, skip_tex_space_and_comments(src, end))
+                    .map(|(_, group_end)| group_end)
+                    .unwrap_or(bytes.len());
+                continue;
+            }
+            if let Some(token) = environment_token_at(src, i) {
+                if token.kind == EnvironmentTokenKind::Begin
+                    && (environment_is_line_delimited_literal(&token.name)
+                        || SKIP_ENVS.contains(&token.name.as_str()))
+                {
+                    i = literal_environment_bounds(src, token.end, &token.name)
+                        .map(|(_, close_end)| close_end)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+            }
+            if IF_OPENERS.contains(&name) {
+                depth += 1;
+            } else if name == "fi" {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(ConditionalBounds {
+                        else_start,
+                        else_end,
+                        fi_start: i,
+                        fi_end: end,
+                    });
+                }
+            } else if name == "else" && depth == 1 && else_start.is_none() {
+                else_start = Some(i);
+                else_end = Some(end);
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Return where parsing should resume after the hidden branch of an
+/// `\iffalse`. A top-level `\else` starts visible input; without one, resume
+/// after the matching `\fi`. Nested primitive conditionals stay balanced.
+fn false_branch_resume(src: &str, after_word: usize) -> usize {
+    conditional_bounds(src, after_word)
+        .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+        .unwrap_or(src.len())
+}
 
 /// Maximum recognized-environment nesting before we stop recursing and capture
 /// the rest as an opaque block. Each recognized container (`center`, theorems,
@@ -651,6 +1337,10 @@ pub fn parse_body_with_overrides(
     // the root preamble, its `\input`/`\usepackage`d files, and viewer-only
     // macro override files.
     ENV_MACROS.with(|m| *m.borrow_mut() = env_macros_for_project(project, overrides));
+    DYNAMIC_LITERAL_ENVS
+        .with(|envs| *envs.borrow_mut() = literal_envs_for_project(project, overrides));
+    DYNAMIC_INLINE_LITERAL_COMMANDS
+        .with(|commands| *commands.borrow_mut() = literal_commands_for_project(project, overrides));
     ENV_EXPANSIONS_LEFT.with(|budget| budget.set(MAX_USER_ENV_EXPANSIONS));
     ENV_EXPANSION_ACTIVE.with(|active| active.set(0));
     let mut nodes = Vec::new();
@@ -948,6 +1638,26 @@ impl<'a> Parser<'a> {
                 let cmd = self.src[self.byte + 1..cmd_name_end].to_string();
                 let cmd_start = self.pos();
 
+                if is_inline_literal_command(&cmd) {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    if let Some((payload, end)) =
+                        inline_literal_payload(self.src, &cmd, cmd_name_end)
+                    {
+                        self.advance_to(end);
+                        out.push(Node {
+                            kind: NodeKind::OpaqueCmd {
+                                name: "inline-literal".to_string(),
+                                raw: payload,
+                            },
+                            span: self.span_from(cmd_start),
+                            children: vec![],
+                        });
+                    } else {
+                        self.advance_to(cmd_name_end);
+                    }
+                    continue;
+                }
+
                 if cmd == "begin" {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     self.parse_environment(out, cmd_start);
@@ -960,6 +1670,35 @@ impl<'a> Parser<'a> {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     self.advance_to(cmd_name_end);
                     self.skip_false_conditional();
+                    continue;
+                }
+
+                // `\iftrue` keeps its first branch and discards the optional
+                // `\else` branch. Parse the live slice recursively so hidden
+                // boundary-looking tokens cannot leak into the preview.
+                if cmd == "iftrue" {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    if let Some(bounds) = conditional_bounds(self.src, cmd_name_end) {
+                        self.advance_to(cmd_name_end);
+                        if self.depth >= MAX_NESTING_DEPTH {
+                            self.advance_to(bounds.fi_end);
+                            continue;
+                        }
+                        let visible_end = bounds.else_start.unwrap_or(bounds.fi_start);
+                        let mut children = Vec::new();
+                        let mut sub = Parser::new_at(
+                            &self.src[self.byte..visible_end],
+                            self.file.clone(),
+                            self.pos(),
+                            self.thms,
+                            self.depth + 1,
+                        );
+                        sub.parse_block_into(&mut children, None);
+                        self.advance_to(bounds.fi_end);
+                        out.extend(children);
+                    } else {
+                        self.advance_to(cmd_name_end);
+                    }
                     continue;
                 }
 
@@ -1197,10 +1936,59 @@ impl<'a> Parser<'a> {
     fn parse_environment(&mut self, out: &mut Vec<Node>, start: Pos) {
         // self.byte is on '\'; consume "\begin"
         self.advance("\\begin".len());
+        // TeX permits whitespace and `%` comments between a control word and
+        // its argument. Keep the main parser in step with the lexical matcher
+        // so `\begin% comment\n{env}` takes the same environment path.
+        self.advance_to(skip_tex_space_and_comments(self.src, self.byte));
         let env = match self.balanced_brace_arg() {
             Some(e) => e.trim().to_string(),
             None => return,
         };
+
+        if env == "math" {
+            let inner_start = self.byte;
+            let body_end = self.find_matching_end(&env);
+            let body = self.src[inner_start..body_end].to_string();
+            self.advance_to(body_end);
+            self.advance("\\end{math}".len());
+            out.push(Node {
+                kind: NodeKind::InlineMath(body),
+                span: self.span_from(start),
+                children: vec![],
+            });
+            return;
+        }
+
+        // `empheq` decorates another display environment. Ignore its visual
+        // box/options but preserve and number the underlying math environment.
+        if env == "empheq" {
+            self.skip_ws_inline();
+            self.skip_optional_arg();
+            self.skip_ws_inline();
+            let target = self
+                .balanced_brace_arg()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "align".to_string());
+            let inner_start = self.byte;
+            let body_end = self.find_matching_end(&env);
+            let body = self.src[inner_start..body_end].to_string();
+            let label = extract_label(&body);
+            self.advance_to(body_end);
+            self.advance("\\end{empheq}".len());
+            out.push(Node {
+                kind: NodeKind::DisplayMath {
+                    body,
+                    env: Some(target),
+                    label,
+                    number: None,
+                    row_numbers: Vec::new(),
+                },
+                span: self.span_from(start),
+                children: vec![],
+            });
+            return;
+        }
 
         // Math environments — capture body verbatim.
         if MATH_ENVS.contains(&env.as_str()) {
@@ -1236,9 +2024,10 @@ impl<'a> Parser<'a> {
         // Discarded environments (the `comment` package): consume the body and
         // emit nothing, like a `%` comment — don't render it as an opaque block.
         if SKIP_ENVS.contains(&env.as_str()) {
-            let body_end = self.find_matching_end(&env);
-            self.advance_to(body_end);
-            self.advance(format!("\\end{{{env}}}").len());
+            let end_after = literal_environment_bounds(self.src, self.byte, &env)
+                .map(|(_, end_after)| end_after)
+                .unwrap_or(self.bytes.len());
+            self.advance_to(end_after);
             return;
         }
 
@@ -1307,6 +2096,13 @@ impl<'a> Parser<'a> {
             return;
         }
 
+        // Literal/code environments are safety boundaries even if the source
+        // also declares an environment replacement with the same name.
+        if environment_is_literal(&env) {
+            self.capture_opaque_env(out, start, env);
+            return;
+        }
+
         // User-defined environment (`\newenvironment`): expand to its begin/end
         // code around the body and parse THAT, so the body's math/refs render and
         // the wrapper (e.g. `\begin{quote}\itshape`) is honored — instead of the
@@ -1336,8 +2132,17 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Opaque environment — capture body, leave for the renderer.
-        self.capture_opaque_env(out, start, env);
+        if environment_is_special_opaque(&env) {
+            self.capture_opaque_env(out, start, env);
+            return;
+        }
+
+        // Unknown but non-literal environments are transparent diagnostics:
+        // show their unsupported boundaries while parsing their contents like
+        // ordinary body TeX. Flattening the parsed children between two marker
+        // nodes keeps large wrappers (for example `questions`) incrementally
+        // patchable instead of turning the whole document into one block.
+        self.parse_unsupported_env(out, start, env);
     }
 
     /// Expand a `\newenvironment` at `\begin{env}`: read its arguments, splice
@@ -1363,7 +2168,9 @@ impl<'a> Parser<'a> {
                 args.push(self.required_macro_arg().unwrap_or_default());
             }
         }
-        let body_end = self.find_matching_end(env);
+        let (body_end, end_after) = self
+            .find_matching_end_lexical(env)
+            .unwrap_or((self.bytes.len(), self.bytes.len()));
         let body_src = &self.src[self.byte..body_end];
         let begin = substitute_env_args(&def.begin, &args);
         let end = substitute_env_args(&def.end, &args);
@@ -1395,8 +2202,7 @@ impl<'a> Parser<'a> {
             );
             sub.parse_block_into(&mut children, None);
         }
-        self.advance_to(body_end);
-        self.advance(format!("\\end{{{env}}}").len());
+        self.advance_to(end_after);
         out.extend(children);
     }
 
@@ -1404,13 +2210,101 @@ impl<'a> Parser<'a> {
     /// descending into it. Used both for genuinely opaque environments and as
     /// the depth-cap fallback for recognized-but-too-deeply-nested ones.
     fn capture_opaque_env(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
-        let body_end = self.find_matching_end(&env);
+        let (body_end, end_after) = if environment_is_line_delimited_literal(&env) {
+            literal_environment_bounds(self.src, self.byte, &env)
+                .unwrap_or((self.bytes.len(), self.bytes.len()))
+        } else {
+            self.find_matching_end_lexical(&env)
+                .unwrap_or((self.bytes.len(), self.bytes.len()))
+        };
         let body = self.src[self.byte..body_end].to_string();
-        self.advance_to(body_end);
-        self.advance(format!("\\end{{{env}}}").len());
+        self.advance_to(end_after);
         out.push(Node {
             kind: NodeKind::OpaqueEnv { env, body },
             span: self.span_from(start),
+            children: vec![],
+        });
+    }
+
+    /// Parse an otherwise-unsupported environment transparently. Its body
+    /// nodes are flattened between visible boundary diagnostics, preserving
+    /// normal math/reference rendering and fine-grained live patches.
+    fn parse_unsupported_env(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
+        let begin_end = self.pos();
+        let matching_end = self.find_matching_end_lexical(&env);
+        out.push(Node {
+            kind: NodeKind::UnsupportedEnvBoundary {
+                env: env.clone(),
+                boundary: EnvironmentBoundary::Begin,
+            },
+            span: Span {
+                file: self.file.clone(),
+                start,
+                end: begin_end,
+            },
+            children: vec![],
+        });
+
+        let Some((body_end, end_after)) = matching_end else {
+            // During a transient/malformed edit, do not recursively interpret
+            // the rest of the file (especially literal TikZ/code) as the
+            // environment body. Keep it visible but inert, then flag the
+            // missing closer at EOF.
+            let body_start = self.pos();
+            let body = self.src[self.byte..].to_string();
+            self.advance_to(self.bytes.len());
+            out.push(Node {
+                kind: NodeKind::OpaqueEnv {
+                    env: env.clone(),
+                    body,
+                },
+                span: Span {
+                    file: self.file.clone(),
+                    start: body_start,
+                    end: self.pos(),
+                },
+                children: vec![],
+            });
+            out.push(Node {
+                kind: NodeKind::UnsupportedEnvBoundary {
+                    env,
+                    boundary: EnvironmentBoundary::MissingEnd,
+                },
+                span: Span {
+                    file: self.file.clone(),
+                    start: self.pos(),
+                    end: self.pos(),
+                },
+                children: vec![],
+            });
+            return;
+        };
+
+        let inner_src = &self.src[self.byte..body_end];
+        let mut children = Vec::new();
+        let mut sub = Parser::new_at(
+            inner_src,
+            self.file.clone(),
+            self.pos(),
+            self.thms,
+            self.depth + 1,
+        );
+        sub.parse_block_into(&mut children, None);
+        out.extend(children);
+
+        self.advance_to(body_end);
+        let end_start = self.pos();
+        self.advance_to(end_after);
+        out.push(Node {
+            kind: NodeKind::UnsupportedEnvBoundary {
+                env,
+                boundary: EnvironmentBoundary::End,
+            },
+            span: Span {
+                file: self.file.clone(),
+                start: end_start,
+                end: self.pos(),
+            },
             children: vec![],
         });
     }
@@ -1783,74 +2677,18 @@ impl<'a> Parser<'a> {
     /// conditional at worst stops the skip early (showing a little) rather than
     /// over-skipping real content.
     fn skip_false_conditional(&mut self) {
-        let bytes = self.bytes;
-        let mut i = self.byte;
-        let mut depth: i32 = 1;
-        let mut else_at: Option<usize> = None;
-        while i < bytes.len() {
-            let b = bytes[i];
-            if b == b'%' {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-                continue;
-            }
-            if b == b'\\' {
-                let name_start = i + 1;
-                let mut j = name_start;
-                while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
-                    j += 1;
-                }
-                let name = &self.src[name_start..j];
-                if IF_OPENERS.contains(&name) {
-                    depth += 1;
-                } else if name == "fi" {
-                    depth -= 1;
-                    if depth == 0 {
-                        // Resume after `\else` (render the false branch) or past
-                        // the matching `\fi` if there was none.
-                        self.advance_to(else_at.unwrap_or(j));
-                        return;
-                    }
-                } else if name == "else" && depth == 1 && else_at.is_none() {
-                    else_at = Some(j);
-                }
-                // Advance past the control word (control symbols like `\\` have
-                // an empty alpha run — step one byte so we make progress).
-                i = if j > name_start { j } else { name_start + 1 };
-                continue;
-            }
-            i += 1;
-        }
-        // Unterminated `\iffalse` — discard to end of input.
-        self.advance_to(bytes.len());
+        self.advance_to(false_branch_resume(self.src, self.byte));
+    }
+
+    /// Find a trustworthy matching end while ignoring inert TeX source.
+    fn find_matching_end_lexical(&self, env: &str) -> Option<(usize, usize)> {
+        find_matching_end_lexical_in(self.src, self.byte, env)
     }
 
     fn find_matching_end(&self, env: &str) -> usize {
-        let begin_tok = format!("\\begin{{{env}}}");
-        let end_tok = format!("\\end{{{env}}}");
-        let mut depth: i32 = 1;
-        let mut i = self.byte;
-        let bytes = self.bytes;
-        while i < bytes.len() {
-            if bytes[i] == b'\\' {
-                if bytes[i..].starts_with(begin_tok.as_bytes()) {
-                    depth += 1;
-                    i += begin_tok.len();
-                    continue;
-                }
-                if bytes[i..].starts_with(end_tok.as_bytes()) {
-                    depth -= 1;
-                    if depth == 0 {
-                        return i;
-                    }
-                    i += end_tok.len();
-                    continue;
-                }
-            }
-            i += 1;
-        }
-        bytes.len()
+        self.find_matching_end_lexical(env)
+            .map(|(start, _)| start)
+            .unwrap_or(self.bytes.len())
     }
 
     fn command_word_end(&self) -> usize {
@@ -2034,6 +2872,407 @@ impl<'a> Parser<'a> {
             byte: self.byte_base + byte as u32,
         }
     }
+}
+
+fn scheduled_hidden_resume(i: usize, hidden_ranges: &mut Vec<(usize, usize)>) -> Option<usize> {
+    let pos = hidden_ranges
+        .iter()
+        .position(|(start, end)| i >= *start && i < *end)?;
+    Some(hidden_ranges.swap_remove(pos).1)
+}
+
+fn find_matching_end_lexical_in(src: &str, from: usize, env: &str) -> Option<(usize, usize)> {
+    find_matching_end_lexical_inner(src, from, env, 0)
+}
+
+/// Return the byte after a lexically live matching `\end{env}` only when that
+/// closer is at or before `limit`. This keeps external live-edit guards in
+/// lockstep with the parser's handling of comments, definitions, conditionals,
+/// and stringified commands.
+pub fn matching_environment_end_before(
+    src: &str,
+    from: usize,
+    env: &str,
+    limit: usize,
+) -> Option<usize> {
+    find_matching_end_lexical_in(src, from, env)
+        .map(|(_, end_after)| end_after)
+        .filter(|end_after| *end_after <= limit.min(src.len()))
+}
+
+fn find_matching_end_lexical_inner(
+    src: &str,
+    from: usize,
+    env: &str,
+    recursion: u32,
+) -> Option<(usize, usize)> {
+    if recursion > MAX_NESTING_DEPTH {
+        return None;
+    }
+    let bytes = src.as_bytes();
+    let mut depth = 1u32;
+    let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut i = from;
+    while i < bytes.len() {
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            i = resume;
+            continue;
+        }
+        match bytes[i] {
+            b'%' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                let word_start = i + 1;
+                let mut word_end = word_start;
+                while word_end < bytes.len()
+                    && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+                {
+                    word_end += 1;
+                }
+                if word_end == word_start {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                let word = &src[word_start..word_end];
+                if word == "iffalse" {
+                    i = false_branch_resume(src, word_end);
+                    continue;
+                }
+                if word == "iftrue" {
+                    if let Some(bounds) = conditional_bounds(src, word_end) {
+                        if let Some(else_start) = bounds.else_start {
+                            hidden_ranges.push((else_start, bounds.fi_end));
+                        }
+                    }
+                    i = word_end;
+                    continue;
+                }
+                if let Some(end) = skip_command_macro_declaration(src, i) {
+                    i = end;
+                    continue;
+                }
+                if let Some(keyword_end) = environment_keyword_end(src, i) {
+                    i = parse_env_macro(src, keyword_end)
+                        .map(|(_, _, end)| end)
+                        .unwrap_or(keyword_end);
+                    continue;
+                }
+                if is_inline_literal_command(word) {
+                    i = inline_literal_payload(src, word, word_end)
+                        .map(|(_, end)| end)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+                if word == "string" {
+                    i = tex_token_end(src, skip_tex_space_and_comments(src, word_end));
+                    continue;
+                }
+                if matches!(word, "detokenize" | "unexpanded") {
+                    i = read_braced(src, skip_tex_space_and_comments(src, word_end))
+                        .map(|(_, end)| end)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+                let Some(token) = environment_token_at(src, i) else {
+                    i = word_end;
+                    continue;
+                };
+                match token.kind {
+                    EnvironmentTokenKind::Begin if token.name == env => {
+                        depth += 1;
+                    }
+                    EnvironmentTokenKind::Begin
+                        if environment_is_line_delimited_literal(&token.name)
+                            || SKIP_ENVS.contains(&token.name.as_str()) =>
+                    {
+                        i = literal_environment_bounds(src, token.end, &token.name)
+                            .map(|(_, end_after)| end_after)
+                            .unwrap_or(bytes.len());
+                        continue;
+                    }
+                    EnvironmentTokenKind::Begin if environment_is_literal(&token.name) => {
+                        i = find_matching_end_lexical_inner(
+                            src,
+                            token.end,
+                            &token.name,
+                            recursion + 1,
+                        )
+                        .map(|(_, end_after)| end_after)
+                        .unwrap_or(bytes.len());
+                        continue;
+                    }
+                    EnvironmentTokenKind::End if token.name == env => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some((i, token.end));
+                        }
+                    }
+                    _ => {}
+                }
+                i = token.end;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Find the first live environment from `candidates`, skipping comments,
+/// stored macro bodies, false conditional branches, and literal/code input.
+/// Used by the float renderer to locate a real nested diagram.
+pub(crate) fn first_supported_environment(
+    src: &str,
+    candidates: &[&str],
+) -> Option<(String, String)> {
+    let bytes = src.as_bytes();
+    let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            i = resume;
+            continue;
+        }
+        match bytes[i] {
+            b'%' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                let word_start = i + 1;
+                let mut word_end = word_start;
+                while word_end < bytes.len()
+                    && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+                {
+                    word_end += 1;
+                }
+                if word_end == word_start {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                let word = &src[word_start..word_end];
+                if word == "iffalse" {
+                    i = false_branch_resume(src, word_end);
+                    continue;
+                }
+                if word == "iftrue" {
+                    if let Some(bounds) = conditional_bounds(src, word_end) {
+                        if let Some(else_start) = bounds.else_start {
+                            hidden_ranges.push((else_start, bounds.fi_end));
+                        }
+                    }
+                    i = word_end;
+                    continue;
+                }
+                if let Some(end) = skip_command_macro_declaration(src, i) {
+                    i = end;
+                    continue;
+                }
+                if let Some(keyword_end) = environment_keyword_end(src, i) {
+                    i = parse_env_macro(src, keyword_end)
+                        .map(|(_, _, end)| end)
+                        .unwrap_or(keyword_end);
+                    continue;
+                }
+                if is_inline_literal_command(word) {
+                    i = inline_literal_payload(src, word, word_end)
+                        .map(|(_, end)| end)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+                if word == "string" {
+                    i = tex_token_end(src, skip_tex_space_and_comments(src, word_end));
+                    continue;
+                }
+                if matches!(word, "detokenize" | "unexpanded") {
+                    i = read_braced(src, skip_tex_space_and_comments(src, word_end))
+                        .map(|(_, end)| end)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+                let Some(token) = environment_token_at(src, i) else {
+                    i = word_end;
+                    continue;
+                };
+                if token.kind == EnvironmentTokenKind::Begin
+                    && candidates.contains(&token.name.as_str())
+                {
+                    let (end_start, _end_after) =
+                        find_matching_end_lexical_in(src, token.end, &token.name)?;
+                    return Some((token.name, src[token.end..end_start].to_string()));
+                }
+                if token.kind == EnvironmentTokenKind::Begin
+                    && (environment_is_line_delimited_literal(&token.name)
+                        || SKIP_ENVS.contains(&token.name.as_str()))
+                {
+                    i = literal_environment_bounds(src, token.end, &token.name)
+                        .map(|(_, end_after)| end_after)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+                if token.kind == EnvironmentTokenKind::Begin && environment_is_literal(&token.name)
+                {
+                    i = find_matching_end_lexical_in(src, token.end, &token.name)
+                        .map(|(_, end_after)| end_after)
+                        .unwrap_or(bytes.len());
+                    continue;
+                }
+                i = token.end;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Whether the live buffer's executable TeX has balanced math delimiters.
+/// Stored definitions, false conditional branches, and literal/code input do
+/// not participate. The daemon uses this to keep the last good preview while
+/// the user is midway through typing a real math delimiter.
+pub fn has_balanced_math_delimiters(source: &str, preamble: &str) -> bool {
+    let mut literals = scan_literal_declarations(preamble);
+    let source_literals = scan_literal_declarations(source);
+    literals.environments.extend(source_literals.environments);
+    literals.commands.extend(source_literals.commands);
+
+    let bytes = source.as_bytes();
+    let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut in_inline = false;
+    let mut in_display = false;
+    let mut in_comment = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            i = resume;
+            continue;
+        }
+        let byte = bytes[i];
+        if byte == b'\n' {
+            in_comment = false;
+            i += 1;
+            continue;
+        }
+        if in_comment {
+            i += 1;
+            continue;
+        }
+        if byte == b'%' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        if byte == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'(' | b')' => {
+                    in_inline = !in_inline;
+                    i += 2;
+                    continue;
+                }
+                b'[' | b']' => {
+                    in_display = !in_display;
+                    i += 2;
+                    continue;
+                }
+                next if !next.is_ascii_alphabetic() => {
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+
+            let word_start = i + 1;
+            let mut word_end = word_start;
+            while word_end < bytes.len()
+                && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+            {
+                word_end += 1;
+            }
+            let word = &source[word_start..word_end];
+            if word == "iffalse" {
+                i = false_branch_resume(source, word_end);
+                continue;
+            }
+            if word == "iftrue" {
+                if let Some(bounds) = conditional_bounds(source, word_end) {
+                    if let Some(else_start) = bounds.else_start {
+                        hidden_ranges.push((else_start, bounds.fi_end));
+                    }
+                }
+                i = word_end;
+                continue;
+            }
+            if let Some(end) = skip_command_macro_declaration(source, i) {
+                i = end;
+                continue;
+            }
+            if let Some(keyword_end) = environment_keyword_end(source, i) {
+                i = parse_env_macro(source, keyword_end)
+                    .map(|(_, _, end)| end)
+                    .unwrap_or(keyword_end);
+                continue;
+            }
+            if is_static_inline_literal_command(word) || literals.commands.contains(word) {
+                i = inline_literal_payload_with_dynamic(
+                    source,
+                    word,
+                    word_end,
+                    literals.commands.contains(word),
+                )
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+                continue;
+            }
+            if word == "string" {
+                i = tex_token_end(source, skip_tex_space_and_comments(source, word_end));
+                continue;
+            }
+            if matches!(word, "detokenize" | "unexpanded") {
+                i = read_braced(source, skip_tex_space_and_comments(source, word_end))
+                    .map(|(_, end)| end)
+                    .unwrap_or(bytes.len());
+                continue;
+            }
+            if word == "begin" {
+                if let Some(token) = environment_token_at(source, i) {
+                    if token.kind == EnvironmentTokenKind::Begin
+                        && (environment_is_literal_with(&token.name, &literals.environments)
+                            || SKIP_ENVS.contains(&token.name.as_str()))
+                    {
+                        i = if (token.name != "alltt"
+                            && environment_is_literal_with(&token.name, &literals.environments))
+                            || SKIP_ENVS.contains(&token.name.as_str())
+                        {
+                            literal_environment_bounds(source, token.end, &token.name)
+                                .map(|(_, end)| end)
+                                .unwrap_or(bytes.len())
+                        } else {
+                            find_matching_end_lexical_in(source, token.end, &token.name)
+                                .map(|(_, end)| end)
+                                .unwrap_or(bytes.len())
+                        };
+                        continue;
+                    }
+                    i = token.end;
+                    continue;
+                }
+            }
+            i = word_end;
+            continue;
+        }
+        if byte == b'$' {
+            if bytes.get(i + 1) == Some(&b'$') {
+                in_display = !in_display;
+                i += 2;
+                continue;
+            }
+            in_inline = !in_inline;
+        }
+        i += 1;
+    }
+    !in_inline && !in_display
 }
 
 fn section_level(cmd: &str) -> Option<u8> {
@@ -2533,6 +3772,61 @@ mod tests {
     }
 
     #[test]
+    fn environment_scanner_ignores_false_conditional_branch() {
+        let nodes = parse_with_preamble(
+            concat!(
+                "\\newenvironment{choice}{GOOD }{}\n",
+                "\\iffalse\n",
+                "\\renewenvironment{choice}{BAD }{}\n",
+                "\\fi\n",
+            ),
+            "\\begin{choice}Body\\end{choice}\n",
+        );
+        assert!(tree_has_text(&nodes, "GOOD"));
+        assert!(!tree_has_text(&nodes, "BAD"), "{nodes:#?}");
+    }
+
+    #[test]
+    fn stored_macro_body_cannot_reclassify_environment_as_literal() {
+        let nodes = parse_with_preamble(
+            concat!(
+                "\\newenvironment{Code}{}{}\n",
+                "\\newcommand{\\factory}{\\lstnewenvironment{Code}{}{}}\n",
+            ),
+            "\\begin{Code}Live $x$.\\end{Code}\n",
+        );
+        assert!(tree_has_text(&nodes, "Live"));
+        assert!(nodes
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+        assert!(!nodes
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "Code")));
+    }
+
+    #[test]
+    fn tcolorbox_listing_declarations_accept_init_options_and_modern_names() {
+        let declared = declared_literal_environments(concat!(
+            "\\newtcblisting[auto counter]{CodeBox}{listing only}\n",
+            "\\DeclareTCBListing{DeclaredBox}{m}{listing only,",
+            "title={\\lstnewenvironment{HiddenBox}{}{}}}\n",
+            "\\NewTCBListing[use counter from=CodeBox]{ModernBox}{O{}}{listing only}\n",
+            "\\RenewTCBListing{RenewedBox}{m}{listing only}\n",
+            "\\ProvideTCBListing{ProvidedBox}{m}{listing only}\n",
+        ));
+        for name in [
+            "CodeBox",
+            "DeclaredBox",
+            "ModernBox",
+            "RenewedBox",
+            "ProvidedBox",
+        ] {
+            assert!(declared.contains(name), "missing {name}: {declared:?}");
+        }
+        assert!(!declared.contains("HiddenBox"), "{declared:?}");
+    }
+
+    #[test]
     fn environment_substitution_preserves_escaped_hashes() {
         assert_eq!(
             substitute_env_args(r"\#1 / #1 / ##", &["Ada".to_string()]),
@@ -2712,6 +4006,21 @@ mod tests {
     }
 
     #[test]
+    fn math_environment_ignores_stringified_fake_closer() {
+        let n = parse(concat!(
+            "\\begin{equation}\n",
+            "\\text{\\texttt{\\string\\end{equation}}}+x=1\n",
+            "\\end{equation}\n",
+            "After.\n",
+        ));
+        assert!(n.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::DisplayMath { body, .. } if body.contains("+x=1")
+        )));
+        assert!(tree_has_text(&n, "After"));
+    }
+
+    #[test]
     fn unicode_text_is_preserved() {
         let n = parse("Café naïve §");
         assert!(matches!(&n[0].kind, NodeKind::Text(s) if s == "Café naïve §"));
@@ -2854,10 +4163,561 @@ mod tests {
 
     #[test]
     fn verbatim_env_stays_opaque() {
-        // Non-callout, non-recognized envs keep the opaque (raw) path.
         let n = parse("\\begin{verbatim}\n$x$\n\\end{verbatim}\n");
         assert!(n.iter().any(
             |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "verbatim")
+        ));
+    }
+
+    #[test]
+    fn literal_env_capture_ignores_inline_fake_closer() {
+        let n = parse(concat!(
+            "\\begin{verbatim}\n",
+            "print(\"\\end{verbatim}\")\n",
+            "still literal $raw$\n",
+            "\\end{verbatim}\n",
+            "After $live$.\n",
+        ));
+        assert!(n.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::OpaqueEnv { env, body }
+                if env == "verbatim"
+                    && body.contains(r#"print("\end{verbatim}")"#)
+                    && body.contains("still literal $raw$")
+        )));
+        let math: Vec<&str> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::InlineMath(body) => Some(body.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(math, ["live"]);
+    }
+
+    #[test]
+    fn alltt_uses_its_valid_inline_closer_but_keeps_body_opaque() {
+        let n = parse("\\begin{alltt}raw $x$\\end{alltt} After $y$.\n");
+        assert!(n.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::OpaqueEnv { env, body } if env == "alltt" && body.contains("raw $x$")
+        )));
+        assert!(tree_has_text(&n, "After"));
+        let math: Vec<&str> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::InlineMath(body) => Some(body.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(math, ["y"]);
+    }
+
+    #[test]
+    fn declared_literal_environments_stay_opaque() {
+        let n = parse_with_preamble(
+            concat!(
+                "\\DefineVerbatimEnvironment{Transcript}{Verbatim}{}\n",
+                "\\lstnewenvironment{Code}{}{}\n",
+                "\\newminted{python}{}\n",
+            ),
+            concat!(
+                "\\begin{Transcript}\n$x$ \\begin{tikzpicture}\n\\end{Transcript}\n",
+                "\\begin{Code}\n$y$ \\begin{tikzpicture}\n\\end{Code}\n",
+                "\\begin{pythoncode}\n$z$ \\begin{tikzpicture}\n\\end{pythoncode}\n",
+            ),
+        );
+        for env in ["Transcript", "Code", "pythoncode"] {
+            assert!(
+                n.iter().any(
+                    |node| matches!(&node.kind, NodeKind::OpaqueEnv { env: actual, .. } if actual == env)
+                ),
+                "declared literal environment {env} was not opaque: {n:#?}"
+            );
+            assert!(!n.iter().any(|node| matches!(
+                &node.kind,
+                NodeKind::UnsupportedEnvBoundary { env: actual, .. } if actual == env
+            )));
+        }
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(_))));
+    }
+
+    #[test]
+    fn unsupported_env_boundaries_wrap_normally_parsed_content() {
+        let n = parse(concat!(
+            "\\begin{mystery}[title]{argument}\n",
+            "Text $x$ and \\ref{eq:k}.\n",
+            "\\begin{inner}Nested.\\end{inner}\n",
+            "\\end{mystery}\n",
+        ));
+        let boundaries: Vec<(&str, EnvironmentBoundary)> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } => {
+                    Some((env.as_str(), *boundary))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [
+                ("mystery", EnvironmentBoundary::Begin),
+                ("inner", EnvironmentBoundary::Begin),
+                ("inner", EnvironmentBoundary::End),
+                ("mystery", EnvironmentBoundary::End),
+            ]
+        );
+        assert!(tree_has_text(&n, "[title]{argument}"));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Ref { key, .. } if key == "eq:k")));
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "mystery")));
+    }
+
+    #[test]
+    fn unsupported_env_accepts_comment_between_begin_and_name() {
+        let n = parse(concat!(
+            "\\begin% continued control word\n",
+            "{mystery}\n",
+            "Body $x$.\n",
+            "\\end{mystery}\n",
+        ));
+        let boundaries: Vec<EnvironmentBoundary> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } if env == "mystery" => {
+                    Some(*boundary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [EnvironmentBoundary::Begin, EnvironmentBoundary::End]
+        );
+        assert!(tree_has_text(&n, "Body"));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+    }
+
+    #[test]
+    fn unsupported_env_matching_ignores_literal_and_commented_fake_ends() {
+        let n = parse(
+            r#"\begin{outer}
+% \end{outer}
+\verb|\end{outer}| still here.
+\\end{outer} is text after a line break.
+\begin{verbatim}
+\end{outer}
+\end{verbatim}
+After $y$.
+\end%
+{outer}
+"#,
+        );
+        let boundaries: Vec<EnvironmentBoundary> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } if env == "outer" => {
+                    Some(*boundary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [EnvironmentBoundary::Begin, EnvironmentBoundary::End]
+        );
+        assert!(tree_has_text(&n, "After"));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "y")));
+    }
+
+    #[test]
+    fn unsupported_env_matching_ignores_nonexecuted_end_tokens() {
+        let n = parse(
+            r#"\begin{outer}
+\iffalse \end{outer} \fi
+\def\x{\end{outer}}
+\newcommand{\y}{\end{outer}}
+\string\end{outer}
+\detokenize{\end{outer}}
+After $y$.
+\end{outer}
+"#,
+        );
+        let boundaries: Vec<EnvironmentBoundary> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } if env == "outer" => {
+                    Some(*boundary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [EnvironmentBoundary::Begin, EnvironmentBoundary::End]
+        );
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "y")));
+    }
+
+    #[test]
+    fn unsupported_env_matching_skips_false_branch_of_iftrue() {
+        let n = parse(concat!(
+            "\\begin{mystery}\n",
+            "\\iftrue Visible one.\\else \\end{mystery}\\fi\n",
+            "Visible two.\n",
+            "\\end{mystery}\n",
+        ));
+        assert!(tree_has_text(&n, "Visible one"));
+        assert!(tree_has_text(&n, "Visible two"));
+        assert!(!tree_has_text(&n, "mystery"), "{n:#?}");
+        let boundaries: Vec<EnvironmentBoundary> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } if env == "mystery" => {
+                    Some(*boundary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [EnvironmentBoundary::Begin, EnvironmentBoundary::End]
+        );
+    }
+
+    #[test]
+    fn inline_literal_commands_stay_inert_inside_unsupported_environment() {
+        let n = parse(concat!(
+            "\\begin{letter}\n",
+            "\\verb|literal $x$ \\begin{tikzpicture}|\n",
+            r"\Verb[formatcom=\itshape]|also $v$ \end{letter}|",
+            "\n",
+            "\\lstinline|listed $y$ \\end{letter}|\n",
+            "\\mintinline{python}{minted $z$ \\end{letter}}\n",
+            "After $live$.\n",
+            "\\end{letter}\n",
+        ));
+        let literals: Vec<&str> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::OpaqueCmd { name, raw } if name == "inline-literal" => Some(raw.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literals.len(), 4, "{n:#?}");
+        assert!(literals.iter().any(|raw| raw.contains("literal $x$")));
+        assert!(literals.iter().any(|raw| raw.contains("listed $y$")));
+        assert!(literals.iter().any(|raw| raw.contains("minted $z$")));
+        let math: Vec<&str> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::InlineMath(body) => Some(body.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(math, ["live"]);
+        assert!(!n.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "tikzpicture")
+        ));
+    }
+
+    #[test]
+    fn declared_inline_literal_commands_stay_inert() {
+        let n = parse_with_preamble(
+            "\\newmintinline[py]{python}{}\n\\newmint[code]{python}{}\n",
+            concat!(
+                "\\begin{letter}\n",
+                "\\py{literal $x$ \\end{letter}}\n",
+                "\\code|listed $y$ \\end{letter}|\n",
+                "After $live$.\n",
+                "\\end{letter}\n",
+            ),
+        );
+        let literals: Vec<&str> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::OpaqueCmd { name, raw } if name == "inline-literal" => Some(raw.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literals.len(), 2, "{n:#?}");
+        assert!(literals.iter().any(|raw| raw.contains("literal $x$")));
+        assert!(literals.iter().any(|raw| raw.contains("listed $y$")));
+        let math: Vec<&str> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::InlineMath(body) => Some(body.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(math, ["live"]);
+    }
+
+    #[test]
+    fn user_environment_matching_ignores_inline_literal_fake_closer() {
+        let n = parse_with_preamble(
+            "\\newenvironment{letterpreview}{\\begin{quote}}{\\end{quote}}\n",
+            concat!(
+                "\\begin{letterpreview}\n",
+                "\\verb|\\end{letterpreview}| still inside. After $x$.\n",
+                "\\end{letterpreview}\n",
+            ),
+        );
+        let quote = n
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Quote { .. }))
+            .expect("replacement quote");
+        assert!(quote
+            .children
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+        assert!(quote.children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::OpaqueCmd { name, raw }
+                if name == "inline-literal" && raw == r"\end{letterpreview}"
+        )));
+    }
+
+    #[test]
+    fn malformed_environment_tokens_do_not_hide_real_outer_closer() {
+        let mut src = "\\begin{outer}\n".to_string();
+        for _ in 0..2000 {
+            src.push_str("\\begin{");
+        }
+        src.push_str("\n\\end{outer}\n");
+        let n = parse(&src);
+        let boundaries: Vec<EnvironmentBoundary> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } if env == "outer" => {
+                    Some(*boundary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [EnvironmentBoundary::Begin, EnvironmentBoundary::End]
+        );
+    }
+
+    #[test]
+    fn standard_math_wrappers_do_not_use_unsupported_fallback() {
+        let n = parse(concat!(
+            "\\begin{math}a+b\\end{math}\n",
+            "\\begin{empheq}[box=\\fbox]{align}c&=d\\end{empheq}\n",
+            "\\begin{circuitikz}\\draw (0,0)--(1,1);\\end{circuitikz}\n",
+            "\\begin{forest}[A [B] [C]]\\end{forest}\n",
+        ));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "a+b")));
+        assert!(n.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::DisplayMath { env: Some(env), body, .. }
+                if env == "align" && body.contains("c&=d")
+        )));
+        assert!(n.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "circuitikz")
+        ));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "forest")));
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::UnsupportedEnvBoundary { .. })));
+    }
+
+    #[test]
+    fn specialized_diagram_capture_ignores_commented_and_stringified_closers() {
+        let n = parse(concat!(
+            "\\begin{tikzpicture}\n",
+            "% \\end{tikzpicture}\n",
+            "\\node{\\texttt{\\string\\end{tikzpicture}}};\n",
+            "\\draw (0,0)--(1,1);\n",
+            "\\end{tikzpicture}\n",
+            "After.\n",
+        ));
+        assert!(n.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::OpaqueEnv { env, body }
+                if env == "tikzpicture"
+                    && body.contains(r"\draw (0,0)--(1,1);")
+                    && body.contains(r"\string\end{tikzpicture}")
+        )));
+        assert!(tree_has_text(&n, "After"));
+    }
+
+    #[test]
+    fn nested_same_name_unsupported_envs_balance_in_source_order() {
+        let n = parse(concat!(
+            "\\begin{mystery}Outer\n",
+            "\\begin{mystery}Inner $z$.\\end{mystery}\n",
+            "Tail.\\end{mystery}\n",
+        ));
+        let boundaries: Vec<EnvironmentBoundary> = n
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::UnsupportedEnvBoundary { env, boundary } if env == "mystery" => {
+                    Some(*boundary)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boundaries,
+            [
+                EnvironmentBoundary::Begin,
+                EnvironmentBoundary::Begin,
+                EnvironmentBoundary::End,
+                EnvironmentBoundary::End,
+            ]
+        );
+        assert!(tree_has_text(&n, "Outer"));
+        assert!(tree_has_text(&n, "Inner"));
+        assert!(tree_has_text(&n, "Tail"));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "z")));
+    }
+
+    #[test]
+    fn many_sequential_unsupported_envs_keep_independent_boundaries() {
+        let mut src = String::new();
+        for i in 0..1500 {
+            src.push_str(&format!("\\begin{{wrapper}}item {i}\\end{{wrapper}}\n"));
+        }
+        let n = parse(&src);
+        assert_eq!(
+            n.iter()
+                .filter(|node| matches!(
+                    &node.kind,
+                    NodeKind::UnsupportedEnvBoundary {
+                        boundary: EnvironmentBoundary::Begin,
+                        ..
+                    }
+                ))
+                .count(),
+            1500
+        );
+        assert_eq!(
+            n.iter()
+                .filter(|node| matches!(
+                    &node.kind,
+                    NodeKind::UnsupportedEnvBoundary {
+                        boundary: EnvironmentBoundary::End,
+                        ..
+                    }
+                ))
+                .count(),
+            1500
+        );
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::OpaqueEnv { .. })));
+    }
+
+    #[test]
+    fn unclosed_unsupported_env_keeps_remainder_inert_and_marks_missing_end() {
+        let n = parse("\\begin{mystery}Text $x$ and \\begin{tikzpicture}.");
+        assert!(matches!(
+            n.first().map(|node| &node.kind),
+            Some(NodeKind::UnsupportedEnvBoundary {
+                env,
+                boundary: EnvironmentBoundary::Begin,
+            }) if env == "mystery"
+        ));
+        assert!(n.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueEnv { env, body } if env == "mystery" && body.contains("$x$"))
+        ));
+        assert!(matches!(
+            n.last().map(|node| &node.kind),
+            Some(NodeKind::UnsupportedEnvBoundary {
+                env,
+                boundary: EnvironmentBoundary::MissingEnd,
+            }) if env == "mystery"
+        ));
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(_))));
+    }
+
+    #[test]
+    fn literal_and_special_environments_never_take_transparent_fallback() {
+        for env in LITERAL_ENVS.iter().chain(SPECIAL_OPAQUE_ENVS) {
+            let src = format!(
+                "\\begin{{{env}}}\n$x$ \\section{{No}} \\begin{{tikzpicture}}\n\\end{{{env}}}\n"
+            );
+            let n = parse(&src);
+            assert!(
+                n.iter()
+                    .any(|node| matches!(&node.kind, NodeKind::OpaqueEnv { env: actual, .. } if actual == env)),
+                "{env} did not stay opaque: {n:#?}"
+            );
+            assert!(
+                !n.iter().any(|node| matches!(
+                    &node.kind,
+                    NodeKind::UnsupportedEnvBoundary { env: actual, .. } if actual == env
+                )),
+                "{env} got unsupported markers: {n:#?}"
+            );
+            assert!(
+                !n.iter()
+                    .any(|node| matches!(&node.kind, NodeKind::InlineMath(_))),
+                "{env} parsed literal math: {n:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn math_delimiter_balance_ignores_inert_source() {
+        for source in [
+            r"\newcommand{\dollar}{$}",
+            r"\def\dollar{$}",
+            "\\newcommand% note\n{\\dollar}{$}",
+            "\\def% note\n\\dollar{$}",
+            "\\newenvironment% note\n{money}{$}{$}",
+            r"\iffalse $ \fi",
+            r"\iftrue visible\else $ \fi",
+            r"\string$",
+            r"\detokenize{$}",
+            "\\begin{alltt}raw $ and \\( text\\end{alltt}",
+            "% unmatched $ in a comment\nVisible.",
+        ] {
+            assert!(
+                has_balanced_math_delimiters(source, ""),
+                "inert delimiter affected balance: {source:?}"
+            );
+        }
+
+        assert!(has_balanced_math_delimiters(
+            "\\begin{Transcript}$ raw\\end{Transcript}",
+            "\\DefineVerbatimEnvironment{Transcript}{Verbatim}{}",
+        ));
+        assert!(!has_balanced_math_delimiters("live $x", ""));
+        assert!(!has_balanced_math_delimiters(r"live \[x", ""));
+        assert!(!has_balanced_math_delimiters(
+            "\\newenvironment% note\n{mystery}{}{} live $x",
+            "",
+        ));
+        assert!(!has_balanced_math_delimiters(
+            r"\newenvironment{mystery} live $x",
+            "",
         ));
     }
 
@@ -2877,7 +4737,14 @@ mod tests {
     #[test]
     fn comment_env_body_discarded() {
         // The `comment` package's env is dropped, not shown as an opaque block.
-        let n = parse("Before \\begin{comment}SECRET $x$\\end{comment} After\n");
+        let n = parse(concat!(
+            "Before\n",
+            "\\begin{comment}\n",
+            "print(\"\\end{comment}\")\n",
+            "SECRET $x$\n",
+            "\\end{comment}\n",
+            "After\n",
+        ));
         assert!(tree_has_text(&n, "Before"));
         assert!(tree_has_text(&n, "After"));
         assert!(!tree_has_text(&n, "SECRET"), "comment body leaked: {n:#?}");
