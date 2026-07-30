@@ -241,13 +241,11 @@ fn scan_literal_declarations(raw: &str) -> LiteralDeclarations {
     let bytes = src.as_bytes();
     let mut out = LiteralDeclarations::default();
     let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
     let mut i = 0usize;
     while i < bytes.len() {
-        if let Some(pos) = hidden_ranges
-            .iter()
-            .position(|(start, end)| i >= *start && i < *end)
-        {
-            i = hidden_ranges.swap_remove(pos).1;
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            i = resume;
             continue;
         }
         if bytes[i] != b'\\' {
@@ -261,12 +259,12 @@ fn scan_literal_declarations(raw: &str) -> LiteralDeclarations {
         }
         let command = &src[start + 1..i];
         if command == "iffalse" {
-            if let Some(bounds) = conditional_bounds(&src, i) {
+            if let Some(bounds) = conditionals.get(&src, start, i) {
                 i = bounds.else_end.unwrap_or(bounds.fi_end);
                 continue;
             }
         } else if command == "iftrue" {
-            if let Some(bounds) = conditional_bounds(&src, i) {
+            if let Some(bounds) = conditionals.get(&src, start, i) {
                 if let Some(else_start) = bounds.else_start {
                     hidden_ranges.push((else_start, bounds.fi_end));
                 }
@@ -366,8 +364,7 @@ fn skip_command_name_arg(src: &str, mut p: usize) -> Option<usize> {
     let bytes = src.as_bytes();
     p = skip_tex_space_and_comments(src, p);
     if bytes.get(p) == Some(&b'{') {
-        let (_, next) = read_braced(src, p)?;
-        p = next;
+        p = tex_inert_group_end(src, p, b'{', b'}')?;
     } else if bytes.get(p) == Some(&b'\\') {
         p += 1;
         if bytes
@@ -389,8 +386,7 @@ fn skip_command_name_arg(src: &str, mut p: usize) -> Option<usize> {
 fn skip_braced_groups(src: &str, mut p: usize, count: usize) -> Option<usize> {
     for _ in 0..count {
         p = skip_tex_space_and_comments(src, p);
-        let (_, next) = read_braced(src, p)?;
-        p = next;
+        p = tex_inert_group_end(src, p, b'{', b'}')?;
     }
     Some(p)
 }
@@ -429,10 +425,24 @@ fn skip_command_macro_declaration(src: &str, start: usize) -> Option<usize> {
 
     if matches!(
         keyword,
-        "NewDocumentCommand" | "RenewDocumentCommand" | "ProvideDocumentCommand"
+        "NewDocumentCommand"
+            | "RenewDocumentCommand"
+            | "ProvideDocumentCommand"
+            | "DeclareDocumentCommand"
     ) {
         p = skip_command_name_arg(src, p)?;
         return skip_braced_groups(src, p, 2);
+    }
+
+    if matches!(
+        keyword,
+        "NewDocumentEnvironment"
+            | "RenewDocumentEnvironment"
+            | "ProvideDocumentEnvironment"
+            | "DeclareDocumentEnvironment"
+    ) {
+        p = skip_command_name_arg(src, p)?;
+        return skip_braced_groups(src, p, 3);
     }
 
     if matches!(keyword, "def" | "edef" | "gdef" | "xdef") {
@@ -498,15 +508,12 @@ fn scan_env_declarations(raw: &str, strict: bool) -> Result<Vec<EnvDeclaration>>
     let literals = scan_literal_declarations(raw);
     let mut declarations = Vec::new();
     let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
     let mut i = 0usize;
     let mut line = 1usize;
     while i < bytes.len() {
-        if let Some(pos) = hidden_ranges
-            .iter()
-            .position(|(start, end)| i >= *start && i < *end)
-        {
-            let end = hidden_ranges.swap_remove(pos).1;
-            advance_env_scan(bytes, &mut i, &mut line, end);
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            advance_env_scan(bytes, &mut i, &mut line, resume);
             continue;
         }
         match bytes[i] {
@@ -519,12 +526,15 @@ fn scan_env_declarations(raw: &str, strict: bool) -> Result<Vec<EnvDeclaration>>
                 }
                 let word = &src[i + 1..word_end];
                 if word == "iffalse" {
-                    let resume = false_branch_resume(&src, word_end);
+                    let resume = conditionals
+                        .get(&src, i, word_end)
+                        .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+                        .unwrap_or(bytes.len());
                     advance_env_scan(bytes, &mut i, &mut line, resume);
                     continue;
                 }
                 if word == "iftrue" {
-                    if let Some(bounds) = conditional_bounds(&src, word_end) {
+                    if let Some(bounds) = conditionals.get(&src, i, word_end) {
                         if let Some(else_start) = bounds.else_start {
                             hidden_ranges.push((else_start, bounds.fi_end));
                         }
@@ -614,7 +624,7 @@ fn scan_env_declarations(raw: &str, strict: bool) -> Result<Vec<EnvDeclaration>>
 /// replacement. LaTeX environment definitions have at most nine arguments.
 fn parse_env_macro(src: &str, keyword_end: usize) -> Option<(String, EnvMacro, usize)> {
     let mut p = skip_tex_space_and_comments(src, keyword_end);
-    let (name, np) = read_braced(src, p)?;
+    let (name, np) = read_braced_inert(src, p)?;
     p = skip_tex_space_and_comments(src, np);
     let mut nargs = 0u8;
     let mut default = None;
@@ -632,9 +642,9 @@ fn parse_env_macro(src: &str, keyword_end: usize) -> Option<(String, EnvMacro, u
             p = skip_tex_space_and_comments(src, np2);
         }
     }
-    let (begin, np) = read_braced(src, p)?;
+    let (begin, np) = read_braced_inert(src, p)?;
     p = skip_tex_space_and_comments(src, np);
-    let (end, declaration_end) = read_braced(src, p)?;
+    let (end, declaration_end) = read_braced_inert(src, p)?;
     if !env_parameters_valid(&begin, nargs) || !env_parameters_valid(&end, nargs) {
         return None;
     }
@@ -738,17 +748,190 @@ fn skip_ascii_ws(src: &str, mut i: usize) -> usize {
     i
 }
 
-/// If `src[from]` is `{`, return the group's inner text and the index past `}`.
-fn read_braced(src: &str, from: usize) -> Option<(String, usize)> {
-    let b = src.as_bytes();
-    if b.get(from) != Some(&b'{') {
+/// Match a stored/tokenized group without executing commands found inside it.
+/// This is deliberately iterative: deeply nested `\detokenize` or macro
+/// definitions in a live buffer must not recurse on the Rust stack.
+fn tex_inert_group_end(src: &str, from: usize, open: u8, close: u8) -> Option<usize> {
+    let bytes = src.as_bytes();
+    if bytes.get(from) != Some(&open) {
         return None;
     }
-    let mut depth = 0usize;
-    let mut i = from;
-    while i < b.len() {
-        match b[i] {
-            b'\\' => i += 1, // skip the escaped next byte
+    let mut depth = 1usize;
+    let mut i = from + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'\\' {
+            let token_start = i + 1;
+            if token_start >= bytes.len() {
+                return None;
+            }
+            if bytes[token_start].is_ascii_alphabetic() || bytes[token_start] == b'@' {
+                i = token_start + 1;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'@')
+                {
+                    i += 1;
+                }
+            } else {
+                i = token_start
+                    + src[token_start..]
+                        .chars()
+                        .next()
+                        .map_or(1, char::len_utf8);
+            }
+            continue;
+        }
+        match bytes[i] {
+            byte if byte == open => depth += 1,
+            byte if byte == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += if bytes[i].is_ascii() {
+            1
+        } else {
+            src[i..].chars().next().map_or(1, char::len_utf8)
+        };
+    }
+    None
+}
+
+fn read_braced_inert(src: &str, from: usize) -> Option<(String, usize)> {
+    let end = tex_inert_group_end(src, from, b'{', b'}')?;
+    Some((src[from + 1..end - 1].to_string(), end))
+}
+
+/// Return the byte immediately after the matching delimiter. TeX comments,
+/// escaped control symbols, `\string`, and inline verbatim payloads are inert:
+/// braces inside them cannot close the surrounding group.
+pub(crate) fn tex_group_end(src: &str, from: usize, open: u8, close: u8) -> Option<usize> {
+    let bytes = src.as_bytes();
+    if bytes.get(from) != Some(&open) {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = from + 1;
+    let mut hidden_true_branches = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
+    while i < bytes.len() {
+        if hidden_true_branches
+            .last()
+            .is_some_and(|(else_start, _)| *else_start == i)
+        {
+            let (_, fi_end) = hidden_true_branches.pop().expect("checked nonempty");
+            i = fi_end;
+            continue;
+        }
+        if bytes[i] == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'\\' {
+            let word_start = i + 1;
+            let mut word_end = word_start;
+            while word_end < bytes.len()
+                && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+            {
+                word_end += 1;
+            }
+            if word_end == word_start {
+                if word_start >= bytes.len() {
+                    return None;
+                }
+                let step = src[word_start..].chars().next().map_or(1, char::len_utf8);
+                i = word_start + step;
+                continue;
+            }
+            let word = &src[word_start..word_end];
+            if is_inline_literal_command(word) {
+                i = inline_literal_payload(src, word, word_end)
+                    .map(|(_, end)| end)
+                    .unwrap_or(bytes.len());
+                continue;
+            }
+            if word == "string" {
+                i = tex_token_end(src, skip_tex_space_and_comments(src, word_end));
+                continue;
+            }
+            if matches!(word, "detokenize" | "unexpanded") {
+                let group_start = skip_tex_space_and_comments(src, word_end);
+                i = tex_inert_group_end(src, group_start, b'{', b'}').unwrap_or(bytes.len());
+                continue;
+            }
+            if let Some(end) = skip_command_macro_declaration(src, i) {
+                i = end;
+                continue;
+            }
+            if let Some(keyword_end) = environment_keyword_end(src, i) {
+                i = parse_env_macro(src, keyword_end)
+                    .map(|(_, _, end)| end)
+                    .unwrap_or(keyword_end);
+                continue;
+            }
+            if word == "iffalse" {
+                if let Some(bounds) = conditionals.get(src, i, word_end) {
+                    i = bounds.else_end.unwrap_or(bounds.fi_end);
+                    continue;
+                }
+            }
+            if word == "iftrue" {
+                if let Some(bounds) = conditionals.get(src, i, word_end) {
+                    if let Some(else_start) = bounds.else_start {
+                        hidden_true_branches.push((else_start, bounds.fi_end));
+                    }
+                }
+            }
+            i = word_end;
+            continue;
+        }
+        match bytes[i] {
+            byte if byte == open => depth += 1,
+            byte if byte == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += if bytes[i].is_ascii() {
+            1
+        } else {
+            src[i..].chars().next().map_or(1, char::len_utf8)
+        };
+    }
+    None
+}
+
+/// If `src[from]` is `{`, return the group's inner text and the index past `}`.
+fn read_braced(src: &str, from: usize) -> Option<(String, usize)> {
+    let end = tex_group_end(src, from, b'{', b'}')?;
+    Some((src[from + 1..end - 1].to_string(), end))
+}
+
+/// Braced inline-literal payloads use braces only as delimiters; TeX comment
+/// and escape rules are disabled inside them. Balance nested braces while
+/// keeping `%`, backslashes, and Unicode completely inert.
+fn read_literal_braced(src: &str, from: usize) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(from) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = from + 1;
+    while i < bytes.len() {
+        match bytes[i] {
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
@@ -758,9 +941,54 @@ fn read_braced(src: &str, from: usize) -> Option<(String, usize)> {
             }
             _ => {}
         }
-        i += 1;
+        i += if bytes[i].is_ascii() {
+            1
+        } else {
+            src[i..].chars().next().map_or(1, char::len_utf8)
+        };
     }
-    None
+    Some((src[from + 1..].to_string(), bytes.len()))
+}
+
+/// Recognize a group whose first executable token is a text-mode color
+/// declaration: `{\color[model]{spec} ...}`. The cheap prefix check happens
+/// before matching the outer group, avoiding a full-group rescan for every
+/// ordinary `{...}` in the document. Returns the declaration, body byte
+/// range, and the byte immediately after the outer `}`.
+fn scoped_text_color_group(
+    src: &str,
+    start: usize,
+) -> Option<(Option<String>, String, usize, usize, usize)> {
+    let bytes = src.as_bytes();
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+    let mut i = skip_tex_space_and_comments(src, start + 1);
+    if bytes.get(i) != Some(&b'\\') {
+        return None;
+    }
+    let word_start = i + 1;
+    let mut word_end = word_start;
+    while word_end < bytes.len()
+        && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+    {
+        word_end += 1;
+    }
+    if &src[word_start..word_end] != "color" {
+        return None;
+    }
+    i = skip_tex_space_and_comments(src, word_end);
+    let model = if bytes.get(i) == Some(&b'[') {
+        let (model, after_model) = read_bracketed(src, i)?;
+        i = skip_tex_space_and_comments(src, after_model);
+        Some(model)
+    } else {
+        None
+    };
+    let (color, body_start) = read_braced(src, i)?;
+    let end = tex_group_end(src, start, b'{', b'}')?;
+    let body_end = end - 1;
+    (body_start <= body_end).then_some((model, color, body_start, body_end, end))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -836,7 +1064,11 @@ fn environment_token_at(src: &str, start: usize) -> Option<EnvironmentToken> {
 
 /// Read one inline verbatim command. The payload must stay inert both while
 /// matching an outer environment and while recursively parsing its body.
-fn inline_literal_payload(src: &str, command: &str, after_word: usize) -> Option<(String, usize)> {
+pub(crate) fn inline_literal_payload(
+    src: &str,
+    command: &str,
+    after_word: usize,
+) -> Option<(String, usize)> {
     let base = command.trim_end_matches('*');
     let dynamic = DYNAMIC_INLINE_LITERAL_COMMANDS.with(|commands| commands.borrow().contains(base));
     inline_literal_payload_with_dynamic(src, command, after_word, dynamic)
@@ -866,19 +1098,23 @@ fn inline_literal_payload_with_dynamic(
     if (dynamic || matches!(base, "lstinline" | "mintinline" | "mint"))
         && bytes.get(after_word) == Some(&b'{')
     {
-        return read_braced(src, after_word);
+        return read_literal_braced(src, after_word);
     }
-    let delimiter = *bytes.get(after_word)?;
-    if delimiter.is_ascii_whitespace() {
+    let delimiter = src[after_word..].chars().next()?;
+    if delimiter.is_whitespace() {
         return None;
     }
-    let payload_start = after_word + 1;
-    let mut i = after_word + 1;
+    let payload_start = after_word + delimiter.len_utf8();
+    let mut i = payload_start;
     while i < bytes.len() {
-        if bytes[i] == delimiter {
-            return Some((src[payload_start..i].to_string(), i + 1));
+        let ch = src[i..].chars().next()?;
+        if ch == delimiter {
+            return Some((
+                src[payload_start..i].to_string(),
+                i.saturating_add(ch.len_utf8()),
+            ));
         }
-        i += 1;
+        i += ch.len_utf8();
     }
     Some((src[payload_start..].to_string(), bytes.len()))
 }
@@ -890,7 +1126,7 @@ fn is_static_inline_literal_command(command: &str) -> bool {
     )
 }
 
-fn is_inline_literal_command(command: &str) -> bool {
+pub(crate) fn is_inline_literal_command(command: &str) -> bool {
     let base = command.trim_end_matches('*');
     is_static_inline_literal_command(base)
         || DYNAMIC_INLINE_LITERAL_COMMANDS.with(|commands| commands.borrow().contains(base))
@@ -1152,6 +1388,46 @@ fn environment_is_line_delimited_literal(env: &str) -> bool {
     environment_is_literal(env) && env != "alltt"
 }
 
+pub(crate) struct InertEnvironmentSpan {
+    pub name: String,
+    pub body_start: usize,
+    pub body_end: usize,
+    pub end: usize,
+    pub discarded: bool,
+}
+
+/// Locate a literal/code or discarded environment beginning at `start`.
+/// Callers that retain raw table source use this to keep the entire region
+/// inert rather than interpreting comments, citations, conditionals, or row
+/// separators inside it.
+pub(crate) fn inert_environment_span_at(
+    src: &str,
+    start: usize,
+) -> Option<InertEnvironmentSpan> {
+    let token = environment_token_at(src, start)?;
+    if token.kind != EnvironmentTokenKind::Begin {
+        return None;
+    }
+    let discarded = SKIP_ENVS.contains(&token.name.as_str());
+    if !discarded && !environment_is_literal(&token.name) {
+        return None;
+    }
+    let (body_end, end) = if discarded || environment_is_line_delimited_literal(&token.name) {
+        literal_environment_bounds(src, token.end, &token.name)
+            .unwrap_or((src.len(), src.len()))
+    } else {
+        find_matching_end_lexical_in(src, token.end, &token.name)
+            .unwrap_or((src.len(), src.len()))
+    };
+    Some(InertEnvironmentSpan {
+        name: token.name,
+        body_start: token.end,
+        body_end,
+        end,
+        discarded,
+    })
+}
+
 fn environment_is_special_opaque(env: &str) -> bool {
     SPECIAL_OPAQUE_ENVS.contains(&env)
 }
@@ -1191,6 +1467,173 @@ struct ConditionalBounds {
     fi_end: usize,
 }
 
+#[derive(Clone, Copy)]
+struct OpenConditional {
+    after_word: usize,
+    else_start: Option<usize>,
+    else_end: Option<usize>,
+}
+
+/// Lazily index matching conditional boundaries for one forward scanner.
+///
+/// Looking up every nested `\iftrue` with `conditional_bounds` rescans the
+/// remaining suffix once per nesting level. A single iterative pass records
+/// every matched opener instead, keeping deeply nested live branches linear.
+/// The index starts at the first conditional the caller encounters, so normal
+/// source without conditionals pays no setup cost.
+#[derive(Default)]
+pub(crate) struct ConditionalLookup {
+    bounds: Option<HashMap<usize, ConditionalBounds>>,
+}
+
+impl ConditionalLookup {
+    fn get(
+        &mut self,
+        src: &str,
+        command_start: usize,
+        after_word: usize,
+    ) -> Option<ConditionalBounds> {
+        let bounds = self
+            .bounds
+            .get_or_insert_with(|| conditional_bounds_index(src, command_start));
+        bounds.get(&after_word).copied()
+    }
+
+    pub(crate) fn false_branch_resume(
+        &mut self,
+        src: &str,
+        command_start: usize,
+        after_word: usize,
+    ) -> usize {
+        self.get(src, command_start, after_word)
+            .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+            .unwrap_or(src.len())
+    }
+
+    pub(crate) fn true_branch_else_range(
+        &mut self,
+        src: &str,
+        command_start: usize,
+        after_word: usize,
+    ) -> Option<(usize, usize)> {
+        let bounds = self.get(src, command_start, after_word)?;
+        bounds
+            .else_start
+            .map(|else_start| (else_start, bounds.fi_end))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONDITIONAL_SCAN_STEPS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_conditional_scan_step() {
+    CONDITIONAL_SCAN_STEPS.with(|steps| steps.set(steps.get().saturating_add(1)));
+}
+
+#[cfg(not(test))]
+#[inline]
+fn count_conditional_scan_step() {}
+
+/// Pair every lexically active primitive conditional at or after `start`.
+/// Stored definitions, comments, literal/code payloads, and stringified input
+/// are skipped exactly as they are by `conditional_bounds`.
+fn conditional_bounds_index(src: &str, start: usize) -> HashMap<usize, ConditionalBounds> {
+    let bytes = src.as_bytes();
+    let mut bounds = HashMap::new();
+    let mut stack: Vec<OpenConditional> = Vec::new();
+    let mut i = start;
+    while i < bytes.len() {
+        count_conditional_scan_step();
+        if bytes[i] == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] != b'\\' {
+            i += if bytes[i].is_ascii() {
+                1
+            } else {
+                src[i..].chars().next().map_or(1, char::len_utf8)
+            };
+            continue;
+        }
+
+        let name_start = i + 1;
+        let mut end = name_start;
+        while end < bytes.len() && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@') {
+            end += 1;
+        }
+        if end == name_start {
+            i = name_start + src[name_start..].chars().next().map_or(0, char::len_utf8);
+            continue;
+        }
+        let name = &src[name_start..end];
+        if let Some(declaration_end) = skip_command_macro_declaration(src, i) {
+            i = declaration_end;
+            continue;
+        }
+        if is_inline_literal_command(name) {
+            i = inline_literal_payload(src, name, end)
+                .map(|(_, payload_end)| payload_end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if name == "string" {
+            i = tex_token_end(src, skip_tex_space_and_comments(src, end));
+            continue;
+        }
+        if matches!(name, "detokenize" | "unexpanded") {
+            let group_start = skip_tex_space_and_comments(src, end);
+            i = tex_inert_group_end(src, group_start, b'{', b'}').unwrap_or(bytes.len());
+            continue;
+        }
+        if let Some(token) = environment_token_at(src, i) {
+            if token.kind == EnvironmentTokenKind::Begin
+                && (environment_is_line_delimited_literal(&token.name)
+                    || SKIP_ENVS.contains(&token.name.as_str()))
+            {
+                i = literal_environment_bounds(src, token.end, &token.name)
+                    .map(|(_, close_end)| close_end)
+                    .unwrap_or(bytes.len());
+                continue;
+            }
+        }
+
+        if IF_OPENERS.contains(&name) {
+            stack.push(OpenConditional {
+                after_word: end,
+                else_start: None,
+                else_end: None,
+            });
+        } else if name == "else" {
+            if let Some(open) = stack.last_mut() {
+                if open.else_start.is_none() {
+                    open.else_start = Some(i);
+                    open.else_end = Some(end);
+                }
+            }
+        } else if name == "fi" {
+            if let Some(open) = stack.pop() {
+                bounds.insert(
+                    open.after_word,
+                    ConditionalBounds {
+                        else_start: open.else_start,
+                        else_end: open.else_end,
+                        fi_start: i,
+                        fi_end: end,
+                    },
+                );
+            }
+        }
+        i = end;
+    }
+    bounds
+}
+
 /// Locate the top-level `\else` and matching `\fi` for a known primitive
 /// conditional. Stored macro bodies, comments, inline literals, and true
 /// verbatim/listing environments stay inert while balancing.
@@ -1200,6 +1643,7 @@ fn conditional_bounds(src: &str, mut i: usize) -> Option<ConditionalBounds> {
     let mut else_start = None;
     let mut else_end = None;
     while i < bytes.len() {
+        count_conditional_scan_step();
         let b = bytes[i];
         if b == b'%' {
             while i < bytes.len() && bytes[i] != b'\n' {
@@ -1233,9 +1677,8 @@ fn conditional_bounds(src: &str, mut i: usize) -> Option<ConditionalBounds> {
                 continue;
             }
             if matches!(name, "detokenize" | "unexpanded") {
-                i = read_braced(src, skip_tex_space_and_comments(src, end))
-                    .map(|(_, group_end)| group_end)
-                    .unwrap_or(bytes.len());
+                let group_start = skip_tex_space_and_comments(src, end);
+                i = tex_inert_group_end(src, group_start, b'{', b'}').unwrap_or(bytes.len());
                 continue;
             }
             if let Some(token) = environment_token_at(src, i) {
@@ -1276,10 +1719,249 @@ fn conditional_bounds(src: &str, mut i: usize) -> Option<ConditionalBounds> {
 /// Return where parsing should resume after the hidden branch of an
 /// `\iffalse`. A top-level `\else` starts visible input; without one, resume
 /// after the matching `\fi`. Nested primitive conditionals stay balanced.
-fn false_branch_resume(src: &str, after_word: usize) -> usize {
+pub(crate) fn false_branch_resume(src: &str, after_word: usize) -> usize {
     conditional_bounds(src, after_word)
         .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
         .unwrap_or(src.len())
+}
+
+/// Remove lexically dormant source while retaining executable TeX in order.
+/// This is used by lightweight renderers (notably native tables) that operate
+/// on retained source rather than a recursively parsed AST.
+pub(crate) fn executable_latex_source(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut hidden_ranges = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
+            i = resume;
+            continue;
+        }
+        if bytes[i] == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] != b'\\' {
+            let width = if bytes[i].is_ascii() {
+                1
+            } else {
+                source[i..].chars().next().map_or(1, char::len_utf8)
+            };
+            out.push_str(&source[i..i + width]);
+            i += width;
+            continue;
+        }
+
+        let command_start = i;
+        let word_start = i + 1;
+        let mut word_end = word_start;
+        while word_end < bytes.len()
+            && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+        {
+            word_end += 1;
+        }
+        if word_end == word_start {
+            if word_start >= bytes.len() {
+                out.push('\\');
+                break;
+            }
+            let width = source[word_start..]
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8);
+            out.push_str(&source[command_start..word_start + width]);
+            i = word_start + width;
+            continue;
+        }
+        let word = &source[word_start..word_end];
+
+        if word == "begin" {
+            if let Some(span) = inert_environment_span_at(source, command_start) {
+                if !span.discarded {
+                    out.push_str(&source[command_start..span.end]);
+                }
+                i = span.end;
+                continue;
+            }
+        }
+        if word == "iffalse" {
+            i = conditionals
+                .get(source, command_start, word_end)
+                .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if word == "iftrue" {
+            if let Some(bounds) = conditionals.get(source, command_start, word_end) {
+                if let Some(else_start) = bounds.else_start {
+                    hidden_ranges.push((else_start, bounds.fi_end));
+                }
+            }
+            i = word_end;
+            continue;
+        }
+        if matches!(word, "else" | "fi") {
+            i = word_end;
+            continue;
+        }
+        if let Some(end) = skip_command_macro_declaration(source, command_start) {
+            i = end;
+            continue;
+        }
+        if let Some(keyword_end) = environment_keyword_end(source, command_start) {
+            i = parse_env_macro(source, keyword_end)
+                .map(|(_, _, end)| end)
+                .unwrap_or(keyword_end);
+            continue;
+        }
+        if let Some((_, end)) = literal_environment_declaration_at(source, word, word_end) {
+            i = end;
+            continue;
+        }
+        if let Some((_, end)) = inline_literal_declaration_at(source, word, word_end) {
+            i = end;
+            continue;
+        }
+        if is_inline_literal_command(word) {
+            let end = inline_literal_payload(source, word, word_end)
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            out.push_str(&source[command_start..end]);
+            i = end;
+            continue;
+        }
+        if matches!(word, "detokenize" | "unexpanded") {
+            let group_start = skip_tex_space_and_comments(source, word_end);
+            let end =
+                tex_inert_group_end(source, group_start, b'{', b'}').unwrap_or(bytes.len());
+            out.push_str(&source[command_start..end]);
+            i = end;
+            continue;
+        }
+        if word == "string" {
+            let end = tex_token_end(source, skip_tex_space_and_comments(source, word_end));
+            out.push_str(&source[command_start..end]);
+            i = end;
+            continue;
+        }
+
+        out.push_str(&source[command_start..word_end]);
+        i = word_end;
+    }
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveBracedCommand {
+    pub name: String,
+    pub value: String,
+    pub starred: bool,
+}
+
+/// Collect live control-word calls with a final required braced argument,
+/// preserving source order while ignoring definitions, comments, literals,
+/// stringified input, and inactive conditional branches.
+pub(crate) fn live_braced_command_calls(
+    source: &str,
+    commands: &[&str],
+    max_optional_args: usize,
+) -> Vec<LiveBracedCommand> {
+    let source = executable_latex_source(source);
+    let bytes = source.as_bytes();
+    let mut calls = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += if bytes[i].is_ascii() {
+                1
+            } else {
+                source[i..].chars().next().map_or(1, char::len_utf8)
+            };
+            continue;
+        }
+        let word_start = i + 1;
+        let mut word_end = word_start;
+        while word_end < bytes.len()
+            && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+        {
+            word_end += 1;
+        }
+        if word_end == word_start {
+            i = word_start
+                + source[word_start..]
+                    .chars()
+                    .next()
+                    .map_or(0, char::len_utf8);
+            continue;
+        }
+        let word = &source[word_start..word_end];
+        if word == "begin" {
+            if let Some(span) = inert_environment_span_at(&source, i) {
+                i = span.end;
+                continue;
+            }
+        }
+        if is_inline_literal_command(word) {
+            i = inline_literal_payload(&source, word, word_end)
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if word == "string" {
+            i = tex_token_end(&source, skip_tex_space_and_comments(&source, word_end));
+            continue;
+        }
+        if matches!(word, "detokenize" | "unexpanded") {
+            let group_start = skip_tex_space_and_comments(&source, word_end);
+            i = tex_inert_group_end(&source, group_start, b'{', b'}').unwrap_or(bytes.len());
+            continue;
+        }
+        if !commands.contains(&word) {
+            i = word_end;
+            continue;
+        }
+
+        let starred = bytes.get(word_end) == Some(&b'*');
+        let mut argument_start = word_end + usize::from(starred);
+        argument_start = skip_tex_space_and_comments(&source, argument_start);
+        let mut valid = true;
+        for _ in 0..max_optional_args {
+            if bytes.get(argument_start) != Some(&b'[') {
+                break;
+            }
+            let Some(end) = tex_group_end(&source, argument_start, b'[', b']') else {
+                valid = false;
+                break;
+            };
+            argument_start = skip_tex_space_and_comments(&source, end);
+        }
+        if !valid {
+            i = word_end;
+            continue;
+        }
+        if bytes.get(argument_start) != Some(&b'{') {
+            i = word_end;
+            continue;
+        }
+        let Some(end) = tex_group_end(&source, argument_start, b'{', b'}') else {
+            i = word_end;
+            continue;
+        };
+        calls.push(LiveBracedCommand {
+            name: word.to_string(),
+            value: source[argument_start + 1..end - 1].to_string(),
+            starred,
+        });
+        i = end;
+    }
+    calls
 }
 
 /// Maximum recognized-environment nesting before we stop recursing and capture
@@ -1506,6 +2188,39 @@ impl<'a> Parser<'a> {
                     children: vec![],
                 });
                 continue;
+            }
+
+            // A scoped text-color declaration must stay atomic through this
+            // parser. Otherwise an inline equation inside the group would
+            // split the opening `{\color...` and closing `}` across separate
+            // nodes, losing TeX's color scope in the HTML renderer.
+            if b == b'{' && self.depth < MAX_NESTING_DEPTH {
+                if let Some((model, color, body_start, body_end, end)) =
+                    scoped_text_color_group(self.src, self.byte)
+                {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    let start = self.pos();
+                    self.advance_to(body_start);
+                    let child_start = self.pos();
+                    let mut children = Vec::new();
+                    {
+                        let mut sub = Parser::new_at(
+                            &self.src[body_start..body_end],
+                            self.file.clone(),
+                            child_start,
+                            self.thms,
+                            self.depth + 1,
+                        );
+                        sub.parse_block_into(&mut children, None);
+                    }
+                    self.advance_to(end);
+                    out.push(Node {
+                        kind: NodeKind::TextColor { model, color },
+                        span: self.span_from(start),
+                        children,
+                    });
+                    continue;
+                }
             }
 
             // Display math $$...$$ — check before $...$ to avoid swallowing.
@@ -1877,15 +2592,9 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                // Old-style font-switch commands (`\bf`, `\em`, `\it`,
-                // `\tt`, `\sc` and their long forms) take no argument —
-                // they change the font for the rest of the enclosing
-                // group. Keep them inline in the text buffer so the
-                // wrapping `{…}` reaches the renderer as one chunk and
-                // the inline-latex pass can emit `<strong>` / `<em>` /
-                // etc. around the body. Treating them as OpaqueCmd
-                // here would split the group across nodes and drop the
-                // styling.
+                // Stateful font/color switches change the remainder of their
+                // enclosing TeX group. Keep them inline in the text buffer so
+                // the wrapping `{…}` reaches the renderer as one chunk.
                 if matches!(
                     cmd.as_str(),
                     "bf" | "bfseries"
@@ -1901,6 +2610,8 @@ impl<'a> Parser<'a> {
                         | "rmfamily"
                         | "sf"
                         | "sffamily"
+                        | "color"
+                        | "normalcolor"
                 ) {
                     if text_start.is_none() {
                         text_start = Some(cmd_start);
@@ -2852,28 +3563,10 @@ impl<'a> Parser<'a> {
             return None;
         }
         let start = self.byte;
-        let mut depth: i32 = 0;
-        let mut i = self.byte;
-        while i < self.bytes.len() {
-            match self.bytes[i] {
-                b'\\' if i + 1 < self.bytes.len() => {
-                    i += 2;
-                    continue;
-                }
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let inside = self.src[start + 1..i].to_string();
-                        self.advance_to(i + 1);
-                        return Some(inside);
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        None
+        let end = tex_group_end(self.src, start, b'{', b'}')?;
+        let inside = self.src[start + 1..end - 1].to_string();
+        self.advance_to(end);
+        Some(inside)
     }
 
     /// Read one undelimited TeX macro argument: a balanced braced group, one
@@ -2948,11 +3641,18 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn scheduled_hidden_resume(i: usize, hidden_ranges: &mut Vec<(usize, usize)>) -> Option<usize> {
-    let pos = hidden_ranges
-        .iter()
-        .position(|(start, end)| i >= *start && i < *end)?;
-    Some(hidden_ranges.swap_remove(pos).1)
+pub(crate) fn scheduled_hidden_resume(
+    i: usize,
+    hidden_ranges: &mut Vec<(usize, usize)>,
+) -> Option<usize> {
+    while hidden_ranges.last().is_some_and(|(_, end)| *end <= i) {
+        hidden_ranges.pop();
+    }
+    let (start, end) = *hidden_ranges.last()?;
+    (i >= start).then(|| {
+        hidden_ranges.pop();
+        end
+    })
 }
 
 fn find_matching_end_lexical_in(src: &str, from: usize, env: &str) -> Option<(usize, usize)> {
@@ -2986,6 +3686,7 @@ fn find_matching_end_lexical_inner(
     let bytes = src.as_bytes();
     let mut depth = 1u32;
     let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
     let mut i = from;
     while i < bytes.len() {
         if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
@@ -3012,11 +3713,14 @@ fn find_matching_end_lexical_inner(
                 }
                 let word = &src[word_start..word_end];
                 if word == "iffalse" {
-                    i = false_branch_resume(src, word_end);
+                    i = conditionals
+                        .get(src, i, word_end)
+                        .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+                        .unwrap_or(bytes.len());
                     continue;
                 }
                 if word == "iftrue" {
-                    if let Some(bounds) = conditional_bounds(src, word_end) {
+                    if let Some(bounds) = conditionals.get(src, i, word_end) {
                         if let Some(else_start) = bounds.else_start {
                             hidden_ranges.push((else_start, bounds.fi_end));
                         }
@@ -3103,6 +3807,7 @@ pub(crate) fn first_supported_environment(
 ) -> Option<(String, String)> {
     let bytes = src.as_bytes();
     let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
     let mut i = 0usize;
     while i < bytes.len() {
         if let Some(resume) = scheduled_hidden_resume(i, &mut hidden_ranges) {
@@ -3129,11 +3834,14 @@ pub(crate) fn first_supported_environment(
                 }
                 let word = &src[word_start..word_end];
                 if word == "iffalse" {
-                    i = false_branch_resume(src, word_end);
+                    i = conditionals
+                        .get(src, i, word_end)
+                        .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+                        .unwrap_or(bytes.len());
                     continue;
                 }
                 if word == "iftrue" {
-                    if let Some(bounds) = conditional_bounds(src, word_end) {
+                    if let Some(bounds) = conditionals.get(src, i, word_end) {
                         if let Some(else_start) = bounds.else_start {
                             hidden_ranges.push((else_start, bounds.fi_end));
                         }
@@ -3214,6 +3922,7 @@ pub fn has_balanced_math_delimiters(source: &str, preamble: &str) -> bool {
 
     let bytes = source.as_bytes();
     let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
     let mut in_inline = false;
     let mut in_display = false;
     let mut in_comment = false;
@@ -3266,11 +3975,14 @@ pub fn has_balanced_math_delimiters(source: &str, preamble: &str) -> bool {
             }
             let word = &source[word_start..word_end];
             if word == "iffalse" {
-                i = false_branch_resume(source, word_end);
+                i = conditionals
+                    .get(source, i, word_end)
+                    .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+                    .unwrap_or(bytes.len());
                 continue;
             }
             if word == "iftrue" {
-                if let Some(bounds) = conditional_bounds(source, word_end) {
+                if let Some(bounds) = conditionals.get(source, i, word_end) {
                     if let Some(else_start) = bounds.else_start {
                         hidden_ranges.push((else_start, bounds.fi_end));
                     }
@@ -3362,6 +4074,7 @@ pub(crate) fn last_live_braced_command_values(
     let literals = scan_literal_declarations(source);
     let mut values = HashMap::new();
     let mut hidden_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut conditionals = ConditionalLookup::default();
     let mut i = 0usize;
 
     while i < bytes.len() {
@@ -3388,11 +4101,14 @@ pub(crate) fn last_live_braced_command_values(
         let word = &src[word_start..word_end];
 
         if word == "iffalse" {
-            i = false_branch_resume(&src, word_end);
+            i = conditionals
+                .get(&src, i, word_end)
+                .map(|bounds| bounds.else_end.unwrap_or(bounds.fi_end))
+                .unwrap_or(bytes.len());
             continue;
         }
         if word == "iftrue" {
-            if let Some(bounds) = conditional_bounds(&src, word_end) {
+            if let Some(bounds) = conditionals.get(&src, i, word_end) {
                 if let Some(else_start) = bounds.else_start {
                     hidden_ranges.push((else_start, bounds.fi_end));
                 }
@@ -3465,9 +4181,15 @@ pub(crate) fn last_live_braced_command_values(
         }
 
         if commands.contains(&word) {
-            if let Some((value, end)) =
-                read_braced(&src, skip_tex_space_and_comments(&src, word_end))
-            {
+            let mut argument_start = skip_tex_space_and_comments(&src, word_end);
+            if bytes.get(argument_start) == Some(&b'[') {
+                let Some(optional_end) = tex_group_end(&src, argument_start, b'[', b']') else {
+                    i = word_end;
+                    continue;
+                };
+                argument_start = skip_tex_space_and_comments(&src, optional_end);
+            }
+            if let Some((value, end)) = read_braced(&src, argument_start) {
                 values.insert(word.to_string(), value);
                 i = end;
                 continue;
@@ -4260,6 +4982,203 @@ mod tests {
     }
 
     #[test]
+    fn scoped_text_color_group_stays_atomic_across_inline_math() {
+        let n = parse(r"before {\color[rgb]{1,0.5,0} colored $x$ text} after");
+        assert_eq!(n.len(), 3, "{n:#?}");
+        assert!(matches!(&n[0].kind, NodeKind::Text(s) if s == "before "));
+        assert!(matches!(
+            &n[1].kind,
+            NodeKind::TextColor {
+                model: Some(model),
+                color,
+            } if model == "rgb" && color == "1,0.5,0"
+        ));
+        assert!(matches!(
+            &n[1].children[0].kind,
+            NodeKind::Text(s) if s == " colored "
+        ));
+        assert!(matches!(
+            &n[1].children[1].kind,
+            NodeKind::InlineMath(s) if s == "x"
+        ));
+        assert!(matches!(
+            &n[1].children[2].kind,
+            NodeKind::Text(s) if s == " text"
+        ));
+        assert!(matches!(&n[2].kind, NodeKind::Text(s) if s == " after"));
+    }
+
+    #[test]
+    fn scoped_text_color_body_keeps_semantic_nodes_comments_and_literals() {
+        let n = parse(concat!(
+            "{\\color{red} see \\cite{smith} % a commented }\n",
+            "\\verb|}| tail\n",
+            "\\begin{equation}x=1\\label{eq:colored}\\end{equation}",
+            "} after",
+        ));
+        assert_eq!(n.len(), 2, "{n:#?}");
+        let colored = &n[0];
+        assert!(matches!(&colored.kind, NodeKind::TextColor { color, .. } if color == "red"));
+        assert!(
+            colored
+                .children
+                .iter()
+                .any(|node| matches!(&node.kind, NodeKind::Cite { keys } if keys == &["smith"])),
+            "{n:#?}"
+        );
+        assert!(
+            colored.children.iter().any(
+                |node| matches!(&node.kind, NodeKind::Comment(text) if text.contains("commented"))
+            ),
+            "{n:#?}"
+        );
+        assert!(
+            colored
+                .children
+                .iter()
+                .any(|node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "inline-literal" && raw == "}")),
+            "{n:#?}"
+        );
+        assert!(
+            colored.children.iter().any(|node| matches!(
+                &node.kind,
+                NodeKind::DisplayMath { label: Some(label), .. } if label == "eq:colored"
+            )),
+            "{n:#?}"
+        );
+        assert!(matches!(&n[1].kind, NodeKind::Text(s) if s == " after"));
+    }
+
+    #[test]
+    fn scoped_text_color_ignores_braces_in_hidden_conditional_branches() {
+        let false_branch = parse(r"before {\color{red}\iffalse }\fi visible} after");
+        assert_eq!(false_branch.len(), 3, "{false_branch:#?}");
+        assert!(matches!(
+            &false_branch[1].kind,
+            NodeKind::TextColor { color, .. } if color == "red"
+        ));
+        assert!(
+            tree_has_text(&false_branch[1].children, "visible"),
+            "{false_branch:#?}"
+        );
+        assert!(matches!(
+            &false_branch[2].kind,
+            NodeKind::Text(text) if text == " after"
+        ));
+
+        let true_branch = parse(r"{\color{blue}\iftrue shown\else }\fi still} outside");
+        assert_eq!(true_branch.len(), 2, "{true_branch:#?}");
+        assert!(matches!(
+            &true_branch[0].kind,
+            NodeKind::TextColor { color, .. } if color == "blue"
+        ));
+        assert!(
+            tree_has_text(&true_branch[0].children, "shown")
+                && tree_has_text(&true_branch[0].children, "still"),
+            "{true_branch:#?}"
+        );
+        assert!(matches!(
+            &true_branch[1].kind,
+            NodeKind::Text(text) if text == " outside"
+        ));
+    }
+
+    #[test]
+    fn scoped_text_color_counts_definition_bodies_lexically() {
+        let nodes = parse(r"{\color{red}\def\foo{\iftrue{\else}\fi} visible} outside");
+        assert_eq!(nodes.len(), 2, "{nodes:#?}");
+        assert!(matches!(
+            &nodes[0].kind,
+            NodeKind::TextColor { color, .. } if color == "red"
+        ));
+        assert!(tree_has_text(&nodes[0].children, "visible"), "{nodes:#?}");
+        assert!(matches!(
+            &nodes[1].kind,
+            NodeKind::Text(text) if text == " outside"
+        ));
+    }
+
+    #[test]
+    fn executable_source_and_live_calls_ignore_dormant_tex() {
+        let source = concat!(
+            "foo% joined\nbar ",
+            "\\newcommand{\\stored}{\\cite{defined}}",
+            "\\iftrue live\\else \\cite{hidden}\\fi ",
+            "\\iffalse false\\else \\cite{shown}\\fi ",
+            "\\verb|\\cite{literal}%| ",
+            "\\label% continued\n{tab:live}",
+        );
+        let live = executable_latex_source(source);
+        assert!(live.contains("foobar"), "{live}");
+        assert!(live.contains("live"), "{live}");
+        assert!(!live.contains("defined"), "{live}");
+        assert!(!live.contains("hidden"), "{live}");
+        assert!(!live.contains("false"), "{live}");
+        assert!(live.contains(r"\verb|\cite{literal}%|"), "{live}");
+
+        let cites = live_braced_command_calls(source, &["cite"], 2);
+        assert_eq!(
+            cites
+                .into_iter()
+                .map(|call| call.value)
+                .collect::<Vec<_>>(),
+            ["shown"]
+        );
+        let labels = live_braced_command_calls(source, &["label"], 0);
+        assert_eq!(labels[0].value, "tab:live");
+    }
+
+    #[test]
+    fn deeply_nested_detokenize_group_matching_is_iterative() {
+        let depth = 5_000;
+        let source = format!(
+            "{{\\color{{red}}{}x{}}}",
+            "\\detokenize{".repeat(depth),
+            "}".repeat(depth)
+        );
+        let end = tex_group_end(&source, 0, b'{', b'}').expect("balanced group");
+        assert_eq!(end, source.len());
+    }
+
+    #[test]
+    fn deeply_nested_live_conditionals_are_scanned_once() {
+        let depth = 10_000;
+        let mut source = String::from("{");
+        source.push_str(&r"\iftrue ".repeat(depth));
+        source.push_str("visible");
+        source.push_str(&r"\else hidden } \fi".repeat(depth));
+        source.push('}');
+
+        CONDITIONAL_SCAN_STEPS.with(|steps| steps.set(0));
+        let end = tex_group_end(&source, 0, b'{', b'}').expect("balanced outer group");
+        assert_eq!(end, source.len());
+        let group_steps = CONDITIONAL_SCAN_STEPS.with(Cell::get);
+        assert!(
+            group_steps <= source.len(),
+            "group matcher rescanned conditional suffixes: {group_steps} steps for {} bytes",
+            source.len()
+        );
+
+        CONDITIONAL_SCAN_STEPS.with(|steps| steps.set(0));
+        let executable = executable_latex_source(&source);
+        assert_eq!(executable, format!("{{{}visible}}", " ".repeat(depth)));
+        let executable_steps = CONDITIONAL_SCAN_STEPS.with(Cell::get);
+        assert!(
+            executable_steps <= source.len(),
+            "executable scanner rescanned conditional suffixes: {executable_steps} steps for {} bytes",
+            source.len()
+        );
+    }
+
+    #[test]
+    fn ordinary_brace_runs_do_not_trigger_color_group_rescans() {
+        let src = format!("{}x{}", "{".repeat(20_000), "}".repeat(20_000));
+        let n = parse(&src);
+        assert_eq!(n.len(), 1);
+        assert!(matches!(&n[0].kind, NodeKind::Text(s) if s.len() == src.len()));
+    }
+
+    #[test]
     fn math_environment_ignores_stringified_fake_closer() {
         let n = parse(concat!(
             "\\begin{equation}\n",
@@ -4291,6 +5210,24 @@ mod tests {
         }
         let n = parse(r"\é");
         assert!(matches!(&n[0].kind, NodeKind::Text(s) if s.contains('é')));
+    }
+
+    #[test]
+    fn inline_literal_unicode_delimiter_does_not_panic() {
+        let src = r"\verbλa&bλ";
+        assert_eq!(
+            inline_literal_payload(src, "verb", r"\verb".len()),
+            Some(("a&b".to_string(), src.len()))
+        );
+    }
+
+    #[test]
+    fn braced_inline_literal_keeps_percent_and_backslash_inert() {
+        let src = "\\lstinline{50% \\\\ {nested}} after";
+        assert_eq!(
+            inline_literal_payload(src, "lstinline", r"\lstinline".len()),
+            Some(("50% \\\\ {nested}".to_string(), src.find(" after").unwrap()))
+        );
     }
 
     #[test]

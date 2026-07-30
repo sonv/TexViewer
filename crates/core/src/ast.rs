@@ -159,6 +159,13 @@ pub enum NodeKind {
     /// `center`, `flushleft`, and `flushright` retain their TeX alignment while
     /// their body is parsed normally, so nested math and references still work.
     Alignment { kind: TextAlignment },
+    /// A TeX-scoped `{\color[model]{name} ...}` group. Its body is parsed into
+    /// children so citations, labels, display math, and nested structures keep
+    /// their normal semantics while inheriting the color.
+    TextColor {
+        model: Option<String>,
+        color: String,
+    },
     /// A standard `letter` document-class letter. The retained container lets
     /// the renderer reproduce the address/date/recipient/closing geometry
     /// while its body remains ordinary parsed TeX.

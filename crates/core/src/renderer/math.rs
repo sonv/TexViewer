@@ -11,8 +11,8 @@ use crate::sync::MathRow;
 
 use super::util::{
     asset_url, css_number, escape_attr, escape_html, escape_math, escape_tex_text, fnv_hash,
-    is_relax_option, latex_command_arg, latex_command_args, latex_command_call, latex_optional_arg,
-    parse_latex_number, parse_number_prefix, refkey_attr, sanitize_id, strip_wrapping_braces,
+    is_relax_option, latex_command_args, latex_command_call, latex_optional_arg, parse_latex_number,
+    parse_number_prefix, refkey_attr, sanitize_id, strip_wrapping_braces,
 };
 
 pub(super) fn equation_number_html(number: Option<&str>, row_numbers: &[Option<String>]) -> String {
@@ -112,45 +112,94 @@ pub(super) fn math_row_labels(body: &str) -> Vec<Vec<String>> {
 pub(super) fn strip_labels(body: &str) -> String {
     let bytes = body.as_bytes();
     let mut out = String::with_capacity(body.len());
-    let mut i = 0;
+    let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i..].starts_with(b"\\label") {
-            let mut j = i + b"\\label".len();
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
+        if bytes[i] == b'\\' {
+            let word_start = i + 1;
+            let mut word_end = word_start;
+            while word_end < bytes.len()
+                && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+            {
+                word_end += 1;
             }
-            if j < bytes.len() && bytes[j] == b'{' {
-                let mut depth = 1i32;
-                let mut k = j + 1;
-                while k < bytes.len() {
-                    match bytes[k] {
-                        b'\\' if k + 1 < bytes.len() => {
-                            k += 2;
-                            continue;
-                        }
-                        b'{' => depth += 1,
-                        b'}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    k += 1;
-                }
-                i = (k + 1).min(bytes.len());
+            if word_end == word_start {
+                let width = body[word_start..]
+                    .chars()
+                    .next()
+                    .map_or(0, char::len_utf8);
+                let end = (word_start + width).min(bytes.len());
+                out.push_str(&body[i..end]);
+                i = end;
                 continue;
             }
+            let word = &body[word_start..word_end];
+            if crate::parser::is_inline_literal_command(word) {
+                let end = crate::parser::inline_literal_payload(body, word, word_end)
+                    .map(|(_, end)| end)
+                    .unwrap_or(bytes.len());
+                out.push_str(&body[i..end]);
+                i = end;
+                continue;
+            }
+            if matches!(word, "detokenize" | "unexpanded") {
+                let mut group_start = word_end;
+                while group_start < bytes.len() && bytes[group_start].is_ascii_whitespace() {
+                    group_start += 1;
+                }
+                let end = crate::parser::tex_group_end(body, group_start, b'{', b'}')
+                    .unwrap_or(bytes.len());
+                out.push_str(&body[i..end]);
+                i = end;
+                continue;
+            }
+            if word == "string" {
+                let mut end = word_end;
+                while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+                    end += 1;
+                }
+                if end < bytes.len() && bytes[end] == b'\\' {
+                    end += 1;
+                    while end < bytes.len()
+                        && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@')
+                    {
+                        end += 1;
+                    }
+                } else if end < bytes.len() {
+                    end += if bytes[end].is_ascii() {
+                        1
+                    } else {
+                        body[end..].chars().next().map_or(1, char::len_utf8)
+                    };
+                }
+                out.push_str(&body[i..end]);
+                i = end;
+                continue;
+            }
+            if word == "label" {
+                let mut argument_start = word_end;
+                while argument_start < bytes.len()
+                    && bytes[argument_start].is_ascii_whitespace()
+                {
+                    argument_start += 1;
+                }
+                if let Some(end) =
+                    crate::parser::tex_group_end(body, argument_start, b'{', b'}')
+                {
+                    i = end;
+                    continue;
+                }
+            }
+            out.push_str(&body[i..word_end]);
+            i = word_end;
+            continue;
         }
-        if bytes[i].is_ascii() {
-            out.push(bytes[i] as char);
-            i += 1;
+        let width = if bytes[i].is_ascii() {
+            1
         } else {
-            let ch = body[i..].chars().next().unwrap_or('\0');
-            out.push(ch);
-            i += ch.len_utf8();
-        }
+            body[i..].chars().next().map_or(1, char::len_utf8)
+        };
+        out.push_str(&body[i..i + width]);
+        i += width;
     }
     out
 }
@@ -237,7 +286,10 @@ fn balanced_arg_at(src: &str, start: usize) -> Option<(&str, usize)> {
 pub(super) fn label_alias_anchors(body: &str, primary: Option<&str>) -> String {
     let mut seen = Vec::<String>::new();
     let mut out = String::new();
-    for label in latex_command_args(body, "label") {
+    for label in crate::parser::live_braced_command_calls(body, &["label"], 0)
+        .into_iter()
+        .map(|call| call.value)
+    {
         if primary == Some(label.as_str()) || seen.iter().any(|s| s == &label) {
             continue;
         }
@@ -500,54 +552,11 @@ pub(super) fn write_inline_math_span(out: &mut String, body: &str) {
 }
 
 pub(super) fn render_latex_text_with_math(s: &str, labels: &LabelTable) -> String {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut text_start = 0usize;
-    let mut i = 0usize;
-
-    while i < bytes.len() {
-        if bytes[i] != b'$' {
-            i += if bytes[i].is_ascii() {
-                1
-            } else {
-                s[i..].chars().next().unwrap_or('\0').len_utf8()
-            };
-            continue;
-        }
-        if i > text_start {
-            out.push_str(&super::render_inline_latex(&s[text_start..i], labels));
-        }
-        i += 1;
-        let math_start = i;
-        while i < bytes.len() {
-            if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if bytes[i] == b'$' {
-                break;
-            }
-            i += if bytes[i].is_ascii() {
-                1
-            } else {
-                s[i..].chars().next().unwrap_or('\0').len_utf8()
-            };
-        }
-        if i >= bytes.len() {
-            out.push('$');
-            out.push_str(&super::render_inline_latex(&s[math_start..], labels));
-            text_start = s.len();
-            break;
-        }
-        write_inline_math_span(&mut out, &s[math_start..i]);
-        i += 1;
-        text_start = i;
-    }
-
-    if text_start < s.len() {
-        out.push_str(&super::render_inline_latex(&s[text_start..], labels));
-    }
-    out
+    // `render_inline_latex` now owns both inline-math delimiters and TeX
+    // grouping. Passing the full string through one call is important:
+    // splitting at `$...$` here used to break a surrounding
+    // `{\color{...} text $x$}` scope into three unrelated fragments.
+    super::render_inline_latex(s, labels)
 }
 
 pub(super) fn write_float_placeholder(
@@ -555,30 +564,43 @@ pub(super) fn write_float_placeholder(
     env: &str,
     body: &str,
     labels: &LabelTable,
+    float_number: Option<&str>,
     rendered_asset: Option<&str>,
 ) {
+    let live_body = crate::parser::executable_latex_source(body);
     let kind = if env.trim_end_matches('*') == "table" {
         "Table"
     } else {
         "Figure"
     };
-    let float_labels = latex_command_args(body, "label");
+    let float_labels = crate::parser::live_braced_command_calls(&live_body, &["label"], 0)
+        .into_iter()
+        .map(|call| call.value)
+        .collect::<Vec<_>>();
     let primary_label = float_labels.first().map(String::as_str);
     let id_attr = primary_label
         .map(|label| format!(r#" id="{}""#, escape_attr(&sanitize_id(label))))
         .unwrap_or_default();
     let refkey = refkey_attr(primary_label);
-    let alias_html = label_alias_anchors(body, primary_label);
-    let kind_label = primary_label
-        .and_then(|label| labels.number.get(label))
-        .map(|number| format!("{kind} {}.", escape_html(number)))
+    let alias_html = label_alias_anchors(&live_body, primary_label);
+    let kind_label = float_number
+        .map(str::to_string)
+        .or_else(|| primary_label.and_then(|label| labels.number.get(label).cloned()))
+        .map(|number| format!("{kind} {}.", escape_html(&number)))
         .unwrap_or_else(|| format!("{kind}."));
-    let caption = latex_command_arg(body, "caption");
-    let asset = latex_command_call(body, "includegraphics");
+    let caption = crate::parser::live_braced_command_calls(&live_body, &["caption"], 1)
+        .into_iter()
+        .next();
+    let asset = latex_command_call(&live_body, "includegraphics");
     let caption_html = caption
-        .as_deref()
-        .map(|c| render_latex_text_with_math(c.trim(), labels))
+        .as_ref()
+        .map(|call| render_latex_text_with_math(strip_labels(&call.value).trim(), labels))
         .unwrap_or_else(|| "content omitted from preview".to_string());
+    let caption_prefix = if caption.as_ref().is_some_and(|call| call.starred) {
+        String::new()
+    } else {
+        format!(r#"<span class="float-kind">{kind_label}</span> "#)
+    };
     let asset_html = rendered_asset
         .map(str::to_string)
         .or_else(|| {
@@ -589,13 +611,13 @@ pub(super) fn write_float_placeholder(
         .unwrap_or_default();
     writeln!(
         out,
-        r#"<figure class="float-placeholder float-{env}"{id}{refkey} data-env="{env}">{aliases}{asset}<figcaption><span class="float-kind">{kind_label}</span> {caption}</figcaption></figure>"#,
+        r#"<figure class="float-placeholder float-{env}"{id}{refkey} data-env="{env}">{aliases}{asset}<figcaption>{caption_prefix}{caption}</figcaption></figure>"#,
         env = escape_attr(env),
         id = id_attr,
         refkey = refkey,
         aliases = alias_html,
-        kind_label = kind_label,
         asset = asset_html,
+        caption_prefix = caption_prefix,
         caption = caption_html,
     )
     .unwrap();

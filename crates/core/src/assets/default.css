@@ -1159,6 +1159,14 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
 }
 .opaque-env { padding: 0.2em 0 0.2em 0.75em; border-left: 1px solid var(--border); color: var(--muted); margin: 0.5em 0; }
 .inline-literal { font: 0.9em/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.text-color-normal { color: var(--fg); }
+.text-color-box {
+  display: inline;
+  padding: 0.04em 0.2em;
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
 .unsupported-env-boundary {
   display: flex;
   width: fit-content;
@@ -1180,6 +1188,26 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
 }
 .unsupported-env-boundary code {
   min-width: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.unsupported-env-inline {
+  display: inline-flex;
+  max-width: 100%;
+  margin: 0 0.16em;
+  padding: 0.02em 0.24em;
+  border: 1px dashed var(--diagnostic-error);
+  border-radius: 3px;
+  color: var(--diagnostic-error);
+  background: var(--diagnostic-error-bg);
+  font: 0.72em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+  vertical-align: baseline;
+}
+.unsupported-env-inline code {
   color: inherit;
   background: transparent;
   font: inherit;
@@ -1306,10 +1334,70 @@ blockquote.quote > :last-child { margin-bottom: 0; }
     padding-top: 0;
   }
 }
-.float-placeholder { margin: 1em 0; text-align: center; color: var(--muted); }
-.float-placeholder figcaption { font-size: 0.95em; line-height: 1.35; }
+.float-placeholder { margin: 1em 0; text-align: center; }
+.float-placeholder figcaption { color: var(--muted); font-size: 0.95em; line-height: 1.35; }
 .float-kind { font-weight: 700; color: var(--fg); }
 .float-asset { font-size: 0.85em; margin-bottom: 0.35em; }
+.latex-tabular-scroll {
+  display: block;
+  container-type: inline-size;
+  max-width: 100%;
+  margin: 0.8em auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: inherit;
+}
+.latex-tabular {
+  width: max-content;
+  max-width: none;
+  margin: 0 auto;
+  border-spacing: 0;
+  border-collapse: collapse;
+  color: inherit;
+  font: inherit;
+  line-height: 1.3;
+}
+.latex-tabular caption {
+  margin-bottom: 0.45em;
+  color: var(--muted);
+  font-size: 0.95em;
+  line-height: 1.35;
+  text-align: center;
+}
+.latex-tabular-cell {
+  padding: 0.16em 0.55em;
+  border-color: currentColor;
+}
+.latex-tabular-cell.align-left { text-align: left; }
+.latex-tabular-cell.align-center { text-align: center; }
+.latex-tabular-cell.align-right { text-align: right; }
+.latex-tabular-cell.valign-top { vertical-align: top; }
+.latex-tabular-cell.valign-baseline { vertical-align: baseline; }
+.latex-tabular-cell.valign-middle { vertical-align: middle; }
+.latex-tabular-cell.valign-bottom { vertical-align: bottom; }
+.latex-tabular-cell.cell-nowrap { white-space: nowrap; }
+.latex-tabular-cell.cell-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.table-literal-env {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+  font: 0.88em/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.table-literal-env code {
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+.latex-tabular-cell.rule-left { border-left: 1px solid currentColor; }
+.latex-tabular-cell.rule-right { border-right: 1px solid currentColor; }
+.latex-tabular-cell.rule-top { border-top: 1px solid currentColor; }
+.latex-tabular-cell.rule-top-strong { border-top: 2px solid currentColor; }
+.latex-tabular-cell.rule-bottom { border-bottom: 1px solid currentColor; }
+.latex-tabular-cell.rule-bottom-strong { border-bottom: 2px solid currentColor; }
 .float-image {
   display: block;
   max-width: 100%;
@@ -1317,6 +1405,9 @@ blockquote.quote > :last-child { margin-bottom: 0; }
   margin: 0 auto;
 }
 .float-pdf-preview { background: #fff; }
+@media print {
+  .latex-tabular-scroll { overflow: visible; }
+}
 .proof-step,
 .proof-case { color: var(--fg); }
 .proof-step { font-weight: 700; }

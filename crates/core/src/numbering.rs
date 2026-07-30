@@ -17,10 +17,12 @@
 //!   / `\nonumber`.
 //!   Starred forms (`equation*` etc.) are unnumbered.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 
-use crate::ast::{Node, NodeKind, RefKind};
+use crate::ast::{Node, NodeKind, RefKind, Span};
 use crate::bibtex::{alphabetic_label, alphabetic_sort_key, authoryear_label, BibEntry, BibStyle};
+use crate::macros::ExtractedMacro;
 use crate::theorems::TheoremRegistry;
 
 #[derive(Debug, Default, Clone)]
@@ -40,9 +42,22 @@ pub struct LabelTable {
     /// Cite keys in display order — for numeric style this is first-appearance,
     /// for alphabetic / author-year it's sorted alphabetically by author/year.
     pub cite_order: Vec<String>,
+    /// Bibliography style used to build the citation labels. Inline renderers
+    /// without a full `RenderCtx` (notably native table cells) need this to
+    /// choose the same citation delimiters as ordinary parsed prose.
+    pub bib_style: BibStyle,
+    /// Source start → float/table number, including unlabeled floats. Label
+    /// lookup alone cannot supply the caption number when no `\label` exists.
+    float_number: HashMap<(PathBuf, u32), String>,
 }
 
 impl LabelTable {
+    pub fn float_number_for_span(&self, span: &Span) -> Option<&str> {
+        self.float_number
+            .get(&(span.file.clone(), span.start.byte))
+            .map(String::as_str)
+    }
+
     /// Resolve a `\ref` / `\cref` / etc. target to display text.
     pub fn resolve_ref(&self, kind: RefKind, key: &str) -> String {
         match kind {
@@ -85,7 +100,24 @@ pub fn assign_numbers(
     thms: &TheoremRegistry,
     referenced: Option<HashSet<String>>,
 ) -> LabelTable {
-    let mut state = State::new(thms);
+    assign_numbers_with_macros(nodes, bib, style, thms, referenced, &[])
+}
+
+/// As [`assign_numbers`], while also expanding preamble text macros when
+/// discovering citations retained inside lightweight native renderers such
+/// as table cells. This keeps a wrapper like
+/// `\newcommand{\source}[1]{\cite{#1}}` in the same citation sequence as the
+/// inline renderer that later expands it.
+pub fn assign_numbers_with_macros(
+    nodes: &mut [Node],
+    bib: &HashMap<String, BibEntry>,
+    style: BibStyle,
+    thms: &TheoremRegistry,
+    referenced: Option<HashSet<String>>,
+    macros: &[ExtractedMacro],
+) -> LabelTable {
+    let mut state = State::new(thms, macros);
+    state.labels.bib_style = style;
     state.referenced = referenced;
     walk(nodes, &mut state);
 
@@ -210,10 +242,12 @@ struct State<'r> {
     /// (and ticks the counter) only when one of its labels is in the set.
     /// `None` = normal numbering.
     referenced: Option<HashSet<String>>,
+    citation_macros: HashMap<String, CitationMacroDef>,
+    citation_budget: CitationExpansionBudget,
 }
 
 impl<'r> State<'r> {
-    fn new(registry: &'r TheoremRegistry) -> Self {
+    fn new(registry: &'r TheoremRegistry, macros: &[ExtractedMacro]) -> Self {
         Self {
             section_prefix: None,
             section_counters: [0; 7],
@@ -227,8 +261,159 @@ impl<'r> State<'r> {
             pending_labels: Vec::new(),
             registry,
             referenced: None,
+            citation_macros: build_citation_macro_defs(macros),
+            citation_budget: CitationExpansionBudget::default(),
         }
     }
+}
+
+#[derive(Clone)]
+struct CitationMacroDef {
+    body: String,
+    n_args: usize,
+    default: Option<String>,
+    intrinsic_citation: bool,
+    argument_order: Vec<usize>,
+    has_user_dependency: bool,
+}
+
+fn build_citation_macro_defs(macros: &[ExtractedMacro]) -> HashMap<String, CitationMacroDef> {
+    let mut definitions = macros
+        .iter()
+        .filter_map(|definition| {
+            let name = definition.name.trim_start_matches('\\');
+            (!name.is_empty()).then(|| {
+                (
+                    name.to_string(),
+                    CitationMacroDef {
+                        body: definition.body.clone(),
+                        n_args: definition.n_args as usize,
+                        default: definition.default.clone(),
+                        intrinsic_citation: false,
+                        argument_order: Vec::new(),
+                        has_user_dependency: false,
+                    },
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+
+    let names = definitions.keys().cloned().collect::<HashSet<_>>();
+    let mut reverse_dependencies: HashMap<String, Vec<String>> = HashMap::new();
+    let mut citation_emitters = HashSet::new();
+    let mut analyses = Vec::with_capacity(definitions.len());
+    for (name, definition) in &definitions {
+        let (commands, argument_order) = live_macro_body_analysis(&definition.body);
+        let direct = commands
+            .iter()
+            .any(|command| is_citation_command(command));
+        if direct {
+            citation_emitters.insert(name.clone());
+        }
+        let dependencies = commands
+            .into_iter()
+            .filter(|command| names.contains(command))
+            .collect::<Vec<_>>();
+        for dependency in &dependencies {
+            reverse_dependencies
+                .entry(dependency.clone())
+                .or_default()
+                .push(name.clone());
+        }
+        analyses.push((name.clone(), argument_order, !dependencies.is_empty()));
+    }
+    for (name, argument_order, has_user_dependency) in analyses {
+        if let Some(definition) = definitions.get_mut(&name) {
+            definition.argument_order = argument_order;
+            definition.has_user_dependency = has_user_dependency;
+        }
+    }
+
+    let mut queue = citation_emitters.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(emitter) = queue.pop_front() {
+        if let Some(dependents) = reverse_dependencies.get(&emitter) {
+            for dependent in dependents {
+                if citation_emitters.insert(dependent.clone()) {
+                    queue.push_back(dependent.clone());
+                }
+            }
+        }
+    }
+    for name in citation_emitters {
+        if let Some(definition) = definitions.get_mut(&name) {
+            definition.intrinsic_citation = true;
+        }
+    }
+    definitions
+}
+
+fn live_macro_body_analysis(src: &str) -> (Vec<String>, Vec<usize>) {
+    let source = crate::parser::executable_latex_source(src);
+    let bytes = source.as_bytes();
+    let mut commands = Vec::new();
+    let mut argument_order = Vec::new();
+    let mut seen_arguments = HashSet::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'#' && bytes.get(i + 1) == Some(&b'#') {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'#' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+            let index = (bytes[i + 1] - b'0') as usize;
+            if index > 0 && seen_arguments.insert(index) {
+                argument_order.push(index);
+            }
+            i += 2;
+            continue;
+        }
+        if bytes[i] != b'\\' {
+            i += if bytes[i].is_ascii() {
+                1
+            } else {
+                source[i..].chars().next().map_or(1, char::len_utf8)
+            };
+            continue;
+        }
+
+        let word_start = i + 1;
+        let mut word_end = word_start;
+        while word_end < bytes.len()
+            && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+        {
+            word_end += 1;
+        }
+        if word_end == word_start {
+            i = tex_token_end_for_citations(&source, i);
+            continue;
+        }
+        let name = &source[word_start..word_end];
+        if name == "begin" {
+            if let Some(span) = crate::parser::inert_environment_span_at(&source, i) {
+                i = span.end;
+                continue;
+            }
+        }
+        if crate::parser::is_inline_literal_command(name) {
+            i = crate::parser::inline_literal_payload(&source, name, word_end)
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if name == "string" {
+            i = tex_token_end_for_citations(&source, skip_tex_argument_space(&source, word_end));
+            continue;
+        }
+        if matches!(name, "detokenize" | "unexpanded") {
+            let group_start = skip_tex_argument_space(&source, word_end);
+            i = crate::parser::tex_group_end(&source, group_start, b'{', b'}')
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        commands.push(name.to_string());
+        i = word_end;
+    }
+    (commands, argument_order)
 }
 
 /// Reset every theorem counter that resets under `level` (or a shallower
@@ -467,7 +652,7 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
             }
             NodeKind::OpaqueEnv { env, body } if is_float_env(env) => {
                 let (n, display_kind) = match env.trim_end_matches('*') {
-                    "table" => {
+                    "table" | "longtable" => {
                         state.table += 1;
                         (state.table.to_string(), "Table")
                     }
@@ -476,6 +661,10 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                         (state.figure.to_string(), "Figure")
                     }
                 };
+                state.labels.float_number.insert(
+                    (node.span.file.clone(), node.span.start.byte),
+                    n.clone(),
+                );
                 for l in labels_from_latex(body) {
                     record_label(&mut state.labels, l, &n, display_kind);
                 }
@@ -483,25 +672,370 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 for l in pending {
                     record_label(&mut state.labels, l, &n, display_kind);
                 }
+                record_citations_from_latex(body, state);
+            }
+            NodeKind::OpaqueEnv { env, body } if is_native_table_env(env) => {
+                record_citations_from_latex(body, state);
             }
             NodeKind::OpaqueCmd { name, raw } if name == "label" => {
                 if let Some(label) = label_from_raw(raw) {
                     state.pending_labels.push(label);
                 }
             }
+            NodeKind::OpaqueCmd { name, .. } if name == "inline-literal" => {}
+            NodeKind::OpaqueCmd { raw, .. } => {
+                record_citations_from_latex(raw, state);
+            }
             NodeKind::Cite { keys } => {
-                for k in keys {
-                    if state.labels.citation_number.contains_key(k) {
-                        continue;
-                    }
-                    let n = state.labels.cite_order.len() as u32 + 1;
-                    state.labels.citation_number.insert(k.clone(), n);
-                    state.labels.cite_order.push(k.clone());
-                }
+                record_citation_keys(keys.iter().cloned(), state);
             }
             _ => {
                 walk(&mut node.children, state);
             }
+        }
+    }
+}
+
+const CITATION_COMMANDS: &[&str] = &[
+    "cite",
+    "citet",
+    "citep",
+    "citeauthor",
+    "citeyear",
+    "parencite",
+    "textcite",
+    "fullcite",
+];
+
+pub(crate) fn is_citation_command(command: &str) -> bool {
+    CITATION_COMMANDS.contains(&command)
+}
+
+/// Parse the optional prenote/postnote arguments and required key group after
+/// a citation control word. The returned end is the byte immediately after
+/// the key group.
+pub(crate) fn citation_call_after_command(
+    src: &str,
+    after_command: usize,
+) -> Option<(Vec<String>, usize)> {
+    let bytes = src.as_bytes();
+    let mut i = skip_tex_argument_space(src, after_command);
+    for _ in 0..2 {
+        if bytes.get(i) != Some(&b'[') {
+            break;
+        }
+        i = crate::parser::tex_group_end(src, i, b'[', b']')?;
+        i = skip_tex_argument_space(src, i);
+    }
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    let end = crate::parser::tex_group_end(src, i, b'{', b'}')?;
+    let keys = src[i + 1..end - 1]
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some((keys, end))
+}
+
+fn record_citations_from_latex(src: &str, state: &mut State<'_>) {
+    let mut keys = Vec::new();
+    collect_expanded_citation_keys(
+        src,
+        &state.citation_macros,
+        0,
+        &mut state.citation_budget,
+        &mut keys,
+    );
+    record_citation_keys(keys, state);
+}
+
+const MAX_CITATION_EXPANSION_DEPTH: usize = 32;
+const MAX_CITATION_EXPANSIONS: usize = 1_024;
+const MAX_CITATION_EXPANDED_BYTES: usize = 1 << 20;
+
+struct CitationExpansionBudget {
+    relevant_calls: usize,
+    relevant_bytes: usize,
+    structural_calls: usize,
+    structural_bytes: usize,
+}
+
+impl Default for CitationExpansionBudget {
+    fn default() -> Self {
+        Self {
+            relevant_calls: MAX_CITATION_EXPANSIONS,
+            relevant_bytes: MAX_CITATION_EXPANDED_BYTES,
+            structural_calls: MAX_CITATION_EXPANSIONS,
+            structural_bytes: MAX_CITATION_EXPANDED_BYTES,
+        }
+    }
+}
+
+fn collect_expanded_citation_keys(
+    src: &str,
+    macros: &HashMap<String, CitationMacroDef>,
+    depth: usize,
+    budget: &mut CitationExpansionBudget,
+    keys: &mut Vec<String>,
+) {
+    if depth >= MAX_CITATION_EXPANSION_DEPTH {
+        return;
+    }
+    let source = crate::parser::executable_latex_source(src);
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += if bytes[i].is_ascii() {
+                1
+            } else {
+                source[i..].chars().next().map_or(1, char::len_utf8)
+            };
+            continue;
+        }
+
+        let word_start = i + 1;
+        let mut word_end = word_start;
+        while word_end < bytes.len()
+            && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+        {
+            word_end += 1;
+        }
+        if word_end == word_start {
+            i = word_start
+                + source[word_start..]
+                    .chars()
+                    .next()
+                    .map_or(0, char::len_utf8);
+            continue;
+        }
+        let name = &source[word_start..word_end];
+
+        if name == "begin" {
+            if let Some(span) = crate::parser::inert_environment_span_at(&source, i) {
+                i = span.end;
+                continue;
+            }
+        }
+        if crate::parser::is_inline_literal_command(name) {
+            i = crate::parser::inline_literal_payload(&source, name, word_end)
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if name == "string" {
+            i = tex_token_end_for_citations(&source, skip_tex_argument_space(&source, word_end));
+            continue;
+        }
+        if matches!(name, "detokenize" | "unexpanded") {
+            let group_start = skip_tex_argument_space(&source, word_end);
+            i = crate::parser::tex_group_end(&source, group_start, b'{', b'}')
+                .unwrap_or(bytes.len());
+            continue;
+        }
+
+        if is_citation_command(name) {
+            if let Some((citation_keys, end)) = citation_call_after_command(&source, word_end) {
+                keys.extend(citation_keys);
+                i = end;
+            } else {
+                i = word_end;
+            }
+            continue;
+        }
+
+        if let Some(definition) = macros.get(name) {
+            let (args, end) = read_citation_macro_args(
+                &source,
+                word_end,
+                definition.n_args,
+                definition.default.as_deref(),
+            );
+            if !definition.intrinsic_citation && !definition.has_user_dependency {
+                for argument_index in &definition.argument_order {
+                    if let Some(argument) = args.get(argument_index - 1) {
+                        collect_expanded_citation_keys(
+                            argument,
+                            macros,
+                            depth + 1,
+                            budget,
+                            keys,
+                        );
+                    }
+                }
+                i = end;
+                continue;
+            }
+            let (calls, bytes_left) = if definition.intrinsic_citation {
+                (&mut budget.relevant_calls, &mut budget.relevant_bytes)
+            } else {
+                (&mut budget.structural_calls, &mut budget.structural_bytes)
+            };
+            if *calls > 0 {
+                let Some(expanded) =
+                    fill_citation_placeholders(&definition.body, &args, *bytes_left)
+                else {
+                    i = end;
+                    continue;
+                };
+                *calls -= 1;
+                *bytes_left -= expanded.len();
+                collect_expanded_citation_keys(&expanded, macros, depth + 1, budget, keys);
+            }
+            i = end;
+            continue;
+        }
+
+        i = word_end;
+    }
+}
+
+fn tex_token_end_for_citations(src: &str, start: usize) -> usize {
+    let bytes = src.as_bytes();
+    if start >= bytes.len() {
+        return bytes.len();
+    }
+    if bytes[start] != b'\\' {
+        return start + src[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    let mut end = start + 1;
+    if bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'@')
+    {
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@')
+        {
+            end += 1;
+        }
+    } else if end < bytes.len() {
+        end += src[end..].chars().next().map_or(1, char::len_utf8);
+    }
+    end
+}
+
+fn read_citation_macro_args(
+    src: &str,
+    from: usize,
+    count: usize,
+    default: Option<&str>,
+) -> (Vec<String>, usize) {
+    let bytes = src.as_bytes();
+    let mut args = Vec::with_capacity(count);
+    let mut i = from;
+    let mut remaining = count;
+    if let (Some(default), true) = (default, count > 0) {
+        let start = skip_tex_argument_space(src, i);
+        if bytes.get(start) == Some(&b'[') {
+            if let Some(end) = crate::parser::tex_group_end(src, start, b'[', b']') {
+                args.push(src[start + 1..end - 1].to_string());
+                i = end;
+            } else {
+                args.push(default.to_string());
+            }
+        } else {
+            args.push(default.to_string());
+        }
+        remaining -= 1;
+    }
+    for _ in 0..remaining {
+        let start = skip_tex_argument_space(src, i);
+        if bytes.get(start) != Some(&b'{') {
+            args.push(String::new());
+            continue;
+        }
+        let Some(end) = crate::parser::tex_group_end(src, start, b'{', b'}') else {
+            args.push(String::new());
+            continue;
+        };
+        args.push(src[start + 1..end - 1].to_string());
+        i = end;
+    }
+    (args, i)
+}
+
+fn fill_citation_placeholders(
+    template: &str,
+    args: &[String],
+    byte_limit: usize,
+) -> Option<String> {
+    let bytes = template.as_bytes();
+    let mut output_len = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'#' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'#' {
+                output_len = output_len.checked_add(1)?;
+                i += 2;
+                continue;
+            }
+            if next.is_ascii_digit() && next != b'0' {
+                if let Some(argument) = args.get((next - b'0') as usize - 1) {
+                    output_len = output_len.checked_add(argument.len())?;
+                }
+                i += 2;
+                continue;
+            }
+        }
+        let ch = template[i..].chars().next().unwrap_or('\0');
+        output_len = output_len.checked_add(ch.len_utf8())?;
+        i += ch.len_utf8();
+    }
+    if output_len > byte_limit {
+        return None;
+    }
+
+    let mut out = String::with_capacity(output_len);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'#' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'#' {
+                out.push('#');
+                i += 2;
+                continue;
+            }
+            if next.is_ascii_digit() && next != b'0' {
+                if let Some(argument) = args.get((next - b'0') as usize - 1) {
+                    out.push_str(argument);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        let ch = template[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    Some(out)
+}
+
+fn record_citation_keys(keys: impl IntoIterator<Item = String>, state: &mut State<'_>) {
+    for key in keys {
+        if state.labels.citation_number.contains_key(&key) {
+            continue;
+        }
+        let n = state.labels.cite_order.len() as u32 + 1;
+        state.labels.citation_number.insert(key.clone(), n);
+        state.labels.cite_order.push(key);
+    }
+}
+
+fn skip_tex_argument_space(src: &str, mut i: usize) -> usize {
+    let bytes = src.as_bytes();
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'%') {
+            return i;
+        }
+        while i < bytes.len() && bytes[i] != b'\n' {
+            i += 1;
         }
     }
 }
@@ -553,45 +1087,11 @@ fn label_from_raw(raw: &str) -> Option<String> {
 }
 
 fn labels_from_latex(src: &str) -> Vec<String> {
-    let needle = "\\label";
-    let bytes = src.as_bytes();
-    let mut labels = Vec::new();
-    let mut search_from = 0usize;
-    while let Some(found) = src[search_from..].find(needle) {
-        let start = search_from + found + needle.len();
-        let mut i = start;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if bytes.get(i) != Some(&b'{') {
-            search_from = start;
-            continue;
-        }
-        let arg_start = i + 1;
-        let mut depth = 1i32;
-        i = arg_start;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\\' if i + 1 < bytes.len() => {
-                    i += 2;
-                    continue;
-                }
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        labels.push(src[arg_start..i].trim().to_string());
-                        i += 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        search_from = i;
-    }
-    labels
+    crate::parser::live_braced_command_calls(src, &["label"], 0)
+        .into_iter()
+        .map(|call| call.value.trim().to_string())
+        .filter(|label| !label.is_empty())
+        .collect()
 }
 
 fn split_math_rows(src: &str) -> Vec<&str> {
@@ -953,7 +1453,11 @@ fn is_multirow_numbered_math_env(env: &str) -> bool {
 }
 
 fn is_float_env(env: &str) -> bool {
-    matches!(env.trim_end_matches('*'), "figure" | "table")
+    matches!(env.trim_end_matches('*'), "figure" | "table" | "longtable")
+}
+
+fn is_native_table_env(env: &str) -> bool {
+    matches!(env, "tabular" | "tabular*" | "tabularx")
 }
 
 #[cfg(test)]
@@ -1014,6 +1518,59 @@ mod tests {
             &TheoremRegistry::with_builtin_defaults(),
             None,
         )
+    }
+
+    #[test]
+    fn citations_inside_native_tables_keep_document_order() {
+        let mut ns = nodes(concat!(
+            "\\cite{before}\n",
+            "\\begin{tabular}{l}\n",
+            "\\cite[see][p.~2]{cell-a, cell-b}\\\\\n",
+            "\\verb|\\cite{literal}| % \\cite{comment}\n",
+            "\\iffalse\\cite{false}\\fi\n",
+            "\\end{tabular}\n",
+            "\\begin{table}\n",
+            "\\caption{A source \\cite{caption}}\n",
+            "\\begin{tabular}{l}\\cite{float-cell}\\\\\\end{tabular}\n",
+            "\\end{table}\n",
+            "\\begin{longtable}{l}\\cite{long}\\\\\\end{longtable}\n",
+            "\\cite{after}\n",
+        ));
+        let labels = assign(&mut ns);
+
+        assert_eq!(
+            labels.cite_order,
+            [
+                "before",
+                "cell-a",
+                "cell-b",
+                "caption",
+                "float-cell",
+                "long",
+                "after",
+            ]
+        );
+        assert_eq!(labels.citation_number.get("cell-a"), Some(&2));
+        assert_eq!(labels.citation_number.get("float-cell"), Some(&5));
+        assert!(!labels.citation_number.contains_key("literal"));
+        assert!(!labels.citation_number.contains_key("comment"));
+        assert!(!labels.citation_number.contains_key("false"));
+    }
+
+    #[test]
+    fn every_longtable_advances_the_table_counter() {
+        let mut ns = nodes(concat!(
+            "\\begin{longtable}{l}Plain\\\\\\label{tab:plain}\\end{longtable}\n",
+            "\\begin{longtable}{l}\\caption*{Starred}\\\\\\label{tab:star}\\end{longtable}\n",
+            "\\begin{longtable}{l}\\caption{Numbered}\\\\\\label{tab:numbered}\\end{longtable}\n",
+        ));
+        let labels = assign(&mut ns);
+        assert_eq!(labels.number.get("tab:plain").map(String::as_str), Some("1"));
+        assert_eq!(labels.number.get("tab:star").map(String::as_str), Some("2"));
+        assert_eq!(
+            labels.number.get("tab:numbered").map(String::as_str),
+            Some("3")
+        );
     }
 
     #[test]

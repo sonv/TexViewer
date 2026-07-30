@@ -101,7 +101,14 @@ fn finish_render(
         }
         keys
     });
-    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms, referenced);
+    let labels = numbering::assign_numbers_with_macros(
+        &mut body,
+        &bib,
+        bib_style,
+        &thms,
+        referenced,
+        &preamble.macros,
+    );
     let mut sync = SyncIndex::new();
     // Inject the resolved root path so the topbar can show "title — path".
     // Done as a clone to avoid asking callers to mutate the &HtmlOptions

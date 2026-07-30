@@ -23,16 +23,22 @@ use crate::numbering::LabelTable;
 use crate::sync::{SyncIndex, SyncKind};
 
 mod bib;
+mod color;
 mod math;
 mod shell;
+mod table;
 mod util;
 use bib::format_bib_entry;
+use color::resolve_css as resolve_color_css;
 use math::{
     equation_number_html, equation_row_refkey_html, label_alias_anchors, math_row_spans,
     math_row_tex_spans, render_latex_text_with_math, resolve_math_refs, strip_labels,
     write_float_placeholder, write_flow_marker, write_inline_math_span,
 };
 use shell::wrap_in_shell;
+use table::{
+    first_nested_tabular, is_tabular_environment, render_tabular, render_tabular_with_number,
+};
 use util::{
     balanced_group_end, capitalize, data_src, escape_attr, escape_html, escape_math, fnv_hash,
     is_blank_line_separator, latex_command_arg, latex_command_args, latex_command_call,
@@ -204,6 +210,7 @@ pub fn render(
     // Make the document's \newcommand definitions + the TOML [text-macros]
     // templates available to the inline text renderer for this render.
     install_text_macros(preamble, opts);
+    color::install(&preamble.raw_preamble);
     reset_footnote_counter();
     let mut idgen = IdGen::default();
     let mut ctx = RenderCtx {
@@ -587,15 +594,16 @@ fn quoted_attr_end(s: &str, start: usize) -> Option<usize> {
 }
 
 fn is_top_level_inline_node(node: &Node) -> bool {
-    matches!(
-        node.kind,
+    match &node.kind {
+        NodeKind::TextColor { .. } => node.children.iter().all(is_top_level_inline_node),
         NodeKind::Text(_)
-            | NodeKind::InlineMath(_)
-            | NodeKind::Ref { .. }
-            | NodeKind::Cite { .. }
-            | NodeKind::OpaqueCmd { .. }
-            | NodeKind::Comment(_)
-    )
+        | NodeKind::InlineMath(_)
+        | NodeKind::Ref { .. }
+        | NodeKind::Cite { .. }
+        | NodeKind::OpaqueCmd { .. }
+        | NodeKind::Comment(_) => true,
+        _ => false,
+    }
 }
 
 fn flow_command_name(node: &Node) -> Option<&str> {
@@ -799,6 +807,20 @@ fn write_source_space_anchor(out: &mut String, span: &Span, ctx: &mut RenderCtx<
 }
 
 fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> String {
+    if contains_stateful_color_switch(s) {
+        let rendered = render_inline_latex(s, ctx.labels);
+        if rendered.is_empty() {
+            return rendered;
+        }
+        let id = ctx.idgen.next("srcw");
+        record(ctx, &id, span, None);
+        return format!(
+            r#"<span class="src-word" id="{id}" data-src="{src}">{rendered}</span>"#,
+            id = escape_attr(&id),
+            src = escape_attr(&data_src(span)),
+        );
+    }
+
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
     while i < s.len() {
@@ -836,13 +858,11 @@ fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderC
         let token_end = if ch == '\\' {
             latex_source_token_end(s, i).unwrap_or_else(|| i + ch.len_utf8())
         } else if ch == '{' {
-            // Keep `{` glued to its matching `}` when the group opens
-            // with a font-switch command (e.g. `{\bf foo}`), so the
-            // wrapping styling reaches `render_inline_latex` as one
-            // unit instead of getting tokenised away. For other groups
-            // we still pass the `{` through as a single char so the
-            // existing brace-stripping behaviour is preserved.
-            if let Some(end) = font_switch_group_end(s, i) {
+            // Keep `{` glued to its matching `}` when the group opens with a
+            // stateful inline switch (for example `{\bf foo}` or
+            // `{\color{red} foo}`), so its scope reaches the inline renderer
+            // as one unit instead of being tokenized away.
+            if let Some(end) = inline_switch_group_end(s, i) {
                 end
             } else {
                 let start = i;
@@ -879,12 +899,28 @@ fn render_inline_latex_with_source_spans(s: &str, span: &Span, ctx: &mut RenderC
     out
 }
 
-/// If `start` points at `{` and the group opens with an old-style
-/// font-switch command (`\bf`, `\em`, `\it`, `\tt`, `\sc` and their
-/// `\bfseries` / `\itshape` / `\ttfamily` / `\scshape` long forms),
-/// return the index just past the matching `}`. Used by the source-span
-/// tokeniser so the whole `{\bf …}` chunk is rendered as one unit.
-fn font_switch_group_end(s: &str, start: usize) -> Option<usize> {
+fn contains_stateful_color_switch(s: &str) -> bool {
+    [r"\color", r"\normalcolor"].iter().any(|needle| {
+        let mut from = 0usize;
+        while let Some(offset) = s[from..].find(needle) {
+            let end = from + offset + needle.len();
+            if s.as_bytes()
+                .get(end)
+                .is_none_or(|byte| !byte.is_ascii_alphabetic() && *byte != b'@')
+            {
+                return true;
+            }
+            from = end;
+        }
+        false
+    })
+}
+
+/// If `start` points at `{` and the group opens with an old-style font switch
+/// or a text-color declaration, return the index just past the matching `}`.
+/// Used by the source-span tokenizer so the whole scoped chunk renders as one
+/// unit.
+fn inline_switch_group_end(s: &str, start: usize) -> Option<usize> {
     let bytes = s.as_bytes();
     if bytes.get(start) != Some(&b'{') {
         return None;
@@ -902,7 +938,7 @@ fn font_switch_group_end(s: &str, start: usize) -> Option<usize> {
         n_end += 1;
     }
     let cmd = &s[n_start..n_end];
-    let is_font_switch = matches!(
+    let is_inline_switch = matches!(
         cmd,
         "bf" | "bfseries"
             | "em"
@@ -913,8 +949,10 @@ fn font_switch_group_end(s: &str, start: usize) -> Option<usize> {
             | "ttfamily"
             | "sc"
             | "scshape"
+            | "color"
+            | "normalcolor"
     );
-    if !is_font_switch {
+    if !is_inline_switch {
         return None;
     }
     let mut depth = 1i32;
@@ -1136,6 +1174,18 @@ fn first_nested_tikz(source: &str) -> Option<(String, String)> {
     )
 }
 
+fn write_opaque_environment(out: &mut String, env: &str, body: &str) {
+    // Best-effort fallback: keep the source readable if a dedicated renderer
+    // cannot safely understand it. Math remains inert in this path.
+    writeln!(
+        out,
+        r#"<div class="opaque-env" data-env="{env}">{body}</div>"#,
+        env = escape_attr(env),
+        body = escape_html(body),
+    )
+    .unwrap();
+}
+
 fn tikz_html(env: &str, body: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> String {
     let hash = fnv_hash(&format!(
         "tikz-svg-v1\0{env}\0{body}\0{}",
@@ -1183,6 +1233,33 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // straggler inline commands get processed instead of leaking as
             // literal backslash sequences.
             write_text_with_span(out, s, &n.span, ctx);
+        }
+        NodeKind::TextColor { model, color } => {
+            let inline = n.children.iter().all(is_top_level_inline_node);
+            let tag = if inline { "span" } else { "div" };
+            let id = ctx.idgen.next("srcw");
+            if inline {
+                record(ctx, &id, &n.span, None);
+            } else {
+                record_container(ctx, &id, &n.span, None);
+            }
+            if let Some(css) = resolve_color_css(model.as_deref(), color) {
+                write!(
+                    out,
+                    r#"<{tag} class="src-word text-color" id="{id}" data-src="{src}" style="color:{css}">"#,
+                    src = escape_attr(&data_src(&n.span)),
+                )
+                .unwrap();
+            } else {
+                write!(
+                    out,
+                    r#"<{tag} class="src-word" id="{id}" data-src="{src}">"#,
+                    src = escape_attr(&data_src(&n.span)),
+                )
+                .unwrap();
+            }
+            write_children_with_initial_trim(out, &n.children, ctx, false);
+            write!(out, "</{tag}>").unwrap();
         }
         NodeKind::Appendix => { /* numbering marker; no visible output */ }
         NodeKind::Comment(_) => { /* discard */ }
@@ -1460,34 +1537,11 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         NodeKind::Cite { keys } => {
             let id = ctx.idgen.next("cite");
             record(ctx, &id, &n.span, None);
-            let parts: Vec<String> = keys
-                .iter()
-                .map(|k| {
-                    let n = ctx.labels.citation_number.get(k).copied().unwrap_or(0);
-                    match ctx.labels.citation_display.get(k) {
-                        Some(disp) => format!(
-                            r##"<a class="cite" href="#bib-{n}" data-key="{key}">{label}</a>"##,
-                            n = n,
-                            key = escape_attr(k),
-                            label = escape_html(disp),
-                        ),
-                        None => format!(
-                            r#"<span class="cite missing" data-key="{key}">{label}</span>"#,
-                            key = escape_attr(k),
-                            label = escape_html(k),
-                        ),
-                    }
-                })
-                .collect();
-            // Author-year style uses parentheses, the rest use square brackets.
-            let (l, r) = match ctx.bib_style {
-                BibStyle::AuthorYear => ('(', ')'),
-                _ => ('[', ']'),
-            };
+            let (l, r) = citation_delimiters(ctx.bib_style);
             write!(
                 out,
                 r#"<span class="cite-group" id="{id}" data-src="{src}">{l}{}{r}</span>"#,
-                parts.join("; "),
+                citation_links_html(keys, ctx.labels),
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
             )
@@ -1662,22 +1716,45 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 tikz if is_tikz_environment(tikz) => {
                     out.push_str(&tikz_html(tikz, body, &n.span, ctx));
                 }
+                tabular if is_tabular_environment(tabular) => {
+                    let number = (tabular == "longtable")
+                        .then(|| ctx.labels.float_number_for_span(&n.span))
+                        .flatten();
+                    if let Some(table) =
+                        render_tabular_with_number(tabular, body, ctx.labels, number)
+                    {
+                        out.push_str(&table);
+                    } else {
+                        write_opaque_environment(out, tabular, body);
+                    }
+                }
                 "figure" | "figure*" | "table" | "table*" => {
-                    let tikz_asset = first_nested_tikz(body).map(|(tikz_env, tikz_body)| {
-                        tikz_html(&tikz_env, &tikz_body, &n.span, ctx)
+                    // Tables are retained opaquely so their alignment syntax is
+                    // not mistaken for prose. Recover the first live nested
+                    // tabular here, using the same comment/definition-aware
+                    // environment scanner as TikZ. If a float contains both,
+                    // the table is the primary asset and avoids duplicating a
+                    // diagram that belongs to one of its cells.
+                    let tabular_asset =
+                        first_nested_tabular(body).and_then(|(tabular_env, tabular_body)| {
+                            render_tabular(&tabular_env, &tabular_body, ctx.labels)
+                        });
+                    let rendered_asset = tabular_asset.or_else(|| {
+                        first_nested_tikz(body).map(|(tikz_env, tikz_body)| {
+                            tikz_html(&tikz_env, &tikz_body, &n.span, ctx)
+                        })
                     });
-                    write_float_placeholder(out, env, body, ctx.labels, tikz_asset.as_deref());
+                    write_float_placeholder(
+                        out,
+                        env,
+                        body,
+                        ctx.labels,
+                        ctx.labels.float_number_for_span(&n.span),
+                        rendered_asset.as_deref(),
+                    );
                 }
                 _ => {
-                    // Best-effort: render verbatim text content so the reader still
-                    // sees the words. Math inside opaque envs won't be typeset.
-                    writeln!(
-                        out,
-                        r#"<div class="opaque-env" data-env="{env}">{body}</div>"#,
-                        env = escape_attr(env),
-                        body = escape_html(body),
-                    )
-                    .unwrap();
+                    write_opaque_environment(out, env, body);
                 }
             }
         }
@@ -2030,8 +2107,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         let style = call
                             .optional
                             .as_deref()
-                            .map(|c| color_to_css(None, c))
-                            .filter(|c| !c.is_empty())
+                            .and_then(|c| resolve_color_css(None, c))
                             .map(|css| format!(r#" style="{prop}:{css}""#))
                             .unwrap_or_default();
                         write!(out, r#"<span class="{klass}"{style}>{content}</span>"#).unwrap();
@@ -2114,7 +2190,16 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
 }
 
 fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
-    let mut trim_next_text = true;
+    write_children_with_initial_trim(out, children, ctx, true);
+}
+
+fn write_children_with_initial_trim(
+    out: &mut String,
+    children: &[Node],
+    ctx: &mut RenderCtx,
+    trim_initial_text: bool,
+) {
+    let mut trim_next_text = trim_initial_text;
     let mut previous_was_display = false;
     let mut pending_paragraph_indent = false;
     let mut seen_content = false;
@@ -2211,13 +2296,14 @@ fn write_children(out: &mut String, children: &[Node], ctx: &mut RenderCtx) {
 }
 
 fn is_inline_like_node(node: &Node) -> bool {
-    matches!(
-        &node.kind,
+    match &node.kind {
+        NodeKind::TextColor { .. } => node.children.iter().all(is_top_level_inline_node),
         NodeKind::InlineMath(_)
-            | NodeKind::Ref { .. }
-            | NodeKind::Cite { .. }
-            | NodeKind::OpaqueCmd { .. }
-    )
+        | NodeKind::Ref { .. }
+        | NodeKind::Cite { .. }
+        | NodeKind::OpaqueCmd { .. } => true,
+        _ => false,
+    }
 }
 
 fn is_chunked_block_child(node: &Node) -> bool {
@@ -2231,7 +2317,8 @@ fn is_chunked_block_child(node: &Node) -> bool {
             | NodeKind::Letter { .. }
             | NodeKind::LetterOpening { .. }
             | NodeKind::LetterClosing { .. }
-    )
+    ) || matches!(&node.kind, NodeKind::TextColor { .. })
+        && !node.children.iter().all(is_top_level_inline_node)
 }
 
 /// Take a paragraph-chunk buffer and wrap it in a hashed `proof-para` span
@@ -2445,13 +2532,45 @@ fn proof_head_html(title: &str, labels: &LabelTable) -> String {
     )
 }
 
+fn citation_delimiters(style: BibStyle) -> (char, char) {
+    match style {
+        BibStyle::AuthorYear => ('(', ')'),
+        _ => ('[', ']'),
+    }
+}
+
+fn citation_links_html(keys: &[String], labels: &LabelTable) -> String {
+    keys.iter()
+        .map(|key| {
+            let number = labels.citation_number.get(key).copied().unwrap_or(0);
+            match labels.citation_display.get(key) {
+                Some(display) => format!(
+                    r##"<a class="cite" href="#bib-{number}" data-key="{key}">{label}</a>"##,
+                    key = escape_attr(key),
+                    label = escape_html(display),
+                ),
+                None => format!(
+                    r#"<span class="cite missing" data-key="{key}">{label}</span>"#,
+                    key = escape_attr(key),
+                    label = escape_html(key),
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// LaTeX-text → HTML for strings extracted into AST fields (section titles,
 /// theorem names, proof "of" args, omitref payloads). Handles a curated set
 /// of inline commands so embedded `\ref` / `\emph` / `\textbf` etc. don't
 /// reach MathJax or land in the output as raw `\name{...}` source.
 pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
+    let Some(_depth_guard) = InlineRenderDepthGuard::enter() else {
+        return escape_html(s);
+    };
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
+    let mut color_span_open = false;
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
@@ -2488,6 +2607,29 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             i += 1;
             continue;
         }
+        // TeX inline/display delimiters that occur inside title-like fields,
+        // table cells, or a scoped color group. These contexts cannot host a
+        // block-level display node, so both forms use the lightweight inline
+        // MathJax wrapper while preserving the formula itself.
+        if b == b'\\' && matches!(bytes.get(i + 1), Some(b'(') | Some(b'[')) {
+            let close = if bytes[i + 1] == b'(' { b')' } else { b']' };
+            let mut k = i + 2;
+            while k + 1 < bytes.len() {
+                if bytes[k] == b'\\' && bytes[k + 1] == close {
+                    break;
+                }
+                k += if bytes[k].is_ascii() {
+                    1
+                } else {
+                    s[k..].chars().next().map_or(1, char::len_utf8)
+                };
+            }
+            if k + 1 < bytes.len() {
+                write_inline_math_span(&mut out, &s[i + 2..k]);
+                i = k + 2;
+                continue;
+            }
+        }
         // Paragraph break: two or more consecutive newlines (with possible
         // intermediate whitespace) → `<br><br>`. A single newline is just
         // inter-word whitespace, as in LaTeX.
@@ -2512,67 +2654,59 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             i = j;
             continue;
         }
+        if b == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            // A TeX comment consumes the line ending as well.
+            if i < bytes.len() {
+                i += 1;
+            }
+            continue;
+        }
         if b != b'\\' {
             // LaTeX grouping braces have no visual effect — strip them so
             // text like `Hello {grouping} world` reads as `Hello grouping
             // world` rather than literally including the braces.
             if b == b'{' {
-                // Old-style font-switch group: `{\bf foo}`, `{\em foo}`,
-                // `{\it foo}`, `{\tt foo}`, `{\sc foo}`. The switch
-                // command takes no arg in LaTeX — it changes the font
-                // for the rest of the enclosing group. Detect that
-                // shape so the wrapping styling actually reaches HTML
-                // (otherwise the command falls through to "unknown,
-                // drop silently" and only the plain text survives).
-                let mut k = i + 1;
-                while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == b'\t') {
-                    k += 1;
-                }
-                if k < bytes.len() && bytes[k] == b'\\' {
-                    let n_start = k + 1;
-                    let mut n_end = n_start;
-                    while n_end < bytes.len() && bytes[n_end].is_ascii_alphabetic() {
-                        n_end += 1;
+                if let Some(group_end) = crate::parser::tex_group_end(s, i, b'{', b'}') {
+                    let inner_end = group_end - 1;
+                    let mut k = i + 1;
+                    while k < inner_end && bytes[k].is_ascii_whitespace() {
+                        k += 1;
                     }
-                    let cmd = &s[n_start..n_end];
-                    let wrap: Option<(&str, &str)> = match cmd {
-                        "bf" | "bfseries" => Some(("<strong>", "</strong>")),
-                        "em" | "it" | "itshape" | "emshape" => Some(("<em>", "</em>")),
-                        "tt" | "ttfamily" => Some(("<code>", "</code>")),
-                        "sc" | "scshape" => Some((r#"<span class="sc">"#, "</span>")),
-                        _ => None,
-                    };
-                    if let Some((open, close)) = wrap {
-                        // Find the matching closing brace at depth 0.
-                        let body_start = n_end;
-                        let mut depth = 1i32;
-                        let mut q = body_start;
-                        while q < bytes.len() {
-                            match bytes[q] {
-                                b'\\' if q + 1 < bytes.len() => {
-                                    q += 2;
-                                    continue;
-                                }
-                                b'{' => depth += 1,
-                                b'}' => {
-                                    depth -= 1;
-                                    if depth == 0 {
-                                        break;
-                                    }
-                                }
-                                _ => {}
-                            }
-                            q += 1;
+                    let mut rendered_switch = false;
+                    if bytes.get(k) == Some(&b'\\') {
+                        let n_start = k + 1;
+                        let mut n_end = n_start;
+                        while n_end < inner_end && bytes[n_end].is_ascii_alphabetic() {
+                            n_end += 1;
                         }
-                        if q < bytes.len() {
+                        let wrap = match &s[n_start..n_end] {
+                            "bf" | "bfseries" => Some(("<strong>", "</strong>")),
+                            "em" | "it" | "itshape" | "emshape" => Some(("<em>", "</em>")),
+                            "tt" | "ttfamily" => Some(("<code>", "</code>")),
+                            "sc" | "scshape" => Some((r#"<span class="sc">"#, "</span>")),
+                            _ => None,
+                        };
+                        if let Some((open, close)) = wrap {
                             out.push_str(open);
-                            out.push_str(&render_inline_latex(&s[body_start..q], labels));
+                            out.push_str(&render_inline_latex(&s[n_end..inner_end], labels));
                             out.push_str(close);
-                            i = q + 1;
-                            continue;
+                            rendered_switch = true;
                         }
                     }
+                    if !rendered_switch {
+                        // Recurse for every ordinary TeX group. Stateful
+                        // switches opened inside this call close at its end,
+                        // restoring the surrounding group's color/font state.
+                        out.push_str(&render_inline_latex(&s[i + 1..inner_end], labels));
+                    }
+                    i = group_end;
+                    continue;
                 }
+                // Incomplete group during an edit: drop only the brace and
+                // keep rendering the useful suffix.
                 i += 1;
                 continue;
             }
@@ -2697,6 +2831,60 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
         }
         let name = &s[cmd_start..cmd_end];
 
+        if crate::parser::is_inline_literal_command(name) {
+            if let Some((payload, next)) = crate::parser::inline_literal_payload(s, name, cmd_end) {
+                write!(
+                    out,
+                    r#"<code class="inline-literal">{}</code>"#,
+                    escape_html(&payload)
+                )
+                .unwrap();
+                i = next;
+                continue;
+            }
+        }
+        if name == "string" {
+            let token_start = skip_tex_argument_space(s, cmd_end);
+            if token_start < bytes.len() {
+                let token_end = if bytes[token_start] == b'\\' {
+                    let mut end = token_start + 1;
+                    if bytes
+                        .get(end)
+                        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'@')
+                    {
+                        while end < bytes.len()
+                            && (bytes[end].is_ascii_alphabetic() || bytes[end] == b'@')
+                        {
+                            end += 1;
+                        }
+                    } else if end < bytes.len() {
+                        end += s[end..].chars().next().map_or(1, char::len_utf8);
+                    }
+                    end
+                } else {
+                    token_start + s[token_start..].chars().next().map_or(1, char::len_utf8)
+                };
+                out.push_str(&escape_html(&s[token_start..token_end]));
+                i = token_end;
+                continue;
+            }
+        }
+        if matches!(name, "detokenize" | "unexpanded") {
+            if let Some((payload, next)) = read_delim(s, cmd_end, b'{', b'}') {
+                out.push_str(&escape_html(&payload));
+                i = next;
+                continue;
+            }
+        }
+
+        // User text macros: \newcommand bodies (re-rendered) and TOML
+        // [text-macros] HTML templates. Defined names win over the built-in
+        // fallbacks below, matching \renewcommand intent.
+        if let Some(next) = render_text_macro(&mut out, name, s, cmd_end, labels) {
+            i = next;
+            continue;
+        }
+
         // Built-in `\textcolor[model]{color}{text}` → colored span.
         if name == "textcolor" {
             if let Some(next) = render_textcolor(&mut out, s, cmd_end, labels) {
@@ -2704,12 +2892,52 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
                 continue;
             }
         }
-        // User text macros: \newcommand bodies (re-rendered) and TOML
-        // [text-macros] HTML templates. Defined names win over the built-in
-        // fallbacks below, matching \renewcommand intent.
-        if let Some(next) = render_text_macro(&mut out, name, s, cmd_end, labels) {
-            i = next;
+        if name == "color" {
+            if let Some((css, next)) = read_color_declaration(s, cmd_end) {
+                if let Some(css) = css {
+                    if color_span_open {
+                        out.push_str("</span>");
+                    }
+                    write!(out, r#"<span class="text-color" style="color:{css}">"#).unwrap();
+                    color_span_open = true;
+                }
+                i = next;
+                continue;
+            }
+        }
+        if name == "normalcolor" {
+            if color_span_open {
+                out.push_str("</span>");
+            }
+            out.push_str(r#"<span class="text-color text-color-normal">"#);
+            color_span_open = true;
+            i = cmd_end;
             continue;
+        }
+        if name == "colorbox" {
+            if let Some(next) = render_color_box(&mut out, s, cmd_end, labels, false) {
+                i = next;
+                continue;
+            }
+        }
+        if name == "fcolorbox" {
+            if let Some(next) = render_color_box(&mut out, s, cmd_end, labels, true) {
+                i = next;
+                continue;
+            }
+        }
+        if crate::numbering::is_citation_command(name) {
+            if let Some((keys, next)) = crate::numbering::citation_call_after_command(s, cmd_end) {
+                let (left, right) = citation_delimiters(labels.bib_style);
+                write!(
+                    out,
+                    r#"<span class="cite-group">{left}{}{right}</span>"#,
+                    citation_links_html(&keys, labels),
+                )
+                .unwrap();
+                i = next;
+                continue;
+            }
         }
 
         // Read one balanced brace arg if present.
@@ -2746,6 +2974,24 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
         };
 
         match (name, arg) {
+            ("begin", Some((env, next))) | ("end", Some((env, next))) => {
+                let boundary = name;
+                let latex = format!(r"\{boundary}{{{env}}}");
+                let aria = format!(
+                    "Unsupported LaTeX environment {boundary}s: {}; contents are shown without environment formatting",
+                    env.trim()
+                );
+                write!(
+                    out,
+                    r#"<span class="unsupported-env-inline unsupported-env-{boundary}" data-env="{env}" role="note" aria-label="{aria}" title="MathPreview does not handle this environment"><code aria-hidden="true">{latex}</code></span>"#,
+                    boundary = boundary,
+                    env = escape_attr(env.trim()),
+                    aria = escape_attr(&aria),
+                    latex = escape_html(&latex),
+                )
+                .unwrap();
+                i = next;
+            }
             ("ref", Some((key, next))) | ("pageref", Some((key, next))) => {
                 let kind_str = if name == "pageref" { "pageref" } else { "ref" };
                 let text = labels.resolve_ref(crate::ast::RefKind::Ref, key);
@@ -2845,6 +3091,9 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             }
         }
     }
+    if color_span_open {
+        out.push_str("</span>");
+    }
     out
 }
 
@@ -2866,10 +3115,45 @@ struct TextMacroDef {
     default: Option<String>,
 }
 
+struct InlineRenderDepthGuard;
+
+impl InlineRenderDepthGuard {
+    fn enter() -> Option<Self> {
+        INLINE_RENDER_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current >= MAX_INLINE_RENDER_DEPTH {
+                None
+            } else {
+                if current == 0 {
+                    TEXT_MACRO_EXPANSIONS_LEFT
+                        .with(|budget| budget.set(MAX_TEXT_MACRO_EXPANSIONS));
+                    TEXT_MACRO_BYTES_LEFT
+                        .with(|budget| budget.set(MAX_TEXT_MACRO_EXPANDED_BYTES));
+                }
+                depth.set(current + 1);
+                Some(Self)
+            }
+        })
+    }
+}
+
+impl Drop for InlineRenderDepthGuard {
+    fn drop(&mut self) {
+        INLINE_RENDER_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 thread_local! {
     static TEXT_MACROS: std::cell::RefCell<std::collections::HashMap<String, TextMacroDef>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static EXPAND_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static INLINE_RENDER_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static TEXT_MACRO_EXPANSIONS_LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static TEXT_MACRO_BYTES_LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static TEXT_MACRO_DOCUMENT_EXPANSIONS_LEFT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    static TEXT_MACRO_DOCUMENT_BYTES_LEFT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
     /// Sequential footnote number for the current render. Thread-local (like the
     /// macro table) so the inline-text renderer — which has no `&mut RenderCtx`
     /// — can number footnotes nested inside section titles, `\emph{…}`, theorem
@@ -2878,6 +3162,11 @@ thread_local! {
 }
 
 const MAX_EXPAND_DEPTH: u32 = 32;
+const MAX_INLINE_RENDER_DEPTH: u32 = 128;
+const MAX_TEXT_MACRO_EXPANSIONS: usize = 1_024;
+const MAX_TEXT_MACRO_EXPANDED_BYTES: usize = 1 << 20;
+const MAX_DOCUMENT_TEXT_MACRO_EXPANSIONS: usize = 16_384;
+const MAX_DOCUMENT_TEXT_MACRO_EXPANDED_BYTES: usize = 8 << 20;
 
 /// Reset per-render footnote numbering. Called at the top of the render walk.
 fn reset_footnote_counter() {
@@ -2948,6 +3237,10 @@ fn install_text_macros(preamble: &ExtractedPreamble, opts: &HtmlOptions) {
         );
     }
     TEXT_MACROS.with(|t| *t.borrow_mut() = map);
+    TEXT_MACRO_DOCUMENT_EXPANSIONS_LEFT
+        .with(|budget| budget.set(MAX_DOCUMENT_TEXT_MACRO_EXPANSIONS));
+    TEXT_MACRO_DOCUMENT_BYTES_LEFT
+        .with(|budget| budget.set(MAX_DOCUMENT_TEXT_MACRO_EXPANDED_BYTES));
 }
 
 /// Highest `#1`..`#9` index referenced in a template (its arg count).
@@ -2983,11 +3276,22 @@ fn render_text_macro(
         // Runaway / recursive expansion — stop expanding to break the loop.
         return Some(next);
     }
+    if !reserve_text_macro_call() {
+        return Some(next);
+    }
     if def.html {
         let rendered: Vec<String> = args.iter().map(|a| render_inline_latex(a, labels)).collect();
-        out.push_str(&fill_placeholders(&def.body, &rendered));
+        let Some(expanded) = fill_placeholders(&def.body, &rendered, text_macro_bytes_left())
+        else {
+            return Some(next);
+        };
+        consume_text_macro_bytes(expanded.len());
+        out.push_str(&expanded);
     } else {
-        let expanded = fill_placeholders(&def.body, &args);
+        let Some(expanded) = fill_placeholders(&def.body, &args, text_macro_bytes_left()) else {
+            return Some(next);
+        };
+        consume_text_macro_bytes(expanded.len());
         EXPAND_DEPTH.with(|d| d.set(depth + 1));
         out.push_str(&render_inline_latex(&expanded, labels));
         EXPAND_DEPTH.with(|d| d.set(depth));
@@ -2995,11 +3299,65 @@ fn render_text_macro(
     Some(next)
 }
 
+fn reserve_text_macro_call() -> bool {
+    TEXT_MACRO_EXPANSIONS_LEFT.with(|calls| {
+        TEXT_MACRO_DOCUMENT_EXPANSIONS_LEFT.with(|document_calls| {
+            let remaining = calls.get();
+            let document_remaining = document_calls.get();
+            if remaining == 0 || document_remaining == 0 {
+                false
+            } else {
+                calls.set(remaining - 1);
+                document_calls.set(document_remaining - 1);
+                true
+            }
+        })
+    })
+}
+
+fn text_macro_bytes_left() -> usize {
+    TEXT_MACRO_BYTES_LEFT.with(|local| {
+        TEXT_MACRO_DOCUMENT_BYTES_LEFT.with(|document| local.get().min(document.get()))
+    })
+}
+
+fn consume_text_macro_bytes(bytes: usize) {
+    TEXT_MACRO_BYTES_LEFT.with(|budget| budget.set(budget.get().saturating_sub(bytes)));
+    TEXT_MACRO_DOCUMENT_BYTES_LEFT
+        .with(|budget| budget.set(budget.get().saturating_sub(bytes)));
+}
+
 /// Replace `#1`..`#9` in `template` with `args` (`#k` → `args[k-1]`, missing →
 /// empty). `##` is a literal `#`.
-fn fill_placeholders(template: &str, args: &[String]) -> String {
+fn fill_placeholders(template: &str, args: &[String], byte_limit: usize) -> Option<String> {
     let b = template.as_bytes();
-    let mut out = String::with_capacity(template.len());
+    let mut output_len = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' && i + 1 < b.len() {
+            let c = b[i + 1];
+            if c == b'#' {
+                output_len = output_len.checked_add(1)?;
+                i += 2;
+                continue;
+            }
+            if c.is_ascii_digit() && c != b'0' {
+                if let Some(a) = args.get((c - b'0') as usize - 1) {
+                    output_len = output_len.checked_add(a.len())?;
+                }
+                i += 2;
+                continue;
+            }
+        }
+        let ch = template[i..].chars().next().unwrap();
+        output_len = output_len.checked_add(ch.len_utf8())?;
+        i += ch.len_utf8();
+    }
+    if output_len > byte_limit {
+        return None;
+    }
+
+    let mut out = String::with_capacity(output_len);
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'#' && i + 1 < b.len() {
@@ -3021,18 +3379,13 @@ fn fill_placeholders(template: &str, args: &[String]) -> String {
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    Some(out)
 }
 
 /// Read up to `n` argument groups starting at `from`. If `default` is set the
 /// first arg is optional (`[..]` or the default); the rest are braced `{..}`.
 /// Returns the raw arg bodies and the index past the last consumed group.
-fn read_braced_args(
-    s: &str,
-    from: usize,
-    n: usize,
-    default: Option<&str>,
-) -> (Vec<String>, usize) {
+fn read_braced_args(s: &str, from: usize, n: usize, default: Option<&str>) -> (Vec<String>, usize) {
     let bytes = s.as_bytes();
     let mut args: Vec<String> = Vec::with_capacity(n);
     let mut i = from;
@@ -3070,44 +3423,121 @@ fn read_braced_args(
 /// doesn't parse (so the caller falls back to generic handling).
 fn render_textcolor(out: &mut String, s: &str, from: usize, labels: &LabelTable) -> Option<usize> {
     let bytes = s.as_bytes();
-    let mut i = from;
-    while i < bytes.len() && bytes[i] == b' ' {
-        i += 1;
-    }
+    let mut i = skip_tex_argument_space(s, from);
     let mut model = None;
     if bytes.get(i) == Some(&b'[') {
         let (m, next) = read_delim(s, i, b'[', b']')?;
         model = Some(m);
-        i = next;
+        i = skip_tex_argument_space(s, next);
     }
     let (color, after_color) = read_delim(s, i, b'{', b'}')?;
     let (text, after_text) = read_delim(s, after_color, b'{', b'}')?;
-    let css = color_to_css(model.as_deref(), &color);
-    let _ = write!(
-        out,
-        r#"<span style="color:{css}">{}</span>"#,
-        render_inline_latex(&text, labels)
-    );
+    let content = render_latex_text_with_math(&text, labels);
+    if let Some(css) = resolve_color_css(model.as_deref(), &color) {
+        let _ = write!(
+            out,
+            r#"<span class="text-color" style="color:{css}">{content}</span>"#
+        );
+    } else {
+        // A complete but unsupported color should not make its declaration
+        // visible or discard the useful text it wraps.
+        out.push_str(&content);
+    }
     Some(after_text)
 }
 
-/// Map a LaTeX color spec to a CSS color, then sanitize so it can't break out
-/// of the `style` attribute. `[HTML]{RRGGBB}` → `#RRGGBB`; `[rgb]`/`[RGB]` →
-/// `rgb(...)`; otherwise the name passes through (CSS knows xcolor's names).
-fn color_to_css(model: Option<&str>, c: &str) -> String {
-    let c = c.trim();
-    let raw = match model {
-        Some(m) if m.eq_ignore_ascii_case("HTML") => format!("#{c}"),
-        Some(m) if m.eq_ignore_ascii_case("rgb") || m.eq_ignore_ascii_case("RGB") => {
-            format!("rgb({c})")
+/// Parse the model/specification portion of `\color[model]{spec}`. A
+/// syntactically complete but unknown color still returns its end position so
+/// the declaration never leaks as visible text.
+fn read_color_declaration(s: &str, from: usize) -> Option<(Option<String>, usize)> {
+    let bytes = s.as_bytes();
+    let mut i = skip_tex_argument_space(s, from);
+    let mut model = None;
+    if bytes.get(i) == Some(&b'[') {
+        let (value, next) = read_delim(s, i, b'[', b']')?;
+        model = Some(value);
+        i = skip_tex_argument_space(s, next);
+    }
+    let (spec, next) = read_delim(s, i, b'{', b'}')?;
+    Some((resolve_color_css(model.as_deref(), &spec), next))
+}
+
+fn render_color_box(
+    out: &mut String,
+    s: &str,
+    from: usize,
+    labels: &LabelTable,
+    framed: bool,
+) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = skip_tex_argument_space(s, from);
+    let mut first_model = None;
+    if bytes.get(i) == Some(&b'[') {
+        let (value, next) = read_delim(s, i, b'[', b']')?;
+        first_model = Some(value);
+        i = skip_tex_argument_space(s, next);
+    }
+
+    let (first, after_first) = read_delim(s, i, b'{', b'}')?;
+    let (background, background_model, after_background, frame) = if framed {
+        i = skip_tex_argument_space(s, after_first);
+        let mut background_model = None;
+        if bytes.get(i) == Some(&b'[') {
+            let (value, next) = read_delim(s, i, b'[', b']')?;
+            background_model = Some(value);
+            i = skip_tex_argument_space(s, next);
         }
-        _ => c.to_string(),
+        let (background, after_background) = read_delim(s, i, b'{', b'}')?;
+        (background, background_model, after_background, Some(first))
+    } else {
+        (first, first_model.clone(), after_first, None)
     };
-    raw.chars()
-        .filter(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, '#' | '(' | ')' | ',' | '.' | '%' | ' ')
-        })
-        .collect()
+    let (text, after_text) = read_delim(s, after_background, b'{', b'}')?;
+
+    let background = resolve_color_css(background_model.as_deref(), &background);
+    let frame = frame.and_then(|value| resolve_color_css(first_model.as_deref(), &value));
+    let mut styles = Vec::new();
+    if let Some(background) = background {
+        styles.push(format!("background-color:{background}"));
+    }
+    if framed {
+        styles.push(format!(
+            "border:1px solid {}",
+            frame.unwrap_or_else(|| "currentColor".to_string())
+        ));
+    }
+    let style = if styles.is_empty() {
+        String::new()
+    } else {
+        format!(r#" style="{}""#, styles.join(";"))
+    };
+    let class = if framed {
+        "text-color-box text-color-frame"
+    } else {
+        "text-color-box"
+    };
+    write!(
+        out,
+        r#"<span class="{class}"{style}>{}</span>"#,
+        render_latex_text_with_math(&text, labels)
+    )
+    .unwrap();
+    Some(after_text)
+}
+
+fn skip_tex_argument_space(s: &str, mut i: usize) -> usize {
+    let bytes = s.as_bytes();
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'%') {
+            return i;
+        }
+        while i < bytes.len() && bytes[i] != b'\n' {
+            i += 1;
+        }
+    }
 }
 
 /// Read a `{..}` / `[..]` group at `start` (after optional spaces). Honors
@@ -3115,33 +3545,12 @@ fn color_to_css(model: Option<&str>, c: &str) -> String {
 /// content and the index just past the closer.
 fn read_delim(s: &str, start: usize, open: u8, close: u8) -> Option<(String, usize)> {
     let bytes = s.as_bytes();
-    let mut i = start;
-    while i < bytes.len() && bytes[i] == b' ' {
-        i += 1;
-    }
+    let i = skip_tex_argument_space(s, start);
     if bytes.get(i) != Some(&open) {
         return None;
     }
-    let content_start = i + 1;
-    let mut depth = 1i32;
-    i = content_start;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\\' && i + 1 < bytes.len() {
-            i += 2;
-            continue;
-        }
-        if b == open {
-            depth += 1;
-        } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some((s[content_start..i].to_string(), i + 1));
-            }
-        }
-        i += 1;
-    }
-    None
+    let end = crate::parser::tex_group_end(s, i, open, close)?;
+    Some((s[i + 1..end - 1].to_string(), end))
 }
 
 #[cfg(test)]
@@ -3895,7 +4304,7 @@ mod tests {
         );
         // \add[red]{$x$} carries the color and typesets the math.
         assert!(
-            body.contains("text-decoration-color:red"),
+            body.contains("text-decoration-color:#FF0000"),
             "color missing: {body}"
         );
         assert!(
@@ -3967,14 +4376,283 @@ mod tests {
     #[test]
     fn textcolor_renders_colored_span() {
         let body = render_body("\\begin{document}\n\\textcolor{red}{warn} ok\n\\end{document}\n");
-        assert!(body.contains(r#"<span style="color:red">warn</span>"#), "{body}");
+        assert!(
+            body.contains(r#"<span class="text-color" style="color:#FF0000">warn</span>"#),
+            "{body}"
+        );
     }
 
     #[test]
     fn textcolor_html_model_is_hex() {
         let body =
             render_body("\\begin{document}\n\\textcolor[HTML]{FF8800}{x}\n\\end{document}\n");
-        assert!(body.contains(r##"<span style="color:#FF8800">x</span>"##), "{body}");
+        assert!(
+            body.contains(r##"<span class="text-color" style="color:#FF8800">x</span>"##),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn textcolor_argument_matching_ignores_comments_and_inline_literals() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\textcolor{red}{before % } ignored\n",
+            "after} outside\n",
+            "\\textcolor{blue}{left \\verb|}| right} done\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"style="color:#FF0000">before after</span>"#), "{body}");
+        assert!(body.contains(r#"style="color:#0000FF">left "#), "{body}");
+        assert!(body.contains(r#"<code class="inline-literal">}</code> right</span>"#), "{body}");
+        assert!(!body.contains("ignored"), "comment contents leaked: {body}");
+        assert!(
+            body.contains(">outside</span>") && body.contains(">done</span>"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn stringified_and_detokenized_citations_stay_literal_inside_color() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\textcolor{red}{\\string\\cite{fake} ",
+            "\\detokenize{\\cite{also-fake}} live}\n",
+            "\\printbibliography\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"style="color:#FF0000""#), "{body}");
+        assert!(!body.contains(r#"class="cite""#), "{body}");
+        assert!(!body.contains(r#"data-key="fake""#), "{body}");
+        assert!(!body.contains(r#"data-key="also-fake""#), "{body}");
+    }
+
+    #[test]
+    fn deeply_nested_inline_groups_stop_without_overflowing_the_stack() {
+        let nested = format!("{}deep{}", "{".repeat(2_000), "}".repeat(2_000));
+        let body = render_body(&format!(
+            "\\begin{{document}}\n{nested}\n\\end{{document}}\n"
+        ));
+        assert!(body.contains("deep"), "{body}");
+    }
+
+    #[test]
+    fn scoped_color_keeps_math_and_stops_at_the_group_boundary() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "before {\\color{ForestGreen} green $x+1$} after\n",
+            "\\end{document}\n",
+        ));
+        let color_start = body.find(r#"style="color:#009B55""#).expect("green span");
+        let math = body.find(r#"class="math inline""#).expect("inline math");
+        let after = body.find(">after</span>").expect("following text");
+        let color_end = body[..after].rfind("</span>").expect("green span end");
+        assert!(color_start < math && math < color_end, "{body}");
+        assert!(color_end < after, "color escaped its TeX group: {body}");
+        assert!(!body.contains("ForestGreen"), "color name leaked: {body}");
+    }
+
+    #[test]
+    fn scoped_color_preserves_citations_numbered_displays_comments_and_literals() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "{\\color{red} see \\cite{smith} % hidden }\n",
+            "\\verb|}| tail\n",
+            "\\begin{equation}x=1\\label{eq:colored}\\end{equation}",
+            "}\n",
+            "See \\eqref{eq:colored}.\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"<div class="src-word text-color""#)
+                && body.contains(r#"style="color:#FF0000""#),
+            "{body}"
+        );
+        assert!(body.contains(r#"class="cite""#), "{body}");
+        assert!(
+            body.contains(r#"<code class="inline-literal""#) && body.contains(r#">}</code>"#),
+            "{body}"
+        );
+        assert!(body.contains(r#"class="math display""#), "{body}");
+        assert!(
+            body.contains(r#"data-target="eq:colored" data-kind="eqref">(1)</a>"#),
+            "{body}"
+        );
+        assert!(!body.contains("hidden }"), "comment leaked: {body}");
+    }
+
+    #[test]
+    fn block_scoped_color_is_a_sync_container() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "{\\color{red} before\n",
+                "\\begin{equation}x=1\\end{equation}\n",
+                "after}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let wrapper = out
+            .sync
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.element_id.starts_with("srcw-")
+                    && entry.kind == crate::sync::SyncKind::Container
+            })
+            .expect("block color sync container");
+        let selected = out.sync.leaves_in_range(Path::new("t.tex"), 2, 1, 4, 6);
+        assert!(
+            !selected.contains(&wrapper.element_id),
+            "selection included the whole colored subtree: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn color_groups_preserve_space_and_restore_the_outer_switch() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "a{\\color{red} b}c\n",
+            "\\section{\\color{blue}A {B \\color{red}C} D}\n",
+            "\\color{red} body switch\n",
+            "\\end{document}\n",
+        ));
+        assert!(text_content(&body).contains("a bc"), "{body}");
+        assert!(
+            body.contains(
+                r#"<span class="text-color" style="color:#0000FF">A B <span class="text-color" style="color:#FF0000">C</span> D</span>"#
+            ),
+            "nested color did not restore blue: {body}"
+        );
+        assert!(
+            body.contains(r#"<span class="text-color" style="color:#FF0000"> body switch"#,),
+            "body-level color switch was split from its text: {body}"
+        );
+    }
+
+    #[test]
+    fn color_switch_inside_user_macro_expands_with_its_tex_scope() {
+        let body = render_body(concat!(
+            "\\newcommand{\\ar}[1]{{\\color{red}{#1}}}\n",
+            "\\begin{document}\n",
+            "plain \\ar{solution $x$} plain\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"<span class="text-color" style="color:#FF0000">solution "#),
+            "{body}"
+        );
+        assert!(body.contains(r#"class="math inline""#), "{body}");
+        assert!(!body.contains(">red"), "color argument leaked: {body}");
+        assert_eq!(
+            body.matches(r#"style="color:#FF0000""#).count(),
+            1,
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn color_models_custom_definitions_aliases_and_mixes_render_safely() {
+        let body = render_body(concat!(
+            "\\usepackage{xcolor}\n",
+            "\\definecolor{brand}{HTML}{336699}\n",
+            "\\colorlet{softbrand}{brand!50!white}\n",
+            "\\begin{document}\n",
+            "\\textcolor[RGB]{255,128,0}{A}\n",
+            "\\textcolor[rgb]{1,0.5,0}{B}\n",
+            "\\textcolor[gray]{0.5}{C}\n",
+            "\\textcolor[cmyk]{0,1,1,0}{D}\n",
+            "\\textcolor{brand}{E}\n",
+            "\\textcolor{softbrand}{F}\n",
+            "\\textcolor{red!50!blue}{G}\n",
+            "\\end{document}\n",
+        ));
+        assert_eq!(body.matches("color:#FF8000").count(), 2, "{body}");
+        for expected in [
+            "color:#808080",
+            "color:#FF0000",
+            "color:#336699",
+            "color:#99B3CC",
+            "color:#800080",
+        ] {
+            assert!(body.contains(expected), "missing {expected}: {body}");
+        }
+    }
+
+    #[test]
+    fn invalid_colors_are_consumed_without_style_injection_or_text_loss() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\textcolor{red;position:fixed}{kept} ",
+            "{\\color[HTML]{bad-onload}also kept} end\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains("kept"), "{body}");
+        assert!(body.contains("also kept"), "{body}");
+        assert!(body.contains("end"), "{body}");
+        assert!(!body.contains("position:fixed"), "{body}");
+        assert!(!body.contains("bad-onload"), "{body}");
+    }
+
+    #[test]
+    fn color_boxes_render_models_nested_formatting_and_math() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\colorbox[rgb]{1,0.5,0}{hot $x$} ",
+            "\\fcolorbox[RGB]{0,0,255}[HTML]{FFFF00}{\\textbf{notice}}\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"class="text-color-box" style="background-color:#FF8000""#),
+            "{body}"
+        );
+        assert!(body.contains(r#"class="math inline""#), "{body}");
+        assert!(
+            body.contains(
+                r#"class="text-color-box text-color-frame" style="background-color:#FFFF00;border:1px solid #0000FF""#
+            ),
+            "{body}"
+        );
+        assert!(body.contains("<strong>notice</strong>"), "{body}");
+    }
+
+    #[test]
+    fn color_boxes_preserve_the_surrounding_foreground() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "{\\color{red}\\colorbox{yellow}{alert $x$}}\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"style="color:#FF0000""#)
+                && body.contains(
+                    r#"<span class="text-color-box" style="background-color:#FFFF00">alert "#
+                ),
+            "{body}"
+        );
+        assert!(!body.contains("background-color:#FFFF00;color:"), "{body}");
+    }
+
+    #[test]
+    fn custom_text_color_wraps_inline_math_without_changing_math_tex() {
+        let body = render_body(concat!(
+            "\\usepackage{xcolor}\n",
+            "\\definecolor{brand}{HTML}{336699}\n",
+            "\\begin{document}\n",
+            "\\textcolor{brand}{word $x$}\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"class="text-color" style="color:#336699">word "#),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"data-mathjax-tex="\(x\)""#) && body.contains(r#"data-tex="\(x\)""#),
+            "copy/source TeX was changed: {body}"
+        );
     }
 
     fn tm(html: &str) -> crate::config::TextMacro {
@@ -4715,6 +5393,438 @@ mod tests {
             .body_html
             .contains(r#"<div class="opaque-env" data-env="figure""#));
         assert!(!out.body_html.contains(r#"\includegraphics"#));
+    }
+
+    #[test]
+    fn standalone_tabular_renders_columns_rules_multicolumn_and_inline_content() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "\\begin{tabular}{|l|cr|}\n",
+                "\\toprule\n",
+                "Name & \\multicolumn{2}{c|}{Results}\\\\\n",
+                "\\midrule\n",
+                "Ada \\& Charles & \\textbf{Score} $x^2$ & ",
+                "\\textcolor{red}{10}\\\\[2pt]\n",
+                "\\bottomrule\n",
+                "\\end{tabular}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            out.body_html
+                .contains(r#"<table class="latex-tabular env-tabular""#),
+            "{}",
+            out.body_html
+        );
+        assert!(out.body_html.contains(r#"colspan="2""#));
+        assert!(out.body_html.contains("align-left"));
+        assert!(out.body_html.contains("align-center"));
+        assert!(out.body_html.contains("align-right"));
+        assert!(out.body_html.contains("rule-left"));
+        assert!(out.body_html.contains("rule-right"));
+        assert!(out.body_html.contains("rule-top-strong"));
+        assert!(out.body_html.contains("rule-top"));
+        assert!(out.body_html.contains("rule-bottom-strong"));
+        assert!(out.body_html.contains("Ada &amp; Charles"));
+        assert!(out.body_html.contains("<strong>Score</strong>"));
+        assert!(out.body_html.contains(r#"class="math inline""#));
+        assert!(out.body_html.contains(">10</span>"));
+        assert!(!out.body_html.contains(r#"\multicolumn"#));
+        assert!(!out.body_html.contains(r#"\textcolor"#));
+        assert!(!out
+            .body_html
+            .contains(r#"class="opaque-env" data-env="tabular""#));
+        assert!(
+            out.blocks
+                .iter()
+                .any(|block| block.html.contains("latex-tabular")
+                    && block
+                        .src
+                        .as_deref()
+                        .is_some_and(|src| src.contains("t.tex:2:"))),
+            "tabular block lost its outer source mapping: {:?}",
+            out.blocks
+                .iter()
+                .map(|block| &block.src)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn table_citations_render_and_populate_the_bibliography_in_source_order() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "Before \\cite{before}.\n",
+                "\\begin{tabular}{l}\n",
+                "\\textbf{Evidence \\cite[see][p.~2]{cell-a,cell-b}}\\\\\n",
+                "\\end{tabular}\n",
+                "\\begin{table}\n",
+                "\\caption{Sources \\cite{caption}}\n",
+                "\\begin{tabular}{l}\\cite{float-cell}\\\\\\end{tabular}\n",
+                "\\end{table}\n",
+                "\\printbibliography\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            out.body_html
+                .contains(r#"data-key="cell-a">2</a>; <a class="cite""#),
+            "{}",
+            out.body_html
+        );
+        assert!(out.body_html.contains(r#"data-key="cell-b">3</a>"#));
+        assert!(out.body_html.contains(r#"data-key="caption">4</a>"#));
+        assert!(out.body_html.contains(r#"data-key="float-cell">5</a>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<strong>Evidence <span class="cite-group">["#));
+
+        let references = out
+            .body_html
+            .split(r#"<section class="references""#)
+            .nth(1)
+            .expect("bibliography rendered");
+        let positions = ["before", "cell-a", "cell-b", "caption", "float-cell"].map(|key| {
+            references
+                .find(&format!(r#"data-key="{key}""#))
+                .unwrap_or_else(|| panic!("missing bibliography entry for {key}: {references}"))
+        });
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn table_live_source_joins_comments_and_ignores_dormant_citations() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{tabular}{l}\n",
+            "A% this newline is consumed\n",
+            "B\\\\\n",
+            "\\iftrue Live \\cite{live}\\else Hidden \\cite{hidden}\\fi\\\\\n",
+            "\\newcommand{\\stored}{Stored \\cite{stored}}\n",
+            "\\DeclareDocumentCommand{\\storedx}{}{StoredX \\cite{stored-x}}\n",
+            "\\NewDocumentEnvironment{stored-env}{}",
+            "{StoredEnv \\cite{stored-env}}{}\n",
+            "After\\\\\n",
+            "\\verb|\\cite{literal}|\\\\\n",
+            "\\end{tabular}\n",
+            "\\printbibliography\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(">AB</td>"), "{body}");
+        assert!(body.contains(r#"data-key="live">1</a>"#), "{body}");
+        assert!(!body.contains("Hidden"), "{body}");
+        assert!(!body.contains("Stored"), "{body}");
+        for key in ["hidden", "stored", "stored-x", "stored-env", "literal"] {
+            assert!(
+                !body.contains(&format!(r#"data-key="{key}""#)),
+                "dormant citation {key} was registered: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn textcolor_and_user_macro_citations_inside_tables_are_registered() {
+        let body = render_body(concat!(
+            "\\newcommand{\\tcite}[1]{\\cite{#1}}\n",
+            "\\newcommand{\\discard}[1]{}\n",
+            "\\newcommand{\\wrapper}[1]{\\discard{#1}}\n",
+            "\\begin{document}\n",
+            "\\begin{tabular}{llll}\n",
+            "\\textcolor{red}{\\cite{colored}} & \\tcite{wrapped} & ",
+            "\\wrapper{\\cite{discarded}} & \\cite{real}\\\\\n",
+            "\\end{tabular}\n",
+            "\\printbibliography\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"data-key="colored">1</a>"#), "{body}");
+        assert!(body.contains(r#"data-key="wrapped">2</a>"#), "{body}");
+        assert!(body.contains(r#"data-key="real">3</a>"#), "{body}");
+        assert!(!body.contains(r#"data-key="discarded""#), "{body}");
+        let references = body
+            .split(r#"<section class="references""#)
+            .nth(1)
+            .expect("bibliography rendered");
+        assert!(references.contains(r#"data-key="colored""#), "{references}");
+        assert!(references.contains(r#"data-key="wrapped""#), "{references}");
+        assert!(references.contains(r#"data-key="real""#), "{references}");
+    }
+
+    #[test]
+    fn unrelated_text_macros_cannot_exhaust_table_citation_discovery() {
+        let mut source = concat!(
+            "\\newcommand{\\fmt}[1]{\\textbf{#1}}\n",
+            "\\newcommand{\\tcite}[1]{\\cite{#1}}\n",
+            "\\begin{document}\n",
+        )
+        .to_string();
+        for _ in 0..1_024 {
+            source.push_str("\\fmt{x}\n");
+        }
+        source.push_str(concat!(
+            "\\begin{tabular}{l}\\tcite{late}\\\\\\end{tabular}\n",
+            "\\printbibliography\n",
+            "\\end{document}\n",
+        ));
+        let body = render_body(&source);
+        assert!(body.contains(r#"data-key="late">1</a>"#), "{body}");
+    }
+
+    #[test]
+    fn branching_recursive_text_macro_has_a_bounded_work_budget() {
+        let body = render_body(concat!(
+            "\\newcommand{\\dup}{\\dup\\dup}\n",
+            "\\begin{document}\n",
+            "\\begin{tabular}{l}\\dup\\\\\\end{tabular}\n",
+            "\\cite{after}\n",
+            "\\printbibliography\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"data-key="after">1</a>"#), "{body}");
+    }
+
+    #[test]
+    fn text_macro_work_budget_remains_global_across_inline_roots() {
+        super::TEXT_MACRO_DOCUMENT_EXPANSIONS_LEFT.with(|budget| budget.set(1));
+        super::TEXT_MACRO_DOCUMENT_BYTES_LEFT
+            .with(|budget| budget.set(super::MAX_DOCUMENT_TEXT_MACRO_EXPANDED_BYTES));
+        super::TEXT_MACRO_EXPANSIONS_LEFT
+            .with(|budget| budget.set(super::MAX_TEXT_MACRO_EXPANSIONS));
+        assert!(super::reserve_text_macro_call());
+
+        // Simulate the next independently rendered field/cell. Its local
+        // recursion budget resets, but the document-wide allowance does not.
+        super::TEXT_MACRO_EXPANSIONS_LEFT
+            .with(|budget| budget.set(super::MAX_TEXT_MACRO_EXPANSIONS));
+        assert!(!super::reserve_text_macro_call());
+    }
+
+    #[test]
+    fn unsupported_environment_inside_a_cell_keeps_content_and_marks_boundaries() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{tabular}{l}\n",
+            "\\begin{mystery}Hello $x$\\end{mystery}\\\\\n",
+            "\\end{tabular}\n",
+            "\\end{document}\n",
+        ));
+        assert_eq!(body.matches("unsupported-env-inline").count(), 2, "{body}");
+        assert!(body.contains(r#"\begin{mystery}"#), "{body}");
+        assert!(body.contains(r#"\end{mystery}"#), "{body}");
+        assert!(body.contains("Hello"), "{body}");
+        assert!(body.contains(r#"class="math inline""#), "{body}");
+    }
+
+    #[test]
+    fn literal_environment_inside_a_cell_is_inert_and_cannot_shift_citations() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{tabular}{p{5cm}}\n",
+            "\\begin{lstlisting}\n",
+            "first \\end{other}\n",
+            "inside & literal \\\\ break\n",
+            "\\cite{fake} 50%\n",
+            "\\end{lstlisting}\\\\\n",
+            "After\\\\\n",
+            "\\end{tabular}\n",
+            "\\cite{real}\n",
+            "\\printbibliography\n",
+            "\\end{document}\n",
+        ));
+        assert_eq!(body.matches("<tr").count(), 2, "{body}");
+        assert!(body.contains(r#"class="table-literal-env" data-env="lstlisting""#), "{body}");
+        assert!(body.contains("inside &amp; literal \\\\ break"), "{body}");
+        assert!(body.contains(r#"\cite{fake} 50%"#), "{body}");
+        assert!(!body.contains(r#"data-key="fake""#), "{body}");
+        assert!(body.contains(r#"data-key="real">1</a>"#), "{body}");
+    }
+
+    #[test]
+    fn table_float_renders_nested_tabular_caption_number_and_reference() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "\\begin{table}[ht]\n",
+                "\\centering\n",
+                "\\caption{Scores at $t=1$.}\\label{tab:scores}\n",
+                "\\begin{tabular}{lc}\n",
+                "Name & Score\\\\\n",
+                "\\hline\n",
+                "Ada & 10\\\\\n",
+                "\\end{tabular}\n",
+                "\\end{table}\n",
+                "See Table~\\ref{tab:scores}.\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out
+            .body_html
+            .contains(r#"class="float-placeholder float-table""#));
+        assert!(out.body_html.contains(r#"id="tab-scores""#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="float-kind">Table 1.</span>"#));
+        assert!(out.body_html.contains("Scores at "));
+        assert_eq!(out.body_html.matches(r#"class="math inline""#).count(), 1);
+        assert!(out
+            .body_html
+            .contains(r#"<table class="latex-tabular env-tabular""#));
+        assert!(out
+            .body_html
+            .contains(r#"data-target="tab:scores" data-kind="ref">1</a>"#));
+        assert!(!out.body_html.contains("content omitted from preview"));
+        assert!(!out.body_html.contains(r#"\begin{tabular}"#));
+    }
+
+    #[test]
+    fn tabular_variants_and_longtable_caption_render_natively() {
+        for (env, args, width) in [
+            ("tabular*", r"{0.8\linewidth}{lr}", "width:80%"),
+            ("tabularx", r"{\linewidth}{lX}", "width:100%"),
+        ] {
+            let body = render_body(&format!(
+                "\\begin{{document}}\n\\begin{{{env}}}{args}\nA & B\\\\\n\\end{{{env}}}\n\\end{{document}}\n"
+            ));
+            assert!(
+                body.contains(&format!(
+                    r#"<table class="latex-tabular env-{}""#,
+                    super::util::sanitize_id(env)
+                )),
+                "{env} did not render: {body}"
+            );
+            assert!(body.contains(width), "{env} width was lost: {body}");
+            assert!(
+                !body.contains(&format!(r#"opaque-env" data-env="{env}""#)),
+                "{env} used opaque fallback: {body}"
+            );
+        }
+
+        let longtable = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{longtable}{lr}\n",
+            "\\caption{Long values}\\label{tab:long}\\\\\n",
+            "Name & Value\\\\\n",
+            "\\hline\n",
+            "Ada & 10\\\\\n",
+            "\\end{longtable}\n",
+            "See \\ref{tab:long}.\n",
+            "\\end{document}\n",
+        ));
+        assert!(longtable.contains(r#"class="latex-tabular env-longtable""#));
+        assert!(longtable.contains(r#"id="tab-long""#));
+        assert!(longtable.contains("<caption>"));
+        assert!(longtable.contains(r#"<span class="float-kind">Table 1.</span>"#));
+        assert!(longtable.contains(r#"data-target="tab:long" data-kind="ref">1</a>"#));
+        assert!(!longtable.contains(r#"\caption"#));
+        assert!(!longtable.contains(r#"\label"#));
+    }
+
+    #[test]
+    fn longtable_numbers_unlabeled_captions_and_keeps_starred_caption_text() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{longtable}{l}\\caption{First}\\\\A\\\\\\end{longtable}\n",
+            "\\begin{longtable}{l}\\caption*{Second}\\\\B\\\\\\end{longtable}\n",
+            "\\begin{longtable}{l}\\caption{Third}\\\\C\\\\\\end{longtable}\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"<span class="float-kind">Table 1.</span> First"#), "{body}");
+        assert!(body.contains("<caption>Second</caption>"), "{body}");
+        assert!(body.contains(r#"<span class="float-kind">Table 3.</span> Third"#), "{body}");
+        assert!(!body.contains("Table 2."), "{body}");
+    }
+
+    #[test]
+    fn ordinary_float_caption_hides_its_nested_label_source() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{table}\n",
+            "\\caption{Scores\\label{tab:scores}}\n",
+            "\\begin{tabular}{l}Ada\\\\\\end{tabular}\n",
+            "\\end{table}\n",
+            "See \\ref{tab:scores}.\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"<span class="float-kind">Table 1.</span> Scores"#), "{body}");
+        assert!(body.contains(r#"data-target="tab:scores" data-kind="ref">1</a>"#), "{body}");
+        assert!(!body.contains(r#"\label"#), "{body}");
+        assert!(!body.contains(">tab:scores<"), "{body}");
+    }
+
+    #[test]
+    fn scoped_text_color_is_inherited_by_a_native_table() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "{\\color{red}\n",
+            "\\begin{tabular}{l}Red\\\\\\end{tabular}\n",
+            "}\n",
+            "\\end{document}\n",
+        ));
+        let color = body.find(r#"style="color:#FF0000""#).expect("red wrapper");
+        let table = body.find(r#"class="latex-tabular env-tabular""#).expect("table");
+        assert!(color < table, "{body}");
+        assert!(body[table..].contains(">Red</td>"), "{body}");
+    }
+
+    #[test]
+    fn malformed_tabular_keeps_safe_opaque_source() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{tabular}\n",
+            "Still visible $x$ & source.\\\\\n",
+            "\\end{tabular}\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"class="opaque-env" data-env="tabular""#));
+        assert!(body.contains("Still visible $x$ &amp; source."));
+        assert!(!body.contains(r#"<table class="latex-tabular"#));
+        assert!(!body.contains(r#"class="math inline"#));
+    }
+
+    #[test]
+    fn mathematical_array_stays_on_the_mathjax_path() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\[\\begin{array}{cc}a&b\\\\c&d\\end{array}\\]\n",
+            "\\end{document}\n",
+        ));
+        assert!(body.contains(r#"class="math display""#));
+        assert!(body.contains(r#"\begin{array}{cc}"#));
+        assert!(!body.contains(r#"class="latex-tabular"#));
+        assert!(!body.contains(r#"class="opaque-env" data-env="array""#));
+    }
+
+    #[test]
+    fn tabular_css_has_alignment_rules_and_local_overflow() {
+        let css = super::shell::DEFAULT_CSS;
+        assert!(css.contains(".latex-tabular-scroll {"));
+        assert!(css.contains("container-type: inline-size;"));
+        assert!(css.contains("overflow-x: auto;"));
+        assert!(css.contains("color: inherit;"));
+        assert!(css.contains(".latex-tabular-cell.align-left"));
+        assert!(css.contains(".latex-tabular-cell.align-center"));
+        assert!(css.contains(".latex-tabular-cell.align-right"));
+        assert!(css.contains(".latex-tabular-cell.valign-top"));
+        assert!(css.contains(".latex-tabular-cell.rule-top-strong"));
+        assert!(css.contains(".latex-tabular-cell.rule-bottom-strong"));
+        assert!(css.contains(".latex-tabular-cell.cell-wrap"));
+        assert!(css.contains(".unsupported-env-inline {"));
     }
 
     #[test]

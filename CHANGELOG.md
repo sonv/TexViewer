@@ -13,6 +13,33 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.15] — 2026-07-30
+
+### Added
+
+- **Tables now render as native, semantic HTML.** `tabular`, `tabular*`,
+  `tabularx`, and `longtable` preserve common column alignment, paragraph
+  widths, vertical and booktabs-style rules, `\multicolumn`, captions,
+  references, inline text formatting, math, colors, and citations. Wide tables
+  scroll within their own preview block, while mathematical `array`
+  environments remain on the MathJax path.
+- **Regular-text xcolor commands now preview safely.** `\textcolor`, scoped
+  `{\color ...}`, `\normalcolor`, `\colorbox`, and `\fcolorbox` support common
+  named colors, color models, mixes, and preamble `\definecolor`,
+  `\providecolor`, and `\colorlet` declarations without accepting arbitrary
+  CSS.
+
+### Fixed
+
+- **Table parsing keeps TeX literals, comments, numbering, and labels
+  faithful.** Percent signs inside inline verbatim cells remain literal;
+  longtable counters and references follow LaTeX; and labels embedded in
+  captions stay invisible.
+- **Colored scopes retain nested document semantics and source sync.**
+  References, citations, comments, literals, display math, conditional
+  branches, nested color groups, and surrounding foreground colors continue
+  to behave normally inside colored text and color boxes.
+
 ## [2.1.14] — 2026-07-30
 
 ### Fixed

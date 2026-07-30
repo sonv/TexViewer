@@ -62,6 +62,11 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   message on the main left edge and the closing/signature in the right half.
 - **Lists** (enumerate / itemize / description / paralist variants) parse
   to `<ol>` / `<ul>` / `<dl>` with each `\item` recursively re-parsed.
+- **Native text tables:** `tabular`, `tabular*`, `tabularx`, and `longtable`
+  render as semantic HTML tables instead of raw source. Column alignment,
+  paragraph-width columns, vertical and booktabs-style rules,
+  `\multicolumn`, captions/references, and ordinary text/math formatting in
+  cells are preserved; a wide table scrolls inside its own container.
 - **Role-tagged theorems** (`[role=main|supporting|standard|omitted]`)
   with per-proof fold/unfold and a toolbar that bulk-sets fold state by
   role. Default: "all expanded".
@@ -84,9 +89,11 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 - **Mid-edit guard**: while you're typing inside an open `$$…$$` or
   `\begin{…}` and the buffer is unbalanced, the daemon defers the push.
   Page keeps the last well-formed render instead of flashing a broken one.
-- **Macros in regular text**: your `\newcommand`s (from the preamble or a
-  local `.sty`) expand in body text, not just math — plus a built-in
-  `\textcolor` and a config-driven `[text-macros]` HTML-template table for
+- **Macros and color in regular text**: your `\newcommand`s (from the preamble
+  or a local `.sty`) expand in body text, not just math. `\textcolor`, scoped
+  `\color`, `\colorbox` / `\fcolorbox`, common xcolor models and mixes, and
+  preamble `\definecolor` / `\colorlet` declarations render natively. A
+  config-driven `[text-macros]` HTML-template table remains available for
   commands the previewer can't otherwise see. See [Macros in regular
   text](#macros-in-regular-text).
 - **Math that follows the prose:** inline formulas can break at TeX-valid
@@ -915,10 +922,13 @@ renderer also handles macros, in three ways:
    Only `\newcommand`-style definitions are picked up; `\def`,
    `\DeclareRobustCommand`, `\NewDocumentCommand`, etc. are not — use the
    `[text-macros]` table for those.
-2. **Built-in `\textcolor`.** `\textcolor{red}{x}` → a colored span;
-   `\textcolor[HTML]{FF8800}{x}` uses a hex color. Color names pass through to
-   CSS. (The `\color{…}` *switch* form isn't supported yet — use `\textcolor`,
-   which wraps its argument.)
+2. **Built-in text colors.** `\textcolor{red}{x}` produces a colored span,
+   while `{\color{ForestGreen} x}` applies a TeX-scoped color switch.
+   `HTML`, `RGB`, normalized `rgb`, `gray`, and `cmyk` models are converted to
+   safe RGB CSS values; xcolor mixes such as `red!50!blue` work too. Preamble
+   `\definecolor`, `\providecolor`, and `\colorlet` declarations are available
+   in regular text. `\colorbox` and `\fcolorbox` preserve nested emphasis and
+   inline math; math-specific color commands continue through MathJax.
 3. **The `[text-macros]` config table — for macros expansion can't reach.**
    For a command defined with `\def` / `\NewDocumentCommand` /
    `\DeclarePairedDelimiter` (not extracted), one from a system package that
@@ -958,7 +968,9 @@ renderer also handles macros, in three ways:
 | `\textbf{x}`, `{\bf x}` | bold |
 | `\texttt{x}`, `{\tt x}` | monospace |
 | `\textsc{x}`, `{\sc x}` | small caps |
-| `\textcolor{name}{x}`, `\textcolor[HTML]{RRGGBB}{x}` | colored span |
+| `\textcolor{name}{x}`, `\textcolor[model]{spec}{x}` | colored span |
+| `{\color{name} x}`, `{\color[model]{spec} x}` | scoped colored text |
+| `\colorbox{name}{x}`, `\fcolorbox{frame}{background}{x}` | colored inline box |
 | `\ref` / `\cref` / `\Cref` / `\autoref` / `\eqref` / `\pageref` | resolved cross-reference link |
 | `$ … $` | inline math (MathJax) |
 | `\'e \`a \"o \^o \~n \=a \.z` | accented letters |
@@ -968,11 +980,11 @@ renderer also handles macros, in three ways:
 | any other `\foo{bar}` | `bar` shown, `\foo` dropped |
 | any other `\foo` (no arg) | dropped |
 
-**Not handled:** the `\color{…}` switch form (use `\textcolor`); macros defined
-with `\def` / `\NewDocumentCommand` / `\DeclarePairedDelimiter` (use
-`[text-macros]`); and arbitrary layout. It's a fast-preview approximation, not
-a TeX engine — a macro whose body is pure math used in *text* renders crudely;
-keep those in math mode or give them a `[text-macros]` template.
+**Not handled:** macros defined with `\def` / `\NewDocumentCommand` /
+`\DeclarePairedDelimiter` (use `[text-macros]`) and arbitrary layout. It's a
+fast-preview approximation, not a TeX engine — a macro whose body is pure math
+used in *text* renders crudely; keep those in math mode or give them a
+`[text-macros]` template.
 
 #### Map a macro to HTML
 

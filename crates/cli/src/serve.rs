@@ -3135,7 +3135,14 @@ async fn render_cached(
         }
         keys
     });
-    let labels = numbering::assign_numbers(&mut body, &bib, bib_style, &thms, referenced);
+    let labels = numbering::assign_numbers_with_macros(
+        &mut body,
+        &bib,
+        bib_style,
+        &thms,
+        referenced,
+        &preamble.macros,
+    );
     t.number_ms = t3.elapsed().as_millis();
 
     let t4 = std::time::Instant::now();
