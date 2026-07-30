@@ -3250,6 +3250,10 @@ mod tests {
         assert!(out.html.contains(r"\newenvironment"));
         assert!(out
             .html
+            .contains("Unknown environment\n            bodies already render normally"));
+        assert!(!out.html.contains(r"\renewenvironment{letter}"));
+        assert!(out
+            .html
             .contains("Enter a \\\\newcommand or \\\\newenvironment definition first."));
         assert!(out.html.contains("markMacroEditorDirty(e.target)"));
         assert!(out.html.contains("seq !== macroLoadSeq"));

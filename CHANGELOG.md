@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.14] — 2026-07-30
+
+### Fixed
+
+- **The macros dialog no longer suggests replacing `letter` with a quoted
+  block.** It now makes clear that unknown environment bodies already render
+  normally between marked `\begin{...}` / `\end{...}` boundaries and that
+  preview replacements are optional layout customizations.
+
 ## [2.1.13] — 2026-07-30
 
 ### Added

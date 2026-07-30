@@ -272,11 +272,14 @@ pub(super) fn wrap_in_shell(
         </div>
         <div id="macros-mode-tex">
           <p class="macros-dialog-hint">
-            The chosen file's existing command macros and preview-only environment
-            replacements load here for editing. <em>Save</em> writes the whole box
-            back (it replaces the file, so re-saving won't duplicate). The viewer
-            re-renders immediately. Or use <em>Use as override</em> to add a file
-            as a live, watched layer without copying its text.
+            The chosen file's existing command macros and optional preview-only
+            environment replacements load here for editing. Unknown environment
+            bodies already render normally between marked begin/end boundaries;
+            add a replacement only when you want custom layout. <em>Save</em>
+            writes the whole box back (it replaces the file, so re-saving won't
+            duplicate). The viewer re-renders immediately. Or use <em>Use as
+            override</em> to add a file as a live, watched layer without copying
+            its text.
           </p>
           <div class="macros-dialog-load">
             <button type="button" class="macros-dialog-loadbtn" id="macros-dialog-loadbtn">Load file…</button>
@@ -285,7 +288,7 @@ pub(super) fn wrap_in_shell(
           </div>
           <textarea class="macros-dialog-input" id="macros-dialog-input" rows="10"
                     spellcheck="false" autocomplete="off"
-                    placeholder="\newcommand{{\st}}{{\mid}}&#10;\renewenvironment{{letter}}[1]{{\begin{{quote}}#1}}{{\end{{quote}}}}"></textarea>
+                    placeholder="\newcommand{{\st}}{{\mid}}"></textarea>
         </div>
         <div id="macros-mode-html" hidden>
           <p class="macros-dialog-hint">
