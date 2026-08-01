@@ -1118,51 +1118,56 @@ local function jump_to_source(jump)
   local file = tostring(jump.file)
   local line = math.max(1, tonumber(jump.line) or 1)
   local col = math.max(0, (tonumber(jump.col) or 1) - 1)
-  -- Browser jumps are Normal-mode navigation. If one arrives while the user
-  -- is inserting, selecting, replacing, or typing in a terminal, return to
-  -- Normal mode before recording the old location.
+  local function navigate()
+    -- Cursor-setting APIs do not create a jumplist entry. Record the editing
+    -- position explicitly before either switching buffers or moving in place,
+    -- so one Ctrl-O returns to where the user was before the preview click.
+    vim.cmd([[normal! m']])
+    if vim.api.nvim_buf_get_name(0) ~= file then
+      -- Opening the target fires BufEnter synchronously; keep the jumping
+      -- daemon active across it (the target is usually an \input of its project).
+      -- `m'` above is the one deliberate jump; suppress :edit's implicit entry
+      -- so Ctrl-O does not stop at an intermediate position in the target.
+      in_jump = true
+      pcall(vim.cmd, "keepjumps edit " .. vim.fn.fnameescape(file))
+      in_jump = false
+    end
+    local line_count = vim.api.nvim_buf_line_count(0)
+    line = math.min(line, math.max(1, line_count))
+    local line_text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
+    col = math.min(col, #line_text)
+    vim.api.nvim_win_set_cursor(0, { line, col })
+    vim.cmd("normal! zvzz")
+    last_status.jumps = last_status.jumps + 1
+    -- Built-in focus (SyncTeX-style): bring nvim's window forward. Runs first
+    -- so a user on_jump hook can still override or extend it.
+    if config.raise_on_jump then
+      pcall(raise_editor)
+    end
+    -- User hook: raise/focus the editor window, etc. The cursor has already
+    -- moved; we just hand the target to whatever the user configured.
+    if type(config.on_jump) == "function" then
+      local ok, err = pcall(config.on_jump, { file = file, line = line, col = col + 1 })
+      if not ok then
+        last_status.last_error = "on_jump error: " .. tostring(err)
+      end
+    end
+  end
+
+  -- Browser jumps are Normal-mode navigation. :stopinsert takes effect after
+  -- the current callback returns, so defer the move by one event-loop turn;
+  -- otherwise nvim shifts the already-set target one byte left when Insert or
+  -- Replace mode finally ends. Other modes can leave synchronously.
   local mode = vim.api.nvim_get_mode().mode
   if mode:sub(1, 1) == "i" or mode:sub(1, 1) == "R" then
-    -- Unlike an executed feedkeys() batch, :stopinsert fully clears nvim's
-    -- "restart Insert mode" state before the asynchronous jump continues.
     vim.cmd("stopinsert")
+    vim.defer_fn(navigate, 0)
+    return
   elseif mode ~= "n" then
     local normal = vim.api.nvim_replace_termcodes("<C-\\><C-N>", true, true, true)
     vim.api.nvim_feedkeys(normal, "nx", false)
   end
-  -- Cursor-setting APIs do not create a jumplist entry. Record the editing
-  -- position explicitly before either switching buffers or moving in place,
-  -- so one Ctrl-O returns to where the user was before the preview click.
-  vim.cmd([[normal! m']])
-  if vim.api.nvim_buf_get_name(0) ~= file then
-    -- Opening the target fires BufEnter synchronously; keep the jumping
-    -- daemon active across it (the target is usually an \input of its project).
-    -- `m'` above is the one deliberate jump; suppress :edit's implicit entry
-    -- so Ctrl-O does not stop at an intermediate position in the target.
-    in_jump = true
-    pcall(vim.cmd, "keepjumps edit " .. vim.fn.fnameescape(file))
-    in_jump = false
-  end
-  local line_count = vim.api.nvim_buf_line_count(0)
-  line = math.min(line, math.max(1, line_count))
-  local line_text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
-  col = math.min(col, #line_text)
-  vim.api.nvim_win_set_cursor(0, { line, col })
-  vim.cmd("normal! zvzz")
-  last_status.jumps = last_status.jumps + 1
-  -- Built-in focus (SyncTeX-style): bring nvim's window forward. Runs first
-  -- so a user on_jump hook can still override or extend it.
-  if config.raise_on_jump then
-    pcall(raise_editor)
-  end
-  -- User hook: raise/focus the editor window, etc. The cursor has already
-  -- moved; we just hand the target to whatever the user configured.
-  if type(config.on_jump) == "function" then
-    local ok, err = pcall(config.on_jump, { file = file, line = line, col = col + 1 })
-    if not ok then
-      last_status.last_error = "on_jump error: " .. tostring(err)
-    end
-  end
+  navigate()
 end
 
 -- Source-jump (browser → editor) over a single long-poll instead of a
