@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.16] — 2026-08-01
+
+### Fixed
+
+- **Preview source-jumps now preserve nvim's jumplist.** A Cmd/Ctrl-click
+  records the editing location before moving, so one `<C-O>` returns directly
+  to it even when the target is in another file. The jump also exits active
+  Insert, Replace, Visual, or Terminal mode, opens enclosing folds, and centers
+  the destination.
+
 ## [2.1.15] — 2026-07-30
 
 ### Added

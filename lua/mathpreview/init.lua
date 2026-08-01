@@ -30,7 +30,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
 -- that a fix you "released" isn't actually the binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.15"
+local PLUGIN_VERSION = "2.1.16"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -1118,11 +1118,29 @@ local function jump_to_source(jump)
   local file = tostring(jump.file)
   local line = math.max(1, tonumber(jump.line) or 1)
   local col = math.max(0, (tonumber(jump.col) or 1) - 1)
+  -- Browser jumps are Normal-mode navigation. If one arrives while the user
+  -- is inserting, selecting, replacing, or typing in a terminal, return to
+  -- Normal mode before recording the old location.
+  local mode = vim.api.nvim_get_mode().mode
+  if mode:sub(1, 1) == "i" or mode:sub(1, 1) == "R" then
+    -- Unlike an executed feedkeys() batch, :stopinsert fully clears nvim's
+    -- "restart Insert mode" state before the asynchronous jump continues.
+    vim.cmd("stopinsert")
+  elseif mode ~= "n" then
+    local normal = vim.api.nvim_replace_termcodes("<C-\\><C-N>", true, true, true)
+    vim.api.nvim_feedkeys(normal, "nx", false)
+  end
+  -- Cursor-setting APIs do not create a jumplist entry. Record the editing
+  -- position explicitly before either switching buffers or moving in place,
+  -- so one Ctrl-O returns to where the user was before the preview click.
+  vim.cmd([[normal! m']])
   if vim.api.nvim_buf_get_name(0) ~= file then
     -- Opening the target fires BufEnter synchronously; keep the jumping
     -- daemon active across it (the target is usually an \input of its project).
+    -- `m'` above is the one deliberate jump; suppress :edit's implicit entry
+    -- so Ctrl-O does not stop at an intermediate position in the target.
     in_jump = true
-    pcall(vim.cmd, "edit " .. vim.fn.fnameescape(file))
+    pcall(vim.cmd, "keepjumps edit " .. vim.fn.fnameescape(file))
     in_jump = false
   end
   local line_count = vim.api.nvim_buf_line_count(0)
@@ -1130,7 +1148,7 @@ local function jump_to_source(jump)
   local line_text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
   col = math.min(col, #line_text)
   vim.api.nvim_win_set_cursor(0, { line, col })
-  vim.cmd("normal! zz")
+  vim.cmd("normal! zvzz")
   last_status.jumps = last_status.jumps + 1
   -- Built-in focus (SyncTeX-style): bring nvim's window forward. Runs first
   -- so a user on_jump hook can still override or extend it.

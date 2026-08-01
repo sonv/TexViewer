@@ -1136,6 +1136,11 @@ require("mathpreview").setup({
   jump_wait_ms = 25000,                   -- how long the daemon holds an idle /jump
   jump_retry_ms = 1000,                   -- back-off before re-parking after empty/err
 
+  -- Each source-jump records the current editing position in nvim's window
+  -- jumplist. Press Ctrl-O once to return after fixing the clicked source.
+  -- Jumps also leave Insert/Replace/Visual/Terminal mode, reveal folds, and
+  -- center the destination before `on_jump` runs.
+
   -- raise_on_jump (default true): bring nvim's window to the front on a
   -- source-jump — the focus a PDF viewer gives you via SyncTeX. Best-effort
   -- and platform-aware. On Linux/BSD it raises THIS nvim's own window by
