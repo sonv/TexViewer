@@ -13,6 +13,20 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.17] — 2026-08-06
+
+### Fixed
+
+- **Escaped TeX special characters now render literally in regular text.**
+  `\#`, `\$`, `\%`, `\&`, `\_`, `\{`, and `\}` no longer leak a backslash,
+  disappear, or consume the following character; `\textbackslash`,
+  `\textasciitilde`, and `\textasciicircum` are also supported without
+  changing accent commands or math-mode input.
+- **Footnote popovers remain visible above display equations.** Hovering or
+  focusing a footnote on the first line after displayed math now lifts only
+  that paragraph block's paint containment, so the full note stays visible
+  and interactive while off-screen block rendering remains lazy.
+
 ## [2.1.16] — 2026-08-01
 
 ### Fixed

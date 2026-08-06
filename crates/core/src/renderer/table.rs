@@ -647,10 +647,10 @@ fn render_cell_content(tex: &str, labels: &LabelTable) -> String {
 
 fn render_cell_inline_content(tex: &str, labels: &LabelTable) -> String {
     // `&` is structural to the tabular scanner, but its escaped form is
-    // ordinary text. The general inline renderer intentionally preserves
-    // unknown control symbols, so normalize this one table-specific escape
-    // after splitting and let the HTML escaper emit `&amp;`. Keep `\&` inside
-    // math untouched so MathJax receives the author's original TeX.
+    // ordinary text. The shared inline renderer also understands `\&`, but
+    // retaining normalization here keeps the scanner/render boundary explicit:
+    // only text-mode `\&` is changed after cells split, while math keeps the
+    // author's original TeX for MathJax.
     let tex = normalize_text_ampersands(tex);
     render_latex_text_with_math(&tex, labels)
 }

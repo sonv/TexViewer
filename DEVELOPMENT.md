@@ -139,7 +139,8 @@ the per-patch client path.
 The `keys` feature broke three times before landing on this architecture.
 Every rule below exists because violating it produced a user-visible bug.
 
-- **No ink outside a `.blk`'s box — ever.** Render blocks use
+- **No ink outside a `.blk`'s box unless that interaction explicitly removes
+  paint containment.** Render blocks use
   `content-visibility: auto`, whose paint containment **clips any ink outside
   the block's border box** (that's what turned margin-hanging chips into
   sliver stubs, and what amputated the amsart "Abstract" heading pulled up by
@@ -152,6 +153,14 @@ Every rule below exists because violating it produced a user-visible bug.
   therefore lives in a **page-level layer**: a direct child of `main#page`
   (`.refkey-layer`, `.lineno-layer`, `.flash-layer`), outside every block's
   containment.
+  The one intentional exception is an open `.footnote-pop`: while its marker
+  is hovered or keyboard-focused, CSS switches only that already-visible block
+  to `content-visibility: visible; contain: layout style`. This removes the
+  paint clip so an upward-opening note can cross a preceding display's block
+  boundary, while retaining the layout/style boundary and every other block's
+  off-screen skipping. Test this exception with pixels or hit-testing a point
+  above the footnote block; its bounding rectangle is present even when the
+  popover is paint-clipped.
 - **The layers are measured, not styled, into position.** `layoutRefkeys()`
   reads each anchor's client rect and divides by the zoom scale
   (`pageRect.height / page.offsetHeight` — `main#page` may be CSS-`zoom`ed or

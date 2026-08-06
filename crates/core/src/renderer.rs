@@ -1033,6 +1033,13 @@ fn latex_source_token_end(s: &str, start: usize) -> Option<usize> {
     if punct.is_whitespace() {
         return Some(i);
     }
+    // Only accent control symbols consume a following character or group.
+    // Literal escapes such as `\%R` end at `%`; treating every punctuation
+    // command as an accent attached `R` to the escape's source span (and made
+    // the inline renderer feed it into the broken escape token).
+    if !matches!(punct, '\'' | '`' | '"' | '^' | '~' | '.' | '=') {
+        return Some(i);
+    }
     while i < bytes.len() && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
         i += 1;
     }
@@ -2743,6 +2750,25 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             // and a few escapes.
             if cmd_start < bytes.len() {
                 let p = bytes[cmd_start];
+                // TeX's seven one-character text escapes. Handle these before
+                // `%` can be mistaken for a comment, `$` for inline math, or
+                // braces for grouping. `~`, `^`, and `\` are intentionally not
+                // listed: their literal text forms are the named commands
+                // handled below, while `\~n`, `\^o`, and `\\` retain their
+                // accent / line-break meanings.
+                match p {
+                    b'#' | b'$' | b'%' | b'_' | b'{' | b'}' => {
+                        out.push(p as char);
+                        i = cmd_start + 1;
+                        continue;
+                    }
+                    b'&' => {
+                        out.push_str("&amp;");
+                        i = cmd_start + 1;
+                        continue;
+                    }
+                    _ => {}
+                }
                 // Accent commands: \'e, \`a, \"o, \^u, \~n, \.z, \=a.
                 let accent = match p {
                     b'\'' => Some('\u{0301}'),
@@ -2882,6 +2908,26 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
         // fallbacks below, matching \renewcommand intent.
         if let Some(next) = render_text_macro(&mut out, name, s, cmd_end, labels) {
             i = next;
+            continue;
+        }
+
+        // The remaining three TeX-special characters have named text-mode
+        // forms because `\~`, `\^`, and `\\` already mean accent/accent/line
+        // break. Leave any following `{...}` group for the normal grouping
+        // path: these commands take no arguments, and `{}` is commonly used
+        // only to delimit the control word. User macro overrides are checked
+        // first, preserving `\renewcommand` semantics.
+        if let Some(symbol) = match name {
+            "textbackslash" => Some('\\'),
+            "textasciitilde" => Some('~'),
+            "textasciicircum" => Some('^'),
+            _ => None,
+        } {
+            out.push(symbol);
+            // A space/comment after a control word is a TeX token separator,
+            // not printed content. Authors who want a visible space use the
+            // usual empty-group delimiter: `\textasciitilde{} word`.
+            i = skip_tex_argument_space(s, cmd_end);
             continue;
         }
 
@@ -3990,6 +4036,106 @@ mod tests {
     }
 
     #[test]
+    fn text_mode_tex_special_characters_render_literally() {
+        let labels = crate::numbering::LabelTable::default();
+        let rendered = super::render_inline_latex(
+            r"\# \$ \% \& \_ \{ \} \textbackslash{} \textasciitilde{} \textasciicircum{}",
+            &labels,
+        );
+        assert_eq!(rendered, r"# $ % &amp; _ { } \ ~ ^");
+        assert_eq!(
+            super::render_inline_latex(r"\textasciitilde word", &labels),
+            "~word",
+        );
+        assert_eq!(
+            super::render_inline_latex(r"\textasciitilde{} word", &labels),
+            "~ word",
+        );
+        assert_eq!(
+            super::render_inline_latex("\\textasciitilde% separator\n word", &labels),
+            "~word",
+        );
+
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            r"Escaped: \# \$ \% \& \_ \{ \} \textbackslash{};\textasciitilde{};\textasciicircum{}; tail.",
+            "\n\\end{document}\n",
+        ));
+        assert!(
+            text_content(&body).contains(r"Escaped: # $ % &amp; _ { } \;~;^; tail."),
+            "special characters did not survive the document renderer: {body}",
+        );
+    }
+
+    #[test]
+    fn literal_control_symbols_do_not_absorb_the_following_source_character() {
+        for source in [
+            r"\#R", r"\$R", r"\%R", r"\&R", r"\_R", r"\{R", r"\}R", r"\%λ",
+        ] {
+            assert_eq!(
+                super::latex_source_token_end(source, 0),
+                Some(2),
+                "literal control symbol swallowed its suffix in {source:?}",
+            );
+        }
+        for source in [r"\,x", r"\!x", r"\\x", r"\ x"] {
+            assert_eq!(
+                super::latex_source_token_end(source, 0),
+                Some(2),
+                "non-accent control symbol swallowed its suffix in {source:?}",
+            );
+        }
+        for source in [r"\'e", r"\`a", r#"\"o"#, r"\^u", r"\~n", r"\.z", r"\=a"] {
+            assert_eq!(
+                super::latex_source_token_end(source, 0),
+                Some(source.len()),
+                "accent command lost its argument in {source:?}",
+            );
+        }
+
+        let body = render_body(
+            "\\begin{document}\nA\\%B % real comment\nTail survives.\n\\end{document}\n",
+        );
+        let visible = text_content(&body);
+        assert!(visible.contains("A%B Tail survives."), "{body}");
+        assert!(!visible.contains("real comment"), "{body}");
+        assert!(body.contains(r#"data-src="t.tex:2:2">%</span>"#), "{body}");
+        assert!(body.contains(r#"data-src="t.tex:2:4">B</span>"#), "{body}");
+    }
+
+    #[test]
+    fn escaped_percent_survives_all_shared_inline_rendering_contexts() {
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "Prose 100\\% ready.\\par\n",
+            "\\textbf{Bold 100\\% ready.}\n",
+            "Foot\\footnote{Note 100\\% ready.}.\n",
+            "\\begin{figure}\\caption{Caption 100\\% ready.}\\end{figure}\n",
+            "\\mystery{Fallback 100\\% ready.}\n",
+            "\\begin{tabular}{l}Table 100\\% ready.\\\\\\end{tabular}\n",
+            "Math $\\%$ stays on the MathJax path.\n",
+            "\\end{document}\n",
+        ));
+        for expected in [
+            "Prose 100% ready.",
+            "Bold 100% ready.",
+            "Note 100% ready.",
+            "Caption 100% ready.",
+            "Fallback 100% ready.",
+            "Table 100% ready.",
+        ] {
+            assert!(
+                text_content(&body).contains(expected),
+                "missing {expected:?}: {body}",
+            );
+        }
+        assert!(
+            body.contains(r#"data-tex="\(\%\)""#),
+            "math-mode percent should remain TeX for MathJax: {body}",
+        );
+    }
+
+    #[test]
     fn alignment_envs_render_semantic_wrappers_with_typeset_math() {
         let body = render_body(concat!(
             "\\begin{document}\n",
@@ -4289,6 +4435,14 @@ mod tests {
             !body.contains("TitleIn a heading."),
             "footnote text leaked into the heading: {body}"
         );
+    }
+
+    #[test]
+    fn open_footnote_popover_drops_block_paint_containment_only_on_screen() {
+        let css = super::shell::DEFAULT_CSS;
+        assert!(css.contains("@media screen {\n  main#page .blk:has(.footnote:hover),"));
+        assert!(css.contains("main#page .blk:has(.footnote:focus-within) {"));
+        assert!(css.contains("content-visibility: visible;\n    contain: layout style;"));
     }
 
     #[test]

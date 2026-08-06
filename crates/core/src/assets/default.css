@@ -1107,6 +1107,20 @@ main#page .blk {
   content-visibility: auto;
   contain-intrinsic-size: auto 180px;
 }
+/* `content-visibility:auto` implicitly paint-contains every block, including a
+   visible one. A footnote on the first line after a display opens upward past
+   its paragraph block, so that containment sliced the popover at the block's
+   top edge. While the note is actually open, remove only paint containment;
+   retaining layout/style containment prevents margin/reflow changes, and all
+   other blocks keep their off-screen skipping. Screen-only so a focused marker
+   cannot introduce containment into print pagination. */
+@media screen {
+  main#page .blk:has(.footnote:hover),
+  main#page .blk:has(.footnote:focus-within) {
+    content-visibility: visible;
+    contain: layout style;
+  }
+}
 main#page .blk:has(> .unsupported-env-boundary) {
   contain-intrinsic-size: auto 36px;
 }
