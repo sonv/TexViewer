@@ -13,6 +13,31 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.18] — 2026-08-07
+
+### Added
+
+- **Theorem boxes are now optional.** The common viewer controls include a
+  **Fancy theorem boxes** checkbox. It remains enabled by default for
+  compatibility; disabling it keeps theorem headings, numbers, labels, and
+  references while using a plain TeX-like layout without colored cards.
+
+### Fixed
+
+- **Theorem environments are no longer guessed from familiar names.** Only
+  environments actually declared with `\newtheorem` receive theorem
+  semantics and optional card styling. Undeclared names now show the normal
+  unsupported begin/end diagnostics while their contents still render, and a
+  user-defined `\newenvironment{theorem}` can expand normally.
+- **Live theorem-numbering changes now affect the numbers themselves.** The
+  daemon reloads and applies the selected numbering scheme before parsing and
+  numbering, and keeps the config dialog's live value synchronized.
+- **Page and half-page scrolling no longer drifts around lazy theorem
+  blocks.** The viewer primes exact theorem-block geometry in one contained
+  layout pass, then immediately restores lazy rendering, so opposite scrolls
+  remain inverse without eagerly typesetting off-screen theorem math. Later
+  MathJax and TikZ size changes refresh the same intrinsic-size cache.
+
 ## [2.1.17] — 2026-08-06
 
 ### Fixed

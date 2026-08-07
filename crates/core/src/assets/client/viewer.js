@@ -2840,6 +2840,13 @@
     if (theme) theme.value = cfg.defaultTheme || 'system';
     var thmNum = document.getElementById('config-theorem-numbering');
     if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
+    var fancyTheorems = document.getElementById('config-fancy-theorems');
+    if (fancyTheorems) {
+      fancyTheorems.checked = cfg.fancyTheorems !== false;
+      // This is the effective cascade value, which may come from another
+      // scope. Only persist it after the user intentionally changes it.
+      fancyTheorems.dataset.dirty = 'false';
+    }
     var tsMode = document.getElementById('config-typeset-mode');
     if (tsMode) tsMode.value = cfg.typesetMode || 'local';
     var renderTikz = document.getElementById('config-render-tikz');
@@ -3000,6 +3007,10 @@
       if (theme) values['viewer.default-theme'] = theme;
       var thmNum = document.getElementById('config-theorem-numbering').value;
       if (thmNum) values['viewer.theorem-numbering'] = thmNum;
+      var fancyTheorems = document.getElementById('config-fancy-theorems');
+      if (fancyTheorems && fancyTheorems.dataset.dirty === 'true') {
+        values['viewer.fancy-theorems'] = fancyTheorems.checked;
+      }
       var typesetMode = document.getElementById('config-typeset-mode').value;
       if (typesetMode) values['viewer.typeset-mode'] = typesetMode;
       var renderTikz = document.getElementById('config-render-tikz');
@@ -3095,6 +3106,7 @@
         // Font size changes line heights/wrapping and key chip geometry, so both
         // page-level overlay layers must re-measure before the next paint.
         invalidateOverlayMetrics();
+        scheduleTheoremBlockIntrinsicSizes(0);
         if (lineNumbersVisible) scheduleLineNumbers();
         if (refkeysVisible) scheduleRefkeys(0);
       }
@@ -3113,6 +3125,7 @@
     if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
     if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
     if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
+    if (cfg.theorem_numbering)   window.__mpConfig.theoremNumbering = cfg.theorem_numbering;
     if (cfg.keybindings && typeof cfg.keybindings === 'object') {
       window.__mpConfig.keybindings = cfg.keybindings;
       setViewerKeybindings(cfg.keybindings);
@@ -3143,6 +3156,9 @@
     }
     if (typeof cfg.render_tikz === 'boolean') {
       window.__mpConfig.renderTikz = cfg.render_tikz;
+    }
+    if (typeof cfg.fancy_theorems === 'boolean') {
+      window.__mpConfig.fancyTheorems = cfg.fancy_theorems;
     }
     // The page margin is baked into config_css in the <head> (screen padding
     // + @page print margin), which a body patch can't touch — reload when the
@@ -3183,6 +3199,8 @@
     row('source-jump trigger', vc.source_jump_trigger);
     row('default page mode', vc.default_page_mode);
     row('default theme', vc.default_theme);
+    row('theorem numbering', vc.theorem_numbering);
+    row('fancy theorem boxes', vc.fancy_theorems ? 'on' : 'off');
     row('render TikZ', vc.render_tikz ? 'on' : 'off');
     row('WS protocol', snapshot.ws_protocol);
     section('editor template');
@@ -3433,6 +3451,175 @@
     return Array.prototype.filter.call(page.children, function(el) {
       return el.classList && el.classList.contains('blk');
     });
+  }
+
+  function isTopLevelTheoremBlock(block, page) {
+    if (!block || !block.classList || !block.classList.contains('blk')) return false;
+    if (block.parentElement !== page) return false;
+    var child = block.firstElementChild;
+    return !!(child && child.classList && child.classList.contains('thm'));
+  }
+
+  function topLevelBlocksFromRoots(roots, page) {
+    var seen = new Set();
+    var blocks = [];
+    Array.from(roots || []).forEach(function(root) {
+      var block = root && root.matches && root.matches('main#page > .blk')
+        ? root
+        : (root && root.closest ? root.closest('main#page > .blk') : null);
+      if (block && block.parentElement === page && !seen.has(block)) {
+        seen.add(block);
+        blocks.push(block);
+      }
+    });
+    return blocks;
+  }
+
+  // Carry an outgoing block's cheap outer-box measurement onto its
+  // replacement as the containment fallback. This does not force layout of
+  // the replacement or disable lazy rendering: once active, real content
+  // still determines its size; while skipped, it keeps a close estimate.
+  function snapshotBlockIntrinsicSize(block) {
+    if (!block || !block.isConnected) return null;
+    var width = block.offsetWidth;
+    var height = block.offsetHeight;
+    if (!(width > 0) || !(height >= 0)) return null;
+    return { width: width, height: height };
+  }
+
+  function seedBlockIntrinsicSize(block, size) {
+    if (!block || !size) return;
+    block.style.setProperty(
+      'contain-intrinsic-size',
+      size.width.toFixed(3) + 'px ' + size.height.toFixed(3) + 'px'
+    );
+  }
+
+  // Keep geometry reads and style writes in separate phases. This helper is
+  // shared by theorem priming, MathJax completion, and TikZ image landing;
+  // callers can hand it any iterable of top-level blocks without turning a
+  // multi-block update into read/write/read/write layout thrashing.
+  function snapshotBlockIntrinsicSizes(blocks) {
+    var snapshots = [];
+    Array.from(blocks || []).forEach(function(block) {
+      var size = snapshotBlockIntrinsicSize(block);
+      if (size) snapshots.push({ block: block, size: size });
+    });
+    return snapshots;
+  }
+
+  function seedBlockIntrinsicSizeSnapshots(snapshots) {
+    snapshots.forEach(function(entry) {
+      seedBlockIntrinsicSize(entry.block, entry.size);
+    });
+  }
+
+  function seedCurrentBlockIntrinsicSizes(blocks) {
+    var snapshots = snapshotBlockIntrinsicSizes(blocks);
+    seedBlockIntrinsicSizeSnapshots(snapshots);
+    return snapshots;
+  }
+
+  // Force a targeted set of lazy blocks visible under the same containment
+  // that content-visibility:auto supplies, take one batched geometry snapshot,
+  // seed every fallback, then restore every block. The marker prevents this
+  // synthetic un-skip from opting raw math into eager MathJax work.
+  function primeTopLevelBlockIntrinsicSizes(blocks) {
+    var page = pageEl();
+    if (!page) return;
+    var targets = topLevelBlocksFromRoots(blocks, page);
+    if (!targets.length) return;
+
+    var token = ++overlayPrelayoutToken;
+    var lifted = targets.map(function(block) {
+      var entry = {
+        block: block,
+        contentVisibility: block.style.contentVisibility,
+        contain: block.style.contain,
+      };
+      block.__mpOverlayPrelayoutToken = token;
+      block.style.contain = 'layout style paint';
+      block.style.contentVisibility = 'visible';
+      return entry;
+    });
+
+    // One flush after all lift writes, then ALL geometry reads before ANY
+    // intrinsic-size or containment-restoration write.
+    void page.offsetHeight;
+    seedCurrentBlockIntrinsicSizes(targets);
+    lifted.forEach(function(entry) {
+      entry.block.style.contentVisibility = entry.contentVisibility;
+      entry.block.style.contain = entry.contain;
+    });
+    setTimeout(function() {
+      lifted.forEach(function(entry) {
+        if (entry.block.__mpOverlayPrelayoutToken === token) {
+          delete entry.block.__mpOverlayPrelayoutToken;
+        }
+      });
+    }, 250);
+  }
+
+  // SVG image loads for one content hash may land together in several live
+  // copies. Coalesce them so TikZ also gets the same two-phase forced-visible
+  // measurement instead of sampling a skipped block's stale fallback.
+  var blockIntrinsicPrimeQueue = new Set();
+  var blockIntrinsicPrimeTimer = 0;
+  function scheduleBlockIntrinsicSizePriming(blocks) {
+    var page = pageEl();
+    if (!page) return;
+    topLevelBlocksFromRoots(blocks, page).forEach(function(block) {
+      blockIntrinsicPrimeQueue.add(block);
+    });
+    if (!blockIntrinsicPrimeQueue.size || blockIntrinsicPrimeTimer) return;
+    blockIntrinsicPrimeTimer = setTimeout(function() {
+      blockIntrinsicPrimeTimer = 0;
+      var batch = Array.from(blockIntrinsicPrimeQueue);
+      blockIntrinsicPrimeQueue.clear();
+      primeTopLevelBlockIntrinsicSizes(batch);
+    }, 0);
+  }
+
+  // Lazy blocks normally use one cheap 180px fallback. Short theorem boxes are
+  // often much smaller, so the first PageUp/PageDown that activates a cold
+  // theorem changes the document height mid-scroll and makes inverse keys
+  // drift. Prime ONLY theorem blocks with their real outer-box size. The
+  // forced visibility is one shared layout pass, retains the containment that
+  // content-visibility:auto normally supplies (so child margins cannot
+  // collapse through .blk), and restores lazy rendering immediately.
+  //
+  // `roots` scopes live updates to inserted/replaced blocks; null means the
+  // initial one-time theorem pass. The prelayout marker is also used by the
+  // lazy MathJax listener, so this geometry read cannot opt every theorem's
+  // equations into eager typesetting.
+  function primeTheoremBlockIntrinsicSizes(roots) {
+    if (!roots && theoremPrimeTimer) {
+      clearTimeout(theoremPrimeTimer);
+      theoremPrimeTimer = 0;
+    }
+    var page = pageEl();
+    if (!page) return;
+    var blocks;
+    if (roots) {
+      blocks = topLevelBlocksFromRoots(roots, page).filter(function(block) {
+        return isTopLevelTheoremBlock(block, page);
+      });
+    } else {
+      blocks = topLevelOverlayBlocks(page).filter(function(block) {
+        return isTopLevelTheoremBlock(block, page);
+      });
+    }
+    if (!blocks.length) return;
+    primeTopLevelBlockIntrinsicSizes(blocks);
+  }
+
+  var theoremPrimeTimer = 0;
+  function scheduleTheoremBlockIntrinsicSizes(delay) {
+    if (theoremPrimeTimer) clearTimeout(theoremPrimeTimer);
+    theoremPrimeTimer = setTimeout(function() {
+      theoremPrimeTimer = 0;
+      primeTheoremBlockIntrinsicSizes();
+    }, typeof delay === 'number' ? delay : NAV_RESIZE_IDLE_MS);
   }
 
   // Drop cached block-local overlay geometry. With no argument every block is
@@ -3821,6 +4008,7 @@
     try { localStorage.setItem('mathpreview.pageMode', currentPageMode); } catch (e) {}
     invalidateOverlayMetrics();
     updatePageScale();
+    scheduleTheoremBlockIntrinsicSizes(0);
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
     if (refkeysVisible) scheduleRefkeys(0);

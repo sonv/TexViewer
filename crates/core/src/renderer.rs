@@ -227,6 +227,7 @@ pub fn render(
         pending_sub: None,
         tikz_assets: HashMap::new(),
         render_tikz: opts.viewer_config.render_tikz,
+        fancy_theorems: opts.viewer_config.fancy_theorems,
         tikz_asset_base: opts.tikz_asset_base.as_deref(),
         latex_preamble: opts.latex_preamble.as_deref().unwrap_or(""),
     };
@@ -1116,6 +1117,7 @@ struct RenderCtx<'a> {
     /// SVG, so ordinary document renders never spawn TeX.
     tikz_assets: HashMap<String, TikzAsset>,
     render_tikz: bool,
+    fancy_theorems: bool,
     tikz_asset_base: Option<&'a str>,
     latex_preamble: &'a str,
 }
@@ -1346,14 +1348,21 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                     )
                 })
                 .unwrap_or_default();
-            let role_pill = role_pill_html(*role);
+            let fancy_class = if ctx.fancy_theorems { " thm-fancy" } else { "" };
+            let role_pill = if ctx.fancy_theorems {
+                role_pill_html(*role)
+            } else {
+                String::new()
+            };
+            let heading_punctuation = if ctx.fancy_theorems { "" } else { "." };
             writeln!(
                 out,
-                r#"<div class="thm {env_class} {type_class} {role_class}" id="{id}" data-src="{src}"{refkey}>"#,
+                r#"<div class="thm{fancy_class} {env_class} {type_class} {role_class}" id="{id}" data-src="{src}"{refkey}>"#,
                 // `env` is an attacker-controllable `\newtheorem{...}` name;
                 // `sanitize_id` keeps it a valid class token and prevents it
                 // from breaking out of the attribute (stored-XSS otherwise).
                 env_class = format_args!("env-{}", sanitize_id(env)),
+                fancy_class = fancy_class,
                 type_class = type_class,
                 role_class = role_class,
                 id = escape_attr(&id),
@@ -1363,7 +1372,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             .unwrap();
             writeln!(
                 out,
-                r#"<div class="thm-head"><span class="thm-kind">{kind_label}</span>{num_html}{name_html}{role_pill}</div>"#,
+                r#"<div class="thm-head"><span class="thm-kind">{kind_label}</span>{num_html}{name_html}{role_pill}{heading_punctuation}</div>"#,
             ).unwrap();
             out.push_str(r#"<div class="thm-body">"#);
             write_chunked_children(out, &n.children, ctx);
@@ -3688,11 +3697,24 @@ mod tests {
         assert!(out.html.contains(r#"id="config-font-size""#));
         assert!(out.html.contains(r#"id="config-source-jump-trigger""#));
         assert!(out.html.contains(r#"id="config-typeset-mode""#));
+        assert!(out.html.contains(r#"id="config-fancy-theorems""#));
+        assert!(out.html.contains("Fancy theorem boxes"));
         assert!(out.html.contains(r#"id="config-render-tikz""#));
         assert!(out
             .html
             .contains("Render TikZ diagrams (trusted projects only)"));
         assert!(out.html.contains("renderTikz: false"));
+        assert!(out.html.contains("fancyTheorems: true"));
+        assert!(out.html.contains("fancyTheorems.dataset.dirty === 'true'"));
+        assert!(out
+            .html
+            .contains("values['viewer.fancy-theorems'] = fancyTheorems.checked"));
+        assert!(out
+            .html
+            .contains("window.__mpConfig.fancyTheorems = cfg.fancy_theorems"));
+        assert!(out
+            .html
+            .contains("window.__mpConfig.theoremNumbering = cfg.theorem_numbering"));
         assert!(out.html.contains("renderTikz.dataset.dirty === 'true'"));
         assert!(out
             .html
@@ -3734,6 +3756,20 @@ mod tests {
         assert!(out
             .html
             .contains("Global <code>~/.config/mathpreview/config.toml</code>"));
+    }
+
+    #[test]
+    fn config_shell_seeds_disabled_fancy_theorems() {
+        let mut opts = HtmlOptions::default();
+        opts.viewer_config.fancy_theorems = false;
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nConfig\n\\end{document}\n".to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert!(out.html.contains("fancyTheorems: false"));
     }
 
     #[test]
@@ -3824,6 +3860,92 @@ mod tests {
             ids.iter().any(|id| id.starts_with("thm-g")),
             "generated theorem id should be g-marked: {ids:?}"
         );
+    }
+
+    #[test]
+    fn theorem_card_class_tracks_fancy_theorems_option() {
+        let source = concat!(
+            "\\newtheorem{theorem}{Theorem}\n",
+            "\\begin{document}\n",
+            "\\begin{theorem}\\label{thm:one}Statement.\\end{theorem}\n",
+            "\\end{document}\n",
+        );
+        let mut fancy = HtmlOptions::default();
+        fancy.viewer_config.fancy_theorems = true;
+        let fancy_body =
+            crate::render_project_from_source(Path::new("t.tex"), source.to_string(), &fancy)
+                .unwrap()
+                .body_html;
+        assert!(
+            fancy_body.contains(r#"class="thm thm-fancy "#),
+            "fancy theorem class missing: {fancy_body}"
+        );
+
+        let mut plain = HtmlOptions::default();
+        plain.viewer_config.fancy_theorems = false;
+        let plain_body =
+            crate::render_project_from_source(Path::new("t.tex"), source.to_string(), &plain)
+                .unwrap()
+                .body_html;
+        assert!(
+            plain_body.contains(r#"class="thm env-theorem "#),
+            "plain theorem should retain semantic markup: {plain_body}"
+        );
+        assert!(
+            !plain_body.contains("thm-fancy"),
+            "plain theorem retained card class: {plain_body}"
+        );
+        assert!(plain_body.contains(r#"class="thm-head"#));
+        assert!(plain_body.contains(r#"class="thm-body"#));
+        assert!(plain_body.contains(r#"data-refkey="thm:one""#));
+        assert!(plain_body.contains(r#"class="thm-num">1</span>"#));
+        assert!(
+            plain_body.contains(r#"class="thm-num">1</span>.</div>"#),
+            "plain theorem heading should end in a literal period: {plain_body}"
+        );
+        assert!(
+            !plain_body.contains("role-pill"),
+            "plain theorem should not render a role pill: {plain_body}"
+        );
+        assert!(
+            fancy_body.contains(r#"class="role-pill role-standard">standard</span></div>"#),
+            "fancy theorem should retain its role pill and no terminal period: {fancy_body}"
+        );
+    }
+
+    #[test]
+    fn undeclared_theorem_renders_as_transparent_unsupported_environment() {
+        let body = render_body(
+            "\\begin{document}\n\\begin{theorem}Text $x$.\\end{theorem}\n\\end{document}\n",
+        );
+        assert!(
+            body.contains(r#"class="unsupported-env-boundary unsupported-env-begin"#),
+            "missing begin diagnostic: {body}"
+        );
+        assert!(
+            body.contains(r#"class="unsupported-env-boundary unsupported-env-end"#),
+            "missing end diagnostic: {body}"
+        );
+        assert!(
+            body.contains(r#"class="math inline"#),
+            "body was not parsed: {body}"
+        );
+        assert!(
+            !body.contains(r#"class="thm"#),
+            "undeclared theorem was enhanced: {body}"
+        );
+    }
+
+    #[test]
+    fn plain_theorem_css_keeps_boxes_opt_in() {
+        let css = super::shell::DEFAULT_CSS;
+        assert!(css.contains(".thm-fancy {\n  padding:"));
+        assert!(css.contains(".thm-head { display: inline;"));
+        assert!(css.contains(".thm-fancy .thm-head { display: block;"));
+        assert!(!css.contains(".thm-head::after"));
+        assert!(css.contains(".thm-body { display: contents;"));
+        assert!(css.contains("body.theme-dark .thm-fancy { background:"));
+        assert!(!css.contains("body.theme-dark .thm { background:"));
     }
 
     #[test]
@@ -5032,7 +5154,7 @@ mod tests {
     fn theorem_optional_name_inline_math_is_typeset() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
-            "\\begin{document}\n\\begin{lemma}[$Y$-energy]\nStatement.\n\\end{lemma}\n\\end{document}\n".to_string(),
+            "\\newtheorem{lemma}{Lemma}\n\\begin{document}\n\\begin{lemma}[$Y$-energy]\nStatement.\n\\end{lemma}\n\\end{document}\n".to_string(),
             &HtmlOptions::default(),
         )
         .unwrap();
@@ -5186,7 +5308,7 @@ mod tests {
     fn refs_inside_inline_latex_fields_carry_data_target() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
-            "\\begin{document}\n\\begin{proposition}\\label{prop:foo}\nStatement.\n\\end{proposition}\n\\section{See \\ref{prop:foo} and \\eqref{eq:x} and \\autoref{prop:foo}}\n\\begin{equation}\\label{eq:x}\na=b\n\\end{equation}\n\\end{document}\n".to_string(),
+            "\\newtheorem{proposition}{Proposition}\n\\begin{document}\n\\begin{proposition}\\label{prop:foo}\nStatement.\n\\end{proposition}\n\\section{See \\ref{prop:foo} and \\eqref{eq:x} and \\autoref{prop:foo}}\n\\begin{equation}\\label{eq:x}\na=b\n\\end{equation}\n\\end{document}\n".to_string(),
             &HtmlOptions::default(),
         )
         .unwrap();
@@ -5215,7 +5337,7 @@ mod tests {
     fn labeled_items_store_refkeys_for_viewer_toggle() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
-            "\\begin{document}\n\\section{Intro}\\label{sec:intro}\n\\begin{theorem}[role=main]\\label{thm:main}\nStatement.\n\\end{theorem}\n\\begin{equation}\n\\label{eq:main}\na=b\n\\label{eq:alias}\n\\end{equation}\n\\begin{figure}\n\\caption{Plot.}\\label{fig:plot}\n\\end{figure}\nLoose\\label{misc:loose}.\n\\end{document}\n"
+            "\\newtheorem{theorem}{Theorem}\n\\begin{document}\n\\section{Intro}\\label{sec:intro}\n\\begin{theorem}[role=main]\\label{thm:main}\nStatement.\n\\end{theorem}\n\\begin{equation}\n\\label{eq:main}\na=b\n\\label{eq:alias}\n\\end{equation}\n\\begin{figure}\n\\caption{Plot.}\\label{fig:plot}\n\\end{figure}\nLoose\\label{misc:loose}.\n\\end{document}\n"
                 .to_string(),
             &HtmlOptions::default(),
         )
@@ -6499,6 +6621,76 @@ mod tests {
         assert!(out.html.contains("viewerJumpStack"));
         assert!(out.html.contains("scrollByVim(0, vh)"));
         assert!(out.html.contains("scrollByVim(0, -vh)"));
+        assert!(out
+            .html
+            .contains("function primeTheoremBlockIntrinsicSizes(roots)"));
+        assert!(out
+            .html
+            .contains("block.style.contain = 'layout style paint'"));
+        assert!(out.html.contains("void page.offsetHeight"));
+        assert!(out
+            .html
+            .contains("primeTheoremBlockIntrinsicSizes(touchedRoots)"));
+        assert!(out
+            .html
+            .contains("primeTheoremBlockIntrinsicSizes(newReplacementBlocks)"));
+        assert!(!out.html.contains("vimScrollHistory"));
+        assert!(out.html.contains("seedTypesetBlockIntrinsicSizes(nodes)"));
+        assert!(out
+            .html
+            .contains("var snapshots = snapshotBlockIntrinsicSizes(blocks);"));
+        assert!(out
+            .html
+            .contains("seedBlockIntrinsicSizeSnapshots(snapshots);"));
+        assert!(out.html.contains("seedCurrentBlockIntrinsicSizes(blocks);"));
+        assert!(out
+            .html
+            .contains("primeTopLevelBlockIntrinsicSizes(blocks);"));
+        assert!(out
+            .html
+            .contains("scheduleBlockIntrinsicSizePriming([block]);"));
+        assert!(out.html.contains("touchedRoots.push(c);"));
+        assert!(!out
+            .html
+            .contains("seedBlockIntrinsicSize(block, snapshotBlockIntrinsicSize(block))"));
+        let batch_start = out
+            .html
+            .find("function seedCurrentBlockIntrinsicSizes(blocks)")
+            .unwrap();
+        let batch_end = out.html[batch_start..]
+            .find("// Force a targeted set of lazy blocks visible")
+            .map(|offset| batch_start + offset)
+            .unwrap();
+        let batch_fn = &out.html[batch_start..batch_end];
+        assert!(
+            batch_fn
+                .find("snapshotBlockIntrinsicSizes(blocks)")
+                .unwrap()
+                < batch_fn
+                    .find("seedBlockIntrinsicSizeSnapshots(snapshots)")
+                    .unwrap(),
+            "intrinsic-size geometry reads must finish before seed writes"
+        );
+        let prime_start = out
+            .html
+            .find("function primeTopLevelBlockIntrinsicSizes(blocks)")
+            .unwrap();
+        let prime_end = out.html[prime_start..]
+            .find("// SVG image loads")
+            .map(|offset| prime_start + offset)
+            .unwrap();
+        let prime_fn = &out.html[prime_start..prime_end];
+        let prime_snapshot = prime_fn
+            .find("seedCurrentBlockIntrinsicSizes(targets)")
+            .unwrap();
+        assert!(prime_fn.find("void page.offsetHeight").unwrap() < prime_snapshot);
+        assert!(
+            prime_snapshot
+                < prime_fn
+                    .find("entry.block.style.contentVisibility = entry.contentVisibility")
+                    .unwrap(),
+            "theorem/TikZ geometry snapshots must precede containment restoration"
+        );
         assert!(out.html.contains("text-align: justify;"));
         assert!(out.html.contains("hyphens: auto;"));
         assert!(out

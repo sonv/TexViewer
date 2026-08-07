@@ -2,18 +2,16 @@
 //! the preamble into a registry that drives:
 //!
 //! * **recognition** — which `\begin{env}` names the parser treats as
-//!   theorem-like (beyond the built-in list), so custom environments such as
-//!   `assumption`, `setting`, or `question` get parsed as theorems;
+//!   theorem-like. Only names actually declared with `\newtheorem` are
+//!   recognized, so an undeclared `theorem` takes the same transparent
+//!   unsupported-environment path as any other unknown wrapper;
 //! * **the heading word** shown for each (`Theorem`, `Lemma`, `Satz`, …);
 //! * **numbering** — whether the environment is numbered, which counter it
 //!   advances (shared vs independent), and the sectioning level it resets
 //!   under.
 //!
 //! This is what lets the preview's theorem/lemma numbers match a real
-//! `latexmk` build instead of assuming one fixed AMS convention. When the
-//! preamble declares nothing, the registry falls back to the AMS-modern
-//! default the renderer used before: all built-in environments share one
-//! `theorem` counter, reset per `\section`.
+//! `latexmk` build instead of assuming one fixed AMS convention.
 
 use std::collections::HashMap;
 
@@ -115,31 +113,37 @@ impl TheoremRegistry {
         Self::from_sources(&sources)
     }
 
-    /// Build from the built-in defaults, then apply every `\newtheorem` /
-    /// `\newtheorem*` / `\numberwithin` declaration found across `sources`, in
-    /// order (so shared counters resolve against earlier definitions).
+    /// Build from every `\newtheorem` / `\newtheorem*` / `\numberwithin`
+    /// declaration found across `sources`, in order (so shared counters resolve
+    /// against earlier definitions). Undeclared standard names are deliberately
+    /// absent: LaTeX does not define `theorem` merely because it is familiar.
     ///
-    /// An environment declared more than once is skipped: that only happens
-    /// across mutually-exclusive conditional branches (`\if…\else…\fi`) — LaTeX
+    /// An environment declared more than once is treated as ambiguous. That
+    /// normally happens across mutually-exclusive conditional branches
+    /// (`\if…\else…\fi`) — LaTeX
     /// forbids redeclaring a theorem otherwise — and we can't evaluate the
-    /// conditional, so rather than let an arbitrary branch win we leave that
-    /// environment at its built-in default.
+    /// conditional. Metadata on which every branch agrees is retained; only
+    /// conflicting fields use conservative fallback values.
     pub fn from_sources(sources: &[String]) -> Self {
-        let mut reg = Self::with_builtin_defaults();
+        let mut reg = Self::default();
         let mut decls: Vec<Decl> = Vec::new();
         for src in sources {
             decls.extend(scan_declarations(src));
         }
-        let mut counts: HashMap<String, u32> = HashMap::new();
+        let mut declarations: HashMap<String, Vec<Decl>> = HashMap::new();
         for d in &decls {
             if let Decl::NewTheorem { env, .. } = d {
-                *counts.entry(env.clone()).or_insert(0) += 1;
+                declarations.entry(env.clone()).or_default().push(d.clone());
             }
         }
+        let mut ambiguous = std::collections::HashSet::new();
         for decl in decls {
             if let Decl::NewTheorem { ref env, .. } = decl {
-                if counts.get(env).copied().unwrap_or(0) > 1 {
-                    continue; // ambiguous (conditional) — keep the built-in default
+                if declarations.get(env).is_some_and(|items| items.len() > 1) {
+                    if ambiguous.insert(env.clone()) {
+                        reg.apply_ambiguous_theorems(&declarations[env]);
+                    }
+                    continue;
                 }
             }
             reg.apply(decl);
@@ -148,12 +152,12 @@ impl TheoremRegistry {
     }
 
     /// Override the detected per-counter reset levels with a global scheme from
-    /// the viewer config. `Auto` keeps what was detected from `\newtheorem` (or
-    /// the built-in default); `Continuous` makes every theorem counter number
+    /// the viewer config. `Auto` keeps what was detected from `\newtheorem`;
+    /// `Continuous` makes every theorem counter number
     /// document-wide (no section prefix); `Section` forces per-section numbering.
-    /// Applied after the registry is built, so it wins over both detection and
-    /// the built-in default — the escape hatch for declarations the viewer can't
-    /// see (a conditional `\if…\newtheorem` block, an unresolvable package).
+    /// Applied after the registry is built, so it wins over detected reset
+    /// metadata — the escape hatch for conditional declarations the viewer can
+    /// recognize but cannot evaluate.
     pub fn apply_numbering_scheme(&mut self, scheme: crate::config::TheoremNumbering) {
         use crate::config::TheoremNumbering;
         let level = match scheme {
@@ -207,7 +211,71 @@ impl TheoremRegistry {
         }
     }
 
-    /// Whether `env` (already `*`-stripped) is a theorem-like environment.
+    /// Keep an environment recognized when it was found in multiple
+    /// conditional branches without guessing which branch TeX will execute.
+    /// Metadata shared by every branch is preserved; only conflicting fields
+    /// fall back. Structural conflicts use legacy AMS metadata for familiar
+    /// names and an independent, continuous counter for custom names.
+    fn apply_ambiguous_theorems(&mut self, declarations: &[Decl]) {
+        let Some(Decl::NewTheorem {
+            env,
+            shared,
+            title,
+            reset,
+            numbered,
+            ..
+        }) = declarations.first()
+        else {
+            return;
+        };
+        let shared_agrees = declarations.iter().all(|decl| {
+            matches!(decl, Decl::NewTheorem { shared: candidate, .. } if candidate == shared)
+        });
+        let reset_agrees = declarations.iter().all(
+            |decl| matches!(decl, Decl::NewTheorem { reset: candidate, .. } if candidate == reset),
+        );
+        let title_agrees = declarations.iter().all(
+            |decl| matches!(decl, Decl::NewTheorem { title: candidate, .. } if candidate == title),
+        );
+        let numbered_agrees = declarations.iter().all(|decl| {
+            matches!(decl, Decl::NewTheorem { numbered: candidate, .. } if candidate == numbered)
+        });
+        let builtin = THEOREM_LIKES.contains(&env.as_str());
+        let resolved_title = if title_agrees {
+            title.clone()
+        } else {
+            default_title(env).to_string()
+        };
+        let resolved_numbered = if numbered_agrees { *numbered } else { true };
+
+        // If the counter/reset structure agrees, preserve it exactly. Only
+        // conflicting structural declarations need the conservative fallback.
+        if shared_agrees && reset_agrees {
+            self.apply(Decl::NewTheorem {
+                env: env.clone(),
+                shared: shared.clone(),
+                title: resolved_title,
+                reset: reset.clone(),
+                numbered: resolved_numbered,
+            });
+            return;
+        }
+
+        let counter = if builtin { "theorem" } else { env }.to_string();
+        self.counter_reset
+            .entry(counter.clone())
+            .or_insert(if builtin { Some(2) } else { None });
+        self.defs.insert(
+            env.clone(),
+            TheoremDef {
+                title: resolved_title,
+                numbered: resolved_numbered,
+                counter,
+            },
+        );
+    }
+
+    /// Whether this exact environment name was declared theorem-like.
     pub fn is_theorem(&self, env: &str) -> bool {
         self.defs.contains_key(env)
     }
@@ -244,6 +312,7 @@ impl TheoremRegistry {
     }
 }
 
+#[derive(Clone)]
 enum Decl {
     NewTheorem {
         env: String,
@@ -300,10 +369,14 @@ fn opt(s: String) -> Option<String> {
     }
 }
 
-/// Scan the preamble for `\newtheorem`, `\newtheorem*`, and `\numberwithin`,
-/// skipping `%` comments. Tolerant of unfamiliar shapes — anything that
-/// doesn't parse cleanly is skipped rather than guessed at.
-fn scan_declarations(src: &str) -> Vec<Decl> {
+/// Scan executable preamble source for `\newtheorem`, `\newtheorem*`, and
+/// `\numberwithin`. Macro definition bodies, dormant fixed conditional
+/// branches, and comments are removed before scanning, so a stored
+/// `\newtheorem` is not mistaken for an executed declaration. Tolerant of
+/// unfamiliar shapes — anything that doesn't parse cleanly is skipped.
+fn scan_declarations(raw: &str) -> Vec<Decl> {
+    let executable = crate::parser::executable_latex_source(raw);
+    let src = executable.as_str();
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -318,9 +391,16 @@ fn scan_declarations(src: &str) -> Vec<Decl> {
                 continue;
             }
             b'\\' => {
-                if let Some(after) = src[i..].strip_prefix("\\newtheorem") {
+                if src[i..].starts_with("\\newtheorem")
+                    && !bytes
+                        .get(i + "\\newtheorem".len())
+                        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'@')
+                {
                     let mut j = i + "\\newtheorem".len();
-                    let numbered = if after.starts_with('*') {
+                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    let numbered = if bytes.get(j) == Some(&b'*') {
                         j += 1;
                         false
                     } else {
@@ -357,7 +437,11 @@ fn scan_declarations(src: &str) -> Vec<Decl> {
                     i += "\\newtheorem".len();
                     continue;
                 }
-                if src[i..].starts_with("\\numberwithin") {
+                if src[i..].starts_with("\\numberwithin")
+                    && !bytes
+                        .get(i + "\\numberwithin".len())
+                        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'@')
+                {
                     let j = i + "\\numberwithin".len();
                     if let Some((counter, j1)) = read_delimited(src, j, b'{', b'}') {
                         if let Some((within, j2)) = read_delimited(src, j1, b'{', b'}') {
@@ -414,11 +498,13 @@ mod tests {
 
     #[test]
     fn continuous_override_rescues_ambiguous_conditional_declaration() {
-        // A conditional double-declaration is skipped → stuck at the built-in
-        // section default; the config override recovers continuous numbering.
+        // A conditional double-declaration remains recognized with the
+        // conservative section fallback; the override recovers continuous
+        // numbering when that is what the active branch uses.
         let mut r = TheoremRegistry::from_sources(&[
             "\\newtheorem{theorem}{Theorem}[section]\n\\newtheorem{theorem}{Theorem}".to_string(),
         ]);
+        assert!(r.is_theorem("theorem"));
         assert_eq!(r.reset_level("theorem"), Some(2));
         r.apply_numbering_scheme(crate::config::TheoremNumbering::Continuous);
         assert_eq!(r.reset_level("theorem"), None);
@@ -432,6 +518,14 @@ mod tests {
         assert_eq!(r.counter("lemma"), "theorem");
         assert_eq!(r.reset_level("lemma"), Some(2));
         assert_eq!(r.title("thm"), "Theorem");
+    }
+
+    #[test]
+    fn source_registry_does_not_invent_standard_environments() {
+        let r = TheoremRegistry::from_preamble("");
+        assert!(!r.is_theorem("theorem"));
+        assert!(!r.is_theorem("lemma"));
+        assert!(!r.is_theorem("remark"));
     }
 
     #[test]
@@ -460,8 +554,7 @@ mod tests {
     fn continuous_when_no_reset() {
         let r = TheoremRegistry::from_preamble("\\newtheorem{theorem}{Theorem}\n");
         assert_eq!(r.reset_level("theorem"), None);
-        // a builtin that shares the theorem counter now also goes continuous
-        assert_eq!(r.reset_level("lemma"), None);
+        assert!(!r.is_theorem("lemma"));
     }
 
     #[test]
@@ -499,22 +592,99 @@ mod tests {
         // different reset behavior. The duplicate is ambiguous, so `theorem`
         // stays at the built-in default (section reset), and `lemma` (declared
         // once, sharing it) inherits that — matching the common AMS result.
-        let r = TheoremRegistry::from_sources(&[
-            "\\ifSV@numwithin\n\
+        let r = TheoremRegistry::from_sources(&["\\ifSV@numwithin\n\
              \\newtheorem{theorem}{Theorem}[section]\n\
              \\else\n\
              \\newtheorem{theorem}{Theorem}\n\
              \\fi\n\
              \\newtheorem{lemma}[theorem]{Lemma}\n\
              \\newtheorem{problem}{Problem}[section]\n"
-                .to_string(),
-        ]);
+            .to_string()]);
+        assert!(r.is_theorem("theorem"));
+        assert!(r.is_theorem("lemma"));
         assert_eq!(r.reset_level("theorem"), Some(2)); // default kept, not None
         assert_eq!(r.counter("lemma"), "theorem");
         assert_eq!(r.reset_level("lemma"), Some(2));
         // A non-duplicated custom env from the same source is still honored.
         assert!(r.is_theorem("problem"));
         assert_eq!(r.counter("problem"), "problem");
+    }
+
+    #[test]
+    fn duplicate_custom_declaration_stays_recognized() {
+        let r = TheoremRegistry::from_preamble(
+            "\\newtheorem{principle}{Principle}[section]\n\\newtheorem{principle}{Principle}\n",
+        );
+        assert!(r.is_theorem("principle"));
+        assert_eq!(r.title("principle"), "Principle");
+        assert_eq!(r.counter("principle"), "principle");
+        assert_eq!(r.reset_level("principle"), None);
+    }
+
+    #[test]
+    fn dormant_macro_bodies_do_not_declare_theorems() {
+        let r = TheoremRegistry::from_preamble(concat!(
+            "\\newcommand{\\factory}{\\newtheorem{ghost}{Ghost}}\n",
+            "\\def\\other{\\newtheorem{phantom}{Phantom}}\n",
+            "\\NewDocumentCommand{\\third}{}{\\newtheorem{specter}{Specter}}\n",
+            "\\newenvironment{wrapper}{\\newtheorem{shade}{Shade}}{}\n",
+            "\\newtheorem{live}{Live}\n",
+        ));
+        assert!(!r.is_theorem("ghost"));
+        assert!(!r.is_theorem("phantom"));
+        assert!(!r.is_theorem("specter"));
+        assert!(!r.is_theorem("shade"));
+        assert!(r.is_theorem("live"));
+    }
+
+    #[test]
+    fn declaration_arguments_accept_tex_comment_continuations() {
+        let r = TheoremRegistry::from_preamble(concat!(
+            "\\newtheorem% command to env\n",
+            "  {theorem}% env to title\n",
+            "  {Theorem}% title to reset\n",
+            "  [section]\n",
+            "\\newtheorem% command to env\n",
+            "  {lemma}% env to shared\n",
+            "  [theorem]% shared to title\n",
+            "  {Lemma}\n",
+            "\\newtheorem% command to star\n",
+            "  *% star to env\n",
+            "  {remark}% env to title\n",
+            "  {Remark}\n",
+            "\\numberwithin% command to counter\n",
+            "  {theorem}% counter to level\n",
+            "  {subsection}\n",
+        ));
+        assert!(r.is_theorem("theorem"));
+        assert!(r.is_theorem("lemma"));
+        assert!(r.is_theorem("remark"));
+        assert_eq!(r.counter("lemma"), "theorem");
+        assert_eq!(r.reset_level("theorem"), Some(3));
+        assert!(!r.numbered("remark"));
+    }
+
+    #[test]
+    fn duplicate_consensus_is_preserved_before_conflict_fallbacks() {
+        let r = TheoremRegistry::from_preamble(concat!(
+            "\\newtheorem*{remark}{Observation}\n",
+            "\\newtheorem*{remark}{Observation}\n",
+            "\\newtheorem{lemma}{Lemma}[section]\n",
+            "\\newtheorem{lemma}{Lemma}[section]\n",
+            "\\newtheorem*{claim}{Claim}\n",
+            "\\newtheorem{claim}{Claim}\n",
+        ));
+        assert!(r.is_theorem("remark"));
+        assert_eq!(r.title("remark"), "Observation");
+        assert!(!r.numbered("remark"));
+        assert_eq!(r.counter("remark"), "remark");
+        assert_eq!(r.counter("lemma"), "lemma");
+        assert_eq!(r.reset_level("lemma"), Some(2));
+        assert_eq!(r.title("claim"), "Claim");
+        assert!(
+            r.numbered("claim"),
+            "conflicting star forms fall back to numbered"
+        );
     }
 
     #[test]

@@ -95,11 +95,12 @@ pub(super) fn wrap_in_shell(
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
         thm = opts.viewer_config.theorem_numbering.as_str(),
+        fancy = opts.viewer_config.fancy_theorems,
         tsm = opts.viewer_config.typeset_mode.as_str(),
         tikz = opts.viewer_config.render_tikz,
         mjx = mathjax_config_js,
@@ -378,6 +379,11 @@ pub(super) fn wrap_in_shell(
             <option value="continuous">Continuous (1, 2, 3…)</option>
             <option value="section">Per section (1.1, 1.2…)</option>
           </select>
+        </label>
+        <label class="config-checkbox"
+               title="Add MathPreview's enhanced boxes to theorem environments declared with \newtheorem. Disable for a plain, PDF-like theorem layout.">
+          Fancy theorem boxes
+          <input type="checkbox" id="config-fancy-theorems">
         </label>
         <label>Math rendering
           <select id="config-typeset-mode">

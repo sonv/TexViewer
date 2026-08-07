@@ -45,9 +45,11 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   PDF figures while preserving common width/height/scale options.
 - **Numbering driven by your `\newtheorem` declarations** — counters
   (shared vs independent), reset level, and titles, including custom and
-  `.sty`-declared environments — plus sections, equation envs, multi-row
-  `align`/`gather`, and `subequations` (alphabetic child suffixes). Falls
-  back to the AMS-modern default when nothing is declared. mathtools'
+  `.sty`-declared environments. Declared theorems can use MathPreview's
+  colored boxes or a plain TeX-like style; familiar but undeclared names stay
+  on the normal unsupported-environment path instead of being guessed. This
+  works alongside sections, equation envs, multi-row `align`/`gather`, and
+  `subequations` (alphabetic child suffixes). mathtools'
   `showonlyrefs` is honored: with
   `\usepackage[showonlyrefs]{mathtools}` (or `\mathtoolsset{showonlyrefs}`)
   only equations that are actually `\ref`'d/`\eqref`'d anywhere get
@@ -646,6 +648,7 @@ overrides, applied per field with last-wins semantics:
 [viewer]
 font-size = 18                  # body text size in CSS pixels
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
+fancy-theorems = true           # false = plain, PDF-like theorem formatting
 typeset-mode = "local"          # | "background" — see below
 # render-tikz = true             # trusted projects only; invokes local TeX
 # page-margin = 25              # A4 horizontal margin in mm; omit to follow the
@@ -762,15 +765,29 @@ matching the printed column — line wrapping and pagination stay in sync.
 On narrow viewports dynamic mode still tightens to a compact reading
 padding regardless.
 
-**Theorem numbering.** By default (`theorem-numbering = "auto"`) theorem-likes
-are numbered from the document's `\newtheorem` declarations — continuously
-(Theorem 1, 2, 3…) for a bare `\newtheorem{theorem}{Theorem}`, or per-section
-(1.1, 1.2, 2.1…) when it carries `[section]`. Set `"continuous"` or `"section"`
-to force one scheme regardless. Use it when the declarations aren't visible to
-the viewer — e.g. inside a conditional `\if…\newtheorem…\else…\fi` block (which
-the viewer can't evaluate, so it falls back to a default) or a package it can't
-resolve. Put it in the project's `.mathpreview.toml` so it applies to that paper
-only; it takes effect on the next render (save the file, or `:MathPreviewRestart`).
+**Theorem recognition, style, and numbering.** MathPreview treats an
+environment as a theorem only when it finds its `\newtheorem` declaration in
+the document or a scanned local `.sty` / `.tex` file. An undeclared
+`\begin{theorem}` is therefore handled like any other unsupported environment:
+its red begin/end diagnostics remain visible while its contents render
+normally. This avoids inventing structure that the TeX source itself has not
+defined.
+
+`fancy-theorems = true` (the compatibility default) adds MathPreview's colored
+box treatment to those declared environments. Turn it off—also available as
+**Fancy theorem boxes** in the config dialog—for a plain TeX-like heading and
+body while retaining theorem numbers, labels, references, and semantic role
+metadata.
+
+By default (`theorem-numbering = "auto"`), detected theorem environments follow
+their declarations: continuously (Theorem 1, 2, 3…) for a bare
+`\newtheorem{theorem}{Theorem}`, or per-section (1.1, 1.2, 2.1…) when it carries
+`[section]`. Set `"continuous"` or `"section"` to override the reset scheme for
+recognized declarations—for example, when mutually exclusive conditional
+branches declare the same environment and MathPreview can see both but cannot
+evaluate which branch TeX selects. Put either setting in the project's
+`.mathpreview.toml`; saving through the config dialog applies it on the next
+live render.
 
 **Raw MathJax config.** To customize MathJax output, drop a snippet of
 JavaScript in `mathjax-config`; it runs right after the generated

@@ -7,6 +7,7 @@ ui-font-size = 12
 default-page-mode = "a4"
 default-theme = "system"
 theorem-numbering = "auto"
+fancy-theorems = true # false keeps declared theorems in a plain TeX-like style.
 typeset-mode = "local"
 # render-tikz = true # Trusted projects only; runs local TeX with shell escape disabled.
 # page-margin = 17 # Uncomment to pin the A4 margin in mm; omitted follows geometry.

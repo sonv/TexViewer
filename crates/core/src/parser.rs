@@ -2773,9 +2773,10 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        // Theorem-like with optional [role=...]{name}. Recognition comes from
-        // the registry (built-ins + the preamble's `\newtheorem` names).
-        if self.thms.is_theorem(strip_star(&env)) {
+        // Theorem-like with optional [role=...]{name}. Match the exact
+        // environment name declared by `\newtheorem`: declaring `lemma` does
+        // not implicitly define a separate `lemma*` environment.
+        if self.thms.is_theorem(&env) {
             self.parse_theorem(out, start, env);
             return;
         }
@@ -3320,11 +3321,10 @@ impl<'a> Parser<'a> {
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
 
-        let bare = strip_star(&env).to_string();
-        let kind_word = self.thms.title(&bare);
+        let kind_word = self.thms.title(&env);
         out.push(Node {
             kind: NodeKind::Theorem {
-                env: bare,
+                env,
                 kind_word,
                 role,
                 name,
@@ -4262,10 +4262,6 @@ fn section_level(cmd: &str) -> Option<u8> {
         "subparagraph" => 6,
         _ => return None,
     })
-}
-
-fn strip_star(env: &str) -> &str {
-    env.strip_suffix('*').unwrap_or(env)
 }
 
 fn split_top_level_commas(src: &str) -> Vec<&str> {
@@ -6206,7 +6202,7 @@ After $y$.
     #[test]
     fn theorem_with_role() {
         let src = "\\begin{theorem}[role=main]{Main result}\\label{thm:main}\nfoo\n\\end{theorem}";
-        let n = parse(src);
+        let n = parse_with_preamble("\\newtheorem{theorem}{Theorem}\n", src);
         match &n[0].kind {
             NodeKind::Theorem {
                 role,
@@ -6230,7 +6226,7 @@ After $y$.
     #[test]
     fn theorem_with_omitted() {
         let src = "\\begin{theorem}[role=omitted]\\omitref{Rudin}\nstmt\n\\end{theorem}";
-        let n = parse(src);
+        let n = parse_with_preamble("\\newtheorem{theorem}{Theorem}\n", src);
         match &n[0].kind {
             NodeKind::Theorem { role, omit_ref, .. } => {
                 assert_eq!(*role, Role::Omitted);
@@ -6238,6 +6234,66 @@ After $y$.
             }
             other => panic!("got {:?}", other),
         }
+    }
+
+    #[test]
+    fn undeclared_standard_theorem_uses_transparent_fallback() {
+        let n = parse("\\begin{theorem}Text $x$.\\end{theorem}");
+        assert!(matches!(
+            n.first().map(|node| &node.kind),
+            Some(NodeKind::UnsupportedEnvBoundary {
+                env,
+                boundary: EnvironmentBoundary::Begin,
+            }) if env == "theorem"
+        ));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+        assert!(matches!(
+            n.last().map(|node| &node.kind),
+            Some(NodeKind::UnsupportedEnvBoundary {
+                env,
+                boundary: EnvironmentBoundary::End,
+            }) if env == "theorem"
+        ));
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Theorem { .. })));
+    }
+
+    #[test]
+    fn newenvironment_named_theorem_expands_instead_of_becoming_a_card() {
+        let n = parse_with_preamble(
+            "\\newenvironment{theorem}{Before }{ after}\n",
+            "\\begin{theorem}Body $x$\\end{theorem}",
+        );
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Theorem { .. })));
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::UnsupportedEnvBoundary { .. })));
+        assert!(n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+        assert!(tree_has_text(&n, "Before"));
+        assert!(tree_has_text(&n, "Body"));
+        assert!(tree_has_text(&n, "after"));
+    }
+
+    #[test]
+    fn theorem_environment_lookup_is_exact() {
+        let n = parse_with_preamble(
+            "\\newtheorem{lemma}{Lemma}\n",
+            "\\begin{lemma*}Text $x$.\\end{lemma*}",
+        );
+        assert!(n.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::UnsupportedEnvBoundary { env, .. } if env == "lemma*"
+        )));
+        assert!(!n
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Theorem { .. })));
     }
 
     #[test]

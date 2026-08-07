@@ -296,6 +296,10 @@
       e.target.dataset.dirty = 'true';
       return;
     }
+    if (e.target && e.target.id === 'config-fancy-theorems') {
+      e.target.dataset.dirty = 'true';
+      return;
+    }
     if (e.target && e.target.name === 'config-mode') {
       syncConfigMode(false);
       return;
@@ -988,7 +992,10 @@
     if (pending) pending.hidden = true;
     diagram.removeAttribute('aria-busy');
     var block = diagram.closest('main#page > .blk');
-    if (block) invalidateOverlayMetrics([block], false);
+    if (block) {
+      scheduleBlockIntrinsicSizePriming([block]);
+      invalidateOverlayMetrics([block], false);
+    }
     scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
   }
 
@@ -1299,33 +1306,18 @@
     });
   }
 
-  // A live replacement near EOF is applied while viewer.js holds #page at
-  // its previous height, so Chromium cannot clamp the reader's top line. A
-  // newly-created content-visibility block otherwise starts with the generic
-  // 180px fallback; when the old block was taller than a viewport, the
-  // preserved scroll position can then land in the page's blank min-height
-  // floor. Chromium considers the undersized replacement off-screen and never
-  // lays it out until a resize invalidates visibility.
-  //
-  // Carry the outgoing block's cheap outer-box measurement onto its
-  // replacement as the containment fallback. This does not force layout of
-  // the replacement or disable lazy rendering: once the block is active its
-  // real content still determines its size, while skipped blocks retain a
-  // close estimate instead of collapsing to 180px.
-  function snapshotBlockIntrinsicSize(block) {
-    if (!block) return null;
-    var width = block.offsetWidth;
-    var height = block.offsetHeight;
-    if (!(width > 0) || !(height >= 0)) return null;
-    return { width: width, height: height };
-  }
-
-  function seedBlockIntrinsicSize(block, size) {
-    if (!block || !size) return;
-    block.style.setProperty(
-      'contain-intrinsic-size',
-      size.width.toFixed(3) + 'px ' + size.height.toFixed(3) + 'px'
-    );
+  // MathJax can finish while a lazy block is temporarily forced visible.
+  // WebKit does not reliably teach `contain-intrinsic-size:auto` the height
+  // measured in that state, so cache it explicitly before restoring
+  // content-visibility. Otherwise the block falls back to 180px off-screen
+  // and changes the document geometry when page scrolling activates it.
+  function seedTypesetBlockIntrinsicSizes(nodes) {
+    var blocks = new Set();
+    nodes.forEach(function(node) {
+      var block = node.closest && node.closest('main#page > .blk');
+      if (block && block.isConnected) blocks.add(block);
+    });
+    seedCurrentBlockIntrinsicSizes(blocks);
   }
 
   function syncReusedBlock(oldBlock, newBlock) {
@@ -1664,16 +1656,24 @@
       .filter(isRawMathNode).slice(0, 40); // cap so one huge block can't jank
     typesetBusy = true;
     var lifted = target.style.contentVisibility === '';
-    if (lifted) target.style.contentVisibility = 'visible';
+    var originalContain = target.style.contain;
+    if (lifted) {
+      target.style.contain = 'layout style paint';
+      target.style.contentVisibility = 'visible';
+    }
     try {
       nodes.forEach(syncMathSourceText);
       await window.__mpEngine.typeset(nodes);
+      seedTypesetBlockIntrinsicSizes(nodes);
     } catch (err) {
       console.error('mathpreview background fill:', err);
       typesetBusy = false;
       return; // stop on engine error rather than spinning
     } finally {
-      if (lifted) target.style.contentVisibility = '';
+      if (lifted) {
+        target.style.contentVisibility = '';
+        target.style.contain = originalContain;
+      }
       typesetBusy = false;
     }
     scheduleBgFill(120);
@@ -1700,14 +1700,22 @@
       if (nodes.length) {
         typesetBusy = true;
         var lifted = blk.style.contentVisibility === '';
-        if (lifted) blk.style.contentVisibility = 'visible';
+        var originalContain = blk.style.contain;
+        if (lifted) {
+          blk.style.contain = 'layout style paint';
+          blk.style.contentVisibility = 'visible';
+        }
         try {
           nodes.forEach(syncMathSourceText);
           await window.__mpEngine.typeset(nodes);
+          seedTypesetBlockIntrinsicSizes(nodes);
         } catch (err) {
           console.error('mathpreview typeset:', err);
         } finally {
-          if (lifted) blk.style.contentVisibility = '';
+          if (lifted) {
+            blk.style.contentVisibility = '';
+            blk.style.contain = originalContain;
+          }
           typesetBusy = false;
         }
       }
@@ -1742,6 +1750,7 @@
             setStatus('updating',
               '↻ preparing print: typeset ' + Math.min(i + BATCH, nodes.length) + '/' + nodes.length);
             await window.__mpEngine.typeset(batch);
+            seedTypesetBlockIntrinsicSizes(batch);
           }
           updatePrintPrepProgress(Math.min(i + BATCH, nodes.length), nodes.length);
         }
@@ -1782,6 +1791,7 @@
     var tStart = performance.now();
     try {
       await window.__mpEngine.typeset(nodes);
+      seedTypesetBlockIntrinsicSizes(nodes);
       var ms = Math.round(performance.now() - tStart);
       nodes.forEach(function(node) { node.classList.remove('math-pending'); });
       restoreMathSearchHighlights();
@@ -2129,6 +2139,7 @@
               children.forEach(function(c) {
                 seedBlockIntrinsicSize(c, rbReplacementSizes.shift());
                 transplantMath(c);
+                touchedRoots.push(c);
                 page.insertBefore(c, rbAnchor);
                 insertedBlocks++;
               });
@@ -2146,6 +2157,7 @@
         if (pageNextSibling) pageParent.insertBefore(page, pageNextSibling);
         else pageParent.appendChild(page);
       }
+      primeTheoremBlockIntrinsicSizes(touchedRoots);
       settleLivePatchViewportAnchor(page, viewportAnchor);
     }
 

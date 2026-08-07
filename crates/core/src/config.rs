@@ -295,10 +295,15 @@ pub struct ViewerConfig {
     /// How theorem-like environments are numbered. `"auto"` (default) follows
     /// the document's `\newtheorem` declarations; `"continuous"` forces one
     /// document-wide sequence (Theorem 1, 2, 3…); `"section"` forces per-section
-    /// numbering (Theorem 1.1, 1.2…). Use the override when the declarations
-    /// aren't visible to the viewer — e.g. inside a conditional `\if…\newtheorem`
-    /// block (which the viewer can't evaluate) or a package it can't resolve.
+    /// numbering (Theorem 1.1, 1.2…). The override changes reset behavior for
+    /// declarations the viewer recognized; it does not invent an undeclared
+    /// theorem environment.
     pub theorem_numbering: Option<TheoremNumbering>,
+    /// Render recognized theorem-like environments with MathPreview's
+    /// enhanced card treatment. When disabled, the renderer keeps their
+    /// semantic heading and numbering but uses a plain, PDF-like layout.
+    /// Enabled by default for compatibility with the existing viewer style.
+    pub fancy_theorems: Option<bool>,
     /// How much of the document to typeset (render math for) at once.
     /// `"local"` (default) typesets only the region around the viewport and
     /// leaves the rest until you scroll to it — lowest memory/CPU on a long
@@ -453,6 +458,7 @@ pub struct ResolvedViewerConfig {
     pub render_tikz: bool,
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
+    pub fancy_theorems: bool,
     pub typeset_mode: TypesetMode,
     /// Explicit A4 page margin (mm), or `None` to fall back to the document's
     /// geometry margin / the built-in default. Kept as an `Option` (unlike the
@@ -498,6 +504,7 @@ impl Default for ResolvedConfig {
                 render_tikz: false,
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
+                fancy_theorems: true,
                 typeset_mode: TypesetMode::Local,
                 page_margin_mm: None,
                 keybindings: default_keybindings(),
@@ -563,6 +570,10 @@ impl Config {
                     .viewer
                     .theorem_numbering
                     .unwrap_or(defaults.viewer.theorem_numbering),
+                fancy_theorems: self
+                    .viewer
+                    .fancy_theorems
+                    .unwrap_or(defaults.viewer.fancy_theorems),
                 typeset_mode: self
                     .viewer
                     .typeset_mode
@@ -645,6 +656,9 @@ impl ViewerConfig {
         }
         if other.theorem_numbering.is_some() {
             self.theorem_numbering = other.theorem_numbering;
+        }
+        if other.fancy_theorems.is_some() {
+            self.fancy_theorems = other.fancy_theorems;
         }
         if other.typeset_mode.is_some() {
             self.typeset_mode = other.typeset_mode;
@@ -739,6 +753,7 @@ mod tests {
         assert_eq!(cfg.viewer.ui_font_size, 12);
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
         assert!(!cfg.viewer.render_tikz);
+        assert!(cfg.viewer.fancy_theorems);
     }
 
     #[test]
@@ -787,6 +802,7 @@ mod tests {
 font-size = 22
 ui-font-size = 15
 render-tikz = true
+fancy-theorems = false
 
 [viewer.source-jump]
 trigger = "double-click"
@@ -796,6 +812,7 @@ trigger = "double-click"
         assert_eq!(resolved.viewer.font_size, 22);
         assert_eq!(resolved.viewer.ui_font_size, 15);
         assert!(resolved.viewer.render_tikz);
+        assert!(!resolved.viewer.fancy_theorems);
         assert_eq!(
             resolved.viewer.source_jump_trigger,
             SourceJumpTrigger::DoubleClick
@@ -807,6 +824,7 @@ trigger = "double-click"
         let mut lower = Config::parse(
             r#"[viewer]
 font-size = 16
+fancy-theorems = false
 [viewer.source-jump]
 trigger = "alt-click"
 "#,
@@ -824,6 +842,8 @@ font-size = 20
         let resolved = lower.resolve();
         // higher overrode font-size:
         assert_eq!(resolved.viewer.font_size, 20);
+        // higher omitted fancy-theorems, so the lower layer survived:
+        assert!(!resolved.viewer.fancy_theorems);
         // higher omitted source-jump, so lower's value survived:
         assert_eq!(
             resolved.viewer.source_jump_trigger,

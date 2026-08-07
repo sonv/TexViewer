@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "74";
+const WS_PROTOCOL_VERSION: &str = "75";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -437,6 +437,8 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "default_page_mode": viewer_config.default_page_mode.as_str(),
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
+            "theorem_numbering": viewer_config.theorem_numbering.as_str(),
+            "fancy_theorems": viewer_config.fancy_theorems,
             "render_tikz": viewer_config.render_tikz,
             "mathjax_config": viewer_config.mathjax_config,
             "keybindings": viewer_config.keybindings,
@@ -3118,7 +3120,40 @@ async fn render_cached(
     };
     t.preamble_ms = t1.elapsed().as_millis();
 
-    let thms = TheoremRegistry::from_project(&project);
+    // Reload before theorem parsing/numbering as well as rendering. Otherwise
+    // a live `theorem-numbering` edit reaches the CSS/HTML shell but the daemon
+    // has already assigned every theorem number with stale defaults.
+    let mut live_text_macros = state.opts.text_macros.clone();
+    match load_and_merge_config_cached(state).await {
+        Ok(resolved) => {
+            live_text_macros = resolved.text_macros.clone();
+            let mut guard = state.viewer_config.write().await;
+            if *guard != resolved.viewer {
+                *guard = resolved.viewer.clone();
+                drop(guard);
+                log_event(
+                    state,
+                    "info",
+                    format!(
+                        "config reloaded: font-size={}, ui-font-size={}, source-jump-trigger={}, default-page-mode={}, default-theme={}, fancy-theorems={}",
+                        resolved.viewer.font_size,
+                        resolved.viewer.ui_font_size,
+                        resolved.viewer.source_jump_trigger.as_str(),
+                        resolved.viewer.default_page_mode.as_str(),
+                        resolved.viewer.default_theme.as_str(),
+                        resolved.viewer.fancy_theorems,
+                    ),
+                );
+            }
+        }
+        Err(e) => {
+            log_event(state, "error", format!("config parse failed: {e:#}"));
+        }
+    }
+    let live_viewer_config = state.viewer_config.read().await.clone();
+
+    let mut thms = TheoremRegistry::from_project(&project);
+    thms.apply_numbering_scheme(live_viewer_config.theorem_numbering);
 
     let t2 = std::time::Instant::now();
     let mut body = parser::parse_body_with_overrides(&project, &thms, &overrides)?;
@@ -3147,39 +3182,6 @@ async fn render_cached(
 
     let t4 = std::time::Instant::now();
     let mut sync = SyncIndex::new();
-    // Reload the config cascade from disk on every render so an edit
-    // to `.mathpreview.toml` in your editor (or a `POST /config/set`
-    // from the dialog) takes effect without restarting the daemon.
-    // Routed through the per-daemon mtime cache so unchanged files
-    // skip disk I/O on the hot path.
-    // Reloaded each render so an edit to `[text-macros]` takes effect live.
-    let mut live_text_macros = state.opts.text_macros.clone();
-    match load_and_merge_config_cached(state).await {
-        Ok(resolved) => {
-            live_text_macros = resolved.text_macros.clone();
-            let mut guard = state.viewer_config.write().await;
-            if *guard != resolved.viewer {
-                *guard = resolved.viewer.clone();
-                drop(guard);
-                log_event(
-                    state,
-                    "info",
-                    format!(
-                        "config reloaded: font-size={}, ui-font-size={}, source-jump-trigger={}, default-page-mode={}, default-theme={}",
-                        resolved.viewer.font_size,
-                        resolved.viewer.ui_font_size,
-                        resolved.viewer.source_jump_trigger.as_str(),
-                        resolved.viewer.default_page_mode.as_str(),
-                        resolved.viewer.default_theme.as_str(),
-                    ),
-                );
-            }
-        }
-        Err(e) => {
-            log_event(state, "error", format!("config parse failed: {e:#}"));
-        }
-    }
-    let live_viewer_config = state.viewer_config.read().await.clone();
     let mut render_opts = state.opts.clone();
     render_opts.viewer_config = live_viewer_config;
     render_opts.text_macros = live_text_macros;
@@ -3296,6 +3298,8 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         // The client reloads only when this deterministic list changes.
         "mathjax_packages": &out.preamble.packages_long,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
+        "theorem_numbering": viewer_config.theorem_numbering.as_str(),
+        "fancy_theorems": viewer_config.fancy_theorems,
         "render_tikz": viewer_config.render_tikz,
         "keybindings": viewer_config.keybindings,
         // The EFFECTIVE page margin baked into config_css (config > geometry >
@@ -4429,12 +4433,13 @@ fn watched_event_paths(
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_render_attempt, diff_blocks, host_is_loopback, is_buffer_renderable,
-        is_buffer_renderable_with_preamble, is_latest_render_attempt, merge_config_editor_values,
-        origin_is_loopback, preamble_fingerprint, search_sync_payload, select_tikz_engine,
-        serve_buffer_push, tikz_document, tikz_error_svg, tikz_hash_from_path,
-        validate_override_content, watched_event_paths, websocket_needs_reload, AppState,
-        EditorSearch, PatchOp, PlanSlot, SearchRequest, WS_PROTOCOL_VERSION,
+        begin_render_attempt, broadcast_render, diff_blocks, host_is_loopback,
+        is_buffer_renderable, is_buffer_renderable_with_preamble, is_latest_render_attempt,
+        merge_config_editor_values, origin_is_loopback, preamble_fingerprint, search_sync_payload,
+        select_tikz_engine, serve_buffer_push, serve_debug, tikz_document, tikz_error_svg,
+        tikz_hash_from_path, validate_override_content, watched_event_paths,
+        websocket_needs_reload, AppState, EditorSearch, PatchOp, PlanSlot, SearchRequest,
+        WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -4667,6 +4672,10 @@ toggle-theme = "T"
         let values = std::collections::BTreeMap::from([
             ("viewer.font-size".to_string(), serde_json::json!(21)),
             (
+                "viewer.fancy-theorems".to_string(),
+                serde_json::json!(false),
+            ),
+            (
                 "viewer.default-page-mode".to_string(),
                 serde_json::json!("dynamic"),
             ),
@@ -4683,6 +4692,7 @@ toggle-theme = "T"
             .unwrap()
             .resolve();
         assert_eq!(resolved.viewer.font_size, 21);
+        assert!(!resolved.viewer.fancy_theorems);
         assert_eq!(resolved.viewer.default_page_mode.as_str(), "dynamic");
         assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
     }
@@ -5228,8 +5238,8 @@ Second paragraph here.
         ));
     }
 
-    #[test]
-    fn newer_render_attempt_invalidates_older_attempts() {
+    #[tokio::test]
+    async fn newer_render_attempt_invalidates_older_attempts() {
         let (tx, _) = broadcast::channel(1);
         let (watch_tx, _) = std_mpsc::channel();
         let state = AppState {
@@ -5297,6 +5307,23 @@ Second paragraph here.
         let newer = begin_render_attempt(&state);
         assert!(!is_latest_render_attempt(&state, older));
         assert!(is_latest_render_attempt(&state, newer));
+
+        state.viewer_config.write().await.fancy_theorems = false;
+        let debug_response = serve_debug(axum::extract::State(state.clone())).await;
+        let debug_bytes = axum::body::to_bytes(debug_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let debug: serde_json::Value = serde_json::from_slice(&debug_bytes).unwrap();
+        assert_eq!(debug["viewer_config"]["fancy_theorems"], false);
+        assert_eq!(debug["viewer_config"]["theorem_numbering"], "auto");
+
+        let mut rx = state.tx.subscribe();
+        let out = state.current.read().await.clone();
+        let latest = begin_render_attempt(&state);
+        broadcast_render(&state, out, latest).await;
+        let payload: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(payload["viewer_config"]["fancy_theorems"], false);
+        assert_eq!(payload["viewer_config"]["theorem_numbering"], "auto");
     }
 
     #[test]

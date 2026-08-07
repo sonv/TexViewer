@@ -11,7 +11,7 @@
   // MUST match WS_PROTOCOL_VERSION in crates/cli/src/serve.rs — a mismatch makes
   // the server full-reload every connect (an infinite reload loop). The
   // `client_ws_protocol_matches_server` test guards this.
-  var WS_PROTOCOL_VERSION = '74';
+  var WS_PROTOCOL_VERSION = '75';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -199,6 +199,7 @@
           // the whole update, not 300+.
           if (pageNextSibling) pageParent.insertBefore(page, pageNextSibling);
           else pageParent.appendChild(page);
+          primeTheoremBlockIntrinsicSizes(newReplacementBlocks);
           settleLivePatchViewportAnchor(page, viewportAnchor);
           page.querySelectorAll('[data-mp-reused-block]').forEach(function(block) {
             block.removeAttribute('data-mp-reused-block');
@@ -309,6 +310,10 @@
   initCmdline();
   initSearchPanel();
   initMarginDnd();
+  // Stabilize cold theorem-block geometry before the initial lazy MathJax
+  // queue attaches its visibility listeners. The prelayout marker keeps this
+  // one-time measurement from eagerly typesetting off-screen theorem math.
+  primeTheoremBlockIntrinsicSizes();
   decorateRefkeyChips(document.getElementById('page'));
   syncTopbarHeight();
   scheduleNavigationRefresh();
@@ -318,12 +323,14 @@
   setTimeout(ensureInitialTypeset, 1200);
   window.addEventListener('load', function() {
     // Re-measure once fonts/layout have fully settled.
+    primeTheoremBlockIntrinsicSizes();
     invalidateOverlayMetrics();
     syncTopbarHeight();
     scheduleNavigationRefresh();
   });
   window.addEventListener('resize', function() {
     invalidateOverlayMetrics();
+    scheduleTheoremBlockIntrinsicSizes();
     updatePageScale();
     // Responsive wrapping changes the toolbar's height, so re-anchor the
     // floating side controls before refreshing navigation.
