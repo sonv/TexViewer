@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.20] — 2026-08-07
+
+### Fixed
+
+- **Source jumps from spaces stay near the clicked words.** Cmd/Ctrl-clicking
+  inter-word whitespace or punctuation now chooses the nearest source-mapped
+  token on that visual line instead of falling back to the beginning of the
+  enclosing proof, theorem, or paragraph. Exact word, math, reference, and
+  heading targets retain their existing behavior, including with large fonts,
+  zoom, wrapping, and justified text.
+
 ## [2.1.19] — 2026-08-07
 
 ### Fixed

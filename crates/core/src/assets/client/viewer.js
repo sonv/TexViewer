@@ -1379,11 +1379,150 @@
     }
   }
 
-  function sourceElementFromTarget(target) {
+  // Return the browser caret nearest a viewport point. Keeping the two API
+  // spellings here lets source-jump hit-testing and zoom anchoring agree in
+  // Chromium and WebKit.
+  function caretTextPositionAtPoint(page, x, y) {
+    var node = null;
+    var offset = 0;
+    if (document.caretPositionFromPoint) {
+      var pos = document.caretPositionFromPoint(x, y);
+      if (pos) {
+        node = pos.offsetNode;
+        offset = pos.offset;
+      }
+    }
+    if ((!node || node.nodeType !== Node.TEXT_NODE) && document.caretRangeFromPoint) {
+      var caret = document.caretRangeFromPoint(x, y);
+      if (caret) {
+        node = caret.startContainer;
+        offset = caret.startOffset;
+      }
+    }
+    if (!node || node.nodeType !== Node.TEXT_NODE || !page.contains(node)) return null;
+    return { node: node, offset: offset };
+  }
+
+  // A caret API can snap a click in empty padding to distant text. Confirm
+  // that the point is actually inside one of the adjacent character boxes
+  // before using it to refine a coarse block-level source anchor.
+  function textCharacterAtPoint(page, x, y) {
+    var caret = caretTextPositionAtPoint(page, x, y);
+    if (!caret) return null;
+    var value = caret.node.nodeValue || '';
+    if (!value.length) return null;
+    var indices = [];
+    var after = Math.max(0, Math.min(value.length - 1, caret.offset));
+    var before = Math.max(0, Math.min(value.length - 1, caret.offset - 1));
+    indices.push(after);
+    if (before !== after) indices.push(before);
+
+    var best = null;
+    indices.forEach(function(index) {
+      var range = document.createRange();
+      range.setStart(caret.node, index);
+      range.setEnd(caret.node, index + 1);
+      Array.prototype.forEach.call(range.getClientRects(), function(rect) {
+        if (!(rect.width > 0) || !(rect.height > 0)) return;
+        var slop = 1;
+        if (x < rect.left - slop || x > rect.right + slop ||
+            y < rect.top - slop || y > rect.bottom + slop) return;
+        var dx = x - (rect.left + rect.right) / 2;
+        var dy = y - (rect.top + rect.bottom) / 2;
+        var distance = dx * dx + dy * dy;
+        if (!best || distance < best.distance) {
+          best = {
+            node: caret.node,
+            index: index,
+            character: value.charAt(index),
+            distance: distance,
+          };
+        }
+      });
+    });
+    return best;
+  }
+
+  function isSourceGapCharacter(character) {
+    if (/\s/.test(character)) return true;
+    // Word tokens and TeX commands already carry their own data-src spans.
+    // These are the visible separators that can remain as bare text nodes.
+    return /[.,;:!?"'()[\]{}<>/\\|&@#%^*+=~`\u00b7\u2010-\u201f\u2026]/.test(character);
+  }
+
+  function sourceFlowScope(node, sourceAnchor, page) {
+    var parent = node && node.parentElement;
+    if (!parent) return null;
+    // These elements each represent one reading flow. In particular, do not
+    // climb to a list/grid wrapper: a description marker and its item body are
+    // siblings, and inverse search must never cross from one into the other.
+    var scope = parent.closest(
+      '.proof-para, p.para, .item-body, .paper-abstract-body, ' +
+      'td, th, caption, .src-word.text-color'
+    );
+    if (!scope || !page.contains(scope)) return null;
+    return scope === sourceAnchor || sourceAnchor.contains(scope) ? scope : null;
+  }
+
+  function sourceLeavesAroundNode(scope, node) {
+    var before = [];
+    var after = [];
+    var candidates = scope.querySelectorAll('[data-src]');
+    // Keep a small window on each side. Soft-newline anchors can be zero-size,
+    // so retaining only the immediate neighbour would occasionally miss the
+    // next visible word; eight is ample without forcing layout for a giant
+    // generated paragraph.
+    var limit = 8;
+    for (var i = 0; i < candidates.length; i++) {
+      var candidate = candidates[i];
+      if (candidate.querySelector('[data-src]') || candidate.contains(node)) continue;
+      var relation = candidate.compareDocumentPosition(node);
+      if (relation & Node.DOCUMENT_POSITION_FOLLOWING) {
+        before.push(candidate);
+        if (before.length > limit) before.shift();
+      } else if (relation & Node.DOCUMENT_POSITION_PRECEDING) {
+        after.push(candidate);
+        if (after.length >= limit) break;
+      }
+    }
+    return before.concat(after);
+  }
+
+  function nearestSourceLeafOnLine(scope, node, x, y) {
+    var best = null;
+    sourceLeavesAroundNode(scope, node).forEach(function(candidate) {
+      Array.prototype.forEach.call(candidate.getClientRects(), function(rect) {
+        if (!(rect.width > 0) || !(rect.height > 0)) return;
+        if (y < rect.top - 1 || y > rect.bottom + 1) return;
+        var distance = x < rect.left ? rect.left - x : (x > rect.right ? x - rect.right : 0);
+        var following = rect.left >= x;
+        if (!best || distance < best.distance - 0.5 ||
+            (Math.abs(distance - best.distance) <= 0.5 && following && !best.following)) {
+          best = { element: candidate, distance: distance, following: following };
+        }
+      });
+    });
+    return best && best.element;
+  }
+
+  function sourceElementFromTarget(target, clientX, clientY) {
     if (!target || !target.closest) return null;
     var el = target.closest('#page [data-src]');
     var page = pageEl();
-    return el && page && page.contains(el) ? el : null;
+    if (!el || !page || !page.contains(el)) return null;
+
+    // Direct word/math/ref/etc. hits are already exact. A coarse block anchor
+    // is distinguishable because it contains finer data-src descendants.
+    if (!el.querySelector('[data-src]') ||
+        !isFinite(clientX) || !isFinite(clientY)) return el;
+    var hit = textCharacterAtPoint(page, clientX, clientY);
+    if (!hit || !isSourceGapCharacter(hit.character)) return el;
+
+    // Stay inside one explicit reading flow. This prevents proof headings,
+    // blank lines, list markers, and layout siblings from searching a whole
+    // container and snapping to unrelated body text.
+    var scope = sourceFlowScope(hit.node, el, page);
+    return scope ? nearestSourceLeafOnLine(scope, hit.node, clientX, clientY) || el : el;
   }
 
   function parseDataSrc(src) {
@@ -1409,7 +1548,7 @@
   }
 
   function requestSourceJump(e) {
-    var el = sourceElementFromTarget(e.target);
+    var el = sourceElementFromTarget(e.target, e.clientX, e.clientY);
     var info = el ? parseDataSrc(el.getAttribute('data-src')) : null;
     if (!info) return false;
     e.preventDefault();
@@ -1486,7 +1625,7 @@
   }
 
   function requestRevealSource(e) {
-    var el = sourceElementFromTarget(e.target);
+    var el = sourceElementFromTarget(e.target, e.clientX, e.clientY);
     var info = el ? parseDataSrc(el.getAttribute('data-src')) : null;
     if (!info) return false;
     e.preventDefault();
@@ -4070,22 +4209,10 @@
   // in the paper's reading content. Both APIs are needed: caretRangeFromPoint
   // is WebKit's long-standing spelling; caretPositionFromPoint is standard.
   function textRectAtPoint(page, x, y) {
-    var node = null;
-    var offset = 0;
-    if (document.caretPositionFromPoint) {
-      var pos = document.caretPositionFromPoint(x, y);
-      if (pos) {
-        node = pos.offsetNode;
-        offset = pos.offset;
-      }
-    } else if (document.caretRangeFromPoint) {
-      var caret = document.caretRangeFromPoint(x, y);
-      if (caret) {
-        node = caret.startContainer;
-        offset = caret.startOffset;
-      }
-    }
-    if (!node || node.nodeType !== Node.TEXT_NODE || !page.contains(node)) return null;
+    var caret = caretTextPositionAtPoint(page, x, y);
+    if (!caret) return null;
+    var node = caret.node;
+    var offset = caret.offset;
     var parent = node.parentElement;
     if (!parent || parent.closest(
       '.lineno-layer, .refkey-layer, .flash-layer, .sidenote, .margin-card'

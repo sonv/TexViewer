@@ -6965,6 +6965,23 @@ mod tests {
             .contains("if (math) {\n      return;\n    }\n    requestSourceJump(e);"));
         assert!(out.html.contains("revealSourceElement"));
         assert!(out.html.contains("scrollSourceIntoView"));
+        // Inter-word whitespace is deliberately left as a bare text node for
+        // DOM/patch efficiency. Inverse search must refine its coarse block
+        // target from the click coordinates instead of jumping to the start
+        // of the enclosing proof, theorem, or paragraph.
+        assert!(out.html.contains("function textCharacterAtPoint"));
+        assert!(out.html.contains("function sourceFlowScope"));
+        assert!(out.html.contains(".item-body, .paper-abstract-body"));
+        assert!(out.html.contains(".src-word.text-color"));
+        assert!(out.html.contains("function sourceLeavesAroundNode"));
+        assert!(out.html.contains("function nearestSourceLeafOnLine"));
+        assert_eq!(
+            out.html
+                .matches("sourceElementFromTarget(e.target, e.clientX, e.clientY)")
+                .count(),
+            2,
+            "both inverse-search paths must use coordinate-aware hit-testing"
+        );
         assert!(out.html.contains("source-active"));
         assert!(out.html.contains("fetch('/jump'"));
         assert!(out.html.contains("source-cursor"));
