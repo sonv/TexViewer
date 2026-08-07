@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.19] — 2026-08-07
+
+### Fixed
+
+- **Equation labels inside theorem environments stay with their equations.**
+  Nested displays now retain their own numbering, references, and source
+  targets—including with mathtools `showonlyrefs`—instead of the surrounding
+  theorem claiming the first nested `\label`.
+
 ## [2.1.18] — 2026-08-07
 
 ### Added

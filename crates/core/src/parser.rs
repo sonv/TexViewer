@@ -3287,36 +3287,29 @@ impl<'a> Parser<'a> {
         let body_end = self.find_matching_end(&env);
         let inner_src = &self.src[self.byte..body_end];
 
-        // Pre-scan inside for \label{...} and \omitref{...}. The primary
-        // theorem label belongs to the outer box, so remove that command from
-        // the parsed child stream to avoid a second loose label chip.
-        let label_span = first_label_span(inner_src);
-        let label = label_span.as_ref().map(|(label, _, _)| label.clone());
+        // Parse the body before choosing the theorem's label. A raw-text scan
+        // cannot distinguish a theorem label from one owned by a nested
+        // equation (or another numbered environment).
         let omit_ref = if matches!(role, Role::Omitted) {
             find_first_omitref(inner_src)
         } else {
             None
         };
 
-        let child_src = match label_span {
-            Some((_, label_start, label_end)) => {
-                let mut child_src = inner_src.to_string();
-                child_src
-                    .replace_range(label_start..label_end, &" ".repeat(label_end - label_start));
-                child_src
-            }
-            None => inner_src.to_string(),
-        };
         let mut children = Vec::new();
         // Parse inner content with a sub-parser so nested commands work.
         let mut sub = Parser::new_at(
-            &child_src,
+            inner_src,
             self.file.clone(),
             self.pos(),
             self.thms,
             self.depth + 1,
         );
         sub.parse_block_into(&mut children, None);
+        // Only a label parsed directly in the theorem body belongs to its
+        // outer box. Nested labels remain on their child nodes. Remove the
+        // owned command so it does not also render as a loose label chip.
+        let label = take_first_direct_label(&mut children);
 
         self.advance_to(body_end);
         self.advance(format!("\\end{{{env}}}").len());
@@ -4496,6 +4489,20 @@ fn split_list_items(src: &str) -> Vec<(Option<String>, usize, usize)> {
 
 fn find_first_label(src: &str) -> Option<String> {
     first_label_span(src).map(|(label, _, _)| label)
+}
+
+fn take_first_direct_label(nodes: &mut Vec<Node>) -> Option<String> {
+    let (index, label) = nodes.iter().enumerate().find_map(|(index, node)| {
+        let NodeKind::OpaqueCmd { name, raw } = &node.kind else {
+            return None;
+        };
+        (name == "label")
+            .then(|| find_first_label(raw))
+            .flatten()
+            .map(|label| (index, label))
+    })?;
+    nodes.remove(index);
+    Some(label)
 }
 
 fn first_label_span(src: &str) -> Option<(String, usize, usize)> {
@@ -6221,6 +6228,30 @@ After $y$.
         assert!(!n[0].children.iter().any(
             |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "label" && raw.contains("thm:main"))
         ));
+    }
+
+    #[test]
+    fn theorem_keeps_outer_and_nested_equation_labels_distinct() {
+        let src = concat!(
+            "\\begin{theorem}\n",
+            "Statement.\\label{thm:outer}\n",
+            "\\begin{equation}\\label{eq:nested}E=mc^2\\end{equation}\n",
+            "\\end{theorem}",
+        );
+        let n = parse_with_preamble("\\newtheorem{theorem}{Theorem}\n", src);
+
+        let NodeKind::Theorem { label, .. } = &n[0].kind else {
+            panic!("got {:?}", n[0].kind);
+        };
+        assert_eq!(label.as_deref(), Some("thm:outer"));
+        assert!(!n[0].children.iter().any(
+            |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, raw } if name == "label" && raw.contains("thm:outer"))
+        ));
+        assert!(n[0].children.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::DisplayMath { label: Some(label), body, .. }
+                if label == "eq:nested" && body.contains(r"\label{eq:nested}")
+        )));
     }
 
     #[test]

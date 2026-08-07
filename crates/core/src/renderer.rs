@@ -6451,6 +6451,55 @@ mod tests {
     }
 
     #[test]
+    fn showonlyrefs_preserves_equation_labels_inside_theorems() {
+        // Regression for #5: the theorem parser used to claim the first label
+        // anywhere in its body. That moved `eq2` from the nested equation onto
+        // the theorem, suppressed the equation under showonlyrefs, and made
+        // both references resolve to the theorem number.
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\documentclass{minimal}\n",
+                "\\newtheorem{theorem}{Theorem}\n",
+                "\\usepackage{mathtools}\n",
+                "\\mathtoolsset{showonlyrefs=true,showmanualtags=true}\n",
+                "\\begin{document}\n",
+                "\\begin{equation}\\label{eq1}E=mc^2\\end{equation}\n",
+                "Reference: \\eqref{eq1}.\n",
+                "\\begin{theorem}\n",
+                "\\begin{equation}\\label{eq2}E=mc^2\\end{equation}\n",
+                "Inside: \\eqref{eq2}.\n",
+                "\\end{theorem}\n",
+                "Outside: \\eqref{eq2}.\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            out.body_html.contains(r#"class="math display" id="eq2""#),
+            "nested equation did not retain eq2: {}",
+            out.body_html,
+        );
+        assert!(
+            out.body_html.contains(r#"<span class="eq-num">(2)</span>"#),
+            "nested equation was not numbered second: {}",
+            out.body_html,
+        );
+        assert_eq!(
+            out.body_html
+                .matches(r##"data-target="eq2" data-kind="eqref">(2)</a>"##)
+                .count(),
+            2,
+            "inside and outside refs should both resolve to equation 2: {}",
+            out.body_html,
+        );
+        assert_eq!(out.body_html.matches(r#"data-refkey="eq2""#).count(), 1);
+    }
+
+    #[test]
     fn showonlyrefs_false_keeps_normal_numbering() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
