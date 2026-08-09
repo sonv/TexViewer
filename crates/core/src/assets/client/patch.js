@@ -376,15 +376,24 @@
   var VIEWER_ACTION_ORDER = [
     'scroll-left', 'scroll-down', 'scroll-up', 'scroll-right',
     'half-page-down', 'half-page-up', 'full-page-down', 'full-page-up',
-    'previous-place',
-    'go-top', 'go-bottom', 'open-search', 'open-command',
-    'search-next', 'search-previous', 'toggle-toc', 'toggle-topbar',
+    'jump-back', 'jump-forward', 'previous-place',
+    'go-top', 'go-bottom', 'horizontal-start', 'horizontal-end',
+    'previous-paragraph', 'next-paragraph', 'previous-heading', 'next-heading',
+    'align-anchor-top', 'align-anchor-center', 'align-anchor-bottom',
+    'open-search', 'open-search-backward', 'open-command',
+    'search-next', 'search-previous', 'search-word-forward',
+    'search-word-backward', 'set-mark', 'jump-mark-line', 'jump-mark-exact',
+    'toggle-toc', 'toggle-topbar',
     'toggle-crop', 'close-viewer', 'page-a4', 'page-dynamic',
     'zoom-in', 'zoom-out', 'zoom-reset', 'zoom-fit-width',
     'browser-print', 'toggle-margin', 'toggle-keys', 'toggle-lines',
     'open-macros', 'open-config', 'toggle-log', 'toggle-theme',
     'proof-main', 'proof-supporting', 'proof-all', 'print-pdf',
     'restart-server', 'stop-server',
+    // Keep newly inherited defaults after every pre-existing action. If an old
+    // partial config already assigned J/K elsewhere, that explicit action
+    // retains conflict priority until the user disables or remaps it.
+    'five-lines-down', 'five-lines-up',
   ];
 
   function applyProofModeFromAction(mode) {
@@ -406,33 +415,287 @@
     return Math.max(48, Math.round(vw * 0.08));
   }
 
+  function viewerTextLineStep() {
+    var page = pageEl();
+    if (!page) return viewerLineStep();
+    var style = getComputedStyle(page);
+    var lineHeight = parseFloat(style.lineHeight);
+    if (!isFinite(lineHeight) || lineHeight <= 0) {
+      var fontSize = parseFloat(style.fontSize);
+      lineHeight = (isFinite(fontSize) && fontSize > 0 ? fontSize : 18) * 1.42;
+    }
+    // Computed lengths are in the page's local CSS coordinates. Convert one
+    // body-text line to viewport coordinates from the zoom state instead of
+    // measuring the whole page on every repeated J/K keypress. During the
+    // short compositor preview, the planned scale is the visual scale; after
+    // its CSS-zoom commit, committedPageScale is authoritative.
+    var scale = zoomPreviewAnchor
+      ? pageScalePlan(currentUserZoom).pageScale
+      : committedPageScale;
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+    return Math.max(1, lineHeight * scale);
+  }
+
+  function viewerFiveLineStep() {
+    return Math.max(1, Math.round(viewerTextLineStep() * 5));
+  }
+
+  function viewerActionCount(ctx) {
+    return ctx && isFinite(ctx.count) ? Math.max(1, Math.floor(ctx.count)) : 1;
+  }
+
+  function viewerCountedDistance(step, ctx) {
+    return Math.max(1, Math.round(step * viewerActionCount(ctx)));
+  }
+
+  function viewerNavigationAnchor() {
+    var page = pageEl();
+    if (!page) return null;
+    var rect = page.getBoundingClientRect();
+    var x = Math.max(
+      rect.left + 1,
+      Math.min(rect.right - 1, Math.round((window.innerWidth || 1000) * 0.5))
+    );
+    var top = topbarOffset();
+    var y = Math.max(top + 1, Math.round(top + ((window.innerHeight || 800) - top) * 0.5));
+    var hit = document.elementFromPoint(x, y);
+    if (!hit || !hit.closest) return null;
+    var anchor = hit.closest('#page [data-src], #page p, #page li');
+    if (anchor) return anchor;
+    // On inter-paragraph whitespace, caret hit-testing usually resolves the
+    // nearest text position even though elementFromPoint only sees the paper.
+    var caretNode = null;
+    if (document.caretPositionFromPoint) {
+      var position = document.caretPositionFromPoint(x, y);
+      caretNode = position && position.offsetNode;
+    } else if (document.caretRangeFromPoint) {
+      var range = document.caretRangeFromPoint(x, y);
+      caretNode = range && range.startContainer;
+    }
+    var caretEl = caretNode && (caretNode.nodeType === 1
+      ? caretNode : caretNode.parentElement);
+    anchor = caretEl && caretEl.closest &&
+      caretEl.closest('#page [data-src], #page p, #page li');
+    if (anchor) return anchor;
+    // A coarse block still preserves the correct document insertion point;
+    // viewerSemanticTarget handles its first/last descendant directionally.
+    return hit.closest('#page .blk');
+  }
+
+  function viewerSemanticTarget(selector, direction, count) {
+    var page = pageEl();
+    if (!page) return null;
+    var targets = Array.from(page.querySelectorAll(selector));
+    if (!targets.length) return null;
+    var anchor = viewerNavigationAnchor();
+    if (!anchor) return null;
+    var index = direction > 0 ? -1 : targets.length;
+    var located = false;
+    var anchorInsideTarget = targets.some(function(target) {
+      return target === anchor || target.contains(anchor);
+    });
+    var coarseAnchor = !anchorInsideTarget && targets.some(function(target) {
+      return anchor.contains(target);
+    });
+    if (coarseAnchor) {
+      var referenceTop = topbarOffset();
+      var referenceY = referenceTop +
+        ((window.innerHeight || 800) - referenceTop) * 0.5;
+      var beforeInside = -1;
+      var afterInside = -1;
+      for (var b = 0; b < targets.length; b++) {
+        if (anchor.contains(targets[b])) {
+          var insideRect = targets[b].getBoundingClientRect();
+          if (insideRect.width === 0 && insideRect.height === 0) continue;
+          if (insideRect.top <= referenceY && insideRect.bottom >= referenceY) {
+            index = b;
+            located = true;
+            break;
+          }
+          if (insideRect.bottom < referenceY) beforeInside = b;
+          if (afterInside < 0 && insideRect.top > referenceY) afterInside = b;
+        }
+      }
+      if (!located && (beforeInside >= 0 || afterInside >= 0)) {
+        index = direction > 0
+          ? (beforeInside >= 0 ? beforeInside : afterInside - 1)
+          : (afterInside >= 0 ? afterInside : beforeInside + 1);
+        located = true;
+      }
+    }
+    for (var i = 0; i < targets.length; i++) {
+      if (located) break;
+      var target = targets[i];
+      if (target === anchor || target.contains(anchor)) {
+        index = i;
+        located = true;
+        break;
+      }
+      if (anchor && (anchor.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+        index = direction > 0 ? i - 1 : i;
+        located = true;
+        break;
+      }
+    }
+    if (!located && direction > 0) index = targets.length - 1;
+    var next = index + direction * viewerActionCount({ count: count });
+    if (next < 0 || next >= targets.length) return null;
+    return targets[next];
+  }
+
+  function navigateViewerSemantic(selector, direction, ctx) {
+    var target = viewerSemanticTarget(selector, direction, viewerActionCount(ctx));
+    if (!target) {
+      setStatus('dead', '○ no navigation target');
+      return false;
+    }
+    scrollToTarget(target);
+    return true;
+  }
+
+  function alignViewerAnchor(fraction) {
+    var target = viewerNavigationAnchor();
+    if (!target || target === pageEl()) return false;
+    var rect = target.getBoundingClientRect();
+    var top = topbarOffset();
+    var available = Math.max(1, (window.innerHeight || 800) - top);
+    var targetY = top + available * fraction;
+    window.scrollTo({
+      left: window.scrollX,
+      top: Math.max(0, window.scrollY + rect.top - targetY),
+      behavior: 'auto',
+    });
+    return true;
+  }
+
+  function viewerSourceLine(src) {
+    var match = /:(\d+):(\d+)$/.exec(src || '');
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  function scrollToViewerSourceLine(line) {
+    var page = pageEl();
+    if (!page) return false;
+    var best = null;
+    var bestLine = Infinity;
+    var last = null;
+    var lastLine = 0;
+    page.querySelectorAll('[data-src]').forEach(function(el) {
+      var candidate = viewerSourceLine(el.getAttribute('data-src'));
+      if (candidate > lastLine) {
+        last = el;
+        lastLine = candidate;
+      }
+      if (candidate >= line && candidate < bestLine) {
+        best = el;
+        bestLine = candidate;
+      }
+    });
+    if (!best) best = last;
+    if (!best) return false;
+    scrollToTarget(best);
+    return true;
+  }
+
+  function viewerSearchWord(backwards, ctx) {
+    var selection = window.getSelection && window.getSelection();
+    var query = selection ? String(selection).replace(/\s+/g, ' ').trim() : '';
+    if (!query) {
+      var anchor = viewerNavigationAnchor();
+      var word = anchor && anchor.closest && anchor.closest('.src-word');
+      query = word ? cleanNavText(word.textContent) : '';
+    }
+    if (!query) {
+      setStatus('dead', '○ select a word to search');
+      return false;
+    }
+    openSearchPanel.backwards = !!backwards;
+    lastSearchQuery = query;
+    var input = searchInputEl();
+    if (input) input.value = query;
+    return runSearch(backwards, viewerActionCount(ctx));
+  }
+
+  function repeatViewerSearch(backwards, ctx) {
+    return runSearch(backwards, viewerActionCount(ctx));
+  }
+
+  var viewerMarks = Object.create(null);
+
+  function viewerMarkName(name) {
+    return typeof name === 'string' && name.length === 1 ? name : '';
+  }
+
+  function setViewerMark(name) {
+    name = viewerMarkName(name);
+    if (!name) return false;
+    viewerMarks[name] = currentViewerPlace();
+    setStatus('live', '● mark ' + name + ' set');
+    return true;
+  }
+
+  function jumpToViewerMark(name, exact) {
+    name = viewerMarkName(name);
+    var place = name && viewerMarks[name];
+    if (!place) {
+      setStatus('dead', '○ mark ' + (name || '?') + ' is not set');
+      return false;
+    }
+    recordViewerPlace();
+    return restoreViewerPlace(Object.assign({}, place, { x: exact ? place.x : 0 }));
+  }
+
   var viewerActions = {
-    'scroll-left': function() { scrollByVim(-viewerColumnStep(), 0); },
-    'scroll-down': function() { scrollByVim(0, viewerLineStep()); },
-    'scroll-up': function() { scrollByVim(0, -viewerLineStep()); },
-    'scroll-right': function() { scrollByVim(viewerColumnStep(), 0); },
-    'half-page-down': function() {
-      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-      scrollByVim(0, Math.round(vh * 0.5));
+    'scroll-left': function(ctx) {
+      scrollByVim(-viewerCountedDistance(viewerColumnStep(), ctx), 0);
     },
-    'half-page-up': function() {
-      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-      scrollByVim(0, -Math.round(vh * 0.5));
+    'scroll-down': function(ctx) {
+      scrollByVim(0, viewerCountedDistance(viewerTextLineStep(), ctx));
     },
-    'full-page-down': function() {
-      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-      scrollByVim(0, vh);
+    'scroll-up': function(ctx) {
+      scrollByVim(0, -viewerCountedDistance(viewerTextLineStep(), ctx));
     },
-    'full-page-up': function() {
+    'scroll-right': function(ctx) {
+      scrollByVim(viewerCountedDistance(viewerColumnStep(), ctx), 0);
+    },
+    // Compatibility actions for configs written during v2.1.21 development.
+    // The built-in J/K bindings are aliases to 5j/5k instead.
+    'five-lines-down': function(ctx) {
+      scrollByVim(0, viewerCountedDistance(viewerFiveLineStep(), ctx));
+    },
+    'five-lines-up': function(ctx) {
+      scrollByVim(0, -viewerCountedDistance(viewerFiveLineStep(), ctx));
+    },
+    'half-page-down': function(ctx) {
       var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-      scrollByVim(0, -vh);
+      scrollByVim(0, viewerCountedDistance(vh * 0.5, ctx));
+    },
+    'half-page-up': function(ctx) {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, -viewerCountedDistance(vh * 0.5, ctx));
+    },
+    'full-page-down': function(ctx) {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, viewerCountedDistance(vh, ctx));
+    },
+    'full-page-up': function(ctx) {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+      scrollByVim(0, -viewerCountedDistance(vh, ctx));
+    },
+    'jump-back': function(ctx) {
+      restorePreviousPlace(viewerActionCount(ctx));
+    },
+    'jump-forward': function(ctx) {
+      restoreNextPlace(viewerActionCount(ctx));
     },
     'previous-place': function() { restorePreviousPlace(); },
-    'go-top': function() {
+    'go-top': function(ctx) {
+      if (ctx && ctx.explicitCount && scrollToViewerSourceLine(ctx.count)) return;
       recordViewerPlace();
       window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
     },
-    'go-bottom': function() {
+    'go-bottom': function(ctx) {
+      if (ctx && ctx.explicitCount && scrollToViewerSourceLine(ctx.count)) return;
       recordViewerPlace();
       window.scrollTo({
         top: document.documentElement.scrollHeight,
@@ -440,10 +703,37 @@
         behavior: 'auto',
       });
     },
+    'horizontal-start': function() {
+      window.scrollTo({ left: 0, top: window.scrollY, behavior: 'auto' });
+    },
+    'horizontal-end': function() {
+      window.scrollTo({
+        left: document.documentElement.scrollWidth,
+        top: window.scrollY,
+        behavior: 'auto',
+      });
+    },
+    'previous-paragraph': function(ctx) { navigateViewerSemantic('p', -1, ctx); },
+    'next-paragraph': function(ctx) { navigateViewerSemantic('p', 1, ctx); },
+    'previous-heading': function(ctx) { navigateViewerSemantic(headingSelector(), -1, ctx); },
+    'next-heading': function(ctx) { navigateViewerSemantic(headingSelector(), 1, ctx); },
+    'align-anchor-top': function() { alignViewerAnchor(0); },
+    'align-anchor-center': function() { alignViewerAnchor(0.5); },
+    'align-anchor-bottom': function() { alignViewerAnchor(1); },
     'open-search': function() { openSearchPanel(); },
+    'open-search-backward': function() { openSearchPanel(true); },
     'open-command': function() { openCmdline(''); },
-    'search-next': function() { runSearch(false); },
-    'search-previous': function() { runSearch(true); },
+    'search-next': function(ctx) {
+      repeatViewerSearch(!!openSearchPanel.backwards, ctx);
+    },
+    'search-previous': function(ctx) {
+      repeatViewerSearch(!openSearchPanel.backwards, ctx);
+    },
+    'search-word-forward': function(ctx) { viewerSearchWord(false, ctx); },
+    'search-word-backward': function(ctx) { viewerSearchWord(true, ctx); },
+    'set-mark': function(ctx) { setViewerMark(ctx && ctx.char); },
+    'jump-mark-line': function(ctx) { jumpToViewerMark(ctx && ctx.char, false); },
+    'jump-mark-exact': function(ctx) { jumpToViewerMark(ctx && ctx.char, true); },
     'toggle-toc': function() { setSideOpen(!currentSideOpen, true); },
     'toggle-topbar': function() { setTopbarHidden(!topbarHidden, true); },
     'toggle-crop': function() { setPageCrop(!pageCropped, true); },
@@ -484,11 +774,42 @@
     },
   };
 
-  function runViewerAction(action) {
+  var VIEWER_MAX_COUNT = 9999;
+  var viewerCountDigits = '';
+  var viewerDigitFallbackTimer = 0;
+
+  function clearViewerDigitFallback() {
+    if (viewerDigitFallbackTimer) {
+      clearTimeout(viewerDigitFallbackTimer);
+      viewerDigitFallbackTimer = 0;
+    }
+  }
+
+  function clearViewerKeyPending() {
+    clearKeySequencePending();
+    clearViewerDigitFallback();
+    viewerCountDigits = '';
+  }
+
+  function runViewerAction(action, invocation) {
     var run = viewerActions[action];
     if (!run) return false;
-    clearKeySequencePending();
-    run();
+    var fromKey = invocation && invocation.fromKey;
+    var typedCount = fromKey && viewerCountDigits
+      ? parseInt(viewerCountDigits, 10)
+      : 1;
+    if (!isFinite(typedCount) || typedCount < 1) typedCount = 1;
+    var fixedCount = invocation && invocation.fixedCount
+      ? invocation.fixedCount
+      : 1;
+    var count = Math.min(VIEWER_MAX_COUNT, typedCount * fixedCount);
+    var ctx = {
+      count: count,
+      explicitCount: !!(fromKey && viewerCountDigits) || fixedCount !== 1,
+      char: invocation && invocation.char || '',
+    };
+    clearViewerKeyPending();
+    run(ctx);
     return true;
   }
 
@@ -518,6 +839,11 @@
       rest = rest.slice(modifier[0].length);
     }
     if (!rest) return null;
+    if (rest.toLowerCase() === '<char>') {
+      if (step.mod || step.ctrl || step.meta || step.alt || step.shift) return null;
+      step.capture = 'char';
+      return step;
+    }
     step.key = normalizedBindingKey(rest);
 
     // `KeyboardEvent.key` already contains the shifted printable glyph. Turn
@@ -551,6 +877,9 @@
       if (!step) return null;
       steps.push(step);
     }
+    if (steps.filter(function(step) { return step.capture === 'char'; }).length > 1) {
+      return null;
+    }
     return steps;
   }
 
@@ -576,11 +905,39 @@
     if (!!e.ctrlKey !== wantsCtrl || !!e.metaKey !== wantsMeta || !!e.altKey !== step.alt) {
       return false;
     }
+    if (step.capture === 'char') {
+      return eventKey(e).length === 1;
+    }
     if (!keyEncodesShift(step.key) && !!e.shiftKey !== step.shift) return false;
     return eventKey(e) === step.key;
   }
 
+  function bindingStepsEqual(left, right) {
+    if (!left || !right || left.length !== right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      var a = effectiveBindingStep(left[i]);
+      var b = effectiveBindingStep(right[i]);
+      if (a.key !== b.key || a.capture !== b.capture || a.ctrl !== b.ctrl ||
+          a.meta !== b.meta || a.alt !== b.alt || a.shift !== b.shift) return false;
+    }
+    return true;
+  }
+
+  function effectiveBindingStep(step) {
+    var apple = isAppleKeyboardPlatform();
+    return {
+      ctrl: step.ctrl || (step.mod && !apple),
+      meta: step.meta || (step.mod && apple),
+      alt: step.alt,
+      shift: step.shift,
+      key: step.key,
+      capture: step.capture || '',
+    };
+  }
+
   var viewerKeybindings = {};
+  var viewerKeybindingAliases = {};
+  var viewerKeybindingSignature = '';
   var compiledKeybindings = [];
 
   function displayBinding(binding) {
@@ -613,9 +970,75 @@
     document.querySelectorAll('[data-viewer-action]').forEach(refreshViewerActionHint);
   }
 
-  function setViewerKeybindings(bindings) {
-    viewerKeybindings = (bindings && typeof bindings === 'object') ? bindings : {};
+  function parseAliasExpansion(raw) {
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    var text = raw.trim();
+    var fixedCount = 1;
+    var count = /^([1-9][0-9]*)(?=[^0-9\s])/.exec(text);
+    if (count) {
+      fixedCount = Math.min(VIEWER_MAX_COUNT, parseInt(count[1], 10));
+      text = text.slice(count[1].length);
+    }
+    var steps = parseBinding(text);
+    return steps ? { steps: steps, fixedCount: fixedCount } : null;
+  }
+
+  function resolveKeybindingAlias(definition, direct, definitions, trail) {
+    if (trail.indexOf(definition.source) >= 0) return null;
+    var parsed = parseAliasExpansion(definition.target);
+    if (!parsed) return null;
+    var action = direct.find(function(binding) {
+      return bindingStepsEqual(binding.steps, parsed.steps);
+    });
+    if (action) {
+      return {
+        action: action.action,
+        fixedCount: parsed.fixedCount,
+        requiresChar: action.steps.some(function(step) { return step.capture === 'char'; }),
+      };
+    }
+    var nested = definitions.find(function(candidate) {
+      return bindingStepsEqual(candidate.steps, parsed.steps);
+    });
+    if (!nested) return null;
+    var resolved = resolveKeybindingAlias(
+      nested,
+      direct,
+      definitions,
+      trail.concat(definition.source)
+    );
+    if (!resolved) return null;
+    resolved.fixedCount = Math.min(
+      VIEWER_MAX_COUNT,
+      resolved.fixedCount * parsed.fixedCount
+    );
+    return resolved;
+  }
+
+  function bindingStepsIdentity(steps) {
+    return JSON.stringify(steps.map(function(step) {
+      var effective = effectiveBindingStep(step);
+      return [
+        effective.ctrl, effective.meta, effective.alt, effective.shift,
+        effective.key, effective.capture,
+      ];
+    }));
+  }
+
+  function setViewerKeybindings(bindings, aliases, timeoutMs) {
+    var nextBindings = (bindings && typeof bindings === 'object') ? bindings : {};
+    var nextAliases = (aliases && typeof aliases === 'object') ? aliases : {};
+    var nextTimeout = Number(timeoutMs);
+    if (!isFinite(nextTimeout) || nextTimeout < 100 || nextTimeout > 5000) nextTimeout = 750;
+    nextTimeout = Math.round(nextTimeout);
+    var nextSignature = JSON.stringify([nextBindings, nextAliases, nextTimeout]);
+    if (nextSignature === viewerKeybindingSignature) return false;
+    viewerKeybindingSignature = nextSignature;
+    viewerKeySequenceTimeoutMs = nextTimeout;
+    viewerKeybindings = nextBindings;
+    viewerKeybindingAliases = nextAliases;
     compiledKeybindings = [];
+    var keybindingWarnings = [];
     VIEWER_ACTION_ORDER.forEach(function(action) {
       var raw = viewerKeybindings[action];
       if (typeof raw === 'string') raw = [raw];
@@ -626,20 +1049,131 @@
         else console.warn('mathpreview: ignored invalid keybinding', action, binding);
       });
     });
-    clearKeySequencePending();
+    var directOwners = new Map();
+    compiledKeybindings = compiledKeybindings.filter(function(binding) {
+      var identity = bindingStepsIdentity(binding.steps);
+      var owner = directOwners.get(identity);
+      if (!owner) {
+        directOwners.set(identity, binding);
+        return true;
+      }
+      if (owner.action !== binding.action) {
+        keybindingWarnings.push(
+          binding.binding + ' is assigned to both ' + owner.action + ' and ' + binding.action
+        );
+      }
+      return false;
+    });
+    var direct = compiledKeybindings.slice();
+    var aliasDefinitions = [];
+    Object.keys(viewerKeybindingAliases).forEach(function(source) {
+      var target = viewerKeybindingAliases[source];
+      var steps = parseBinding(source);
+      if (typeof target === 'string' && steps) {
+        aliasDefinitions.push({ source: source, target: target, steps: steps });
+      } else {
+        console.warn('mathpreview: ignored invalid keybinding alias', source, target);
+      }
+    });
+    aliasDefinitions.forEach(function(definition) {
+      var resolved = resolveKeybindingAlias(definition, direct, aliasDefinitions, []);
+      if (!resolved) {
+        console.warn(
+          'mathpreview: keybinding alias has no configured target or contains a cycle',
+          definition.source,
+          definition.target
+        );
+        keybindingWarnings.push(
+          definition.source + ' alias has no configured target or contains a cycle'
+        );
+        return;
+      }
+      if (resolved.requiresChar &&
+          !definition.steps.some(function(step) { return step.capture === 'char'; })) {
+        keybindingWarnings.push(
+          definition.source + ' cannot expand to wildcard mapping ' + definition.target
+        );
+        return;
+      }
+      var aliasIdentity = bindingStepsIdentity(definition.steps);
+      var existing = compiledKeybindings.find(function(binding) {
+        return bindingStepsIdentity(binding.steps) === aliasIdentity;
+      });
+      if (existing) {
+        if (!existing.alias) {
+          // Explicit action bindings intentionally outrank aliases, but make
+          // the shadowing visible instead of silently choosing by registry order.
+          keybindingWarnings.push(
+            definition.source + ' alias is shadowed by action ' + existing.action
+          );
+        } else {
+          keybindingWarnings.push(
+            definition.source + ' duplicates alias ' + existing.binding
+          );
+        }
+        return;
+      }
+      compiledKeybindings.push({
+        action: resolved.action,
+        binding: definition.source,
+        steps: definition.steps,
+        fixedCount: resolved.fixedCount,
+        alias: true,
+      });
+    });
+    clearViewerKeyPending();
     refreshViewerActionHints();
+    if (keybindingWarnings.length) {
+      console.warn('mathpreview: keybinding conflicts', keybindingWarnings);
+      setTimeout(function() {
+        setStatus('dead', '○ keybinding conflict: ' + keybindingWarnings[0]);
+      }, 0);
+    }
+    return true;
+  }
+
+  function candidateInvocation(binding, e, captures) {
+    var char = captures && captures.char || '';
+    if (binding.steps.length === 1 && binding.steps[0].capture === 'char') {
+      char = eventKey(e);
+    }
+    return {
+      fromKey: true,
+      fixedCount: binding.fixedCount || 1,
+      char: char,
+    };
+  }
+
+  function preferLiteralBindingStep(left, right, stepIndex) {
+    var leftStep = left.steps[stepIndex];
+    var rightStep = right.steps[stepIndex];
+    return (leftStep.capture ? 1 : 0) - (rightStep.capture ? 1 : 0);
   }
 
   function startKeybindingSequence(e) {
     var matches = compiledKeybindings.filter(function(binding) {
       return bindingStepMatches(binding.steps[0], e);
     });
+    // A literal mapping is more specific than a `<char>` wildcard. Keep
+    // action-order priority only when both candidates have equal specificity.
+    matches.sort(function(left, right) {
+      return preferLiteralBindingStep(left, right, 0);
+    });
     if (!matches.length) return false;
     var exact = matches.find(function(binding) { return binding.steps.length === 1; });
-    if (exact) return runViewerAction(exact.action);
-    keySequenceCandidates = matches.map(function(binding) {
-      return { binding: binding, next: 1 };
+    var longer = matches.filter(function(binding) { return binding.steps.length > 1; });
+    if (exact && !longer.length) {
+      return runViewerAction(exact.action, candidateInvocation(exact, e));
+    }
+    keySequenceCandidates = longer.map(function(binding) {
+      var captures = {};
+      if (binding.steps[0].capture === 'char') captures.char = eventKey(e);
+      return { binding: binding, next: 1, captures: captures };
     });
+    keySequenceExactFallback = exact ? {
+      action: exact.action,
+      invocation: candidateInvocation(exact, e),
+    } : null;
     armKeySequenceTimeout();
     return true;
   }
@@ -648,33 +1182,129 @@
     var matches = keySequenceCandidates.filter(function(candidate) {
       return bindingStepMatches(candidate.binding.steps[candidate.next], e);
     });
+    matches.sort(function(left, right) {
+      return preferLiteralBindingStep(left.binding, right.binding, left.next);
+    });
     if (!matches.length) {
-      clearKeySequencePending();
-      return startKeybindingSequence(e);
+      var fallback = keySequenceExactFallback;
+      if (fallback) runViewerAction(fallback.action, fallback.invocation);
+      else clearViewerKeyPending();
+      // A mismatch ends the old command. Reprocess the key as the start of a
+      // fresh command, but never leak the abandoned command's count into it.
+      return handleViewerKeybindings(e) || !!fallback;
     }
     var exact = matches.find(function(candidate) {
       return candidate.next + 1 === candidate.binding.steps.length;
     });
-    if (exact) return runViewerAction(exact.binding.action);
-    keySequenceCandidates = matches.map(function(candidate) {
-      return { binding: candidate.binding, next: candidate.next + 1 };
+    var longer = matches.filter(function(candidate) {
+      return candidate.next + 1 < candidate.binding.steps.length;
     });
+    if (exact && !longer.length) {
+      if (exact.binding.steps[exact.next].capture === 'char') {
+        exact.captures.char = eventKey(e);
+      }
+      return runViewerAction(
+        exact.binding.action,
+        candidateInvocation(exact.binding, e, exact.captures)
+      );
+    }
+    keySequenceCandidates = longer.map(function(candidate) {
+      var captures = Object.assign({}, candidate.captures);
+      if (candidate.binding.steps[candidate.next].capture === 'char') {
+        captures.char = eventKey(e);
+      }
+      return {
+        binding: candidate.binding,
+        next: candidate.next + 1,
+        captures: captures,
+      };
+    });
+    if (exact) {
+      var exactCaptures = Object.assign({}, exact.captures);
+      if (exact.binding.steps[exact.next].capture === 'char') {
+        exactCaptures.char = eventKey(e);
+      }
+      keySequenceExactFallback = {
+        action: exact.binding.action,
+        invocation: candidateInvocation(exact.binding, e, exactCaptures),
+      };
+    } else {
+      keySequenceExactFallback = null;
+    }
     armKeySequenceTimeout();
     return true;
   }
 
   function handleViewerKeybindings(e) {
-    if (e.defaultPrevented || e.isComposing || isEditableTarget(e.target)) return false;
+    if (e.defaultPrevented || e.isComposing ||
+        isViewerKeySuppressedTarget(e.target, e.key)) {
+      if (keySequenceCandidates.length || viewerCountDigits) clearViewerKeyPending();
+      return false;
+    }
     // Never run page-level actions behind an open modal. Native dialog keys
     // (Escape, Enter, Space, Tab) and form accessibility remain untouched.
-    if (document.querySelector('dialog[open]')) return false;
+    if (document.querySelector('dialog[open]')) {
+      if (keySequenceCandidates.length || viewerCountDigits) clearViewerKeyPending();
+      return false;
+    }
+    if (e.key === 'Escape' && (keySequenceCandidates.length || viewerCountDigits)) {
+      clearViewerKeyPending();
+      return true;
+    }
+    var key = eventKey(e);
+    // Physical modifier keydowns precede combinations such as `3J`. They are
+    // not commands and must not discard the count before the printable key.
+    if (key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta') {
+      return false;
+    }
     if (keySequenceCandidates.length) return continueKeybindingSequence(e);
-    return startKeybindingSequence(e);
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9]$/.test(key) &&
+        (viewerCountDigits || key !== '0')) {
+      clearViewerDigitFallback();
+      viewerCountDigits = (viewerCountDigits + key).replace(/^0+/, '');
+      if (!viewerCountDigits) viewerCountDigits = '0';
+      if (parseInt(viewerCountDigits, 10) > VIEWER_MAX_COUNT) {
+        viewerCountDigits = String(VIEWER_MAX_COUNT);
+      }
+      // Old configs may still bind a bare 1–9 (v2.1.20 used `4` for A4).
+      // Counts take precedence when another key follows; an otherwise-bare
+      // legacy digit fires after the normal mapping timeout.
+      if (viewerCountDigits.length === 1) {
+        var digitBinding = compiledKeybindings.find(function(binding) {
+          return binding.steps.length === 1 && bindingStepMatches(binding.steps[0], e);
+        });
+        if (digitBinding) {
+          // A timed-out bare digit is the configured mapping itself, not a
+          // count applied to that mapping (for example a legacy `4 = page-a4`).
+          var digitInvocation = { fromKey: false, fixedCount: 1, char: '' };
+          viewerDigitFallbackTimer = setTimeout(function() {
+            viewerDigitFallbackTimer = 0;
+            runViewerAction(digitBinding.action, digitInvocation);
+          }, viewerKeySequenceTimeoutMs);
+        }
+      }
+      return true;
+    }
+    clearViewerDigitFallback();
+    var handled = startKeybindingSequence(e);
+    if (!handled && viewerCountDigits) viewerCountDigits = '';
+    return handled;
   }
 
-  setViewerKeybindings((window.__mpConfig || {}).keybindings);
+  setViewerKeybindings(
+    (window.__mpConfig || {}).keybindings,
+    (window.__mpConfig || {}).keybindingAliases,
+    (window.__mpConfig || {}).keySequenceTimeoutMs
+  );
+  document.addEventListener('focusin', function(e) {
+    if (isEditableTarget(e.target) || isViewerInteractiveTarget(e.target)) {
+      clearViewerKeyPending();
+    }
+  });
+  window.addEventListener('blur', clearViewerKeyPending);
 
   document.addEventListener('click', function(e) {
+    clearViewerKeyPending();
     // Any click outside the row-selected block drops the row selection and
     // its band — whichever branch below ends up handling the click.
     if (selectedMathRow &&
@@ -902,7 +1532,7 @@
         e.preventDefault();
         // Enter accepts a highlighted suggestion; otherwise runs the search.
         if (searchSuggestIndex >= 0) acceptSearchSuggestion(searchSuggestIndex);
-        else runSearch(e.shiftKey);
+        else runSearch(e.shiftKey ? !openSearchPanel.backwards : !!openSearchPanel.backwards);
         return;
       }
       return;

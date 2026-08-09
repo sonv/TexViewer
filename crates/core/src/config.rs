@@ -19,10 +19,11 @@ use serde::{Deserialize, Serialize};
 
 pub const PROJECT_CONFIG_FILENAME: &str = ".mathpreview.toml";
 
-/// Complete built-in viewer configuration shown in the config dialog when
-/// the selected global/project file does not exist yet. A regression test
-/// resolves this template and compares it with `ResolvedConfig::default` so
-/// the editable example cannot silently drift from the runtime defaults.
+/// Complete documented built-in viewer configuration. Sparse config-dialog
+/// drafts deliberately do not materialize this into a selected scope. A
+/// regression test resolves the template and compares it with
+/// `ResolvedConfig::default` so the reference cannot silently drift from the
+/// runtime defaults.
 pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("assets/default-config.toml");
 
 /// A `[text-macros]` entry: an HTML template plus an optional argument count
@@ -116,12 +117,40 @@ pub struct Config {
     /// `[text-macros]` or `[text_macros]`.
     #[serde(default, alias = "text_macros")]
     pub text_macros: HashMap<String, TextMacro>,
-    /// Viewer action → keyboard shortcut(s). A value can be one string or an
-    /// array of strings; an empty array explicitly disables an action's
-    /// built-in shortcuts. This table lives at top level (`[keybindings]`) so
-    /// the global config can hold one keyboard layout for every paper.
+    /// Viewer action → keyboard shortcut(s), plus the nested aliases table.
+    /// A value can be one string or an array of strings; an empty array
+    /// explicitly disables an action's built-in shortcuts.
     #[serde(default)]
-    pub keybindings: BTreeMap<String, KeyBindingList>,
+    pub keybindings: KeyBindingsConfig,
+    /// Pre-release spelling accepted for migration. `parse` normalizes these
+    /// entries into `[keybindings.aliases]` before merging config layers.
+    #[serde(
+        default,
+        rename = "keybinding-aliases",
+        alias = "keybinding_aliases",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    legacy_keybinding_aliases: BTreeMap<String, KeyBindingList>,
+}
+
+/// The `[keybindings]` table stays flat for action names while reserving the
+/// nested `[keybindings.aliases]` table for composable key-sequence aliases.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyBindingsConfig {
+    /// Delay for pending multi-step mappings, exact-prefix fallback, and the
+    /// legacy bare-digit compatibility fallback. Numeric counts do not expire.
+    #[serde(
+        default,
+        rename = "sequence-timeout-ms",
+        alias = "sequence_timeout_ms",
+        alias = "timeout-ms"
+    )]
+    pub sequence_timeout_ms: Option<u32>,
+    #[serde(default)]
+    pub aliases: BTreeMap<String, KeyBindingList>,
+    #[serde(flatten)]
+    pub actions: BTreeMap<String, KeyBindingList>,
 }
 
 /// One or more shortcuts assigned to a viewer action. TOML accepts the common
@@ -154,17 +183,36 @@ pub const KEYBINDING_ACTIONS: &[&str] = &[
     "scroll-down",
     "scroll-up",
     "scroll-right",
+    "five-lines-down",
+    "five-lines-up",
     "half-page-down",
     "half-page-up",
     "full-page-down",
     "full-page-up",
+    "jump-back",
+    "jump-forward",
     "previous-place",
     "go-top",
     "go-bottom",
+    "horizontal-start",
+    "horizontal-end",
+    "previous-paragraph",
+    "next-paragraph",
+    "previous-heading",
+    "next-heading",
+    "align-anchor-top",
+    "align-anchor-center",
+    "align-anchor-bottom",
     "open-search",
+    "open-search-backward",
     "open-command",
     "search-next",
     "search-previous",
+    "search-word-forward",
+    "search-word-backward",
+    "set-mark",
+    "jump-mark-line",
+    "jump-mark-exact",
     "toggle-toc",
     "toggle-topbar",
     "toggle-crop",
@@ -193,30 +241,46 @@ pub const KEYBINDING_ACTIONS: &[&str] = &[
 
 fn default_keybindings() -> BTreeMap<String, Vec<String>> {
     let defaults: &[(&str, &[&str])] = &[
-        ("scroll-left", &["h"]),
-        ("scroll-down", &["j"]),
-        ("scroll-up", &["k"]),
-        ("scroll-right", &["l"]),
+        ("scroll-left", &["h", "ArrowLeft"]),
+        ("scroll-down", &["j", "Ctrl+e", "ArrowDown"]),
+        ("scroll-up", &["k", "Ctrl+y", "ArrowUp"]),
+        ("scroll-right", &["l", "ArrowRight"]),
         ("half-page-down", &["Ctrl+d"]),
         ("half-page-up", &["Ctrl+u"]),
-        ("full-page-down", &["Space"]),
-        ("full-page-up", &["b"]),
-        ("previous-place", &["Ctrl+o"]),
-        ("go-top", &["g g"]),
-        ("go-bottom", &["G"]),
+        ("full-page-down", &["Space", "Ctrl+f", "PageDown"]),
+        ("full-page-up", &["b", "Ctrl+b", "PageUp"]),
+        ("jump-back", &["Ctrl+o"]),
+        ("jump-forward", &["Ctrl+i"]),
+        ("go-top", &["g g", "Home"]),
+        ("go-bottom", &["G", "End"]),
+        ("horizontal-start", &["0"]),
+        ("horizontal-end", &["$"]),
+        ("previous-paragraph", &["{"]),
+        ("next-paragraph", &["}"]),
+        ("previous-heading", &["[ ["]),
+        ("next-heading", &["] ]"]),
+        ("align-anchor-top", &["z t"]),
+        ("align-anchor-center", &["z z"]),
+        ("align-anchor-bottom", &["z b"]),
         ("open-search", &["/"]),
+        ("open-search-backward", &["?"]),
         ("open-command", &[":"]),
         ("search-next", &["n"]),
         ("search-previous", &["N"]),
+        ("search-word-forward", &["*"]),
+        ("search-word-backward", &["#"]),
+        ("set-mark", &["m <char>"]),
+        ("jump-mark-line", &["' <char>"]),
+        ("jump-mark-exact", &["` <char>"]),
         ("toggle-toc", &["t"]),
         ("toggle-topbar", &["B"]),
         ("toggle-crop", &["c"]),
         ("close-viewer", &["q"]),
-        ("page-a4", &["4"]),
+        ("page-a4", &["p 4"]),
         ("page-dynamic", &["d"]),
         ("zoom-in", &["+", "Mod+=", "Mod++"]),
         ("zoom-out", &["-", "_", "Mod+-", "Mod+_"]),
-        ("zoom-reset", &["0", "Mod+0"]),
+        ("zoom-reset", &["z 0", "Mod+0"]),
         ("zoom-fit-width", &["="]),
         ("browser-print", &["Mod+p"]),
         // Cmd+M is swallowed by macOS as Minimize, but retaining both forms
@@ -239,9 +303,21 @@ fn default_keybindings() -> BTreeMap<String, Vec<String>> {
     out
 }
 
+fn default_keybinding_aliases() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("J".to_string(), "5j".to_string()),
+        ("K".to_string(), "5k".to_string()),
+    ])
+}
+
 fn valid_keybinding(binding: &str) -> bool {
-    binding.split_whitespace().all(|raw_step| {
+    if binding.trim().is_empty() {
+        return false;
+    }
+    let mut captures = 0;
+    let valid = binding.split_whitespace().all(|raw_step| {
         let mut step = raw_step;
+        let mut has_modifier = false;
         loop {
             let lower = step.to_ascii_lowercase();
             let Some(prefix) = [
@@ -252,10 +328,129 @@ fn valid_keybinding(binding: &str) -> bool {
             .find(|prefix| lower.starts_with(prefix)) else {
                 break;
             };
+            has_modifier = true;
             step = &step[prefix.len()..];
         }
-        !step.is_empty() && (!step.contains('+') || step == "+")
-    })
+        if step.eq_ignore_ascii_case("<char>") {
+            captures += 1;
+        }
+        if step.is_empty() || (step.contains('+') && step != "+") {
+            return false;
+        }
+        !(step.eq_ignore_ascii_case("<char>") && has_modifier)
+    });
+    valid && captures <= 1
+}
+
+fn canonical_keybinding(binding: &str) -> String {
+    binding
+        .split_whitespace()
+        .map(|raw_step| {
+            let mut step = raw_step;
+            let mut modifiers = Vec::new();
+            loop {
+                let lower = step.to_ascii_lowercase();
+                let Some((prefix, canonical)) = [
+                    ("mod+", "Mod"),
+                    ("ctrl+", "Ctrl"),
+                    ("control+", "Ctrl"),
+                    ("meta+", "Meta"),
+                    ("cmd+", "Meta"),
+                    ("command+", "Meta"),
+                    ("alt+", "Alt"),
+                    ("option+", "Alt"),
+                    ("shift+", "Shift"),
+                ]
+                .into_iter()
+                .find(|(prefix, _)| lower.starts_with(prefix)) else {
+                    break;
+                };
+                if !modifiers.contains(&canonical) {
+                    modifiers.push(canonical);
+                }
+                step = &step[prefix.len()..];
+            }
+            let normalized_key = match step.to_ascii_lowercase().as_str() {
+                "space" | "spacebar" => "Space",
+                "esc" => "Escape",
+                "plus" => "+",
+                "minus" => "-",
+                "equal" | "equals" => "=",
+                "return" => "Enter",
+                "<char>" => "<char>",
+                _ => step,
+            };
+            let shifted = match normalized_key {
+                "`" => Some("~"),
+                "1" => Some("!"),
+                "2" => Some("@"),
+                "3" => Some("#"),
+                "4" => Some("$"),
+                "5" => Some("%"),
+                "6" => Some("^"),
+                "7" => Some("&"),
+                "8" => Some("*"),
+                "9" => Some("("),
+                "0" => Some(")"),
+                "-" => Some("_"),
+                "=" => Some("+"),
+                "[" => Some("{"),
+                "]" => Some("}"),
+                "\\" => Some("|"),
+                ";" => Some(":"),
+                "'" => Some("\""),
+                "," => Some("<"),
+                "." => Some(">"),
+                "/" => Some("?"),
+                _ => None,
+            };
+            let mut key = normalized_key.to_string();
+            if modifiers.contains(&"Shift") {
+                if normalized_key.len() == 1 && normalized_key.as_bytes()[0].is_ascii_lowercase() {
+                    key.make_ascii_uppercase();
+                    modifiers.retain(|modifier| *modifier != "Shift");
+                } else if let Some(glyph) = shifted {
+                    key = glyph.to_string();
+                    modifiers.retain(|modifier| *modifier != "Shift");
+                }
+            }
+            modifiers.sort_by_key(|modifier| match *modifier {
+                "Mod" => 0,
+                "Ctrl" => 1,
+                "Meta" => 2,
+                "Alt" => 3,
+                _ => 4,
+            });
+            if modifiers.is_empty() {
+                key
+            } else {
+                format!("{}+{key}", modifiers.join("+"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn valid_keybinding_alias_expansion(expansion: &str) -> bool {
+    let trimmed = expansion.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let first_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let first = &trimmed[..first_end];
+    let count_len = first
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if count_len > 0 && !first.starts_with('0') {
+        if count_len == first.len() {
+            return false;
+        }
+        let binding = format!("{}{}", &first[count_len..], &trimmed[first_end..]);
+        valid_keybinding(&binding)
+    } else {
+        valid_keybinding(trimmed)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -468,6 +663,11 @@ pub struct ResolvedViewerConfig {
     /// Effective action bindings after built-ins + global + project + CLI
     /// config layers have merged action-by-action.
     pub keybindings: BTreeMap<String, Vec<String>>,
+    /// Ambiguous key-sequence timeout in milliseconds.
+    pub key_sequence_timeout_ms: u32,
+    /// Effective key-sequence aliases after the same cascade. The client
+    /// compiles these to action + count pairs; values never execute script.
+    pub keybinding_aliases: BTreeMap<String, String>,
 }
 
 /// The A4 page margin actually in effect, in millimetres — the single value
@@ -508,6 +708,8 @@ impl Default for ResolvedConfig {
                 typeset_mode: TypesetMode::Local,
                 page_margin_mm: None,
                 keybindings: default_keybindings(),
+                key_sequence_timeout_ms: 750,
+                keybinding_aliases: default_keybinding_aliases(),
             },
             text_macros: HashMap::new(),
         }
@@ -528,8 +730,19 @@ impl Config {
         }
         // Later layers win per action, not for the whole table. A project can
         // override one shortcut while keeping the user's global keyboard map.
-        for (action, bindings) in other.keybindings {
-            self.keybindings.insert(action, bindings);
+        for (action, bindings) in other.keybindings.actions {
+            self.keybindings.actions.insert(action, bindings);
+        }
+        // Alias sources merge independently. An empty list is an explicit
+        // tombstone that removes a lower-layer/default alias during resolve.
+        for (source, expansion) in other.keybindings.aliases {
+            self.keybindings.aliases.insert(source, expansion);
+        }
+        if other.keybindings.sequence_timeout_ms.is_some() {
+            self.keybindings.sequence_timeout_ms = other.keybindings.sequence_timeout_ms;
+        }
+        for (source, expansion) in other.legacy_keybinding_aliases {
+            self.keybindings.aliases.insert(source, expansion);
         }
     }
 
@@ -538,8 +751,25 @@ impl Config {
     pub fn resolve(self) -> ResolvedConfig {
         let defaults = ResolvedConfig::default();
         let mut keybindings = defaults.viewer.keybindings.clone();
-        for (action, bindings) in self.keybindings {
+        let mut action_overrides = self.keybindings.actions;
+        // v2.1.20 exposed Ctrl-O as `previous-place`. Preserve an old remap or
+        // tombstone unless the same layer explicitly adopts `jump-back`.
+        if !action_overrides.contains_key("jump-back") {
+            if let Some(previous) = action_overrides.remove("previous-place") {
+                action_overrides.insert("jump-back".to_string(), previous);
+                action_overrides.insert("previous-place".to_string(), KeyBindingList(Vec::new()));
+            }
+        }
+        for (action, bindings) in action_overrides {
             keybindings.insert(action, bindings.0);
+        }
+        let mut keybinding_aliases = defaults.viewer.keybinding_aliases.clone();
+        for (source, expansion) in self.keybindings.aliases {
+            if let Some(target) = expansion.0.into_iter().next() {
+                keybinding_aliases.insert(source, target);
+            } else {
+                keybinding_aliases.remove(&source);
+            }
         }
         ResolvedConfig {
             viewer: ResolvedViewerConfig {
@@ -582,6 +812,11 @@ impl Config {
                 // document's geometry margin, resolved at render time".
                 page_margin_mm: self.viewer.page_margin,
                 keybindings,
+                key_sequence_timeout_ms: self
+                    .keybindings
+                    .sequence_timeout_ms
+                    .unwrap_or(defaults.viewer.key_sequence_timeout_ms),
+                keybinding_aliases,
             },
             text_macros: self.text_macros,
         }
@@ -590,9 +825,44 @@ impl Config {
     /// Parse a TOML string into a `Config`. Returns an error with the
     /// source path attached for context if the file is malformed.
     pub fn parse(source: &str, label: &Path) -> Result<Self> {
-        let config = toml::from_str::<Config>(source)
+        let mut config = toml::from_str::<Config>(source)
             .with_context(|| format!("parsing config file {}", label.display()))?;
+        // The nested table is canonical. If both spellings occur in one file,
+        // it wins entry-by-entry while the old top-level spelling fills only
+        // aliases that were not already defined.
+        for (source, expansion) in std::mem::take(&mut config.legacy_keybinding_aliases) {
+            config
+                .keybindings
+                .aliases
+                .entry(source)
+                .or_insert(expansion);
+        }
         config.validate_keybindings(label)?;
+        let mut canonical_aliases = BTreeMap::new();
+        for (source, expansion) in std::mem::take(&mut config.keybindings.aliases) {
+            let canonical = canonical_keybinding(&source);
+            if canonical_aliases
+                .insert(canonical.clone(), expansion)
+                .is_some()
+            {
+                bail!(
+                    "duplicate equivalent keybinding alias source {canonical:?} in {}",
+                    label.display()
+                );
+            }
+        }
+        config.keybindings.aliases = canonical_aliases;
+        // Normalize the renamed backward-jump action before config layers
+        // merge, so a higher-layer old tombstone still overrides a lower-layer
+        // new binding (and vice versa).
+        if !config.keybindings.actions.contains_key("jump-back") {
+            if let Some(previous) = config.keybindings.actions.remove("previous-place") {
+                config
+                    .keybindings
+                    .actions
+                    .insert("jump-back".to_string(), previous);
+            }
+        }
         Ok(config)
     }
 
@@ -609,7 +879,16 @@ impl Config {
     }
 
     fn validate_keybindings(&self, label: &Path) -> Result<()> {
-        for (action, bindings) in &self.keybindings {
+        if let Some(timeout) = self.keybindings.sequence_timeout_ms {
+            if !(100..=5000).contains(&timeout) {
+                bail!(
+                    "keybinding sequence-timeout-ms must be between 100 and 5000 in {}; got {timeout}",
+                    label.display()
+                );
+            }
+        }
+        let mut binding_owners = BTreeMap::<String, &str>::new();
+        for (action, bindings) in &self.keybindings.actions {
             if !KEYBINDING_ACTIONS.contains(&action.as_str()) {
                 bail!(
                     "unknown keybinding action {action:?} in {}; expected one of: {}",
@@ -628,6 +907,41 @@ impl Config {
                     "invalid shortcut {binding:?} for keybinding action {action:?} in {}",
                     label.display()
                 );
+            }
+            for binding in &bindings.0 {
+                let canonical = canonical_keybinding(binding);
+                if let Some(owner) = binding_owners.get(&canonical) {
+                    if *owner != action {
+                        bail!(
+                            "shortcut {binding:?} in {} is assigned to both {owner:?} and {action:?}",
+                            label.display()
+                        );
+                    }
+                } else {
+                    binding_owners.insert(canonical, action);
+                }
+            }
+        }
+        for (source, expansion) in &self.keybindings.aliases {
+            if !valid_keybinding(source) {
+                bail!(
+                    "invalid keybinding alias source {source:?} in {}",
+                    label.display()
+                );
+            }
+            if expansion.0.len() > 1 {
+                bail!(
+                    "keybinding alias {source:?} in {} must have one expansion or [] to disable it",
+                    label.display()
+                );
+            }
+            if let Some(target) = expansion.0.first() {
+                if !valid_keybinding_alias_expansion(target) {
+                    bail!(
+                        "invalid expansion {target:?} for keybinding alias {source:?} in {}",
+                        label.display()
+                    );
+                }
             }
         }
         Ok(())
@@ -867,9 +1181,23 @@ toggle-lines = []
         assert_eq!(cfg.viewer.keybindings["toggle-theme"], ["T", "Ctrl+t"]);
         assert!(cfg.viewer.keybindings["toggle-lines"].is_empty());
         // An omitted action keeps its built-in default.
-        assert_eq!(cfg.viewer.keybindings["scroll-down"], ["j"]);
-        assert_eq!(cfg.viewer.keybindings["full-page-down"], ["Space"]);
-        assert_eq!(cfg.viewer.keybindings["full-page-up"], ["b"]);
+        assert_eq!(
+            cfg.viewer.keybindings["scroll-down"],
+            ["j", "Ctrl+e", "ArrowDown"]
+        );
+        assert!(cfg.viewer.keybindings["five-lines-down"].is_empty());
+        assert!(cfg.viewer.keybindings["five-lines-up"].is_empty());
+        assert_eq!(
+            cfg.viewer.keybindings["full-page-down"],
+            ["Space", "Ctrl+f", "PageDown"]
+        );
+        assert_eq!(
+            cfg.viewer.keybindings["full-page-up"],
+            ["b", "Ctrl+b", "PageUp"]
+        );
+        assert_eq!(cfg.viewer.keybinding_aliases["J"], "5j");
+        assert_eq!(cfg.viewer.keybinding_aliases["K"], "5k");
+        assert_eq!(cfg.viewer.key_sequence_timeout_ms, 750);
     }
 
     #[test]
@@ -888,6 +1216,113 @@ toggle-lines = []
         let resolved = global.resolve();
         assert_eq!(resolved.viewer.keybindings["scroll-down"], ["j"]);
         assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
+    }
+
+    #[test]
+    fn keybindings_can_release_or_reassign_browser_keys() {
+        let mut released_layers = Config::parse(
+            r#"[keybindings]
+scroll-down = ["Ctrl+e", "ArrowDown"]
+scroll-up = ["Ctrl+y", "ArrowUp"]
+
+[keybindings.aliases]
+J = []
+K = []
+"#,
+            Path::new("browser-keys.toml"),
+        )
+        .unwrap();
+        released_layers.merge(
+            Config::parse(
+                "[viewer]\nfont-size = 20\n",
+                Path::new("unrelated-project.toml"),
+            )
+            .unwrap(),
+        );
+        released_layers.merge(
+            Config::parse(
+                "[viewer]\nui-font-size = 13\n",
+                Path::new("unrelated-cli.toml"),
+            )
+            .unwrap(),
+        );
+        let released = released_layers.resolve();
+        assert_eq!(
+            released.viewer.keybindings["scroll-down"],
+            ["Ctrl+e", "ArrowDown"]
+        );
+        assert_eq!(
+            released.viewer.keybindings["scroll-up"],
+            ["Ctrl+y", "ArrowUp"]
+        );
+        assert!(!released.viewer.keybinding_aliases.contains_key("J"));
+        assert!(!released.viewer.keybinding_aliases.contains_key("K"));
+
+        let reassigned = Config::parse(
+            r#"[keybindings]
+scroll-down = []
+scroll-up = []
+toggle-toc = "j"
+toggle-theme = "k"
+
+[keybindings.aliases]
+J = []
+K = []
+"#,
+            Path::new("reassigned-keys.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert!(reassigned.viewer.keybindings["scroll-down"].is_empty());
+        assert!(reassigned.viewer.keybindings["scroll-up"].is_empty());
+        assert_eq!(reassigned.viewer.keybindings["toggle-toc"], ["j"]);
+        assert_eq!(reassigned.viewer.keybindings["toggle-theme"], ["k"]);
+        assert!(!reassigned.viewer.keybinding_aliases.contains_key("J"));
+        assert!(!reassigned.viewer.keybinding_aliases.contains_key("K"));
+    }
+
+    #[test]
+    fn keybinding_aliases_merge_by_source_and_can_be_disabled() {
+        let mut global = Config::parse(
+            "[keybindings.aliases]\nJ = \"10j\"\nX = \"2Ctrl+d\"\n",
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let project = Config::parse(
+            "[keybindings.aliases]\nJ = \"7j\"\nK = []\n",
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        global.merge(project);
+        let resolved = global.resolve();
+        assert_eq!(resolved.viewer.keybinding_aliases["J"], "7j");
+        assert_eq!(resolved.viewer.keybinding_aliases["X"], "2Ctrl+d");
+        assert!(!resolved.viewer.keybinding_aliases.contains_key("K"));
+
+        let shifted = Config::parse(
+            "[keybindings.aliases]\n\"Shift+j\" = \"10j\"\n",
+            Path::new("shifted.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert_eq!(shifted.viewer.keybinding_aliases["J"], "10j");
+
+        let mut synonym_global = Config::parse(
+            "[keybindings.aliases]\nSpacebar = \"2j\"\n",
+            Path::new("synonym-global.toml"),
+        )
+        .unwrap();
+        let synonym_project = Config::parse(
+            "[keybindings.aliases]\nSpace = []\n",
+            Path::new("synonym-project.toml"),
+        )
+        .unwrap();
+        synonym_global.merge(synonym_project);
+        assert!(!synonym_global
+            .resolve()
+            .viewer
+            .keybinding_aliases
+            .contains_key("Space"));
     }
 
     #[test]
@@ -912,6 +1347,104 @@ toggle-lines = []
         )
         .unwrap_err();
         assert!(malformed.to_string().contains("invalid shortcut"));
+
+        let wildcard_modifier = Config::parse(
+            "[keybindings]\nset-mark = \"m Ctrl+<char>\"\n",
+            Path::new("wildcard.toml"),
+        )
+        .unwrap_err();
+        assert!(wildcard_modifier.to_string().contains("invalid shortcut"));
+
+        let repeated_wildcard = Config::parse(
+            "[keybindings]\nset-mark = \"m <char> <char>\"\n",
+            Path::new("repeated-wildcard.toml"),
+        )
+        .unwrap_err();
+        assert!(repeated_wildcard.to_string().contains("invalid shortcut"));
+
+        let blank_alias = Config::parse(
+            "[keybindings.aliases]\n\"\" = \"5j\"\n",
+            Path::new("blank-alias.toml"),
+        )
+        .unwrap_err();
+        assert!(blank_alias
+            .to_string()
+            .contains("invalid keybinding alias source"));
+
+        let equivalent_alias = Config::parse(
+            "[keybindings.aliases]\nJ = \"5j\"\n\"Shift+j\" = \"10j\"\n",
+            Path::new("duplicate-alias.toml"),
+        )
+        .unwrap_err();
+        assert!(equivalent_alias
+            .to_string()
+            .contains("duplicate equivalent keybinding alias source"));
+
+        let duplicate_action = Config::parse(
+            "[keybindings]\nscroll-down = \"x\"\ntoggle-theme = \"x\"\n",
+            Path::new("duplicate-action.toml"),
+        )
+        .unwrap_err();
+        assert!(duplicate_action.to_string().contains("assigned to both"));
+
+        let too_many = Config::parse(
+            "[keybindings.aliases]\nJ = [\"5j\", \"6j\"]\n",
+            Path::new("alias.toml"),
+        )
+        .unwrap_err();
+        assert!(too_many.to_string().contains("must have one expansion"));
+
+        let timeout = Config::parse(
+            "[keybindings]\nsequence-timeout-ms = 50\n",
+            Path::new("timeout.toml"),
+        )
+        .unwrap_err();
+        assert!(timeout.to_string().contains("between 100 and 5000"));
+    }
+
+    #[test]
+    fn legacy_top_level_keybinding_aliases_are_normalized() {
+        let cfg = Config::parse(
+            "[keybinding-aliases]\nJ = \"9j\"\nK = []\n",
+            Path::new("legacy-alias.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert_eq!(cfg.viewer.keybinding_aliases["J"], "9j");
+        assert!(!cfg.viewer.keybinding_aliases.contains_key("K"));
+    }
+
+    #[test]
+    fn legacy_previous_place_override_controls_the_new_jump_back_action() {
+        let disabled = Config::parse(
+            "[keybindings]\nprevious-place = []\n",
+            Path::new("old-disabled.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert!(disabled.viewer.keybindings["jump-back"].is_empty());
+
+        let remapped = Config::parse(
+            "[keybindings]\nprevious-place = \"Alt+o\"\n",
+            Path::new("old-remap.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert_eq!(remapped.viewer.keybindings["jump-back"], ["Alt+o"]);
+        assert!(remapped.viewer.keybindings["previous-place"].is_empty());
+
+        let mut global = Config::parse(
+            "[keybindings]\njump-back = \"Alt+o\"\n",
+            Path::new("global-new.toml"),
+        )
+        .unwrap();
+        let project = Config::parse(
+            "[keybindings]\nprevious-place = []\n",
+            Path::new("project-old.toml"),
+        )
+        .unwrap();
+        global.merge(project);
+        assert!(global.resolve().viewer.keybindings["jump-back"].is_empty());
     }
 
     #[test]

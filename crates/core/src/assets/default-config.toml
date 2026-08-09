@@ -16,32 +16,55 @@ typeset-mode = "local"
 trigger = "cmd-click"
 
 # One shortcut string or an array is accepted. Use [] to disable an action.
-# Mod means Command on macOS and Control elsewhere.
+# Removing a key from its action leaves it untouched for the browser or an
+# extension. For example, omit `j`/`k` below while keeping the arrow aliases.
+# Counts compose with motions (`10j`, `3Ctrl+d`, `25gg`). Mod means Command
+# on macOS and Control elsewhere. `<char>` captures the following printable key.
 [keybindings]
-scroll-left = "h"
-scroll-down = "j"
-scroll-up = "k"
-scroll-right = "l"
+sequence-timeout-ms = 750 # Pending sequence wait; counts do not expire. Range: 100..5000.
+scroll-left = ["h", "ArrowLeft"]
+scroll-down = ["j", "Ctrl+e", "ArrowDown"]
+scroll-up = ["k", "Ctrl+y", "ArrowUp"]
+scroll-right = ["l", "ArrowRight"]
+five-lines-down = [] # Compatibility action; J is the configurable 5j alias below.
+five-lines-up = []   # Compatibility action; K is the configurable 5k alias below.
 half-page-down = "Ctrl+d"
 half-page-up = "Ctrl+u"
-full-page-down = "Space"
-full-page-up = "b"
-previous-place = "Ctrl+o"
-go-top = "g g"
-go-bottom = "G"
+full-page-down = ["Space", "Ctrl+f", "PageDown"]
+full-page-up = ["b", "Ctrl+b", "PageUp"]
+jump-back = "Ctrl+o"
+jump-forward = "Ctrl+i"
+previous-place = [] # Deprecated compatibility name for jump-back.
+go-top = ["g g", "Home"]
+go-bottom = ["G", "End"]
+horizontal-start = "0"
+horizontal-end = "$"
+previous-paragraph = "{"
+next-paragraph = "}"
+previous-heading = "[ ["
+next-heading = "] ]"
+align-anchor-top = "z t"
+align-anchor-center = "z z"
+align-anchor-bottom = "z b"
 open-search = "/"
+open-search-backward = "?"
 open-command = ":"
 search-next = "n"
 search-previous = "N"
+search-word-forward = "*"
+search-word-backward = "#"
+set-mark = "m <char>"
+jump-mark-line = "' <char>"
+jump-mark-exact = "` <char>"
 toggle-toc = "t"
 toggle-topbar = "B"
 toggle-crop = "c"
 close-viewer = "q"
-page-a4 = "4"
+page-a4 = "p 4"
 page-dynamic = "d"
 zoom-in = ["+", "Mod+=", "Mod++"]
 zoom-out = ["-", "_", "Mod+-", "Mod+_"]
-zoom-reset = ["0", "Mod+0"]
+zoom-reset = ["z 0", "Mod+0"]
 zoom-fit-width = "="
 browser-print = "Mod+p"
 toggle-margin = ["Ctrl+m", "Meta+m"]
@@ -59,3 +82,10 @@ proof-all = []
 print-pdf = []
 restart-server = []
 stop-server = []
+
+# Aliases expand to configured bindings and multiply typed counts. For example,
+# `3J` resolves to `15j`. Use [] to remove an inherited alias (and leave that
+# key untouched for the browser or an extension).
+[keybindings.aliases]
+J = "5j"
+K = "5k"

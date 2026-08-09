@@ -50,7 +50,14 @@ pub(super) fn wrap_in_shell(
     let engine_css = engine.extra_css();
     let warnings_html = warnings_panel(preamble);
     let css = if opts.inline_css { DEFAULT_CSS } else { "" };
-    let default_config_html = escape_html(crate::config::DEFAULT_CONFIG_TEMPLATE);
+    // Seed with an inheritance-safe sparse layer. The selected scope is loaded
+    // asynchronously; using the full documented defaults here would create a
+    // short window where Save could materialize them above a user's lower-layer
+    // customizations (notably their browser keybindings).
+    let default_config_html = escape_html(
+        "# Add only settings to override at this scope.\n\
+         # Omitted settings and keybindings remain inherited.\n",
+    );
     // Config-driven overrides emitted after the bundled CSS so they win
     // by source order, and as a separate `<script>` so client JS can read
     // the values at init without round-tripping through localStorage.
@@ -94,8 +101,15 @@ pub(super) fn wrap_in_shell(
         .replace('&', "\\u0026")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
+    let keybinding_aliases_js = serde_json::to_string(&opts.viewer_config.keybinding_aliases)
+        .unwrap_or_else(|_| "{}".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
@@ -106,6 +120,8 @@ pub(super) fn wrap_in_shell(
         mjx = mathjax_config_js,
         mjx_packages = mathjax_packages_js,
         keybindings = keybindings_js,
+        keybinding_aliases = keybinding_aliases_js,
+        key_sequence_timeout_ms = opts.viewer_config.key_sequence_timeout_ms,
         // Seeded so applyViewerConfig can detect the FIRST live change (its
         // reload guard treats `undefined` as not-yet-seen; without this seed
         // the first flip after page load was silently swallowed). `null` =
@@ -401,8 +417,8 @@ pub(super) fn wrap_in_shell(
         TOML editor (advanced settings and keybindings)
       </label>
       <p class="macros-dialog-hint config-editor-hint">
-        The selected file loads here. Missing keybindings are added to the
-        unsaved draft so every viewer button can be configured.
+        The selected file loads here unchanged. A missing file starts as a
+        sparse override; omitted keybindings keep inheriting from lower scopes.
       </p>
       <textarea id="config-viewer-toml" class="macros-dialog-input config-viewer-editor"
                 rows="18" spellcheck="false" autocomplete="off">{default_config_html}</textarea>

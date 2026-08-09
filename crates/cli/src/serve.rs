@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "75";
+const WS_PROTOCOL_VERSION: &str = "76";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -442,6 +442,8 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "render_tikz": viewer_config.render_tikz,
             "mathjax_config": viewer_config.mathjax_config,
             "keybindings": viewer_config.keybindings,
+            "keybinding_aliases": viewer_config.keybinding_aliases,
+            "key_sequence_timeout_ms": viewer_config.key_sequence_timeout_ms,
             "page_margin_mm": mathpreview_core::effective_page_margin_mm(
                 &viewer_config, geometry_margin_mm),
         },
@@ -3302,6 +3304,8 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "fancy_theorems": viewer_config.fancy_theorems,
         "render_tikz": viewer_config.render_tikz,
         "keybindings": viewer_config.keybindings,
+        "keybinding_aliases": viewer_config.keybinding_aliases,
+        "key_sequence_timeout_ms": viewer_config.key_sequence_timeout_ms,
         // The EFFECTIVE page margin baked into config_css (config > geometry >
         // default). The margin lives in the <head>, so a live change can only
         // take effect via reload — the client watches this value for that.
@@ -4698,6 +4702,36 @@ toggle-theme = "T"
     }
 
     #[test]
+    fn structured_editor_sparse_scope_does_not_materialize_keybindings() {
+        let label = PathBuf::from(".mathpreview.toml");
+        let sparse = "# Add only settings to override at this scope.\n\
+                      # Omitted settings and keybindings remain inherited.\n";
+        let values = std::collections::BTreeMap::from([
+            ("viewer.font-size".to_string(), serde_json::json!(20)),
+            (
+                "viewer.default-theme".to_string(),
+                serde_json::json!("dark"),
+            ),
+        ]);
+
+        let merged = merge_config_editor_values(sparse, &values, &label).unwrap();
+        assert!(merged.contains("font-size = 20"));
+        assert!(merged.contains("default-theme = \"dark\""));
+        assert!(!merged.contains("[keybindings]"));
+        assert!(!merged.contains("[keybindings.aliases]"));
+
+        let resolved = mathpreview_core::Config::parse(&merged, &label)
+            .unwrap()
+            .resolve();
+        assert_eq!(resolved.viewer.font_size, 20);
+        assert_eq!(resolved.viewer.default_theme.as_str(), "dark");
+        assert_eq!(
+            resolved.viewer.keybindings["scroll-down"],
+            ["j", "Ctrl+e", "ArrowDown"]
+        );
+    }
+
+    #[test]
     fn buffer_guard_defers_unclosed_math_and_unfinished_def_at_cursor() {
         assert!(is_buffer_renderable(r"\begin{document}\section{A", None));
         assert!(is_buffer_renderable(
@@ -5316,6 +5350,8 @@ Second paragraph here.
         let debug: serde_json::Value = serde_json::from_slice(&debug_bytes).unwrap();
         assert_eq!(debug["viewer_config"]["fancy_theorems"], false);
         assert_eq!(debug["viewer_config"]["theorem_numbering"], "auto");
+        assert_eq!(debug["viewer_config"]["keybinding_aliases"]["J"], "5j");
+        assert_eq!(debug["viewer_config"]["key_sequence_timeout_ms"], 750);
 
         let mut rx = state.tx.subscribe();
         let out = state.current.read().await.clone();
@@ -5324,6 +5360,8 @@ Second paragraph here.
         let payload: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
         assert_eq!(payload["viewer_config"]["fancy_theorems"], false);
         assert_eq!(payload["viewer_config"]["theorem_numbering"], "auto");
+        assert_eq!(payload["viewer_config"]["keybinding_aliases"]["K"], "5k");
+        assert_eq!(payload["viewer_config"]["key_sequence_timeout_ms"], 750);
     }
 
     #[test]

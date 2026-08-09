@@ -3684,7 +3684,7 @@ mod tests {
     }
 
     #[test]
-    fn config_dialog_has_common_viewer_controls_above_full_toml_editor() {
+    fn config_dialog_has_common_viewer_controls_above_sparse_toml_editor() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
             "\\begin{document}\nConfig\n\\end{document}\n".to_string(),
@@ -3723,6 +3723,16 @@ mod tests {
         assert!(!out.html.contains("Wrap long equations"));
         assert!(!out.html.contains("wrap-equations ="));
         assert!(out.html.contains(r#"id="config-viewer-toml""#));
+        assert!(out
+            .html
+            .contains("Omitted settings and keybindings remain inherited."));
+        assert!(!out.html.contains("function withDefaultKeybindings"));
+        assert!(out.html.contains("built-in keybindings remain inherited"));
+        assert!(out.html.contains("editor.dataset.loadedScope = ''"));
+        assert!(out.html.contains("save.disabled = !!loading"));
+        assert!(out
+            .html
+            .contains("Wait for the selected config file to finish loading."));
         assert!(out.html.contains("Macros and environments"));
         assert!(out.html.contains(r"\newenvironment"));
         assert!(out
@@ -3748,9 +3758,10 @@ mod tests {
             controls < editor,
             "common controls must appear above the editor"
         );
-        assert!(out.html.contains("[keybindings]"));
-        assert!(out
-            .html
+        let editor_end = editor + out.html[editor..].find("</textarea>").unwrap();
+        let editor_markup = &out.html[editor..editor_end];
+        assert!(!editor_markup.contains("[keybindings]"));
+        assert!(!editor_markup
             .contains("zoom-in = [&quot;+&quot;, &quot;Mod+=&quot;, &quot;Mod++&quot;]"));
         assert!(out.html.contains("Project (local)"));
         assert!(out
@@ -6626,12 +6637,24 @@ mod tests {
         assert!(out.html.contains(r#"id="search-panel""#));
         assert!(out.html.contains(r#"id="search-input""#));
         assert!(out.html.contains("handleViewerKeybindings"));
+        assert!(out
+            .html
+            .contains("if (handleViewerKeybindings(e)) {\n      e.preventDefault();\n    }"));
         assert!(out.html.contains("runViewerAction"));
         assert!(out.html.contains(r#"data-viewer-action="toggle-theme""#));
         assert!(out.html.contains(r#"data-viewer-action="print-pdf""#));
-        assert!(out.html.contains(r#""go-top":["g g"]"#));
-        assert!(out.html.contains(r#""full-page-down":["Space"]"#));
-        assert!(out.html.contains(r#""full-page-up":["b"]"#));
+        assert!(out.html.contains(r#""go-top":["g g","Home"]"#));
+        assert!(out
+            .html
+            .contains(r#""full-page-down":["Space","Ctrl+f","PageDown"]"#));
+        assert!(out
+            .html
+            .contains(r#""full-page-up":["b","Ctrl+b","PageUp"]"#));
+        assert!(out.html.contains(r#""five-lines-down":[]"#));
+        assert!(out.html.contains(r#""five-lines-up":[]"#));
+        assert!(out
+            .html
+            .contains(r#"keybindingAliases: {"J":"5j","K":"5k"}"#));
         assert!(out.html.contains(r#""toggle-lines":[]"#));
         for action in [
             "page-a4",
@@ -6666,10 +6689,32 @@ mod tests {
             );
         }
         assert!(out.html.contains("recordViewerPlace"));
+        assert!(out.html.contains("currentViewerPlace"));
+        assert!(out.html.contains("restoreViewerPlace"));
         assert!(out.html.contains("restorePreviousPlace"));
-        assert!(out.html.contains("viewerJumpStack"));
-        assert!(out.html.contains("scrollByVim(0, vh)"));
-        assert!(out.html.contains("scrollByVim(0, -vh)"));
+        assert!(out.html.contains("restoreNextPlace"));
+        assert!(out.html.contains("viewerJumpList"));
+        assert!(out.html.contains("viewerJumpIndex"));
+        assert!(out.html.contains("checkpointViewerJumps"));
+        assert!(out.html.contains("rollbackViewerJumps"));
+        assert!(!out.html.contains("viewerJumpStack"));
+        assert!(out.html.contains("if (!typing) recordViewerPlace()"));
+        assert!(out
+            .html
+            .contains("viewerCountedDistance(viewerTextLineStep(), ctx)"));
+        assert!(out
+            .html
+            .contains("viewerCountedDistance(viewerFiveLineStep(), ctx)"));
+        assert!(out.html.contains("viewerCountedDistance(vh, ctx)"));
+        assert!(out.html.contains("parseAliasExpansion"));
+        assert!(out.html.contains("viewerCountDigits"));
+        assert!(out.html.contains("fixedCount: resolved.fixedCount"));
+        let line_step_start = out.html.find("function viewerTextLineStep()").unwrap();
+        let five_step_start = out.html.find("function viewerFiveLineStep()").unwrap();
+        let line_step = &out.html[line_step_start..five_step_start];
+        assert!(line_step.contains("pageScalePlan(currentUserZoom).pageScale"));
+        assert!(!line_step.contains("getBoundingClientRect"));
+        assert!(!line_step.contains("offsetHeight"));
         assert!(out
             .html
             .contains("function primeTheoremBlockIntrinsicSizes(roots)"));

@@ -1,11 +1,3 @@
-    var current = { x: window.scrollX || 0, y: window.scrollY || 0 };
-    viewerJumpStack.push(current);
-    if (viewerJumpStack.length > 100) viewerJumpStack.shift();
-    window.scrollTo({ left: place.x, top: place.y, behavior: 'smooth' });
-    setStatus('live', '● previous place');
-    return true;
-  }
-
   function searchPanelEl() {
     return document.getElementById('search-panel');
   }
@@ -19,10 +11,11 @@
     return !!(panel && !panel.hidden);
   }
 
-  function openSearchPanel() {
+  function openSearchPanel(backwards) {
     var panel = searchPanelEl();
     var input = searchInputEl();
     if (!panel || !input) return;
+    openSearchPanel.backwards = !!backwards;
     panel.hidden = false;
     input.value = lastSearchQuery;
     input.focus({ preventScroll: true });
@@ -344,7 +337,7 @@
   }
 
   function applyMathSearchHighlights(activeResult) {
-    if (!searchPanelIsOpen()) {
+    if (!mathSearchQuery) {
       clearMathSearchHighlights();
       return;
     }
@@ -362,8 +355,8 @@
     }
   }
 
-  function runMathSearch(query, backwards) {
-    if (!searchPanelIsOpen()) return false;
+  function runMathSearch(query, backwards, count) {
+    count = Math.max(1, Math.floor(count || 1));
     var previousQuery = mathSearchQuery;
     var previousTarget = mathSearchResults[mathSearchIndex] && mathSearchResults[mathSearchIndex].target;
     mathSearchResults = buildMathSearchResults(query);
@@ -377,21 +370,24 @@
 
     mathSearchQuery = query;
     var nextIndex = -1;
+    var locatedPrevious = false;
     if (previousQuery === query && previousTarget) {
       for (var i = 0; i < mathSearchResults.length; i++) {
         if (mathSearchResults[i].target === previousTarget) {
-          nextIndex = backwards ? i - 1 : i + 1;
+          nextIndex = i + (backwards ? -count : count);
+          locatedPrevious = true;
           break;
         }
       }
     }
-    if (nextIndex < 0 || nextIndex >= mathSearchResults.length) {
+    if (!locatedPrevious) {
       nextIndex = previousQuery === query && mathSearchIndex >= 0
-        ? mathSearchIndex + (backwards ? -1 : 1)
-        : firstMathResultIndex(mathSearchResults, backwards);
+        ? mathSearchIndex + (backwards ? -count : count)
+        : firstMathResultIndex(mathSearchResults, backwards)
+          + (backwards ? -(count - 1) : count - 1);
     }
-    if (nextIndex < 0) nextIndex = mathSearchResults.length - 1;
-    if (nextIndex >= mathSearchResults.length) nextIndex = 0;
+    nextIndex = ((nextIndex % mathSearchResults.length) + mathSearchResults.length)
+      % mathSearchResults.length;
 
     mathSearchIndex = nextIndex;
     var active = mathSearchResults[mathSearchIndex];
@@ -404,11 +400,10 @@
   }
 
   function restoreMathSearchHighlights() {
-    if (!searchPanelIsOpen()) {
+    if (!mathSearchQuery) {
       clearMathSearchHighlights();
       return;
     }
-    if (!mathSearchQuery) return;
     var oldIndex = mathSearchIndex;
     mathSearchResults = buildMathSearchResults(mathSearchQuery);
     if (!mathSearchResults.length) {
@@ -766,7 +761,7 @@
     input.value = input.value.replace(/\S*$/, searchSuggestions[i]);
     clearSearchSuggestions();
     input.focus({ preventScroll: true });
-    runSearch(false);
+    runSearch(!!openSearchPanel.backwards);
     return true;
   }
 
@@ -823,12 +818,12 @@
     if (rect.width === 0 && rect.height === 0) {
       var el = range.startContainer && (range.startContainer.nodeType === 1
         ? range.startContainer : range.startContainer.parentElement);
-      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'auto' });
       return;
     }
     if (rect.top >= topbarOffset() + 8 && rect.bottom <= window.innerHeight - 8) return;
     var y = rect.top + window.scrollY - Math.max(topbarOffset() + 16, window.innerHeight * 0.3);
-    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+    window.scrollTo({ top: Math.max(0, y), behavior: 'auto' });
   }
 
   // Shared current/total pill in the search panel; empty when idle.
@@ -837,7 +832,8 @@
     if (el) el.textContent = total > 0 ? (index + 1) + '/' + total : '';
   }
 
-  function runPlainSearch(query, backwards) {
+  function runPlainSearch(query, backwards, count) {
+    count = Math.max(1, Math.floor(count || 1));
     var sameQuery = textSearchQuery === query;
     textSearchResults = buildSearchMatches(query);
     textSearchQuery = query;
@@ -849,12 +845,13 @@
     }
     var next;
     if (sameQuery && textSearchIndex >= 0) {
-      next = textSearchIndex + (backwards ? -1 : 1);
-      if (next < 0) next = textSearchResults.length - 1;         // wrap at the top
-      if (next >= textSearchResults.length) next = 0;            // wrap at the end
+      next = textSearchIndex + (backwards ? -count : count);
     } else {
-      next = firstTextResultIndex(textSearchResults, backwards);
+      next = firstTextResultIndex(textSearchResults, backwards)
+        + (backwards ? -(count - 1) : count - 1);
     }
+    next = ((next % textSearchResults.length) + textSearchResults.length)
+      % textSearchResults.length;
     textSearchIndex = next;
     applyTextHighlights();
     scrollRangeIntoView(textSearchResults[textSearchIndex]);
@@ -922,7 +919,7 @@
 
   // Rebuild after a live re-render (the old Ranges point at replaced nodes).
   function restoreTextSearchHighlights() {
-    if (!searchPanelIsOpen() || !textSearchQuery) { clearTextHighlights(); return; }
+    if (!textSearchQuery) { clearTextHighlights(); return; }
     var old = textSearchIndex;
     textSearchResults = buildSearchMatches(textSearchQuery);
     if (!textSearchResults.length) {
@@ -936,37 +933,39 @@
     updateSearchCount(textSearchIndex, textSearchResults.length);
   }
 
-  function runSearch(backwards) {
+  function runSearch(backwards, count) {
+    count = Math.max(1, Math.floor(count || 1));
     var input = searchInputEl();
     var query = input ? input.value.trim() : lastSearchQuery;
     if (!query) {
-      openSearchPanel();
+      openSearchPanel(backwards);
       return false;
     }
     clearSearchSuggestions();
     lastSearchQuery = query;
     if (input && document.activeElement === input) input.blur();
-    var recorded = recordViewerPlace();
+    var jumpCheckpoint = checkpointViewerJumps();
+    recordViewerPlace();
     var parsed = parseSearchQuery(query);
     // Explicit math-mode sigil: skip `window.find` entirely. Otherwise
     // single-letter searches (e.g. `m:n` to find italic-n inside an
     // equation) get stuck cycling through body-text matches first.
     if (parsed.forceMath) {
-      if (parsed.core && runMathSearch(parsed.core, backwards)) {
+      if (parsed.core && runMathSearch(parsed.core, backwards, count)) {
         // The math session owns the panel now; a lingering text session would
         // keep stale paint and clobber the counter on the next re-render.
         clearTextSession();
         return true;
       }
       if (mathSearchQuery) clearSearchSession();
-      if (recorded) viewerJumpStack.pop();
+      rollbackViewerJumps(jumpCheckpoint);
       setStatus('dead', '○ no math match ' + parsed.core);
       return false;
     }
     // Math-looking queries (`\cmd`, `_`, `^`, `{}`, `$`) still route to math
     // search — those special characters aren't word searches, so fuzzy text
     // matching wouldn't apply anyway. Plain words go to the fuzzy text search.
-    if (looksLikeMathSearch(query) && runMathSearch(query, backwards)) {
+    if (looksLikeMathSearch(query) && runMathSearch(query, backwards, count)) {
       clearTextSession();
       return true;
     }
@@ -980,12 +979,12 @@
       mathSearchIndex = -1;
       clearMathSearchHighlights();
     }
-    var found = runPlainSearch(query, backwards);
-    if (!found && runMathSearch(query, backwards)) {
+    var found = runPlainSearch(query, backwards, count);
+    if (!found && runMathSearch(query, backwards, count)) {
       clearTextSession();
       return true;
     }
-    if (!found && recorded) viewerJumpStack.pop();
+    if (!found) rollbackViewerJumps(jumpCheckpoint);
     setStatus(
       found ? 'live' : 'dead',
       found
@@ -1024,8 +1023,9 @@
     // return a degenerate rect — scrollIntoView still resolves correctly and
     // forces the block to render.
     if (rect.width === 0 && rect.height === 0 && target.scrollIntoView) {
-      recordViewerPlace();
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // Auto-follow while editing is continuous movement, not a Vim jump.
+      if (!typing) recordViewerPlace();
+      target.scrollIntoView({ block: 'center', behavior: typing ? 'smooth' : 'auto' });
       return;
     }
     var vh = window.innerHeight || document.documentElement.clientHeight || 800;
@@ -1036,8 +1036,8 @@
     var maxScroll = Math.max(0, document.documentElement.scrollHeight - vh);
     var top = Math.min(maxScroll, Math.max(0, window.scrollY + rect.top - vh * 0.25));
     if (Math.abs(top - window.scrollY) < 4) return;
-    recordViewerPlace();
-    window.scrollTo({ top: top, behavior: 'smooth' });
+    if (!typing) recordViewerPlace();
+    window.scrollTo({ top: top, behavior: typing ? 'smooth' : 'auto' });
   }
 
   // While a burst of typing stays inside one element, follow it at most once:
@@ -2901,52 +2901,16 @@
 
   var configLoadSeq = 0;
 
-  function withDefaultKeybindings(content, defaultConfig) {
-    var marker = defaultConfig.indexOf('[keybindings]');
-    if (marker < 0) return content;
-    var start = defaultConfig.lastIndexOf('\n# One shortcut', marker);
-    if (start < 0) start = marker;
-    else start += 1;
-    var keybindings = defaultConfig.slice(start).trim();
-    var tableMatch = /^\s*\[keybindings\]\s*(?:#.*)?$/m.exec(content);
-    if (!tableMatch) {
-      return content.replace(/[\r\n]+$/, '') + '\n\n' + keybindings + '\n';
-    }
-
-    // Complete a partial table without touching any overrides already there.
-    // The keybindings table is flat, so line-level insertion is sufficient and
-    // avoids reserializing the user's comments before the server validates it.
-    var bodyStart = tableMatch.index + tableMatch[0].length;
-    var tail = content.slice(bodyStart);
-    var nextTable = /^\s*\[[^\]\r\n]+\]\s*(?:#.*)?$/m.exec(tail);
-    var bodyEnd = nextTable ? bodyStart + nextTable.index : content.length;
-    var existing = {};
-    content.slice(bodyStart, bodyEnd).split(/\r?\n/).forEach(function(line) {
-      var match = /^\s*["']?([A-Za-z0-9-]+)["']?\s*=/.exec(line);
-      if (match) existing[match[1]] = true;
-    });
-    var missing = [];
-    defaultConfig.slice(marker).split(/\r?\n/).forEach(function(line) {
-      var match = /^\s*([A-Za-z0-9-]+)\s*=/.exec(line);
-      if (match && !existing[match[1]]) missing.push(line);
-    });
-    if (!missing.length) return content;
-    var before = content.slice(0, bodyEnd).replace(/[\r\n]+$/, '');
-    var after = content.slice(bodyEnd);
-    return before + '\n\n# Unlisted built-in bindings (editable).\n'
-      + missing.join('\n') + '\n' + after;
+  function setViewerConfigLoadState(editor, loading) {
+    if (editor) editor.readOnly = !!loading;
+    var save = document.getElementById('config-dialog-save');
+    if (save && currentConfigMode() === 'viewer') save.disabled = !!loading;
   }
 
-  // The rendered textarea starts with the complete built-in config. Preserve
-  // that text once, then replace the editor with the selected scope's file
-  // when it exists. This makes an absent project/global file immediately
-  // useful without hiding an existing partial config behind generated values.
+  // Every selected scope remains a sparse override. Materializing omitted
+  // defaults into a project file would shadow a customized global key map.
   function prefillConfigDialog() {
     var cfg = window.__mpConfig || {};
-    var editor = viewerConfigEditorEl();
-    if (editor && editor._defaultConfig === undefined) {
-      editor._defaultConfig = editor.value;
-    }
     var fontSize = parseInt(
       getComputedStyle(document.documentElement).getPropertyValue('--body-font-size'),
       10
@@ -3016,12 +2980,24 @@
     if (!editor) return;
     var sc = currentConfigScope();
     if (sc.scope === 'custom' && !sc.path) {
+      editor.dataset.loadedScope = '';
+      editor.value = '# Enter a custom path to load that config.\n';
+      setViewerConfigLoadState(editor, true);
       setConfigFeedback('Enter a custom path to load or save that config.', false);
       return;
     }
     var scopeKey = sc.scope + ':' + (sc.path || '');
-    if (!force && editor.dataset.loadedScope === scopeKey) return;
+    if (!force && editor.dataset.loadedScope === scopeKey) {
+      setViewerConfigLoadState(editor, false);
+      return;
+    }
     var seq = ++configLoadSeq;
+    // Invalidate the prior scope before starting I/O. Otherwise a fast Save
+    // after switching Global/Project/Custom could write the previous scope's
+    // TOML to the newly selected path.
+    editor.dataset.loadedScope = '';
+    editor.value = '# Loading selected config…\n';
+    setViewerConfigLoadState(editor, true);
     setConfigFeedback('Loading config…', true);
     try {
       var payload = { scope: sc.scope };
@@ -3039,27 +3015,25 @@
         setConfigFeedback((body && body.error) || 'config load failed', false);
         return;
       }
-      var existingContent = body && body.exists ? (body.content || '') : '';
-      var preparedContent = withDefaultKeybindings(
-        existingContent,
-        editor._defaultConfig || ''
-      );
-      var addedKeybindings = body && body.exists && preparedContent !== existingContent;
-      editor.value = body && body.exists
-        ? preparedContent
-        : (editor._defaultConfig || '');
+      var exists = !!(body && body.exists);
+      editor.value = exists
+        ? (body.content || '')
+        : '# Add only settings to override at this scope.\n'
+          + '# Omitted settings and keybindings remain inherited.\n';
       editor.dataset.loadedScope = scopeKey;
+      setViewerConfigLoadState(editor, false);
       var file = body && body.file ? ' — ' + body.file : '';
       setConfigFeedback(
-        body && body.exists
-          ? 'Loaded existing config' + file + (addedKeybindings
-            ? ' and completed the default keybindings in this unsaved draft.'
-            : '. Save updates this file.')
-          : 'No config at this scope' + file + ' — showing built-in defaults.',
+        exists
+          ? 'Loaded existing config' + file + ' unchanged. Save updates this file.'
+          : 'No config at this scope' + file
+            + ' — starting a minimal override; built-in keybindings remain inherited.',
         true
       );
     } catch (e) {
       if (seq === configLoadSeq) {
+        editor.value = '# Config load failed; choose the scope again to retry.\n';
+        setViewerConfigLoadState(editor, true);
         setConfigFeedback(String(e && e.message || e), false);
       }
     }
@@ -3075,7 +3049,10 @@
     if (viewerPanel) viewerPanel.hidden = mode !== 'viewer';
     if (mathjaxPanel) mathjaxPanel.hidden = mode !== 'mathjax';
     var save = document.getElementById('config-dialog-save');
-    if (save) save.textContent = mode === 'viewer' ? 'Save viewer config' : 'Save MathJax config';
+    if (save) {
+      save.textContent = mode === 'viewer' ? 'Save viewer config' : 'Save MathJax config';
+      if (mode !== 'viewer') save.disabled = false;
+    }
     setConfigFeedback('', false);
     if (mode === 'viewer') loadViewerConfigForScope(!!forceReload);
   }
@@ -3122,6 +3099,11 @@
     if (currentConfigMode() === 'viewer') {
       var editor = viewerConfigEditorEl();
       if (!editor) return;
+      var scopeKey = sc.scope + ':' + (sc.path || '');
+      if (editor.readOnly || editor.dataset.loadedScope !== scopeKey) {
+        setConfigFeedback('Wait for the selected config file to finish loading.', false);
+        return;
+      }
       var values = {};
       var fontSize = parseInt(document.getElementById('config-font-size').value, 10);
       if (isFinite(fontSize) && fontSize > 0) values['viewer.font-size'] = fontSize;
@@ -3267,7 +3249,21 @@
     if (cfg.theorem_numbering)   window.__mpConfig.theoremNumbering = cfg.theorem_numbering;
     if (cfg.keybindings && typeof cfg.keybindings === 'object') {
       window.__mpConfig.keybindings = cfg.keybindings;
-      setViewerKeybindings(cfg.keybindings);
+    }
+    if (cfg.keybinding_aliases && typeof cfg.keybinding_aliases === 'object') {
+      window.__mpConfig.keybindingAliases = cfg.keybinding_aliases;
+    }
+    if (typeof cfg.key_sequence_timeout_ms === 'number') {
+      window.__mpConfig.keySequenceTimeoutMs = cfg.key_sequence_timeout_ms;
+    }
+    if ((cfg.keybindings && typeof cfg.keybindings === 'object') ||
+        (cfg.keybinding_aliases && typeof cfg.keybinding_aliases === 'object') ||
+        typeof cfg.key_sequence_timeout_ms === 'number') {
+      setViewerKeybindings(
+        window.__mpConfig.keybindings,
+        window.__mpConfig.keybindingAliases,
+        window.__mpConfig.keySequenceTimeoutMs
+      );
     }
     // Raw MathJax config is baked into the <head> at page load, so a live
     // change must reload before it can take effect.

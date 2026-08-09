@@ -539,30 +539,37 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - `hide` hides the top banner and persists that preference in the
   browser. A small `toolbar` button appears at the top right to restore
   the banner.
-- Vim-style keyboard navigation works in the viewer: `h`/`j`/`k`/`l`
-  scroll left/down/up/right, `Ctrl-d` and `Ctrl-u` move by half pages, and
-  `Space` / `b` move down/up by full pages. All of these use immediate browser
-  scrolling without the animated Page Down / Page Up effect.
-  `gg` and `G` jump to the top/bottom, `/` opens search, `n`/`N` move
-  between search matches, `:` opens the command line (see `margin`
-  above), `t` toggles the index/pages side panel, `B` toggles the top
+- Neovim-style keyboard navigation works in the viewer. `j`/`k` (also
+  `Ctrl-e`/`Ctrl-y` and the arrow keys) scroll by one rendered prose line;
+  `J`/`K` are configurable aliases for `5j`/`5k`; `Ctrl-d`/`Ctrl-u` move by
+  half pages; and `Ctrl-f`/`Ctrl-b`, `Space`/`b`, or Page Down/Page Up move by
+  full pages. Numeric counts compose with motions and aliases: `10j`, `3n`,
+  `2Ctrl-o`, and `3J` (fifteen lines) are single commands. Scrolling is
+  immediate and each counted line motion becomes one browser scroll, so it
+  remains predictable across display equations.
+  `gg`/`G` jump to the top/bottom (a count targets that source line), `{`/`}`
+  move by paragraphs, `[[`/`]]` move by headings, and `zt`/`zz`/`zb` align the
+  current reading anchor. `/` and `?` search forward/backward; `n` preserves
+  that direction and `N` reverses it; `*`/`#` search the selected or anchored
+  word. `Ctrl-o` and `Ctrl-i` traverse a real backward/forward jump list, while
+  `m<char>`, `'<char>`, and `` `<char> `` set and restore session marks.
+  `:` opens the command line (see `margin` above), `t` toggles the index/pages
+  side panel, `B` toggles the top
   banner (keyboard counterpart to the thin stripe), `c` crops the page
   to the text (trims the paper margins, TeXpresso-style — wrapping is
   unchanged; line numbers hide while cropped since their gutter is gone;
   the `keys` chips sit in the margin normally and overlay the content
   edge only while cropped (translucent until hovered);
-  persisted per browser), `4` / `d` switch to the A4 / dynamic page
+  persisted per browser), `p4` / `d` switch to the A4 / dynamic page
   modes, `q` closes the viewer (same as `:q` — the browser tab closes itself
   where the browser allows it, and
-  otherwise the status pill names the key that will), and `Ctrl-o` jumps
-  back and forth between the current place and the previous one
-  (pressing it repeatedly ping-pongs between the two). These bindings
-  are ignored while typing in editable controls. Every shortcut below is
+  otherwise the status pill names the key that will). These bindings are
+  ignored while typing in editable controls or while a dialog is open. Every shortcut below is
   configurable by action name in the global or project `[keybindings]` table;
   every fixed toolbar button has an action name too, even when it is unbound by
   default.
 - **Content zoom.** `+` / `-` zoom the page (header and sidebar stay
-  put), `0` resets, and `=` auto-fits the page width to the viewport.
+  put), `z0` resets, and `=` auto-fits the page width to the viewport.
   `Cmd`/`Ctrl` + `+`/`-`/`0` mirror the browser zoom shortcuts but
   only scale the paper. The first visible line below the toolbar stays fixed
   through repeated zoom keys and the final layout commit. When
@@ -587,8 +594,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
   `gaint clustr` finds `giant cluster`. As you type, a strip of matching
   document words appears above the box; `Tab` or `↑`/`↓`+`Enter` completes to
   one (or click it). Cycling and the current/total counter work as usual.
-  Prefix `m:` or `$…$` to search math instead; use the browser's **Cmd/Ctrl+F**
-  for exact literal search.
+  Prefix `m:` or `$…$` to search math instead. Browser **Cmd+F** remains exact
+  literal search on macOS; on Linux/Windows, remove `Ctrl+f` from
+  `full-page-down` if you want the browser's **Ctrl+F** instead.
 
 The status dot in the toolbar reports each update — e.g. `● 6ms · 1r /
 typeset 0` for a one-block patch, or a fuller `parse / diff / swap /
@@ -662,31 +670,52 @@ trigger = "cmd-click"           # | "ctrl-click" | "alt-click" | "double-click"
 # The complete built-in keyboard map. Keep this in the global file to use the
 # same keys for every paper; a project's [keybindings] table can override just
 # the actions it mentions. One string or an array is accepted; [] disables.
+# Counts compose with motions, and <char> captures the following printable key.
 [keybindings]
-scroll-left = "h"
-scroll-down = "j"
-scroll-up = "k"
-scroll-right = "l"
+sequence-timeout-ms = 750 # Pending sequence wait; counts do not expire. 100..5000.
+scroll-left = ["h", "ArrowLeft"]
+scroll-down = ["j", "Ctrl+e", "ArrowDown"]
+scroll-up = ["k", "Ctrl+y", "ArrowUp"]
+scroll-right = ["l", "ArrowRight"]
+five-lines-down = [] # compatibility action; J is the alias below
+five-lines-up = []
 half-page-down = "Ctrl+d"
 half-page-up = "Ctrl+u"
-full-page-down = "Space"
-full-page-up = "b"
-previous-place = "Ctrl+o"
-go-top = "g g"
-go-bottom = "G"
+full-page-down = ["Space", "Ctrl+f", "PageDown"]
+full-page-up = ["b", "Ctrl+b", "PageUp"]
+jump-back = "Ctrl+o"
+jump-forward = "Ctrl+i"
+previous-place = [] # deprecated compatibility name for jump-back
+go-top = ["g g", "Home"]
+go-bottom = ["G", "End"]
+horizontal-start = "0"
+horizontal-end = "$"
+previous-paragraph = "{"
+next-paragraph = "}"
+previous-heading = "[ ["
+next-heading = "] ]"
+align-anchor-top = "z t"
+align-anchor-center = "z z"
+align-anchor-bottom = "z b"
 open-search = "/"
+open-search-backward = "?"
 open-command = ":"
 search-next = "n"
 search-previous = "N"
+search-word-forward = "*"
+search-word-backward = "#"
+set-mark = "m <char>"
+jump-mark-line = "' <char>"
+jump-mark-exact = "` <char>"
 toggle-toc = "t"
 toggle-topbar = "B"
 toggle-crop = "c"
 close-viewer = "q"
-page-a4 = "4"
+page-a4 = "p 4"
 page-dynamic = "d"
 zoom-in = ["+", "Mod+=", "Mod++"]
 zoom-out = ["-", "_", "Mod+-", "Mod+_"]
-zoom-reset = ["0", "Mod+0"]
+zoom-reset = ["z 0", "Mod+0"]
 zoom-fit-width = "="
 browser-print = "Mod+p"
 toggle-margin = ["Ctrl+m", "Meta+m"]
@@ -704,22 +733,57 @@ proof-all = []
 print-pdf = []
 restart-server = []
 stop-server = []
+
+# Aliases resolve through the configured action bindings and multiply counts.
+# `3J` therefore resolves to `15j`. Use [] to disable an inherited alias.
+[keybindings.aliases]
+J = "5j"
+K = "5k"
 ```
 
 `Mod` means Command on macOS and Control elsewhere. `Ctrl`, `Meta`/`Cmd`,
 `Alt`/`Option`, and `Shift` can also be named explicitly. Shifted printable
 keys may be written as their glyph (`G`, `+`, `:`) or as a combination
 (`Shift+g`, `Shift+=`, `Shift+;`); separate sequence steps with spaces, as in
-`"g g"`. Toolbar tooltips show the effective bindings after the global,
-project, and `--config` layers have merged. If two layers mention different
-actions, both survive; a later layer replaces only the action it mentions.
+`"g g"`. Leading digits form a count; a bare `0` remains a normal binding.
+The built-in digit commands were therefore moved to `p 4` and `z 0`. A
+`[keybindings.aliases]` entry maps its left-hand key sequence to another
+configured sequence, optionally with a count (`J = "5j"`); aliases can chain,
+and `[]` removes an inherited alias. Direct action bindings win if an alias
+uses the same keys. Toolbar tooltips show the effective bindings after the
+global, project, and `--config` layers have merged. If two layers mention
+different actions or alias sources, both survive; a later layer replaces only
+the entry it mentions. On Linux/Windows, the Neovim `Ctrl-f` default takes over
+the browser's Find shortcut; use `/` for viewer search or remove `Ctrl+f` from
+`full-page-down` if you prefer the browser behavior.
+`sequence-timeout-ms` controls pending multi-step mappings and ambiguous
+complete-prefix fallbacks (for example custom `g` alongside `gg`); an
+unfinished numeric count does not time out.
+
+TexViewer only cancels keyboard events that match an effective binding. To
+leave `j`/`k` (and uppercase `J`/`K`) entirely to the browser or an extension,
+remove them from the action lists and disable their aliases:
+
+```toml
+[keybindings]
+scroll-down = ["Ctrl+e", "ArrowDown"]
+scroll-up = ["Ctrl+y", "ArrowUp"]
+
+[keybindings.aliases]
+J = []
+K = []
+```
+
+Setting an action itself to `[]` disables all its shortcuts. To reuse a key for
+another viewer action, disable or replace its old action first, then assign the
+key to the new action.
 
 The toolbar **config** dialog's **Viewer config** tab provides structured
 controls for the common settings, followed by a full TOML editor for advanced
 settings and keybindings. Pick **Project (local)** or **Global** and it loads
-that file when present; for a missing file it starts from the defaults above.
-If an existing file has no `[keybindings]` table—or only overrides some
-actions—the missing default bindings are added to the unsaved editor draft.
+that file exactly when present; for a missing file it starts with a minimal
+override. Omitted settings keep flowing from lower config layers and built-in
+defaults—the dialog never materializes missing keybindings into a higher scope.
 Save merges the structured controls into the editor text, preserves the other
 local content and comments, and validates the complete result before replacing
 the selected file. The adjacent

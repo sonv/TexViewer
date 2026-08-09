@@ -13,6 +13,40 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.21] — 2026-08-09
+
+### Added
+
+- **Composable Neovim-style viewer navigation.** Numeric counts now compose
+  with line, page, search, semantic, and jump motions (`10j`, `3n`, `2Ctrl-o`).
+  `J`/`K` are configurable `[keybindings.aliases]` for `5j`/`5k`, so `3J`
+  becomes one fifteen-line scroll. Line distances follow the rendered prose
+  font and zoom—not display-equation height—and counted scrolling dispatches
+  only one browser scroll operation.
+- **A fuller read-only Neovim map.** Arrow and `Ctrl-e`/`Ctrl-y` line aliases,
+  `Ctrl-f`/`Ctrl-b` and Page Up/Down, forward/backward search, paragraph and
+  heading motions, `zt`/`zz`/`zb`, selected-word search, marks, source-line
+  counts, and Home/End aliases are all configurable by stable action name.
+- **A real viewer jump list.** `Ctrl-o` walks backward and `Ctrl-i` walks
+  forward through search, source-sync, heading, mark, and document jumps.
+  Replaying history does not create entries, a new jump after going backward
+  truncates the old forward branch, failed searches roll their checkpoint
+  back, and typing-driven cursor following no longer pollutes history.
+
+### Changed
+
+- `j`/`k` now move by one rendered prose line. The count-reserved A4 and zoom
+  shortcuts moved from bare `4`/`0` to `p4`/`z0`; `Mod+0` remains available.
+  Existing `five-lines-down`/`five-lines-up` actions remain accepted for
+  compatibility, but their defaults are empty in favor of aliases. Viewer
+  configuration pushes now use WebSocket protocol 76. Any default action or
+  alias can be removed with `[]`; unmatched keys are left untouched for the
+  browser and its extensions.
+- The config dialog now preserves each selected TOML file as a sparse override
+  instead of inserting omitted default keybindings. Saving an unrelated project
+  option therefore cannot shadow a customized global keyboard map or resurrect
+  released browser keys such as `j`/`k`.
+
 ## [2.1.20] — 2026-08-07
 
 ### Fixed
