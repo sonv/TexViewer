@@ -45,7 +45,10 @@ summary.
 - The config dialog now preserves each selected TOML file as a sparse override
   instead of inserting omitted default keybindings. Saving an unrelated project
   option therefore cannot shadow a customized global keyboard map or resurrect
-  released browser keys such as `j`/`k`.
+  released browser keys such as `j`/`k`. Its TOML editor still shows the full
+  Neovim-style action map and alias table as a commented, editable reference;
+  an untouched reference is not persisted, and Save refuses to overwrite a
+  config changed by another editor after it was loaded.
 
 ## [2.1.20] — 2026-08-07
 

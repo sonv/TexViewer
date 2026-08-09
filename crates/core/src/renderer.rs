@@ -3723,6 +3723,7 @@ mod tests {
         assert!(!out.html.contains("Wrap long equations"));
         assert!(!out.html.contains("wrap-equations ="));
         assert!(out.html.contains(r#"id="config-viewer-toml""#));
+        assert!(out.html.contains(r#"id="config-keybindings-reference""#));
         assert!(out
             .html
             .contains("Omitted settings and keybindings remain inherited."));
@@ -3733,6 +3734,10 @@ mod tests {
         assert!(out
             .html
             .contains("Wait for the selected config file to finish loading."));
+        assert!(out.html.contains("withViewerKeybindingReference"));
+        assert!(out.html.contains("editor._loadedContent"));
+        assert!(out.html.contains("editor._displayContent"));
+        assert!(out.html.contains("expected_content: editor._loadedContent"));
         assert!(out.html.contains("Macros and environments"));
         assert!(out.html.contains(r"\newenvironment"));
         assert!(out
@@ -3760,13 +3765,51 @@ mod tests {
         );
         let editor_end = editor + out.html[editor..].find("</textarea>").unwrap();
         let editor_markup = &out.html[editor..editor_end];
-        assert!(!editor_markup.contains("[keybindings]"));
-        assert!(!editor_markup
-            .contains("zoom-in = [&quot;+&quot;, &quot;Mod+=&quot;, &quot;Mod++&quot;]"));
+        assert!(editor_markup.contains("# [keybindings]"));
+        assert!(editor_markup.contains("# [keybindings.aliases]"));
+        assert!(editor_markup.contains("# J = &quot;5j&quot;"));
+        assert!(editor_markup
+            .contains("# zoom-in = [&quot;+&quot;, &quot;Mod+=&quot;, &quot;Mod++&quot;]"));
+        assert!(!editor_markup.contains("\n[keybindings]"));
         assert!(out.html.contains("Project (local)"));
         assert!(out
             .html
             .contains("Global <code>~/.config/mathpreview/config.toml</code>"));
+    }
+
+    #[test]
+    fn config_dialog_keybinding_reference_tracks_every_documented_default() {
+        let reference = super::shell::viewer_keybinding_reference();
+        let start = crate::config::DEFAULT_CONFIG_TEMPLATE
+            .find("# One shortcut string or an array is accepted.")
+            .unwrap();
+
+        for line in crate::config::DEFAULT_CONFIG_TEMPLATE[start..].lines() {
+            let commented = if line.is_empty() {
+                "#".to_string()
+            } else if line.trim_start().starts_with('#') {
+                line.to_string()
+            } else {
+                format!("# {line}")
+            };
+            assert!(
+                reference.lines().any(|candidate| candidate == commented),
+                "missing documented keybinding line: {line}"
+            );
+        }
+        assert!(reference.contains(&format!(
+            "# --- Complete Neovim-style keybinding reference for v{} (commented) ---",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(reference.contains("# [keybindings.aliases]"));
+        assert!(reference.contains("# One shortcut string or an array is accepted."));
+        assert!(reference.contains("# extension. For example, omit `j`/`k`"));
+        assert!(reference.contains("# J = \"5j\""));
+        assert!(reference.contains("# K = \"5k\""));
+        assert!(!reference.lines().any(|line| line == "[keybindings]"));
+        assert!(!reference
+            .lines()
+            .any(|line| line == "[keybindings.aliases]"));
     }
 
     #[test]

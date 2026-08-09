@@ -784,6 +784,11 @@ settings and keybindings. Pick **Project (local)** or **Global** and it loads
 that file exactly when present; for a missing file it starts with a minimal
 override. Omitted settings keep flowing from lower config layers and built-in
 defaults—the dialog never materializes missing keybindings into a higher scope.
+The editor appends the complete Neovim-style action map and alias table as a
+commented reference. Copy entries into an existing table, or uncomment only the
+table and bindings you want; an untouched reference is not written to disk.
+If another editor changes the selected file after it loads, Save stops and asks
+you to reload instead of overwriting that newer version.
 Save merges the structured controls into the editor text, preserves the other
 local content and comments, and validates the complete result before replacing
 the selected file. The adjacent

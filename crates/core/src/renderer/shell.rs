@@ -39,6 +39,32 @@ pub(super) const CLIENT_JS: &str = concat!(
 
 pub(super) const DEFAULT_CSS: &str = include_str!("../assets/default.css");
 
+pub(super) fn viewer_keybinding_reference() -> String {
+    let mut out = format!(
+        "# --- Complete Neovim-style keybinding reference for v{} (commented) ---\n\
+         # Copy entries into an existing table, or uncomment the table and only\n\
+         # the actions you want to override. Commented defaults change nothing.\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    let start = crate::config::DEFAULT_CONFIG_TEMPLATE
+        .find("# One shortcut string or an array is accepted.")
+        .expect("the documented config must contain the keybinding guide");
+    for line in crate::config::DEFAULT_CONFIG_TEMPLATE[start..].lines() {
+        if line.is_empty() {
+            out.push_str("#\n");
+        } else if line.trim_start().starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+        } else {
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str("# --- End keybinding reference ---\n");
+    out
+}
+
 pub(super) fn wrap_in_shell(
     body: &str,
     preamble: &ExtractedPreamble,
@@ -54,10 +80,13 @@ pub(super) fn wrap_in_shell(
     // asynchronously; using the full documented defaults here would create a
     // short window where Save could materialize them above a user's lower-layer
     // customizations (notably their browser keybindings).
-    let default_config_html = escape_html(
+    let keybinding_reference = viewer_keybinding_reference();
+    let default_config_html = escape_html(&format!(
         "# Add only settings to override at this scope.\n\
-         # Omitted settings and keybindings remain inherited.\n",
-    );
+         # Omitted settings and keybindings remain inherited.\n\n\
+         {keybinding_reference}"
+    ));
+    let keybinding_reference_html = escape_html(&keybinding_reference);
     // Config-driven overrides emitted after the bundled CSS so they win
     // by source order, and as a separate `<script>` so client JS can read
     // the values at init without round-tripping through localStorage.
@@ -417,11 +446,14 @@ pub(super) fn wrap_in_shell(
         TOML editor (advanced settings and keybindings)
       </label>
       <p class="macros-dialog-hint config-editor-hint">
-        The selected file loads here unchanged. A missing file starts as a
-        sparse override; omitted keybindings keep inheriting from lower scopes.
+        The selected file loads here unchanged, followed by a complete commented
+        keybinding reference. Uncomment only the overrides you want; comments do
+        not shadow lower config scopes.
       </p>
       <textarea id="config-viewer-toml" class="macros-dialog-input config-viewer-editor"
                 rows="18" spellcheck="false" autocomplete="off">{default_config_html}</textarea>
+      <textarea id="config-keybindings-reference" hidden readonly
+                aria-hidden="true">{keybinding_reference_html}</textarea>
     </section>
     <section class="config-panel config-fields" id="config-mode-mathjax" role="tabpanel" hidden>
       <details class="config-mjx-current">
@@ -487,6 +519,7 @@ pub(super) fn wrap_in_shell(
 "#,
         client_js = CLIENT_JS,
         default_config_html = default_config_html,
+        keybinding_reference_html = keybinding_reference_html,
     )
     .unwrap();
     out

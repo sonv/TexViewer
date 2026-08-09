@@ -2901,6 +2901,25 @@
 
   var configLoadSeq = 0;
 
+  function viewerConfigSparseDraft() {
+    return '# Add only settings to override at this scope.\n'
+      + '# Omitted settings and keybindings remain inherited.\n';
+  }
+
+  function viewerConfigKeybindingReference() {
+    var source = document.getElementById('config-keybindings-reference');
+    return source ? (source.value || '') : '';
+  }
+
+  function withViewerKeybindingReference(content) {
+    var reference = viewerConfigKeybindingReference();
+    if (!reference) return content;
+    var marker = reference.split('\n')[0];
+    if (marker && content.indexOf(marker) >= 0) return content;
+    var separator = !content ? '' : (/\n$/.test(content) ? '\n' : '\n\n');
+    return content + separator + reference;
+  }
+
   function setViewerConfigLoadState(editor, loading) {
     if (editor) editor.readOnly = !!loading;
     var save = document.getElementById('config-dialog-save');
@@ -2981,6 +3000,9 @@
     var sc = currentConfigScope();
     if (sc.scope === 'custom' && !sc.path) {
       editor.dataset.loadedScope = '';
+      editor._loadedContent = null;
+      editor._baseContent = null;
+      editor._displayContent = null;
       editor.value = '# Enter a custom path to load that config.\n';
       setViewerConfigLoadState(editor, true);
       setConfigFeedback('Enter a custom path to load or save that config.', false);
@@ -2996,6 +3018,9 @@
     // after switching Global/Project/Custom could write the previous scope's
     // TOML to the newly selected path.
     editor.dataset.loadedScope = '';
+    editor._loadedContent = null;
+    editor._baseContent = null;
+    editor._displayContent = null;
     editor.value = '# Loading selected config…\n';
     setViewerConfigLoadState(editor, true);
     setConfigFeedback('Loading config…', true);
@@ -3012,14 +3037,27 @@
       try { body = await res.json(); } catch (e) {}
       if (seq !== configLoadSeq) return;
       if (!res.ok) {
+        editor._loadedContent = null;
+        editor._baseContent = null;
+        editor._displayContent = null;
+        editor.value = '# Config load failed; choose the scope again to retry.\n';
         setConfigFeedback((body && body.error) || 'config load failed', false);
         return;
       }
       var exists = !!(body && body.exists);
-      editor.value = exists
-        ? (body.content || '')
-        : '# Add only settings to override at this scope.\n'
-          + '# Omitted settings and keybindings remain inherited.\n';
+      // Keep the exact on-disk baseline separate from the sparse text shown
+      // for a missing file. It protects a newer nvim edit at save time and
+      // preserves CRLF content when the displayed reference is untouched.
+      editor._loadedContent = body && typeof body.content === 'string'
+        ? body.content
+        : '';
+      editor._baseContent = exists
+        ? editor._loadedContent
+        : viewerConfigSparseDraft();
+      editor.value = withViewerKeybindingReference(editor._baseContent);
+      // The textarea normalizes line endings. Compare against this exact
+      // post-assignment snapshot rather than reconstructing it from disk text.
+      editor._displayContent = editor.value;
       editor.dataset.loadedScope = scopeKey;
       setViewerConfigLoadState(editor, false);
       var file = body && body.file ? ' — ' + body.file : '';
@@ -3032,6 +3070,9 @@
       );
     } catch (e) {
       if (seq === configLoadSeq) {
+        editor._loadedContent = null;
+        editor._baseContent = null;
+        editor._displayContent = null;
         editor.value = '# Config load failed; choose the scope again to retry.\n';
         setViewerConfigLoadState(editor, true);
         setConfigFeedback(String(e && e.message || e), false);
@@ -3140,7 +3181,14 @@
       }
       var writePayload = {
         scope: sc.scope,
-        content: editor.value || '',
+        // A pristine appended reference is display-only and must not bloat the
+        // selected file. Once edited/uncommented it becomes ordinary TOML and
+        // is saved exactly as shown.
+        content: (typeof editor._baseContent === 'string' &&
+                  editor.value === editor._displayContent)
+          ? editor._baseContent
+          : (editor.value || ''),
+        expected_content: editor._loadedContent,
         values: values,
       };
       if (sc.path) writePayload.path = sc.path;
