@@ -6684,6 +6684,14 @@ mod tests {
         assert!(out.html.contains("handleViewerKeybindings"));
         assert!(out
             .html
+            .contains("function viewerSequenceWaitsForCharacter()"));
+        assert!(out
+            .html
+            .contains("armKeySequenceTimeout(viewerSequenceWaitsForCharacter())"));
+        assert!(out.html.contains("if (waitForCharacter)"));
+        assert!(out.html.contains("'● mark ' + name + ' restored'"));
+        assert!(out
+            .html
             .contains("if (handleViewerKeybindings(e)) {\n      e.preventDefault();\n    }"));
         assert!(out.html.contains("runViewerAction"));
         assert!(out.html.contains(r#"data-viewer-action="toggle-theme""#));

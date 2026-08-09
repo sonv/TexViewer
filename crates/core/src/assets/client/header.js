@@ -135,8 +135,16 @@
     }
   }
 
-  function armKeySequenceTimeout() {
+  function armKeySequenceTimeout(waitForCharacter) {
     if (keySequenceTimer) clearTimeout(keySequenceTimer);
+    // A terminal `<char>` capture is an operator-pending command, not an
+    // incomplete chord. Vim waits for the mark/register name until the user
+    // supplies it or explicitly cancels; clicks, focus changes, blur, and
+    // Escape still clear the shared pending state.
+    if (waitForCharacter) {
+      keySequenceTimer = 0;
+      return;
+    }
     keySequenceTimer = setTimeout(function() {
       keySequenceTimer = 0;
       var fallback = keySequenceExactFallback;

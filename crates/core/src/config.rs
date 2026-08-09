@@ -138,8 +138,9 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeyBindingsConfig {
-    /// Delay for pending multi-step mappings, exact-prefix fallback, and the
-    /// legacy bare-digit compatibility fallback. Numeric counts do not expire.
+    /// Delay for incomplete chords, exact-prefix fallback, and the legacy
+    /// bare-digit compatibility fallback. Counts and unambiguous final
+    /// `<char>` captures do not expire.
     #[serde(
         default,
         rename = "sequence-timeout-ms",

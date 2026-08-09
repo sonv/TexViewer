@@ -642,7 +642,11 @@
       return false;
     }
     recordViewerPlace();
-    return restoreViewerPlace(Object.assign({}, place, { x: exact ? place.x : 0 }));
+    var restored = restoreViewerPlace(Object.assign({}, place, {
+      x: exact ? place.x : 0,
+    }));
+    if (restored) setStatus('live', '● mark ' + name + ' restored');
+    return restored;
   }
 
   var viewerActions = {
@@ -1150,6 +1154,15 @@
     return (leftStep.capture ? 1 : 0) - (rightStep.capture ? 1 : 0);
   }
 
+  function viewerSequenceWaitsForCharacter() {
+    if (keySequenceExactFallback || !keySequenceCandidates.length) return false;
+    return keySequenceCandidates.every(function(candidate) {
+      var step = candidate.binding.steps[candidate.next];
+      return step && step.capture === 'char' &&
+        candidate.next + 1 === candidate.binding.steps.length;
+    });
+  }
+
   function startKeybindingSequence(e) {
     var matches = compiledKeybindings.filter(function(binding) {
       return bindingStepMatches(binding.steps[0], e);
@@ -1174,7 +1187,7 @@
       action: exact.action,
       invocation: candidateInvocation(exact, e),
     } : null;
-    armKeySequenceTimeout();
+    armKeySequenceTimeout(viewerSequenceWaitsForCharacter());
     return true;
   }
 
@@ -1231,7 +1244,7 @@
     } else {
       keySequenceExactFallback = null;
     }
-    armKeySequenceTimeout();
+    armKeySequenceTimeout(viewerSequenceWaitsForCharacter());
     return true;
   }
 

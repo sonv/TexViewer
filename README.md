@@ -553,7 +553,12 @@ a Rust roundtrip unless they are controlling the daemon itself.
   current reading anchor. `/` and `?` search forward/backward; `n` preserves
   that direction and `N` reverses it; `*`/`#` search the selected or anchored
   word. `Ctrl-o` and `Ctrl-i` traverse a real backward/forward jump list, while
-  `m<char>`, `'<char>`, and `` `<char> `` set and restore session marks.
+  `m<char>`, `'<char>`, and `` `<char> `` set and restore session
+  reading-position marks. An unambiguous pending mark command waits for its
+  character until it is completed or cancelled with Escape, a click, focus in
+  a control, or browser blur.
+  The spaces in TOML binding strings delimit successive key tokens: type `ma`,
+  not `m Space a`.
   `:` opens the command line (see `margin` above), `t` toggles the index/pages
   side panel, `B` toggles the top
   banner (keyboard counterpart to the thin stripe), `c` crops the page
@@ -671,9 +676,10 @@ trigger = "cmd-click"           # | "ctrl-click" | "alt-click" | "double-click"
 # The complete built-in keyboard map. Keep this in the global file to use the
 # same keys for every paper; a project's [keybindings] table can override just
 # the actions it mentions. One string or an array is accepted; [] disables.
-# Counts compose with motions, and <char> captures the following printable key.
+# Counts compose with motions, and <char> waits for the following printable key.
+# Spaces delimit successive key tokens: `m <char>` is typed `ma`, without Space.
 [keybindings]
-sequence-timeout-ms = 750 # Pending sequence wait; counts do not expire. 100..5000.
+sequence-timeout-ms = 750 # Chord wait; counts/unambiguous final <char> do not expire. 100..5000.
 scroll-left = ["h", "ArrowLeft"]
 scroll-down = ["j", "Ctrl+e", "ArrowDown"]
 scroll-up = ["k", "Ctrl+y", "ArrowUp"]
@@ -763,7 +769,7 @@ the browser's Find shortcut; use `/` for viewer search or remove `Ctrl+f` from
 `full-page-down` if you prefer the browser behavior.
 `sequence-timeout-ms` controls pending multi-step mappings and ambiguous
 complete-prefix fallbacks (for example custom `g` alongside `gg`); an
-unfinished numeric count does not time out.
+unfinished numeric count or unambiguous final `<char>` capture does not time out.
 
 TexViewer only cancels keyboard events that match an effective binding. To
 leave `j`/`k` (and uppercase `J`/`K`) entirely to the browser or an extension,

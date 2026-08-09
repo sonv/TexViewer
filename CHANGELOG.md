@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.23] — 2026-08-09
+
+### Fixed
+
+- **Default mark commands now wait for their mark name.** `m<char>`, `'<char>`, and
+  `` `<char> `` no longer expire after the ordinary key-sequence timeout while
+  the user chooses or recalls a character. Escape, a click, focus in a control,
+  or browser blur still cancels the pending command, and successful jumps now
+  report which reading-position mark was restored.
+
 ## [2.1.22] — 2026-08-09
 
 ### Fixed

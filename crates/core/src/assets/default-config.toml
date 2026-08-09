@@ -19,9 +19,10 @@ trigger = "cmd-click"
 # Removing a key from its action leaves it untouched for the browser or an
 # extension. For example, omit `j`/`k` below while keeping the arrow aliases.
 # Counts compose with motions (`10j`, `3Ctrl+d`, `25gg`). Mod means Command
-# on macOS and Control elsewhere. `<char>` captures the following printable key.
+# on macOS and Control elsewhere. `<char>` waits for the following printable key.
+# Spaces delimit successive key tokens: `m <char>` is typed `ma`, without Space.
 [keybindings]
-sequence-timeout-ms = 750 # Pending sequence wait; counts do not expire. Range: 100..5000.
+sequence-timeout-ms = 750 # Chord wait; counts/unambiguous final <char> do not expire. Range: 100..5000.
 scroll-left = ["h", "ArrowLeft"]
 scroll-down = ["j", "Ctrl+e", "ArrowDown"]
 scroll-up = ["k", "Ctrl+y", "ArrowUp"]
