@@ -89,3 +89,4 @@ stop-server = []
 [keybindings.aliases]
 J = "5j"
 K = "5k"
+"Shift+Space" = "b" # Matching page-up distance; follows the configured b motion.

@@ -542,8 +542,9 @@ a Rust roundtrip unless they are controlling the daemon itself.
 - Neovim-style keyboard navigation works in the viewer. `j`/`k` (also
   `Ctrl-e`/`Ctrl-y` and the arrow keys) scroll by one rendered prose line;
   `J`/`K` are configurable aliases for `5j`/`5k`; `Ctrl-d`/`Ctrl-u` move by
-  half pages; and `Ctrl-f`/`Ctrl-b`, `Space`/`b`, or Page Down/Page Up move by
-  full pages. Numeric counts compose with motions and aliases: `10j`, `3n`,
+  half pages; `Space` moves a full page down while `Shift+Space` or `b` moves
+  back; and `Ctrl-f`/`Ctrl-b` or Page Down/Page Up provide the same full-page
+  motions. Numeric counts compose with motions and aliases: `10j`, `3n`,
   `2Ctrl-o`, and `3J` (fifteen lines) are single commands. Scrolling is
   immediate and each counted line motion becomes one browser scroll, so it
   remains predictable across display equations.
@@ -739,6 +740,7 @@ stop-server = []
 [keybindings.aliases]
 J = "5j"
 K = "5k"
+"Shift+Space" = "b" # matching page-up distance; follows the configured b motion
 ```
 
 `Mod` means Command on macOS and Control elsewhere. `Ctrl`, `Meta`/`Cmd`,
@@ -753,7 +755,10 @@ and `[]` removes an inherited alias. Direct action bindings win if an alias
 uses the same keys. Toolbar tooltips show the effective bindings after the
 global, project, and `--config` layers have merged. If two layers mention
 different actions or alias sources, both survive; a later layer replaces only
-the entry it mentions. On Linux/Windows, the Neovim `Ctrl-f` default takes over
+the entry it mentions. The `Shift+Space = "b"` alias makes shifted Space use
+TexViewer's matching full-page-up distance—even with an older explicit
+`full-page-up = "b"` map; set `"Shift+Space" = []` to retain the browser's
+native behavior. On Linux/Windows, the Neovim `Ctrl-f` default takes over
 the browser's Find shortcut; use `/` for viewer search or remove `Ctrl+f` from
 `full-page-down` if you prefer the browser behavior.
 `sequence-timeout-ms` controls pending multi-step mappings and ambiguous

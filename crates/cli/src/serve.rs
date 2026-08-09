@@ -5351,6 +5351,10 @@ Second paragraph here.
         assert_eq!(debug["viewer_config"]["fancy_theorems"], false);
         assert_eq!(debug["viewer_config"]["theorem_numbering"], "auto");
         assert_eq!(debug["viewer_config"]["keybinding_aliases"]["J"], "5j");
+        assert_eq!(
+            debug["viewer_config"]["keybinding_aliases"]["Shift+Space"],
+            "b"
+        );
         assert_eq!(debug["viewer_config"]["key_sequence_timeout_ms"], 750);
 
         let mut rx = state.tx.subscribe();
@@ -5361,6 +5365,10 @@ Second paragraph here.
         assert_eq!(payload["viewer_config"]["fancy_theorems"], false);
         assert_eq!(payload["viewer_config"]["theorem_numbering"], "auto");
         assert_eq!(payload["viewer_config"]["keybinding_aliases"]["K"], "5k");
+        assert_eq!(
+            payload["viewer_config"]["keybinding_aliases"]["Shift+Space"],
+            "b"
+        );
         assert_eq!(payload["viewer_config"]["key_sequence_timeout_ms"], 750);
     }
 

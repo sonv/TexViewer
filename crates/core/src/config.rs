@@ -307,6 +307,7 @@ fn default_keybinding_aliases() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("J".to_string(), "5j".to_string()),
         ("K".to_string(), "5k".to_string()),
+        ("Shift+Space".to_string(), "b".to_string()),
     ])
 }
 
@@ -1197,6 +1198,7 @@ toggle-lines = []
         );
         assert_eq!(cfg.viewer.keybinding_aliases["J"], "5j");
         assert_eq!(cfg.viewer.keybinding_aliases["K"], "5k");
+        assert_eq!(cfg.viewer.keybinding_aliases["Shift+Space"], "b");
         assert_eq!(cfg.viewer.key_sequence_timeout_ms, 750);
     }
 
@@ -1323,6 +1325,29 @@ K = []
             .viewer
             .keybinding_aliases
             .contains_key("Space"));
+    }
+
+    #[test]
+    fn shift_space_alias_survives_legacy_page_bindings_and_can_be_released() {
+        let legacy = Config::parse(
+            "[keybindings]\nfull-page-down = \"Space\"\nfull-page-up = \"b\"\n",
+            Path::new("legacy-full-map.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert_eq!(legacy.viewer.keybinding_aliases["Shift+Space"], "b");
+        assert_eq!(legacy.viewer.keybindings["full-page-up"], ["b"]);
+
+        let released = Config::parse(
+            "[keybindings.aliases]\n\"Shift+Space\" = []\n",
+            Path::new("browser-shift-space.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert!(!released
+            .viewer
+            .keybinding_aliases
+            .contains_key("Shift+Space"));
     }
 
     #[test]

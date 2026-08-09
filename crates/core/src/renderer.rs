@@ -3768,6 +3768,7 @@ mod tests {
         assert!(editor_markup.contains("# [keybindings]"));
         assert!(editor_markup.contains("# [keybindings.aliases]"));
         assert!(editor_markup.contains("# J = &quot;5j&quot;"));
+        assert!(editor_markup.contains("# &quot;Shift+Space&quot; = &quot;b&quot;"));
         assert!(editor_markup
             .contains("# zoom-in = [&quot;+&quot;, &quot;Mod+=&quot;, &quot;Mod++&quot;]"));
         assert!(!editor_markup.contains("\n[keybindings]"));
@@ -3806,6 +3807,7 @@ mod tests {
         assert!(reference.contains("# extension. For example, omit `j`/`k`"));
         assert!(reference.contains("# J = \"5j\""));
         assert!(reference.contains("# K = \"5k\""));
+        assert!(reference.contains("# \"Shift+Space\" = \"b\""));
         assert!(!reference.lines().any(|line| line == "[keybindings]"));
         assert!(!reference
             .lines()
@@ -6697,7 +6699,7 @@ mod tests {
         assert!(out.html.contains(r#""five-lines-up":[]"#));
         assert!(out
             .html
-            .contains(r#"keybindingAliases: {"J":"5j","K":"5k"}"#));
+            .contains(r#"keybindingAliases: {"J":"5j","K":"5k","Shift+Space":"b"}"#));
         assert!(out.html.contains(r#""toggle-lines":[]"#));
         for action in [
             "page-a4",

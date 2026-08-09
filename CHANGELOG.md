@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.22] — 2026-08-09
+
+### Fixed
+
+- **Shift-Space now uses TexViewer's matching page-up distance.** It is a
+  configurable `"Shift+Space" = "b"` alias, so it uses TexViewer's matching
+  full-page-up distance instead of the browser's shorter native increment.
+  The alias also works with older explicit `full-page-up = "b"` maps and can
+  be released back to the browser with `"Shift+Space" = []`.
+
 ## [2.1.21] — 2026-08-09
 
 ### Added
