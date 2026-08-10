@@ -1505,6 +1505,27 @@
     return best && best.element;
   }
 
+  // The [data-src] leaf holding `node`, provided it has a fragment on the
+  // clicked visual line. Used when a click in bare line-end / indent space
+  // snapped the caret INTO the nearest word: nearestSourceLeafOnLine
+  // deliberately skips the leaf containing its reference node, but here that
+  // leaf is exactly the nearest target.
+  function sourceLeafOnClickedLine(node, sourceAnchor, page, y) {
+    var parent = node && node.parentElement;
+    var leaf = parent && parent.closest('#page [data-src]');
+    if (!leaf || !page.contains(leaf) || !sourceAnchor.contains(leaf)) return null;
+    // Coarse anchors (they contain finer leaves) never resolve here — the
+    // scope search below handles carets in their bare text.
+    if (leaf.querySelector('[data-src]')) return null;
+    var rects = leaf.getClientRects();
+    for (var i = 0; i < rects.length; i++) {
+      var rect = rects[i];
+      if (!(rect.width > 0) || !(rect.height > 0)) continue;
+      if (y >= rect.top - 1 && y <= rect.bottom + 1) return leaf;
+    }
+    return null;
+  }
+
   function sourceElementFromTarget(target, clientX, clientY) {
     if (!target || !target.closest) return null;
     var el = target.closest('#page [data-src]');
@@ -1516,13 +1537,75 @@
     if (!el.querySelector('[data-src]') ||
         !isFinite(clientX) || !isFinite(clientY)) return el;
     var hit = textCharacterAtPoint(page, clientX, clientY);
-    if (!hit || !isSourceGapCharacter(hit.character)) return el;
+    if (hit && !isSourceGapCharacter(hit.character)) return el;
+
+    // A verified gap character refines through its own text node. Without one
+    // (a click past the end or before the start of a line — no adjacent
+    // character box contains the point) fall back to the bare caret, which
+    // still snapped to the nearest text position: without this, a click in
+    // the space after a line's last word resolved to the whole block's
+    // anchor — for a proof, \begin{proof}, possibly pages away.
+    var probe = hit || caretTextPositionAtPoint(page, clientX, clientY);
+    if (!hit && probe) {
+      var own = sourceLeafOnClickedLine(probe.node, el, page, clientY);
+      if (own) return own;
+    }
 
     // Stay inside one explicit reading flow. This prevents proof headings,
     // blank lines, list markers, and layout siblings from searching a whole
     // container and snapping to unrelated body text.
-    var scope = sourceFlowScope(hit.node, el, page);
-    return scope ? nearestSourceLeafOnLine(scope, hit.node, clientX, clientY) || el : el;
+    var scope = probe ? sourceFlowScope(probe.node, el, page) : null;
+    if (scope) return nearestSourceLeafOnLine(scope, probe.node, clientX, clientY) || el;
+    // No verified character and no usable flow scope — the caret gave loose
+    // block text, or no text position at all (an indent click can resolve to
+    // an element position on the para-indent-marker). Scan the coarse anchor
+    // for a leaf on the clicked visual line: the same-line requirement keeps
+    // distant lines (and thus "jump to the top of the proof") out of reach;
+    // a lineless click still falls back to el.
+    if (!hit) return nearestSourceLeafOnLineWithin(el, clientX, clientY) || el;
+    return el;
+  }
+
+  // Last-resort variant of nearestSourceLeafOnLine for clicks that resolved
+  // no flow scope: nearest [data-src] leaf with a fragment on the clicked
+  // visual line, searched across the whole coarse anchor. Leaves come in
+  // document order, so the scan stops once it has passed the clicked line
+  // rather than measuring every word of a long proof.
+  function nearestSourceLeafOnLineWithin(root, x, y) {
+    var best = null;
+    var candidates = root.querySelectorAll('[data-src]');
+    for (var i = 0; i < candidates.length; i++) {
+      var candidate = candidates[i];
+      if (candidate.querySelector('[data-src]')) continue;
+      // Never snap into margin overlays: a line-end click is close to the
+      // right margin, where line numbers / refkey chips / sidenote cards on
+      // the same visual line could otherwise out-compete the line's own last
+      // word (mirror of textRectAtPoint's exclusion list).
+      if (candidate.closest(
+        '.lineno-layer, .refkey-layer, .flash-layer, .sidenote, .margin-card'
+      )) continue;
+      var rects = candidate.getClientRects();
+      var below = false;
+      for (var j = 0; j < rects.length; j++) {
+        var rect = rects[j];
+        if (!(rect.width > 0) || !(rect.height > 0)) continue;
+        // Perf-only early exit, at least one full line below the click: an
+        // element ON the clicked line can have a low box (short inline math,
+        // subscript runs sit under the line's midline), so breaking at the
+        // first below-y rect would hide the rest of the line. Requiring the
+        // rect to clear its own height keeps the exit zoom-proportional;
+        // later-line candidates it lets through are rejected by the same-line
+        // filter below anyway.
+        if (rect.top - rect.height > y) { below = true; continue; }
+        if (y < rect.top - 1 || y > rect.bottom + 1) continue;
+        var distance = x < rect.left ? rect.left - x : (x > rect.right ? x - rect.right : 0);
+        if (!best || distance < best.distance) {
+          best = { element: candidate, distance: distance };
+        }
+      }
+      if (below) break;
+    }
+    return best && best.element;
   }
 
   function parseDataSrc(src) {

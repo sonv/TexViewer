@@ -13,6 +13,22 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.25] — 2026-08-10
+
+### Fixed
+
+- **Inverse search no longer jumps to the top of the block from line-edge
+  clicks.** Cmd/Ctrl-clicking the bare space just past a line's last word —
+  or the indent before a paragraph's first word — found no character box, so
+  the click fell back to the whole block's source anchor: inside a proof
+  that meant `\begin{proof}`, possibly pages away, and cursor sync then
+  dragged the viewer up there too. Those clicks now resolve through the
+  browser caret to the nearest word on the clicked visual line (with an
+  anchor-wide same-line scan when the caret gives no usable text position,
+  e.g. on a paragraph indent). Clicks in vertical padding keep the block
+  anchor, proof headings still jump to `\begin{proof}`, and margin overlays
+  are never snap targets.
+
 ## [2.1.24] — 2026-08-10
 
 ### Fixed
