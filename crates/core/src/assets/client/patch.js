@@ -2800,7 +2800,7 @@
         if (pageNextSibling) pageParent.insertBefore(page, pageNextSibling);
         else pageParent.appendChild(page);
       }
-      primeTheoremBlockIntrinsicSizes(touchedRoots);
+      primeStructuralBlockIntrinsicSizes(touchedRoots);
       settleLivePatchViewportAnchor(page, viewportAnchor);
     }
 

@@ -5081,6 +5081,33 @@ mod tests {
     }
 
     #[test]
+    fn latex_list_is_one_top_level_structural_block() {
+        let out = crate::render_project_from_source(
+            Path::new("list.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "\\begin{enumerate}\n",
+                "\\item First item.\n",
+                "\\item Second item.\n",
+                "\\end{enumerate}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(out.blocks.len(), 1, "{}", out.body_html);
+        let block = &out.blocks[0].html;
+        assert!(block.starts_with(r#"<article class="blk""#), "{block}");
+        assert!(
+            block.contains(r#"<ol class="latex-list enumerate">"#),
+            "{block}"
+        );
+        assert!(block.ends_with("</ol>\n</article>"), "{block}");
+    }
+
+    #[test]
     fn blank_line_after_display_renders_indented_paragraph_without_extra_break() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
@@ -6770,17 +6797,18 @@ mod tests {
         assert!(!line_step.contains("offsetHeight"));
         assert!(out
             .html
-            .contains("function primeTheoremBlockIntrinsicSizes(roots)"));
+            .contains("function primeStructuralBlockIntrinsicSizes(roots)"));
+        assert!(out.html.contains("child.classList.contains('latex-list')"));
         assert!(out
             .html
             .contains("block.style.contain = 'layout style paint'"));
         assert!(out.html.contains("void page.offsetHeight"));
         assert!(out
             .html
-            .contains("primeTheoremBlockIntrinsicSizes(touchedRoots)"));
+            .contains("primeStructuralBlockIntrinsicSizes(touchedRoots)"));
         assert!(out
             .html
-            .contains("primeTheoremBlockIntrinsicSizes(newReplacementBlocks)"));
+            .contains("primeStructuralBlockIntrinsicSizes(newReplacementBlocks)"));
         assert!(!out.html.contains("vimScrollHistory"));
         assert!(out.html.contains("seedTypesetBlockIntrinsicSizes(nodes)"));
         assert!(out

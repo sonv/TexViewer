@@ -3275,7 +3275,7 @@
         // Font size changes line heights/wrapping and key chip geometry, so both
         // page-level overlay layers must re-measure before the next paint.
         invalidateOverlayMetrics();
-        scheduleTheoremBlockIntrinsicSizes(0);
+        scheduleStructuralBlockIntrinsicSizes(0);
         if (lineNumbersVisible) scheduleLineNumbers();
         if (refkeysVisible) scheduleRefkeys(0);
       }
@@ -3636,11 +3636,12 @@
     });
   }
 
-  function isTopLevelTheoremBlock(block, page) {
+  function isTopLevelScrollSensitiveBlock(block, page) {
     if (!block || !block.classList || !block.classList.contains('blk')) return false;
     if (block.parentElement !== page) return false;
     var child = block.firstElementChild;
-    return !!(child && child.classList && child.classList.contains('thm'));
+    return !!(child && child.classList &&
+      (child.classList.contains('thm') || child.classList.contains('latex-list')));
   }
 
   function topLevelBlocksFromRoots(roots, page) {
@@ -3763,45 +3764,46 @@
     }, 0);
   }
 
-  // Lazy blocks normally use one cheap 180px fallback. Short theorem boxes are
-  // often much smaller, so the first PageUp/PageDown that activates a cold
-  // theorem changes the document height mid-scroll and makes inverse keys
-  // drift. Prime ONLY theorem blocks with their real outer-box size. The
-  // forced visibility is one shared layout pass, retains the containment that
-  // content-visibility:auto normally supplies (so child margins cannot
-  // collapse through .blk), and restores lazy rendering immediately.
+  // Lazy blocks normally use one cheap 180px fallback. Short theorem boxes and
+  // multi-item LaTeX lists often differ sharply from that estimate, so the
+  // first PageUp/PageDown that activates one can change the document height
+  // mid-scroll and make inverse keys drift. Prime ONLY those structural blocks
+  // with their real outer-box size. The forced visibility is one shared layout
+  // pass, retains the containment that content-visibility:auto normally
+  // supplies (so child margins cannot collapse through .blk), and restores
+  // lazy rendering immediately.
   //
   // `roots` scopes live updates to inserted/replaced blocks; null means the
-  // initial one-time theorem pass. The prelayout marker is also used by the
-  // lazy MathJax listener, so this geometry read cannot opt every theorem's
-  // equations into eager typesetting.
-  function primeTheoremBlockIntrinsicSizes(roots) {
-    if (!roots && theoremPrimeTimer) {
-      clearTimeout(theoremPrimeTimer);
-      theoremPrimeTimer = 0;
+  // initial one-time structural pass. The prelayout marker is also used by the
+  // lazy MathJax listener, so this geometry read cannot opt equations inside
+  // every theorem or list into eager typesetting.
+  function primeStructuralBlockIntrinsicSizes(roots) {
+    if (!roots && structuralPrimeTimer) {
+      clearTimeout(structuralPrimeTimer);
+      structuralPrimeTimer = 0;
     }
     var page = pageEl();
     if (!page) return;
     var blocks;
     if (roots) {
       blocks = topLevelBlocksFromRoots(roots, page).filter(function(block) {
-        return isTopLevelTheoremBlock(block, page);
+        return isTopLevelScrollSensitiveBlock(block, page);
       });
     } else {
       blocks = topLevelOverlayBlocks(page).filter(function(block) {
-        return isTopLevelTheoremBlock(block, page);
+        return isTopLevelScrollSensitiveBlock(block, page);
       });
     }
     if (!blocks.length) return;
     primeTopLevelBlockIntrinsicSizes(blocks);
   }
 
-  var theoremPrimeTimer = 0;
-  function scheduleTheoremBlockIntrinsicSizes(delay) {
-    if (theoremPrimeTimer) clearTimeout(theoremPrimeTimer);
-    theoremPrimeTimer = setTimeout(function() {
-      theoremPrimeTimer = 0;
-      primeTheoremBlockIntrinsicSizes();
+  var structuralPrimeTimer = 0;
+  function scheduleStructuralBlockIntrinsicSizes(delay) {
+    if (structuralPrimeTimer) clearTimeout(structuralPrimeTimer);
+    structuralPrimeTimer = setTimeout(function() {
+      structuralPrimeTimer = 0;
+      primeStructuralBlockIntrinsicSizes();
     }, typeof delay === 'number' ? delay : NAV_RESIZE_IDLE_MS);
   }
 
@@ -4191,7 +4193,7 @@
     try { localStorage.setItem('mathpreview.pageMode', currentPageMode); } catch (e) {}
     invalidateOverlayMetrics();
     updatePageScale();
-    scheduleTheoremBlockIntrinsicSizes(0);
+    scheduleStructuralBlockIntrinsicSizes(0);
     scheduleNavigationRefresh(NAV_RESIZE_IDLE_MS, false);
     if (lineNumbersVisible) scheduleLineNumbers();
     if (refkeysVisible) scheduleRefkeys(0);

@@ -199,7 +199,7 @@
           // the whole update, not 300+.
           if (pageNextSibling) pageParent.insertBefore(page, pageNextSibling);
           else pageParent.appendChild(page);
-          primeTheoremBlockIntrinsicSizes(newReplacementBlocks);
+          primeStructuralBlockIntrinsicSizes(newReplacementBlocks);
           settleLivePatchViewportAnchor(page, viewportAnchor);
           page.querySelectorAll('[data-mp-reused-block]').forEach(function(block) {
             block.removeAttribute('data-mp-reused-block');
@@ -310,10 +310,10 @@
   initCmdline();
   initSearchPanel();
   initMarginDnd();
-  // Stabilize cold theorem-block geometry before the initial lazy MathJax
-  // queue attaches its visibility listeners. The prelayout marker keeps this
-  // one-time measurement from eagerly typesetting off-screen theorem math.
-  primeTheoremBlockIntrinsicSizes();
+  // Stabilize cold theorem/list geometry before the initial lazy MathJax queue
+  // attaches its visibility listeners. The prelayout marker keeps this
+  // one-time measurement from eagerly typesetting off-screen structural math.
+  primeStructuralBlockIntrinsicSizes();
   decorateRefkeyChips(document.getElementById('page'));
   syncTopbarHeight();
   scheduleNavigationRefresh();
@@ -323,14 +323,14 @@
   setTimeout(ensureInitialTypeset, 1200);
   window.addEventListener('load', function() {
     // Re-measure once fonts/layout have fully settled.
-    primeTheoremBlockIntrinsicSizes();
+    primeStructuralBlockIntrinsicSizes();
     invalidateOverlayMetrics();
     syncTopbarHeight();
     scheduleNavigationRefresh();
   });
   window.addEventListener('resize', function() {
     invalidateOverlayMetrics();
-    scheduleTheoremBlockIntrinsicSizes();
+    scheduleStructuralBlockIntrinsicSizes();
     updatePageScale();
     // Responsive wrapping changes the toolbar's height, so re-anchor the
     // floating side controls before refreshing navigation.

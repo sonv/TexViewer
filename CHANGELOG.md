@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.24] — 2026-08-10
+
+### Fixed
+
+- **Page and half-page motions stay stable around LaTeX lists.** Top-level
+  `enumerate`, `itemize`, and `description` blocks now cache their measured
+  outer size through the same contained, lazy-safe pass used for theorem
+  blocks. Activating a long off-screen list no longer swaps the generic 180px
+  estimate into the scroll geometry between opposite motions.
+
 ## [2.1.23] — 2026-08-09
 
 ### Fixed

@@ -86,6 +86,14 @@ same-value attribute writes are guarded. Geometry reads on skipped content
 return degenerate rects, so scroll paths fall back to native `scrollIntoView`
 (which forces the target to render). Verified pixel-identical by screenshot.
 
+The generic 180px fallback is especially inaccurate for theorem boxes and for
+a whole `enumerate`/`itemize`/`description` list stored in one top-level block.
+Those structural blocks are primed together in one contained layout pass on
+load and after relevant live replacements, then immediately return to lazy
+rendering. Persisting their measured outer boxes keeps half/full-page inverse
+motions stable without walking every prose block or enrolling list math in an
+eager MathJax pass.
+
 ## Layer 4 — Viewport-lazy typesetting (v0.1.92)
 
 Containment alone made cold load *worse*: eagerly typesetting 3,302 equations
