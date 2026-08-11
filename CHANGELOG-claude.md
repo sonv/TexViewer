@@ -1,5 +1,54 @@
 # CHANGELOG-claude
 
+## 2026-08-10
+
+### Fixed
+
+- **Inverse search: line-edge clicks resolved to the coarse block anchor** — the user's "Ctrl-click sometimes jumps to the beginning of the proof" report (worst with large fonts, where line-edge gaps are big targets; cursor sync then scrolled the viewer up to `\begin{proof}` as well, compounding the pain). Reproduced deterministically in a served browser at `font-size = 48`: three distinct click geometries behave differently under the 00106684 refinement:
+  - *Mid-line inter-word gaps were already fine*: the caret lands in the whitespace text node and the (justified-stretched) space character's box contains the point, so `textCharacterAtPoint` verifies a gap character and the flow-scope search resolves the neighbour word. A 24-click battery confirmed 0 failures pre-fix.
+  - *Trailing space past a line's last word* (the reported bug): the click target is the block itself (inline spans don't extend past the line end), so `el` = the block's `[data-src]` anchor (`div.proof` → `\begin{proof}`); the caret snaps INTO the last word's text, but the click point sits outside every adjacent character box, `textCharacterAtPoint` returns null, and the old code fell back to `el`. Clicks at `right + 16px` and `right + 70px` both jumped to `10:1` in the repro.
+  - *Paragraph first-line indent*: `caretPositionFromPoint` returns an **element** position (`span.para-indent-marker`, offset 0), not a text node, so `caretTextPositionAtPoint` returns null outright — same fallback to the block anchor.
+- Fix in `crates/core/src/assets/client/viewer.js` `sourceElementFromTarget`, three additions in resolution order:
+  - `sourceLeafOnClickedLine`: with no verified character, fall back to the bare caret; when it snapped into a word — its own `[data-src]` leaf with a fragment on the clicked visual line — that leaf is the answer. Needed because `nearestSourceLeafOnLine` deliberately skips the leaf *containing* its reference node (right for whitespace-node carets, wrong here).
+  - The flow-scope path now runs off the caret probe too (carets landing in bare whitespace text between words still refine).
+  - `nearestSourceLeafOnLineWithin`: when the caret gives no usable text position at all (the indent case), scan the whole coarse anchor for the nearest leaf on the clicked visual line. Margin overlays are excluded via `textRectAtPoint`'s list (`.lineno-layer, .refkey-layer, .flash-layer, .sidenote, .margin-card`) so a line-end click near the right margin can't snap into line numbers / refkey chips. The document-order early exit only fires once a rect clears its own height below the click (`rect.top - rect.height > y`) — a same-line low box (short inline math like `$x_i$` sits below the line's midline) must not truncate the scan.
+- Preserved contracts (asserted in the battery): direct word/math hits exact; proof-heading clicks still map to `\begin{proof}`; vertical-padding clicks keep the block anchor; description-list marker/body clicks stay on the item line, marker keeps its own anchor; clicks outside the text column stay inert.
+
+### Verified
+
+- Browser-driven e2e (see the new DEVELOPMENT.md cookbook entry): served daemon via `.claude/launch.json` + preview browser, `--config` TOML with `font-size = 48`, dispatched `MouseEvent`s with `ctrlKey` at computed gap/edge/indent coordinates, `fetch('/jump')` hooked to capture the resolved `{line, col}`. Final batteries: 42/42 and 39/39 click classes correct (incl. a line ending in `$z_k$` small inline math); pre-fix the same battery showed all three trailing-space clicks at `10:1`.
+- Adversarial review workflow (2 finders + refuting verifiers): one low finding (the early-exit break on low-box same-line candidates) — fixed pre-commit as above; the verifier ultimately refuted it, so the released code carries a belt-and-braces version. Zero confirmed findings.
+- `cargo test --workspace` (391), `cargo clippy` clean, `npm run lint` clean, `luajit -bl` OK, `client_ws_protocol_matches_server` OK (WS stays '76' — client-only logic).
+
+### Committed / Released
+
+- `71a528b` fix: line-edge inverse-search clicks resolve to the clicked line
+- Released **v2.1.25** (dev → main FF, tag, 4-target CI, 8 assets, curated notes, published Latest). Gotcha for next time: `git push origin dev:main` from a worktree resolves the *stale local* `dev` branch and no-ops with "Everything up-to-date" — push the SHA explicitly (`git push origin <sha>:main`).
+
+## 2026-07-12
+
+### Fixed
+
+- **Phantom equation number after a trailing `\\`** in multi-row math: `split_math_rows` returns a trailing empty row, `row_is_unnumbered("")` is false, so the phantom row got a gutter number and ticked the counter ((1)(2)(3) for a 2-row align; next equation (4)). Dropped the trailing empty row before the numbering loop in `numbering.rs` (mirror of the drop `math_row_line_ranges` already did) and in `math_row_labels` so `equation_row_refkey_html`'s row list stays aligned with `row_numbers`. Mid-body empty rows (`\\ \\`) are kept — MathJax renders those.
+- **`\eqref` to a label on a later align row resolved to row 1's number**: the parser's primary label is just the first `\label` anywhere in the env body, the multirow numbering arm recorded it against the *first numbered row*, and `record_label` is first-write-wins — so the per-row pass couldn't correct it. The multirow arm no longer records the primary label; per-row `labels_from_latex` records every in-body label against its own row.
+- **Typing flash in long equations**: every keystroke changes the equation's content hash; the fresh server node showed raw LaTeX source (reflowing the page) until the debounced typeset queue caught up. Added `seedStaleMath` (patch.js): pair outgoing typeset donors with incoming raw receivers **by element id** (label-derived ids stable across edits; positional `dm-g<block>-<n>` stable for within-equation edits) with matching display-ness, move the donor's `<mjx-container>` into the receiver's `.math-source`, mark `data-mp-stale`. `isRawMathNode` counts stale as raw (every producer re-renders them); `syncMathSourceText` skips stale (engine reads TeX from `data-mathjax-tex`); engine skip exempts stale sources and clears the marker after `replaceChildren`. Seeding runs on all three replacement paths: applyPatch range/rebuild, blocksub, and footer.js `body-updated` — small documents take the full-body path on EVERY keystroke (`fallback_full = patch_cost * 2 > block_count` in serve.rs), discovered by sniffing WS frames when the patch-path test refused to reproduce.
+- Adversarial review of the anti-flash found three real bugs, all fixed: `indexMathByHash` missed a root that IS a math node (display math is a direct child of chunked proof/theorem/callout/quote bodies → blocksub ops lost the donor); `clearRemovedMath` must run BEFORE container donation (else `typesetClear` can't find the moved container in the typesetPromise engine path); `queueTypeset` re-arms `observeTypesetWindow` when a round defers everything (`checkVisibility` is false for display:none nodes — folded proofs, footnote popovers — whose rendered blocks never fire `contentvisibilityautostatechange`; without a flush nothing re-observed the block and a stale node would show the pre-edit equation indefinitely).
+
+### Added
+
+- **mathtools `showonlyrefs`**: previously ignored entirely (MathJax numbering is off — `tags: 'none'`; all numbers are computed in Rust). Detection in `macros.rs` (`\usepackage[...,showonlyrefs,...]{...,mathtools,...}` and `\mathtoolsset{...}`, processed in source order, last setting wins, `showonlyrefs=false` disables) → `ExtractedPreamble.show_only_refs`. `numbering::collect_referenced_keys` scans raw project sources (comment-aware, `\%`-safe) for the `\ref` family; `assign_numbers` takes `Option<HashSet<String>>` and numbers a row/equation only when one of its labels is referenced. Deliberately more generous than mathtools (any `\ref`-family counts, not just `\eqref`/`\refeq` — `\cref`+showonlyrefs produces broken PDFs, faithfulness there isn't useful). Wired in both render paths (lib.rs and the daemon's serve.rs twin).
+
+### Verified
+
+- CLI renders of each repro before/after; regression tests: `align_trailing_row_separator_gets_no_phantom_number`, `align_label_on_second_row_refs_that_rows_number`, three `showonlyrefs_*` tests.
+- Anti-flash verified in a live browser (MutationObserver state timeline on the math node): visible edits go `SVG → SVG+STALE → SVG` with **no RAW-TEX state**, including a 5-edit burst at 150 ms intervals (the placeholder chains across patches); a new equation typesets normally; a folded-proof edit recovers to the new content on the next rendering pass.
+
+### Committed
+
+- `d4ea7c2` fix: no phantom equation number after a trailing `\\` in multi-row math
+- `103f535` fix: eqref binds to its own align row; feat: mathtools showonlyrefs
+- `2a7115a` feat: keep the previous math render visible while an edit re-typesets
+
 ## 2026-05-21
 
 ### Fixed

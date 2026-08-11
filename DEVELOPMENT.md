@@ -100,10 +100,40 @@ Patterns that have proven out, with the traps that motivated them:
   paths don't.
 - **`timeout(1)` does not exist on macOS**; sub-second sleeps via
   `perl -e 'select(undef,undef,undef,0.2)'`.
-- **Adversarial review for unrunnable code**: nontrivial client/plugin changes
-  get a multi-lens review (find → adversarially verify each finding, reviewers
-  told to *refute*). It has repeatedly caught real bugs (wrong-window focus,
-  clipped popovers, comment-handling in extractors). Trap learned the hard way:
+- **Client JS IS runnable — drive a real browser** (an agent session with
+  browser tooling can do all of this): point a preview browser at the served
+  daemon (a `.claude/launch.json` entry running
+  `target/debug/mathpreview-cli serve <scratch>.tex --port 277xx` works;
+  delete the file afterward), then verify *behavior*, not just the served
+  bundle:
+  - Instrument with an injected `MutationObserver` recording a state timeline
+    of the node under test (e.g. `SVG → SVG+STALE → SVG` for the anti-flash
+    path — the assertion is the *absence* of a `RAW-TEX` state).
+  - Hook `window.fetch` to capture control-plane POSTs (`/jump` bodies give
+    you every inverse-search resolution without an editor attached).
+  - Synthesize input with dispatched `MouseEvent`s (`ctrlKey: true`,
+    `clientX/Y` at computed gap/edge coordinates) — batteries of dozens of
+    clicks per geometry class beat one manual spot-check. `elementFromPoint`
+    needs on-screen coordinates: `scrollIntoView` first, and beware headless
+    panes reporting `window.innerHeight === 0` (resize the viewport, and
+    remember IntersectionObserver / content-visibility events only fire when
+    the pane actually renders frames — a screenshot forces one).
+  - **Rebuild + restart between JS edits**: client assets are
+    `include_str!`-embedded, so the running daemon serves the binary's copy,
+    not the file on disk — the stale-binary trap applies to yourself.
+  - **Tiny docs don't exercise the patch path**: the server falls back to a
+    full `body-updated` when the diff would cost more than half the block
+    count (`fallback_full` in serve.rs), so a 3-block scratch doc tests
+    footer.js's full-body handler, never `applyPatch`. Sniff the WS frames
+    when in doubt about which path ran.
+  - Config knobs matter for geometry bugs: `--config` a scratch TOML (e.g.
+    `font-size = 48`) to reproduce large-font layouts.
+- **Adversarial review for nontrivial client/plugin code**: multi-lens review
+  (find → adversarially verify each finding, reviewers told to *refute*),
+  even when the change was browser-verified — it has repeatedly caught real
+  bugs the happy-path battery missed (blocksub donor loss, typeset-queue
+  dead-ends, wrong-window focus, clipped popovers, comment-handling in
+  extractors). Trap learned the hard way:
   **never `git add -A` while review agents are running** — a verifier's live
   scratch edits once rode into a commit and broke `cargo test` at HEAD. Stage
   explicitly, or commit only after the workflow completes.

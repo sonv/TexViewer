@@ -37,16 +37,22 @@ Work happens on `dev`. For every change:
    - Protocol behavior: python `websocket-client` against
      `ws://…/ws?v=<WS_PROTOCOL_VERSION>` (matching `host=`/`origin=`), assert
      on the broadcast events themselves.
-   - Client JS/CSS: grep the served page for the new wiring (functions, CSS
-     rules, handlers) and the absence of removed paths.
+   - Client JS/CSS: at minimum, grep the served page for the new wiring
+     (functions, CSS rules, handlers) and the absence of removed paths. When
+     browser tooling is available, verify *behavior* in a real browser —
+     preview the served daemon, inject MutationObserver timelines, hook
+     `fetch('/jump')`, dispatch synthetic clicks (full recipe in
+     DEVELOPMENT.md's cookbook, "Client JS IS runnable"). Rebuild + restart
+     between JS edits: assets are `include_str!`-embedded.
    - Write test `.tex` with `printf '%s\n' '…'` — **never `echo`** (it eats
      `\n`/`\a` inside LaTeX). `POST /buffer` takes the **raw buffer text** with
      the path in `x-mathpreview-path` — not JSON.
    - Perf claims: `--release` build, end-to-end timing (POST → WS event),
      dissect payloads before optimizing.
-2. **For nontrivial client/plugin logic** (unrunnable here): adversarial
-   multi-lens review via the Workflow tool — finders per concern, then a
-   verifier per finding instructed to *refute* it. Fix what survives.
+2. **For nontrivial client/plugin logic** — even when browser-verified:
+   adversarial multi-lens review via the Workflow tool — finders per concern,
+   then a verifier per finding instructed to *refute* it. Fix what survives
+   (it has caught real bugs the happy-path battery missed).
    **Do not `git add -A` while a review workflow is running** — verifier
    scratch edits can ride into the commit. Stage files explicitly, or wait.
 3. **Quality gates** (all must pass; there is no PR CI — local gates are the
