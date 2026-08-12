@@ -13,6 +13,25 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.26] — 2026-08-12
+
+### Fixed
+
+- **Page motions stay symmetric across long equations — and everything
+  else.** Space / Shift+Space scroll by exact viewports, but cold lazy
+  blocks carried a generic 180px size estimate (prose is ~40-90px real,
+  tall equations more), and some browsers forget a block's rendered height
+  when it re-enters the lazy skipped state — so the document's geometry
+  changed between opposite motions and paging down twice then up once could
+  land pages away from where you started. Every top-level block is now
+  primed with its real measured size (a cold document previously measured
+  ~23% taller than warm): replaced blocks immediately, the full document in
+  small chunks during idle time so large papers see no load stall. The
+  live math-typeset passes additionally keep the reading position pinned
+  while an equation above or at the viewport swaps its raw source for the
+  (taller) rendered form — on all browsers, with or without native scroll
+  anchoring.
+
 ## [2.1.25] — 2026-08-10
 
 ### Fixed

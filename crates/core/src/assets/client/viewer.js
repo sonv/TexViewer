@@ -3720,11 +3720,18 @@
   }
 
   function isTopLevelScrollSensitiveBlock(block, page) {
-    if (!block || !block.classList || !block.classList.contains('blk')) return false;
-    if (block.parentElement !== page) return false;
-    var child = block.firstElementChild;
-    return !!(child && child.classList &&
-      (child.classList.contains('thm') || child.classList.contains('latex-list')));
+    // Every top-level block is scroll-sensitive. This started as theorems
+    // only, grew lists (both differ sharply from the 180px estimate), and is
+    // now universal: plain paragraph blocks are ~40-90px real vs 180px
+    // estimated, and on WebKit a block that re-enters the skipped state
+    // FORGETS its rendered height and reverts to the estimate — so page-up
+    // over previously read prose drifted by the cumulative error (the
+    // long-equation scrolling report: a cold document measured ~23% taller
+    // than warm). Priming everything writes an explicit fallback once, in
+    // one shared contained layout pass, with math still raw via the
+    // prelayout marker.
+    return !!(block && block.classList && block.classList.contains('blk') &&
+      block.parentElement === page);
   }
 
   function topLevelBlocksFromRoots(roots, page) {
@@ -3797,6 +3804,12 @@
     var targets = topLevelBlocksFromRoots(blocks, page);
     if (!targets.length) return;
 
+    // Re-seeding blocks above a mid-document reader changes geometry above
+    // the viewport; keep the reading position pinned the same way typeset
+    // batches do (measured displacement — a no-op under native anchoring,
+    // aborted if the user scrolled meanwhile). Covers every caller: the
+    // chunked drain, patch-scoped priming, and the TikZ seed queue.
+    var viewportAnchor = captureTypesetViewportAnchor();
     var token = ++overlayPrelayoutToken;
     var lifted = targets.map(function(block) {
       var entry = {
@@ -3818,6 +3831,7 @@
       entry.block.style.contentVisibility = entry.contentVisibility;
       entry.block.style.contain = entry.contain;
     });
+    settleTypesetViewportAnchor(viewportAnchor);
     setTimeout(function() {
       lifted.forEach(function(entry) {
         if (entry.block.__mpOverlayPrelayoutToken === token) {
@@ -3878,7 +3892,81 @@
       });
     }
     if (!blocks.length) return;
-    primeTopLevelBlockIntrinsicSizes(blocks);
+    // Both branches route through the shared bounded queue: a mass-change
+    // patch (a renumbering edit can replace half the document) must not
+    // synchronously prime hundreds of blocks any more than the initial
+    // full pass may (one monolithic forced-visible layout measured ~1.9s
+    // at 840 blocks). The nearest slice primes synchronously so the very
+    // next motion sees stable geometry near the reader; the rest fills in
+    // during idle time, each slice its own bounded layout pass.
+    queueStructuralPrime(blocks, !roots);
+  }
+
+  var STRUCTURAL_PRIME_CHUNK = 64;
+  var structuralPrimeQueue = [];
+  var structuralPrimeQueuedSet = new Set();
+  var structuralPrimeIdle = 0;
+  var scheduleIdlePrime = window.requestIdleCallback
+    ? function(cb) { return window.requestIdleCallback(cb, { timeout: 1000 }); }
+    : function(cb) { return setTimeout(cb, 80); };
+  var cancelIdlePrime = window.cancelIdleCallback
+    ? function(id) { window.cancelIdleCallback(id); }
+    : function(id) { clearTimeout(id); };
+
+  // Viewport-proximate blocks first: a session restored deep into the
+  // document (or a mid-document reader when a mass patch lands) needs ITS
+  // neighbourhood stable first, not the document top.
+  function orderBlocksByViewportProximity(blocks) {
+    var top = topbarOffset();
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    return blocks
+      .map(function(block) {
+        var rect = block.getBoundingClientRect();
+        var distance = 0;
+        if (rect.bottom < top) distance = top - rect.bottom;
+        else if (rect.top > vh) distance = rect.top - vh;
+        return { block: block, distance: distance };
+      })
+      .sort(function(a, b) { return a.distance - b.distance; })
+      .map(function(entry) { return entry.block; });
+  }
+
+  function queueStructuralPrime(blocks, replaceQueue) {
+    if (replaceQueue) {
+      if (structuralPrimeIdle) {
+        cancelIdlePrime(structuralPrimeIdle);
+        structuralPrimeIdle = 0;
+      }
+      structuralPrimeQueue = [];
+      structuralPrimeQueuedSet = new Set();
+    }
+    var fresh = orderBlocksByViewportProximity(
+      Array.from(blocks).filter(function(block) {
+        return block && block.isConnected && !structuralPrimeQueuedSet.has(block);
+      })
+    );
+    if (!fresh.length && !structuralPrimeQueue.length) return;
+    // New work goes to the FRONT: freshly replaced (or refolded) blocks are
+    // what the user is looking at; a pending full-document tail can wait.
+    structuralPrimeQueue = fresh.concat(structuralPrimeQueue);
+    fresh.forEach(function(block) { structuralPrimeQueuedSet.add(block); });
+    drainStructuralPrimeSlice();
+  }
+
+  function drainStructuralPrimeSlice() {
+    var slice = [];
+    while (slice.length < STRUCTURAL_PRIME_CHUNK && structuralPrimeQueue.length) {
+      var block = structuralPrimeQueue.shift();
+      structuralPrimeQueuedSet.delete(block);
+      if (block.isConnected) slice.push(block);
+    }
+    if (slice.length) primeTopLevelBlockIntrinsicSizes(slice);
+    if (structuralPrimeQueue.length && !structuralPrimeIdle) {
+      structuralPrimeIdle = scheduleIdlePrime(function() {
+        structuralPrimeIdle = 0;
+        drainStructuralPrimeSlice();
+      });
+    }
   }
 
   var structuralPrimeTimer = 0;

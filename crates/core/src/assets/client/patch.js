@@ -1949,6 +1949,82 @@
     });
   }
 
+  // A typeset batch (or a priming pass) changes block heights. When that
+  // happens at or above the viewport top, the content the reader is on
+  // shifts — Chromium's native scroll anchoring compensates, WebKit has
+  // none, so Space / Shift+Space page motions drifted around long
+  // equations. Capture the first element fully below the viewport top
+  // before the work and restore its on-screen position after: the
+  // correction is the element's MEASURED displacement, so wherever native
+  // anchoring already fixed it the delta is ~0 and this is a no-op.
+  //
+  // When a block straddles the viewport top, descend into it: anchoring the
+  // NEXT top-level block would misattribute growth in the straddler's
+  // visible lower part (below the reading point) as displacement and scroll
+  // for content the reader watched grow on screen.
+  function descendToViewportTopAnchor(root, top) {
+    var node = root;
+    for (var depth = 0; depth < 12; depth++) {
+      var children = node.children;
+      var straddler = null;
+      for (var i = 0; i < children.length; i++) {
+        var rect = children[i].getBoundingClientRect();
+        if (!(rect.height > 0) || rect.bottom <= top) continue;
+        if (rect.top >= top) return { el: children[i], top: rect.top };
+        straddler = children[i];
+        break;
+      }
+      if (!straddler) return null;
+      node = straddler;
+    }
+    return null;
+  }
+
+  function captureTypesetViewportAnchor() {
+    if (window.scrollY < 0.5) return null;
+    var page = pageEl();
+    if (!page) return null;
+    var top = topbarOffset();
+    var blocks = pageBlocks(page);
+    for (var i = 0; i < blocks.length; i++) {
+      var rect = blocks[i].getBoundingClientRect();
+      if (!(rect.height > 0) || rect.bottom <= top) continue;
+      var el = blocks[i];
+      var elTop = rect.top;
+      if (rect.top < top) {
+        var refined = descendToViewportTopAnchor(blocks[i], top);
+        if (!refined) continue;
+        el = refined.el;
+        elTop = refined.top;
+      }
+      return {
+        el: el,
+        top: elTop,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+      };
+    }
+    return null;
+  }
+
+  function settleTypesetViewportAnchor(anchor) {
+    if (!anchor || !anchor.el.isConnected) return;
+    // Any interleaved scroll makes the viewport-relative delta unsound: a
+    // user keypress/fling landing in an engine yield window must not be
+    // reverted, and on Chromium the native anchoring adjustment itself
+    // moves scrollY (bailing there loses nothing — delta was ~0 by
+    // design). On WebKit a pure layout shift leaves scrollY untouched, so
+    // the stationary-reader correction still fires.
+    if (Math.abs(window.scrollX - anchor.scrollX) >= 1 ||
+        Math.abs(window.scrollY - anchor.scrollY) >= 1) {
+      return;
+    }
+    var delta = anchor.el.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) >= 0.5) {
+      window.scrollBy({ left: 0, top: delta, behavior: 'auto' });
+    }
+  }
+
   // MathJax can finish while a lazy block is temporarily forced visible.
   // WebKit does not reliably teach `contain-intrinsic-size:auto` the height
   // measured in that state, so cache it explicitly before restoring
@@ -2298,6 +2374,7 @@
     var nodes = Array.from(target.querySelectorAll('.math[data-hash]'))
       .filter(isRawMathNode).slice(0, 40); // cap so one huge block can't jank
     typesetBusy = true;
+    var anchor = captureTypesetViewportAnchor();
     var lifted = target.style.contentVisibility === '';
     var originalContain = target.style.contain;
     if (lifted) {
@@ -2317,6 +2394,7 @@
         target.style.contentVisibility = '';
         target.style.contain = originalContain;
       }
+      settleTypesetViewportAnchor(anchor);
       typesetBusy = false;
     }
     scheduleBgFill(120);
@@ -2342,6 +2420,7 @@
       var nodes = Array.from(blk.querySelectorAll('.math[data-hash]')).filter(isRawMathNode);
       if (nodes.length) {
         typesetBusy = true;
+        var anchor = captureTypesetViewportAnchor();
         var lifted = blk.style.contentVisibility === '';
         var originalContain = blk.style.contain;
         if (lifted) {
@@ -2359,6 +2438,7 @@
             blk.style.contentVisibility = '';
             blk.style.contain = originalContain;
           }
+          settleTypesetViewportAnchor(anchor);
           typesetBusy = false;
         }
       }
@@ -2430,11 +2510,13 @@
     if (!nodes.length) return;
 
     typesetBusy = true;
+    var anchor = captureTypesetViewportAnchor();
     setStatus('updating', '↻ typesetting ' + nodes.length + ' math');
     var tStart = performance.now();
     try {
       await window.__mpEngine.typeset(nodes);
       seedTypesetBlockIntrinsicSizes(nodes);
+      settleTypesetViewportAnchor(anchor);
       var ms = Math.round(performance.now() - tStart);
       nodes.forEach(function(node) { node.classList.remove('math-pending'); });
       restoreMathSearchHighlights();

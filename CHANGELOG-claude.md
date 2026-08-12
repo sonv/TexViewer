@@ -1,5 +1,23 @@
 # CHANGELOG-claude
 
+## 2026-08-12
+
+### Fixed
+
+- **Page-scroll drift around long equations** (user repro: fit to eq 1.5, Space ×2 → section 2 mid-screen, Shift+Space ×1 → back at eq 1.2). Page motions are plain `scrollBy(±viewport)`; the drift is document geometry changing between opposite motions. Two mechanisms, measured with the user's `test.tex` served live: (a) cold lazy blocks carry the generic 180px `contain-intrinsic-size` estimate — prose is ~40-90px real, tall `\displaystyle` fractions more — and a cold document measured **9006px vs 7303px warm (~23% error)**; on WebKit a re-skipped block *forgets* its rendered height and reverts to the estimate, so even previously read content drifts (Chromium remembers, which is why the drift wouldn't reproduce in the Chromium test pane — clean symmetric motions there pre-fix). (b) raw→SVG math typeset changes block heights with no scroll anchoring on WebKit.
+- Fix, in three parts:
+  - `isTopLevelScrollSensitiveBlock` (viewer.js) now matches EVERY top-level block (was theorem/list first-children); all priming routes through one bounded queue (`queueStructuralPrime` / `drainStructuralPrimeSlice`): viewport-proximate blocks first, 64-block slices, nearest slice synchronous, rest via `requestIdleCallback` (setTimeout fallback) — because one monolithic pass measured **~1.9s at 840 blocks**, and a renumbering edit can hand the roots path half the document on a keystroke.
+  - The live typeset paths (flush / window drain / background fill, not print) and every priming pass are wrapped in `captureTypesetViewportAnchor` / `settleTypesetViewportAnchor` (patch.js): anchor the first element fully below the viewport top (descending into a straddling block so visible growth below the reading point isn't misread), scroll by measured displacement after. The settle aborts when scrollX/Y moved during the async window (user scroll during a MathJax yield must not be reverted; Chromium's native-anchoring adjustment moves scrollY, making the abort the exact no-double-compensation condition).
+  - `applyMode` (proof.js) re-primes fold-toggled blocks through the queue — explicit seeds override the browser's remembered size, so they must not describe pre-toggle geometry.
+- Adversarial review (3 finders / 16 agents): 10 confirmed findings collapsing to 6 distinct defects — scroll-revert during typeset yields (high, ×2), unbounded roots-path priming (×2), straddling-block anchor misattribution (×2), fold staleness, chunk ordering from document top, unanchored idle chunks — all fixed pre-commit; 3 refuted.
+
+### Verified
+
+- User's `test.tex`: exact symmetric paging (900↔1800↔900; EOF round-trip to 0), height byte-stable from first sample, 48/48 blocks explicitly seeded.
+- Synthetic 840-block / 200-equation doc: 12↓=10800 / 12↑=0 exact; 840/840 seeded; no monolithic stall (worst observed task 281ms during full page load vs the 1.9s single-pass; slices amortized over idle).
+- Priming keeps math raw (200/200 untypeset after the pass — prelayout marker held), preserving the lazy-typeset invariants.
+- `cargo test --workspace` (391), clippy 0, eslint 0, luajit OK; shell test updated to lock the queue + anchor invariants into the served bundle.
+
 ## 2026-08-10
 
 ### Fixed

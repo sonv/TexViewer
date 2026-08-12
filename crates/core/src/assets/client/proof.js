@@ -133,7 +133,15 @@
       }
       p.classList.toggle('folded', folded);
     });
-    if (metricBlocks.size) invalidateOverlayMetrics(Array.from(metricBlocks));
+    if (metricBlocks.size) {
+      invalidateOverlayMetrics(Array.from(metricBlocks));
+      // Folding/unfolding changes these blocks' heights, and their explicit
+      // inline contain-intrinsic-size (which overrides any browser-
+      // remembered size) still describes the pre-toggle geometry — re-prime
+      // them through the bounded queue so page motions stay symmetric after
+      // a proof-mode switch that refolds hundreds of blocks.
+      queueStructuralPrime(Array.from(metricBlocks));
+    }
     scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
   }
 

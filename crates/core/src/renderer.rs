@@ -6798,7 +6798,20 @@ mod tests {
         assert!(out
             .html
             .contains("function primeStructuralBlockIntrinsicSizes(roots)"));
-        assert!(out.html.contains("child.classList.contains('latex-list')"));
+        // The structural pass primes EVERY top-level block (not just theorem
+        // and list blocks): plain blocks' 180px estimates and WebKit's
+        // re-skip forgetting made page motions drift around long equations.
+        assert!(out
+            .html
+            .contains("block.parentElement === page"));
+        // Typeset batches keep the reading position steady: the correction is
+        // measured displacement, a no-op where native anchoring already ran.
+        assert!(out
+            .html
+            .contains("function captureTypesetViewportAnchor()"));
+        assert!(out
+            .html
+            .contains("settleTypesetViewportAnchor(anchor)"));
         assert!(out
             .html
             .contains("block.style.contain = 'layout style paint'"));
@@ -6818,9 +6831,24 @@ mod tests {
             .html
             .contains("seedBlockIntrinsicSizeSnapshots(snapshots);"));
         assert!(out.html.contains("seedCurrentBlockIntrinsicSizes(blocks);"));
+        // Both priming branches route through the bounded viewport-ordered
+        // queue — a mass-change patch must not synchronously prime hundreds
+        // of blocks any more than the initial full pass may.
+        assert!(out.html.contains("queueStructuralPrime(blocks, !roots);"));
         assert!(out
             .html
-            .contains("primeTopLevelBlockIntrinsicSizes(blocks);"));
+            .contains("function drainStructuralPrimeSlice()"));
+        assert!(out
+            .html
+            .contains("function orderBlocksByViewportProximity(blocks)"));
+        // Priming passes and typeset batches pin the reading position; the
+        // settle aborts when the user scrolled during the async window.
+        assert!(out
+            .html
+            .contains("settleTypesetViewportAnchor(viewportAnchor);"));
+        assert!(out
+            .html
+            .contains("Math.abs(window.scrollY - anchor.scrollY) >= 1"));
         assert!(out
             .html
             .contains("scheduleBlockIntrinsicSizePriming([block]);"));

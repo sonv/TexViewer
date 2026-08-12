@@ -86,13 +86,33 @@ same-value attribute writes are guarded. Geometry reads on skipped content
 return degenerate rects, so scroll paths fall back to native `scrollIntoView`
 (which forces the target to render). Verified pixel-identical by screenshot.
 
-The generic 180px fallback is especially inaccurate for theorem boxes and for
-a whole `enumerate`/`itemize`/`description` list stored in one top-level block.
-Those structural blocks are primed together in one contained layout pass on
-load and after relevant live replacements, then immediately return to lazy
-rendering. Persisting their measured outer boxes keeps half/full-page inverse
-motions stable without walking every prose block or enrolling list math in an
-eager MathJax pass.
+The generic 180px fallback is inaccurate for EVERY block kind — prose blocks
+are ~40-90px real, theorem boxes and lists differ sharply in both directions,
+and on WebKit a block that re-enters the skipped state *forgets* its rendered
+height and reverts to the estimate, so half/full-page inverse motions drifted
+over previously read content (worst around long equations; a cold document
+measured ~23% taller than warm). All top-level blocks are therefore primed
+with explicit measured sizes through one bounded queue — viewport-proximate
+blocks first, 64-block slices, the nearest slice synchronous and the rest via
+idle callbacks — because one monolithic forced-visible layout measured ~1.9 s
+at 840 blocks, and a mass-change patch (a renumbering edit can replace half
+the document) would otherwise pay the same stall on a keystroke. Fold/unfold
+re-primes the toggled blocks through the same queue (their explicit seeds
+would otherwise describe the pre-toggle geometry). Each slice retains
+containment during its lift and returns to lazy rendering immediately; the
+prelayout marker keeps slice lifts from enrolling raw math in eager MathJax
+passes; each pass pins the reading position via the measured-displacement
+anchor below. Separately, the live typeset paths (flush, window drain, background
+fill — not the print flush) and every priming pass capture the first element
+fully below the viewport top before the work (descending into a block that
+straddles the top edge, so growth the reader watches below the reading point
+is not misread as displacement) and scroll by its measured displacement
+after, so raw→SVG height changes at or above the reading position don't move
+it even on browsers without native scroll anchoring. The settle aborts when
+scrollX/Y moved during the async window — a user keypress or fling landing
+in an engine yield must not be reverted, and on Chromium the native-anchoring
+adjustment itself moves scrollY, which makes the abort exactly the no-op that
+avoids double compensation.
 
 ## Layer 4 — Viewport-lazy typesetting (v0.1.92)
 
