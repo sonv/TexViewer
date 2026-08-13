@@ -2417,6 +2417,68 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                // Preview-only unwrap of the graphicx box transforms:
+                // \resizebox{w}{h}{content} (+ starred), \scalebox{s}[v]{content},
+                // \rotatebox[opts]{angle}{content}. Their geometry cannot apply
+                // in a reflowing HTML preview, but the CONTENT argument
+                // routinely holds a whole tabular
+                // (`\resizebox{\textwidth}{!}{\begin{tabular}…}`) which must
+                // parse as block content — left in prose it degrades into
+                // unsupported-env chips with raw `&`-separated cells. The
+                // content renders at natural size and orientation instead.
+                if matches!(
+                    cmd.trim_end_matches('*'),
+                    "resizebox" | "scalebox" | "rotatebox"
+                ) {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    // command_word_end already swallowed a trailing `*`
+                    // (starred variants size by total height; same unwrap).
+                    self.advance_to(cmd_name_end);
+                    // TeX argument scanning skips %-comments and accepts
+                    // undelimited token args (`\resizebox\columnwidth{!}{…}`),
+                    // so use required_macro_arg / skip_tex_argument_space, not
+                    // the brace-only, comment-blind readers.
+                    match cmd.trim_end_matches('*') {
+                        "resizebox" => {
+                            let _ = self.required_macro_arg();
+                            let _ = self.required_macro_arg();
+                        }
+                        "scalebox" => {
+                            let _ = self.required_macro_arg();
+                            self.skip_tex_argument_space();
+                            let _ = self.skip_optional_arg();
+                        }
+                        _ => {
+                            self.skip_tex_argument_space();
+                            let _ = self.skip_optional_arg();
+                            let _ = self.required_macro_arg();
+                        }
+                    }
+                    self.skip_tex_argument_space();
+                    let group_start = self.byte;
+                    if self.peek_byte() == Some(b'{') {
+                        if let Some(group_end) = tex_group_end(self.src, group_start, b'{', b'}') {
+                            self.advance(1);
+                            if self.depth >= MAX_NESTING_DEPTH {
+                                self.advance_to(group_end);
+                                continue;
+                            }
+                            let mut children = Vec::new();
+                            let mut sub = Parser::new_at(
+                                &self.src[self.byte..group_end - 1],
+                                self.file.clone(),
+                                self.pos(),
+                                self.thms,
+                                self.depth + 1,
+                            );
+                            sub.parse_block_into(&mut children, None);
+                            self.advance_to(group_end);
+                            out.extend(children);
+                        }
+                    }
+                    continue;
+                }
+
                 if cmd == "appendix" {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     self.advance_to(cmd_name_end);

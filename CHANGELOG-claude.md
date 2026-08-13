@@ -1,5 +1,19 @@
 # CHANGELOG-claude
 
+## 2026-08-12 (second session: tabular fallback)
+
+### Fixed
+
+- **User report "tabular doesn't work"** (screenshot: `\begin{tabular}` unsupported-env chip, literal `&` cells, stray `!`). Diagnosis was a chase: the minimal `{@{}llll@{}}` spec, floats, and `\resizebox`-in-float all rendered natively; the user's installed binary and running daemon were current (2.1.26); nvim buffer matched disk. The stray `!` in the screenshot was the tell — `\resizebox{\textwidth}{!}{…}` renders its `{!}` arg as prose. Ground truth came from the user's real paper (`bk-paper/paper1-main.tex:1071`): `\begin{center}\resizebox{\textwidth}{!}{\begin{tabular}{@{}llll@{}}…` — and the minimal repro (center + resizebox + tabular) fails while the float variant works, because floats recover nested tabulars via `first_nested_tabular` on the raw body and `center` does not. Inside a command's brace argument the content is prose-parsed, where environments become inline unsupported-env chips. (Aside: my first "CLI renders fine" comparison was a miscount from a bad grep pattern — the resizebox tabular had NEVER rendered; always chase the chip's `data-src`.)
+- Fix in `parser.rs` `parse_block_into`: a new dispatch arm (modeled on the `iftrue` sub-parse) unwraps `\resizebox`/`\scalebox`/`\rotatebox` (+ starred — note `command_word_end` swallows the `*` into the command name, which broke the first cut's `cmd == "resizebox"` comparison): consume the sizing args (`balanced_brace_arg` / `skip_optional_arg` per command shape), then sub-parse the content group as block content via `Parser::new_at` at the group's position (spans/data-src stay correct for inverse search). Malformed input (no content group) falls through to prose; `MAX_NESTING_DEPTH` skips the content like the other recursion guards.
+- Regression test `resizebox_wrapped_tabular_renders_natively`: center+resizebox+tabular renders a native table with no chips and no leaked sizing args; scalebox/rotatebox/starred variants; malformed no-group case doesn't panic.
+- Adversarial review confirmed one shared root across two findings: the first cut's argument scanning was brace-only and comment-blind, missing TeX-legal spellings — `\resizebox{\textwidth}%⏎{!}{…}` (trailing-`%` line continuation leaks a stray `!` into prose) and undelimited `\resizebox\columnwidth{!}{…}` (reproduces the original chip degradation). Fixed with the file's own TeX-argument helpers (`required_macro_arg`, `skip_tex_argument_space` — the same pair `required_macro_arg` call sites already use); both spellings added to the regression test.
+
+### Verified
+
+- The user's real paper now renders **4/4 tabulars natively, 0 chips** (was 3/4 + 1 chip — the notation table). Verified in both the CLI render and the serve path.
+- `cargo test --workspace` (392), clippy 0, eslint 0, luajit OK, fmt clean on changed lines.
+
 ## 2026-08-12
 
 ### Fixed

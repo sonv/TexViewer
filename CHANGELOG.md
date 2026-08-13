@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.27] — 2026-08-12
+
+### Fixed
+
+- **`\resizebox`-wrapped tables render natively.** A tabular inside
+  `\resizebox{\textwidth}{!}{…}` (or `\scalebox` / `\rotatebox`, starred
+  forms included) outside a float was left in prose, where it degraded into
+  unsupported-environment chips with raw `&`-separated cells — the common
+  `\begin{center}\resizebox…{\begin{tabular}…` pattern. The box transforms
+  now unwrap: the sizing arguments are dropped (a reflowing HTML preview
+  can't honor them) and the content parses normally, so the table renders
+  as a real table at natural size.
+
 ## [2.1.26] — 2026-08-12
 
 ### Fixed

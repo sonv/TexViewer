@@ -6052,6 +6052,62 @@ mod tests {
     }
 
     #[test]
+    fn resizebox_wrapped_tabular_renders_natively() {
+        // Regression: `\resizebox{\textwidth}{!}{\begin{tabular}…}` outside a
+        // float left the tabular inside the command's brace argument, where
+        // prose parsing degraded it into unsupported-env chips with raw `&`
+        // cells (a float would have recovered it via first_nested_tabular;
+        // `\begin{center}` did not). The box transforms now unwrap: sizing
+        // args are dropped and the content parses as block content.
+        let body = render_body(concat!(
+            "\\begin{document}\n",
+            "\\begin{center}\n",
+            "\\resizebox{\\textwidth}{!}{\\begin{tabular}{@{}ll@{}}\n",
+            "a & b \\\\\n",
+            "c & d\n",
+            "\\end{tabular}}\n",
+            "\\end{center}\n",
+            "\\end{document}\n",
+        ));
+        assert!(
+            body.contains(r#"<table class="latex-tabular env-tabular""#),
+            "{body}"
+        );
+        assert!(!body.contains("unsupported-env"), "{body}");
+        assert!(!body.contains("textwidth"), "sizing args leaked: {body}");
+
+        // \scalebox{s}[v]{content} and \rotatebox[opts]{angle}{content} take
+        // the same unwrap; starred \resizebox* too, plus TeX-legal spellings
+        // the brace-only scan missed: a %-comment between sizing args and an
+        // undelimited control-sequence arg.
+        for wrapper in [
+            "\\scalebox{0.8}[0.9]",
+            "\\rotatebox[origin=c]{90}",
+            "\\resizebox*{\\textwidth}{!}",
+            "\\resizebox{\\textwidth}%\n{!}",
+            "\\resizebox\\columnwidth{!}",
+        ] {
+            let body = render_body(&format!(
+                "\\begin{{document}}\n{wrapper}{{\\begin{{tabular}}{{ll}}\nx & y\n\\end{{tabular}}}}\n\\end{{document}}\n"
+            ));
+            assert!(
+                body.contains(r#"<table class="latex-tabular env-tabular""#),
+                "{wrapper} did not unwrap: {body}"
+            );
+        }
+
+        // Malformed (no content group): must not panic, sizing args are
+        // consumed, following prose still renders.
+        let body = render_body(
+            "\\begin{document}\n\\resizebox{\\textwidth}{!} and prose continues.\n\\end{document}\n",
+        );
+        assert!(
+            text_content(&body).contains("and prose continues."),
+            "{body}"
+        );
+    }
+
+    #[test]
     fn tabular_variants_and_longtable_caption_render_natively() {
         for (env, args, width) in [
             ("tabular*", r"{0.8\linewidth}{lr}", "width:80%"),
