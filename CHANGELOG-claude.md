@@ -1,5 +1,29 @@
 # CHANGELOG-claude
 
+## 2026-08-12 (third session: Safari "unexpected spaces" triage)
+
+### Investigated
+
+- Second-hand report: "unexpected spaces in MathPreview under Safari; Chrome
+  is perfect." Built a real-WebKit harness (Playwright webkit + chromium in a
+  scratch dir; see the new DEVELOPMENT.md cookbook entry) against the served
+  `bk-paper/paper1-main.tex` and measured, per engine: per-kind
+  inter-fragment gaps (word-word / word-math / ref-word / … — medians within
+  0.2px, p90s within 1.5px), line advances with and without inline math
+  (identical to the decimal), inter-block vertical gaps (zero in both), and
+  total heights (within 0.6%). The current build shows NO WebKit spacing
+  anomaly, horizontal or vertical, static or dynamic.
+- Dynamic validation of the v2.1.26 geometry fix on REAL WebKit (it had only
+  been verified on Chromium): 214/214 blocks explicitly seeded, page-motion
+  round trips return to y=0 exactly both cold and warm, scrollHeight is
+  byte-stable after the one-time typeset convergence. Conclusion: the report
+  matches the pre-2.1.26 WebKit-only failure (re-skipped blocks forgetting
+  their rendered height → phantom whitespace; Chromium was immune via native
+  remembered sizes + scroll anchoring, hence "changed to Chrome and
+  everything is perfect"). Remedy is upgrading to ≥2.1.26, not new code. If
+  the symptom recurs ON ≥2.1.26, re-open with the reporter's exact document,
+  font size, and viewport.
+
 ## 2026-08-12 (second session: tabular fallback)
 
 ### Fixed

@@ -128,6 +128,15 @@ Patterns that have proven out, with the traps that motivated them:
     when in doubt about which path ran.
   - Config knobs matter for geometry bugs: `--config` a scratch TOML (e.g.
     `font-size = 48`) to reproduce large-font layouts.
+- **Safari-class bugs are testable without Safari**: `npm i playwright &&
+  npx playwright install webkit` in a scratch dir gives a real WebKit engine
+  to drive headlessly against a served daemon — same harness patterns as the
+  Chromium recipe (dispatched keys, geometry sampling, scroll cycles).
+  Measure DISTRIBUTIONS per engine, not absolutes: e.g. per-kind
+  inter-fragment gap medians/p90s (word-word, word-math, …) and line-advance
+  stats make "Safari adds weird spaces" falsifiable in minutes. This is how
+  the v2.1.26 geometry fix was validated on actual WebKit (214/214 blocks
+  seeded, byte-stable scrollHeight through repeated page-motion round trips).
 - **Adversarial review for nontrivial client/plugin code**: multi-lens review
   (find → adversarially verify each finding, reviewers told to *refute*),
   even when the change was browser-verified — it has repeatedly caught real
