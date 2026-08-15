@@ -137,6 +137,20 @@ Patterns that have proven out, with the traps that motivated them:
   stats make "Safari adds weird spaces" falsifiable in minutes. This is how
   the v2.1.26 geometry fix was validated on actual WebKit (214/214 blocks
   seeded, byte-stable scrollHeight through repeated page-motion round trips).
+- **Memory/leak reports: measure the whole process tree, and measure under
+  CONCURRENCY.** Two harnesses that found the 2.1.27 OOM:
+  - *Plugin soak*: `nvim --headless -u NONE -l soak.lua` driving the real
+    plugin against a real daemon — thousands of `nvim_exec_autocmds`
+    CursorMoved/TextChanged events, sampling nvim RSS, `collectgarbage("count")`,
+    AND `pgrep -P <nvim pid> | wc -l` (child curls count as the editor's
+    memory to systemd). Traps: autocmds are filetype-gated (`vim.bo.filetype =
+    "tex"` under `-u NONE`); `nvim -l` exits on return (`vim.wait` on a done
+    flag); the plugin grabs the first free port from 23636.
+  - *Daemon burst*: fire N concurrent `POST /buffer` bodies (unique content
+    each) and sample daemon RSS per burst. SEQUENTIAL requests plateau;
+    only CONCURRENT ones expose peak-retention ratchets — a sequential-only
+    test would have declared the daemon clean. `wait $PIDS`, never bare
+    `wait`, when the daemon is a background child of the same shell.
 - **Adversarial review for nontrivial client/plugin code**: multi-lens review
   (find → adversarially verify each finding, reviewers told to *refute*),
   even when the change was browser-verified — it has repeatedly caught real

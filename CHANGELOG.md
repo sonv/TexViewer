@@ -13,10 +13,32 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
-## [2.1.27] — 2026-08-12
+## [2.1.27] — 2026-08-15
 
 ### Fixed
 
+- **Typing no longer makes the preview daemon's memory grow without bound.**
+  Every keystroke pushed the whole buffer, and every push rendered the whole
+  document — concurrently. On a long paper each render outlasts the typing
+  debounce, so a burst of keystrokes meant tens of full renders in flight at
+  once (each holding a parsed document plus its HTML), and the allocator
+  keeps that peak: a daemon measured 122 → 467–510 MiB per typing burst
+  and, on Linux, never gave it back. Over days of editing that is an
+  out-of-memory kill (as reported — an editor session OOM-killed at 3.3 GB
+  after nine hours). Renders are now strictly one-at-a-time and pushes
+  coalesce onto the newest keystroke: a push superseded before it renders
+  stores its buffer (a push for an `\input` child is never dropped by a
+  concurrent push for the root, or by a save) but skips the render — the
+  newest push renders everything. Peak memory during a burst is now bounded
+  by one render plus the parked connections, and it settles back down
+  between bursts instead of ratcheting; a sustained burst finishes in a
+  fraction of the time.
+- **The editor plugin keeps at most one buffer upload in flight.** A new
+  push used to spawn a fresh `curl` alongside any still-uploading one; on a
+  slow render that piled up 100+ concurrent `curl` processes, each holding
+  the whole buffer in its pipe, inside the editor's own process tree — the
+  memory a systemd unit charges to the editor. A newer push now cancels the
+  in-flight upload before starting (the daemon side coalesces the rest).
 - **`\resizebox`-wrapped tables render natively.** A tabular inside
   `\resizebox{\textwidth}{!}{…}` (or `\scalebox` / `\rotatebox`, starred
   forms included) outside a float was left in prose, where it degraded into

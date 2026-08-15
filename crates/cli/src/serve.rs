@@ -102,6 +102,23 @@ struct AppState {
     /// `/buffer` can target the root or any watched included file; the
     /// renderer then splices these sources into the real root project.
     buffer_overrides: Arc<RwLock<HashMap<PathBuf, String>>>,
+    /// Render-attempt sequence of the newest buffer push STORED per file.
+    /// Lets the push gate coalesce a burst without ever dropping content: a
+    /// push is stored iff it is the newest push for ITS file (a root push
+    /// must not shadow a concurrent child-file push and vice versa), while
+    /// the expensive render is skipped whenever any globally newer attempt
+    /// exists (that attempt renders everything stored). Guarded by the
+    /// `buffer_overrides` lock — always take them together.
+    buffer_push_seq: Arc<RwLock<HashMap<PathBuf, u64>>>,
+    /// Single render permit. At most one full render is ever in flight;
+    /// pushes that arrive during a render wait here, then re-check
+    /// staleness — every one that has meanwhile been superseded returns
+    /// without rendering, so a typing burst collapses onto its newest push
+    /// no matter how the keystrokes are spaced. Without it, keystrokes 40 ms
+    /// apart during a slow render each passed the pre-render gate (each WAS
+    /// the newest at that instant) and overlapped anyway: 467 MiB peak, and
+    /// hundreds of MiB retained across a session.
+    render_permit: Arc<Mutex<()>>,
     /// Last broadcast block sequence — diff target for the next render.
     /// Updated atomically with each broadcast so reconnects and patches
     /// stay in sync.
@@ -761,6 +778,8 @@ pub async fn run(
         watch_tx,
         preamble_cache: Arc::new(RwLock::new(None)),
         buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+        buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+        render_permit: Arc::new(Mutex::new(())),
         last_blocks: Arc::new(RwLock::new(last_blocks)),
         render_seq: Arc::new(AtomicU64::new(0)),
         jump_seq: Arc::new(AtomicU64::new(0)),
@@ -2648,6 +2667,11 @@ fn append_macro_line(target: &Path, line: &str) -> std::io::Result<()> {
 /// button) instead of a filesystem event.
 async fn trigger_rerender(state: &AppState, root_file: &Path) -> anyhow::Result<()> {
     let seq = begin_render_attempt(state);
+    // Same single-render discipline as buffer pushes (see render_permit).
+    let _render_permit = state.render_permit.lock().await;
+    if !is_latest_render_attempt(state, seq) {
+        return Ok(());
+    }
     let (out, _timing) = render_cached(state, root_file).await?;
     update_watched(state, &out).await;
     let _ = broadcast_render(state, out, seq).await;
@@ -2983,9 +3007,60 @@ async fn serve_buffer_push(
         return axum::http::StatusCode::ACCEPTED;
     }
 
+    // Coalesce a typing burst. Before this gate every concurrent push ran a
+    // full render only to discard the result at the post-render staleness
+    // check; on a long paper a fast typing burst meant tens of full renders in
+    // flight at once, each holding a parsed AST plus rendered HTML. The
+    // allocator retains that peak, so a daemon accumulated hundreds of MiB per
+    // burst and never released it (measured 122→467 MiB over six bursts of 80
+    // concurrent pushes, flat at ~200 MiB with this gate; the reporter's
+    // editor was OOM-killed after days). Two independent decisions, both under
+    // the overrides lock:
+    //   store  — iff this is the newest push for ITS file. Sequence numbers are
+    //            global, so a concurrent push for a DIFFERENT file (root vs an
+    //            \input child) must not make this one look stale: its content
+    //            exists nowhere else and would silently vanish from the preview.
+    //   render — iff no globally newer attempt exists; that newer attempt
+    //            renders everything stored, this one included. Nothing is lost.
     {
         let mut overrides = state.buffer_overrides.write().await;
-        overrides.insert(pushed_path.clone(), body);
+        let mut push_seq = state.buffer_push_seq.write().await;
+        let newest_for_file = push_seq
+            .get(&pushed_path)
+            .is_none_or(|stored| seq > *stored);
+        if newest_for_file {
+            overrides.insert(pushed_path.clone(), body);
+            push_seq.insert(pushed_path.clone(), seq);
+        }
+        if !is_latest_render_attempt(&state, seq) {
+            log_event_verbose(
+                &state,
+                "info",
+                format!(
+                    "buffer-push #{seq} {body_len}b superseded before render — coalesced ({})",
+                    if newest_for_file {
+                        "stored"
+                    } else {
+                        "older than stored, dropped"
+                    }
+                ),
+            );
+            return axum::http::StatusCode::NO_CONTENT;
+        }
+    }
+
+    // One render at a time. A push that waited here while another render ran
+    // is very likely superseded by now (its keystroke has successors) — the
+    // re-check makes the whole burst collapse onto the newest push. Held
+    // across render AND broadcast so the diff base can't interleave either.
+    let _render_permit = state.render_permit.lock().await;
+    if !is_latest_render_attempt(&state, seq) {
+        log_event_verbose(
+            &state,
+            "info",
+            format!("buffer-push #{seq} {body_len}b superseded while waiting for render — coalesced"),
+        );
+        return axum::http::StatusCode::NO_CONTENT;
     }
 
     match render_cached(&state, &current_root).await {
@@ -3367,8 +3442,18 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         (payload, patch_cost, "ops")
     };
 
+    // Commit atomically under cancellation. A client that disconnects
+    // mid-request (the editor plugin now cancels a superseded upload — at
+    // keystroke rate on long papers) makes hyper drop this handler at its
+    // next pending await. If that await sat between `*last_blocks = …` and the
+    // `current` write, the diff base advanced to a render the browser never
+    // received, and every later positional patch applied against the wrong
+    // base until a full reload. So: take the `current` guard FIRST (the only
+    // remaining await), then mutate both and send with no await in between.
+    // Lock order last_blocks → current is what every other path uses.
+    let mut current = state.current.write().await;
     *last_blocks = out.blocks.clone();
-    *state.current.write().await = out;
+    *current = out;
     let _ = state.tx.send(payload);
     (op_count, kind)
 }
@@ -4378,6 +4463,14 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
                 let current = state.current.read().await;
                 current.root_file.clone()
             };
+            // Same single-render discipline as buffer pushes (see
+            // render_permit): a save that lands mid-typing-burst must not add
+            // a concurrent render either. Note the drain above already made
+            // this tick the newest of the queued watcher ticks.
+            let _render_permit = state.render_permit.lock().await;
+            if !is_latest_render_attempt(&state, seq) {
+                continue;
+            }
             match render_cached(&state, &root).await.map(|(out, _)| out) {
                 Ok(new_output) => {
                     if !is_latest_render_attempt(&state, seq) {
@@ -5314,6 +5407,8 @@ Second paragraph here.
             watch_tx,
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
@@ -5752,6 +5847,8 @@ Second paragraph here.
             watch_tx,
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),
@@ -5827,6 +5924,324 @@ Second paragraph here.
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A buffer-push that is superseded by a newer push before it reaches the
+    /// render must be coalesced: no render, and — critically — it must not
+    /// overwrite the newer buffer in the override map. Regression for the
+    /// typing-burst memory ratchet: every concurrent push used to run a full
+    /// render and only then discover it was stale, so a burst of N keystrokes
+    /// meant N documents' worth of parse trees and HTML in flight at once, a
+    /// peak the allocator never released (a long-lived daemon reached hundreds
+    /// of MiB per burst; the reporting user's editor was OOM-killed).
+    #[tokio::test]
+    async fn superseded_buffer_push_is_coalesced_without_render() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mp-buffer-push-coalesce-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        std::fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\nDisk.\n\\end{document}\n",
+        )
+        .unwrap();
+        let root_canon = root.canonicalize().unwrap();
+
+        let (tx, _rx) = broadcast::channel(8);
+        let (watch_tx, _watch_rx) = std_mpsc::channel();
+        let mut watched_set = HashSet::new();
+        watched_set.insert(root_canon.clone());
+
+        let state = AppState {
+            opts: HtmlOptions::default(),
+            current: Arc::new(RwLock::new(RenderOutput {
+                html: String::new(),
+                body_html: String::new(),
+                blocks: Vec::new(),
+                sync: SyncIndex::new(),
+                root_file: root_canon.clone(),
+                preamble: empty_preamble(),
+                included_files: Vec::new(),
+                tikz_assets: HashMap::new(),
+            })),
+            tx,
+            watched: Arc::new(RwLock::new(watched_set)),
+            watch_tx,
+            preamble_cache: Arc::new(RwLock::new(None)),
+            buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            render_permit: Arc::new(Mutex::new(())),
+            last_blocks: Arc::new(RwLock::new(Vec::new())),
+            render_seq: Arc::new(AtomicU64::new(0)),
+            jump_seq: Arc::new(AtomicU64::new(0)),
+            pending_jump: Arc::new(RwLock::new(None)),
+            jump_notify: Arc::new(Notify::new()),
+            active_jump_pollers: Arc::new(AtomicU64::new(0)),
+            editor_cmd: Arc::new(String::new()),
+            session_macros: Arc::new(RwLock::new(Vec::new())),
+            config_paths: Arc::new(Vec::new()),
+            viewer_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedConfig::default().viewer,
+            )),
+            search_query: Arc::new(RwLock::new(EditorSearch::default())),
+            last_cursor: Arc::new(RwLock::new(None)),
+            file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            file_save_lock: Arc::new(Mutex::new(())),
+            tikz_cache: Arc::new(Mutex::new(HashMap::new())),
+            log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            debug_logging: Arc::new(AtomicBool::new(false)),
+            last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
+            last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
+        };
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-mathpreview-path",
+            axum::http::HeaderValue::from_str(root_canon.to_str().unwrap()).unwrap(),
+        );
+
+        // The newest push renders normally.
+        let newest = "\\documentclass{article}\n\\begin{document}\nNewest.\n\\end{document}\n";
+        let status = serve_buffer_push(
+            axum::extract::State(state.clone()),
+            headers.clone(),
+            newest.to_string(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        let seq_after_newest = state.render_seq.load(std::sync::atomic::Ordering::Acquire);
+        let rendered_after_newest = state.current.read().await.body_html.clone();
+        assert!(
+            rendered_after_newest.contains(">Newest<"),
+            "{rendered_after_newest}"
+        );
+
+        // Now fire many concurrent pushes. Under the old code each one ran a
+        // full render regardless of ordering; with the gate, only the push
+        // holding the newest sequence number at gate time renders and stores.
+        // The invariant that must hold under EVERY interleaving: after the
+        // burst settles, the override map holds the buffer of the push that
+        // took the highest sequence number, and nothing older.
+        let mut handles = Vec::new();
+        for i in 0..24u32 {
+            let state_i = state.clone();
+            let headers_i = headers.clone();
+            let body = format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\nBurst{i}.\n\\end{{document}}\n"
+            );
+            handles.push(tokio::spawn(async move {
+                serve_buffer_push(axum::extract::State(state_i), headers_i, body).await
+            }));
+        }
+        let mut statuses = Vec::new();
+        for h in handles {
+            statuses.push(h.await.unwrap());
+        }
+        assert!(
+            statuses
+                .iter()
+                .all(|s| *s == axum::http::StatusCode::NO_CONTENT),
+            "{statuses:?}"
+        );
+        let final_seq = state.render_seq.load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(
+            final_seq,
+            seq_after_newest + 24,
+            "every push must take a sequence number"
+        );
+
+        // The stored buffer belongs to whichever push won the newest sequence
+        // number — and the rendered body agrees with it. A superseded push
+        // never overwrites a newer one (that is what the pre-render gate
+        // guarantees; before it, the store happened before any staleness
+        // check, so an older body could land last).
+        let overrides = state.buffer_overrides.read().await;
+        let stored = overrides
+            .get(&root_canon)
+            .cloned()
+            .expect("burst stored a buffer");
+        drop(overrides);
+        let stored_idx: u32 = stored
+            .split("Burst")
+            .nth(1)
+            .and_then(|rest| rest.split('.').next())
+            .and_then(|n| n.parse().ok())
+            .expect("stored buffer is one of the burst bodies");
+        let current = state.current.read().await;
+        assert!(
+            current.body_html.contains(&format!(">Burst{stored_idx}<")),
+            "rendered body must match the stored (newest) buffer {stored_idx}, got: {}",
+            current.body_html,
+        );
+        // And the winner is a genuinely-latest push: re-running the same body
+        // through the gate as the newest attempt renders identically.
+        assert!(
+            !current.body_html.contains(">Newest<"),
+            "{}",
+            current.body_html
+        );
+        drop(current);
+        let _ = newest;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The coalescing gate must never DROP content: a push that is globally
+    /// superseded (a newer attempt exists) but is the newest push for its OWN
+    /// file must still be stored, or a child-file edit that raced a root push
+    /// would silently vanish from the preview until the next keystroke in that
+    /// child. Constructed deterministically: bump render_seq underneath a
+    /// child push so its attempt is stale on arrival at the gate.
+    #[tokio::test]
+    async fn superseded_child_push_is_still_stored_for_its_file() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mp-buffer-push-childkeep-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        let child = dir.join("child.tex");
+        std::fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\nRoot.\n\\input{child}\n\\end{document}\n",
+        )
+        .unwrap();
+        std::fs::write(&child, "Childdisk\n").unwrap();
+        let root_canon = root.canonicalize().unwrap();
+        let child_canon = child.canonicalize().unwrap();
+
+        let (tx, _rx) = broadcast::channel(8);
+        let (watch_tx, _watch_rx) = std_mpsc::channel();
+        let mut watched_set = HashSet::new();
+        watched_set.insert(root_canon.clone());
+        watched_set.insert(child_canon.clone());
+
+        let state = AppState {
+            opts: HtmlOptions::default(),
+            current: Arc::new(RwLock::new(RenderOutput {
+                html: String::new(),
+                body_html: String::new(),
+                blocks: Vec::new(),
+                sync: SyncIndex::new(),
+                root_file: root_canon.clone(),
+                preamble: empty_preamble(),
+                included_files: vec![child_canon.clone()],
+                tikz_assets: HashMap::new(),
+            })),
+            tx,
+            watched: Arc::new(RwLock::new(watched_set)),
+            watch_tx,
+            preamble_cache: Arc::new(RwLock::new(None)),
+            buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            render_permit: Arc::new(Mutex::new(())),
+            last_blocks: Arc::new(RwLock::new(Vec::new())),
+            render_seq: Arc::new(AtomicU64::new(0)),
+            jump_seq: Arc::new(AtomicU64::new(0)),
+            pending_jump: Arc::new(RwLock::new(None)),
+            jump_notify: Arc::new(Notify::new()),
+            active_jump_pollers: Arc::new(AtomicU64::new(0)),
+            editor_cmd: Arc::new(String::new()),
+            session_macros: Arc::new(RwLock::new(Vec::new())),
+            config_paths: Arc::new(Vec::new()),
+            viewer_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedConfig::default().viewer,
+            )),
+            search_query: Arc::new(RwLock::new(EditorSearch::default())),
+            last_cursor: Arc::new(RwLock::new(None)),
+            file_content_cache: Arc::new(RwLock::new(HashMap::new())),
+            file_save_lock: Arc::new(Mutex::new(())),
+            tikz_cache: Arc::new(Mutex::new(HashMap::new())),
+            log_buffer: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            debug_logging: Arc::new(AtomicBool::new(false)),
+            last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
+            last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
+        };
+
+        // Make the child push stale on arrival: hold the overrides lock (the
+        // gate needs it), start the child push, bump the global sequence past
+        // it while it is blocked on the lock, then release. Its own attempt
+        // number is now older than the newest — globally superseded — yet it
+        // is the newest (only) push for child.tex.
+        let mut child_headers = axum::http::HeaderMap::new();
+        child_headers.insert(
+            "x-mathpreview-path",
+            axum::http::HeaderValue::from_str(child_canon.to_str().unwrap()).unwrap(),
+        );
+        let hold = state.buffer_overrides.write().await;
+        let state_child = state.clone();
+        let child_task = tokio::spawn(async move {
+            serve_buffer_push(
+                axum::extract::State(state_child),
+                child_headers,
+                "Childlive\n".to_string(),
+            )
+            .await
+        });
+        // Wait until the child task has taken its sequence number (render_seq
+        // moves from 0 to 1) and is parked on the lock we hold — structural,
+        // not a sleep. Then a "newer attempt" arrives (e.g. a concurrent root
+        // push): the global sequence moves past the child's number.
+        let child_took_seq = async {
+            while state.render_seq.load(std::sync::atomic::Ordering::Acquire) < 1 {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), child_took_seq)
+            .await
+            .expect("child push should take its sequence number");
+        for _ in 0..20 {
+            tokio::task::yield_now().await; // let it reach the lock
+        }
+        begin_render_attempt(&state);
+        drop(hold);
+        let status = child_task.await.unwrap();
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT, "child push status");
+
+        // Coalesced (no render, since something newer exists) — but STORED.
+        let overrides = state.buffer_overrides.read().await;
+        assert_eq!(
+            overrides.get(&child_canon).map(String::as_str),
+            Some("Childlive\n"),
+            "a globally-superseded child push must still store its buffer",
+        );
+        drop(overrides);
+        // And the body did not render on the child's own turn (rendered body
+        // is still empty: the newer attempt is responsible for rendering).
+        assert!(state.current.read().await.body_html.is_empty());
+
+        // The next (root) push — the newest attempt — renders both live buffers.
+        let mut root_headers = axum::http::HeaderMap::new();
+        root_headers.insert(
+            "x-mathpreview-path",
+            axum::http::HeaderValue::from_str(root_canon.to_str().unwrap()).unwrap(),
+        );
+        let status = serve_buffer_push(
+            axum::extract::State(state.clone()),
+            root_headers,
+            "\\documentclass{article}\n\\begin{document}\nRootlive.\n\\input{child}\n\\end{document}\n"
+                .to_string(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        let current = state.current.read().await;
+        assert!(
+            current.body_html.contains(">Rootlive<") && current.body_html.contains(">Childlive<"),
+            "the newest attempt must render every stored buffer; got: {}",
+            current.body_html,
+        );
+        assert!(!current.body_html.contains("Childdisk"), "{}", current.body_html);
+        drop(current);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `POST /buffer` with a path that's neither the root nor a watched
     /// included file must be rejected without poisoning the override map.
     #[tokio::test]
@@ -5854,6 +6269,8 @@ Second paragraph here.
             watch_tx,
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
+            buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
             jump_seq: Arc::new(AtomicU64::new(0)),

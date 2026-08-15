@@ -166,6 +166,10 @@ local stopping = {}
 local timer = nil
 local cursor_timer = nil
 local selection_timer = nil
+-- The one in-flight buffer-push curl (vim.system handle); a newer push kills
+-- it. nil on the jobstart fallback path (no handle) — that path stays as
+-- before.
+local push_job = nil
 local last_jump_seq = 0
 -- When each buffer last changed (ms, keyed by bufnr). Cursor posts within
 -- TYPING_WINDOW_MS of an edit IN THE SAME BUFFER are tagged `typing: true`
@@ -283,10 +287,10 @@ local function run_system(args, opts, on_done)
   local on_line = opts.on_stderr_line
   if vim.system then
     if not on_line then
-      vim.system(args, opts, function(res)
+      -- Returned so a caller can cancel a superseded request (see push_buffer).
+      return vim.system(args, opts, function(res)
         if on_done then vim.schedule(function() on_done(res) end) end
       end)
-      return
     end
     -- Streaming variant: forward each stderr line live, still capturing the
     -- full stderr for the final result.
@@ -766,7 +770,33 @@ local function push_buffer(edit_buf, edit_cursor)
     "-X", "POST",
     config.url,
   }
-  run_system(args, { stdin = body }, function(res)
+  -- One in-flight buffer push at a time. A newer push supersedes the older one
+  -- entirely (the daemon renders whole buffers, never deltas), so an in-flight
+  -- curl still uploading the previous state is pure waste — and on a long
+  -- file, where each render outlasts the debounce, those curls piled up
+  -- unbounded (a soak measured 100+ concurrent curl processes, each holding a
+  -- whole-buffer stdin pipe, inside the editor's process tree — memory that a
+  -- systemd unit accounts against the editor). Kill it before starting the
+  -- next; the daemon side coalesces superseded pushes too, so a killed upload
+  -- costs nothing but the bytes already sent.
+  -- Liveness guard: a job that already exited (but whose on_done hasn't been
+  -- delivered yet — vim.system closes the handle in _on_exit, the callback
+  -- arrives a tick later via vim.schedule) has a closed uv handle whose kill
+  -- would go straight to kill(2) on a possibly-recycled PID. Never signal a
+  -- closed handle.
+  if push_job and push_job.kill
+      and not (push_job.is_closing and push_job:is_closing()) then
+    pcall(push_job.kill, push_job, 15)
+  end
+  -- Declare before the closure is created: `local job = f(function() job end)`
+  -- would make the inner `job` a GLOBAL (nil) because the local isn't bound
+  -- until after the call, so push_job would never clear.
+  local job
+  job = run_system(args, { stdin = body }, function(res)
+    if job and push_job == job then push_job = nil end
+    -- Killed by a newer push (vim.system reports signal=15, code=0): not an
+    -- error and not this push's status to report.
+    if res and res.signal and res.signal ~= 0 then return end
     if res and res.code ~= 0 then
       last_status.last_error = ("curl exit %d: %s"):format(
         res.code or -1, (res.stderr or ""):gsub("%s+$", ""))
@@ -774,6 +804,7 @@ local function push_buffer(edit_buf, edit_cursor)
       last_status.last_error = nil
     end
   end)
+  push_job = job
   last_status.pushes = last_status.pushes + 1
   last_status.last_push_ms = uv.hrtime() / 1e6
 end

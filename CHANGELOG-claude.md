@@ -1,5 +1,139 @@
 # CHANGELOG-claude
 
+## 2026-08-15 (memory leak: editor OOM after days of editing)
+
+### Report
+
+- Second-hand (gi1242 via Son): neovide systemd unit OOM-killed, 3.3G peak
+  over 9h wall; "only when editing with math preview"; suspects source jumps
+  / continuous cursor sync; edits long files, leaves nvim open for days.
+
+### Investigated
+
+- **Plugin Lua audit came up clean**: every timer is stopped+closed on
+  reschedule, `run_system` jobs are one-shot, no growing tables (buffer
+  caches are keyed by bufnr and pruned on BufDelete), the source-jump path
+  is one parked long-poll curl with a generation token. `last_text_change`
+  is bounded by open buffers. Nothing in Lua accumulates.
+- **Built a headless soak** (`scratchpad/soak2.lua`, `nvim --headless -u
+  NONE -l`): real plugin + real daemon, 3000 iterations mixing
+  CursorMoved / TextChanged (edit + undo) / visual selection at 15 ms,
+  sampling nvim RSS, Lua heap, live child-process count, and the daemon's
+  RSS. Gotchas that cost time: the plugin's autocmds are FILETYPE-GATED
+  (set `vim.bo.filetype = "tex"` under `-u NONE` or every event is
+  ignored — `pushes=0` was the tell); `nvim -l` exits when the script
+  returns (hold the loop with `vim.wait` on a done flag); the plugin picks
+  the first free port from 23636 (my earlier `pkill -f soak-paper` killed
+  its own daemon mid-run); a shell `wait` with no args waits on the
+  backgrounded daemon too (collect curl PIDs and `wait $PIDS`).
+- **Result: nvim itself is flat** (19.8 → 22 MiB, Lua ~1 MiB) — but
+  `children=100–172` concurrent `curl` processes at steady state, each a
+  whole-buffer POST holding the paper in its stdin pipe, inside nvim's
+  process tree. That is memory a systemd unit's OOM accounting charges to
+  the editor even though nvim's own heap is fine — which reconciles "3.3G
+  peak in the neovide unit" with a clean Lua audit.
+- **The daemon is the real ratchet.** A single `/buffer` POST of the paper
+  takes ~1 s (debug) and renders synchronously inside the async handler,
+  so N concurrent pushes = N concurrent full renders. Sequential pushes
+  plateau (~137 MiB, allocator reuse). CONCURRENT pushes ratchet: bursts of
+  80 took a release daemon 122 → 424 → 456 → 460 → 462 → 467 → 467 MiB,
+  never released after idle. Mechanism: `serve_buffer_push` ran
+  `render_cached` for every request and only THEN checked
+  `is_latest_render_attempt` — the staleness check discarded the result
+  but the peak allocation (AST + HTML per in-flight render) had already
+  happened, and the allocator retains the high-water arena. Days of typing
+  bursts on a long file → unbounded growth → OOM. Cursor posts (`/cursor`)
+  are a read-lock + lookup: cheap, no render, not implicated.
+
+### Fixed
+
+- **Daemon: pre-render coalescing gate** in `serve_buffer_push`, under the
+  `buffer_overrides` lock, two independent decisions: STORE iff this push
+  is the newest for ITS file (new `AppState.buffer_push_seq:
+  HashMap<PathBuf,u64>`, guarded by the overrides lock — sequence numbers
+  are global, so a concurrent push for a DIFFERENT file, or a watcher /
+  trigger_rerender bump, must not make this one look stale: its content
+  exists nowhere else and would silently vanish from the preview); RENDER
+  iff no globally newer attempt exists (that attempt renders everything
+  stored). The first cut gated store AND render on the global seq — the
+  adversarial review and my own root+child race analysis both flagged the
+  drop; couldn't hit it empirically even with a 2 ms stagger against a
+  slow root render (pre-gate section is sub-ms) but "hard to hit" ≠
+  "impossible" when the cost is a lost edit, so per-file it is. Proven by
+  `superseded_child_push_is_still_stored_for_its_file` (deterministic:
+  hold the overrides lock, spawn the child push, wait structurally for it
+  to take its seq, bump the global seq, release → child is globally stale
+  yet stored; a mutation check confirmed the test FAILS against the naive
+  gate) and `superseded_buffer_push_is_coalesced_without_render` (24-way
+  burst: stored buffer == newest-seq winner, rendered body agrees).
+- **Result**: 122 → ~181 MiB FLAT through 14 bursts of 80 (1,120 pushes;
+  bursts 5–10 byte-identical — arena noise around a plateau), each burst
+  ~0–1 s instead of 2–3 s because 79/80 renders are skipped.
+- **Plugin: one in-flight upload.** `push_buffer` keeps the `vim.system`
+  handle and `:kill(15)`s it before the next push (a killed job reports
+  `signal=15, code=0` → ignored, not an error; the jobstart fallback for
+  nvim <0.10 is unchanged). Soak: `children=3` steady (was 100–172),
+  same 300 pushes + 3000 cursor posts, zero errors.
+
+### Adversarial review round (4 confirmed, all fixed)
+
+- **Lua scoping bug in my first cut** (high): `local job = f(function()
+  job end)` binds `job` AFTER the call, so the inner `job` was a global
+  (nil), `push_job` never cleared, and every later push `:kill(15)`ed the
+  handle of the last COMPLETED curl — the reviewer showed that reaches
+  `kill(2)` on the old PID (libuv has no closed-handle guard), i.e. a
+  silent SIGTERM to whatever same-uid process has recycled that PID hours
+  later. Fixed with `local job; job = f(...)` PLUS a liveness guard
+  (`not push_job:is_closing()` — verified true after exit / false while
+  live on nvim 0.12), so a closed handle is never signalled.
+- **The gate alone did not stop the REALISTIC ratchet** (high): my burst
+  harness fired 80 pushes simultaneously, but real typing arrives ~40 ms
+  apart DURING a render — each such push IS the newest at its gate moment,
+  so they overlapped anyway. Reproduced: 467 MiB peak with gate-only. Fix:
+  a single render permit (`AppState.render_permit: Mutex<()>`) taken after
+  the store/gate and re-checked for staleness after acquisition, in all
+  three render sites (`serve_buffer_push`, `trigger_rerender`, the
+  file-watcher task) — at most one render ever in flight; a whole burst
+  collapses onto its newest push.
+- **Cancellation desync** (medium + low, same root — the reviewer
+  reproduced it, 6/20 hits under cursor-post contention): my plugin kill
+  makes hyper drop the handler at its next pending await, at keystroke
+  rate. `broadcast_render` mutated `*last_blocks` BEFORE awaiting
+  `current.write()`; a drop in that gap advanced the diff base to a render
+  the browser never received, and every later positional patch applied
+  against the wrong base until a full reload. Fixed: take the `current`
+  guard first (the only remaining await), then mutate both and send with
+  no await between. Lock order last_blocks → current is unchanged.
+
+### Verified — the honest measurement picture
+
+- Harnesses: `burst.sh` (simultaneous), `typing.sh`/`typing2.sh` (40 ms
+  spaced, pause-separated bursts), `harsh.sh` (400 pushes at 25 ms, no
+  pauses), `seq.sh` (strictly sequential unique content), all against the
+  release binary on the 167 KB paper (~170 ms/render). macOS allocator.
+- Sequential-unique: BEFORE and PERMIT both plateau ~150 MiB by ~90
+  pushes → there is NO per-render leak; caches are bounded.
+- Simultaneous bursts of 80: BEFORE 122→467 ratcheting; gate 122→181 flat.
+- Realistic 40 ms bursts with pauses (`typing2`, 5×100): BEFORE peak
+  468/burst; PERMIT peak ~300 and SETTLED BACK to 110 MiB by burst 4 —
+  transient, not retained.
+- Harsh no-pause 400 pushes: BEFORE jumps to 510 immediately and holds;
+  PERMIT climbs linearly (~1 MiB/push, `curls alive` 1–3 = one render at a
+  time) to a plateau ~417 at the burst's end. That climb is the queue of
+  parked handlers (hyper connection + response machinery each; bodies are
+  already moved into the override map before parking), bounded by burst
+  length and released after — consistent with `typing2` settling. So:
+  the permit bounds concurrent RENDER work to one; peak now scales with
+  parked connections rather than with N × (AST + HTML). On glibc/Linux
+  (the reporter's platform) the render peak is what fragments arenas and
+  sticks, so capping it is the fix; macOS returned memory in both cases,
+  which is why "retained" numbers here are milder than the reviewer's
+  1.4–1.75 GiB or the reporter's 3.3 G.
+- Plugin soak before/after: children 100–172 → 3, nvim RSS flat both ways.
+- `cargo test --workspace` (394: two new deterministic coalescing tests,
+  one mutation-checked to FAIL against the naive gate), clippy 0, eslint
+  0, luajit OK, fmt clean on changed lines.
+
 ## 2026-08-12 (third session: Safari "unexpected spaces" triage)
 
 ### Investigated
