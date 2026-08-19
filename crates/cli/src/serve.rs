@@ -977,7 +977,11 @@ fn host_is_loopback(host_header: &str) -> bool {
         // `host` or `host:port` — strip a trailing `:port` if present.
         host.rsplit_once(':').map_or(host, |(h, _)| h)
     };
-    if hostname.eq_ignore_ascii_case("localhost") {
+    if hostname
+        .rsplit('.')
+        .next()
+        .map_or(false, |tld| tld.eq_ignore_ascii_case("localhost"))
+    {
         return true;
     }
     hostname
@@ -4641,6 +4645,7 @@ mod tests {
         assert!(host_is_loopback("127.0.0.1"));
         assert!(host_is_loopback("localhost:23636"));
         assert!(host_is_loopback("LocalHost"));
+        assert!(host_is_loopback("mathpreview.localhost"));
         assert!(host_is_loopback("127.5.6.7"));
         assert!(host_is_loopback("[::1]:23636"));
         assert!(host_is_loopback("[::1]"));

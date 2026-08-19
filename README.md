@@ -375,7 +375,7 @@ Open any `.tex` file and run:
 ```
 
 The plugin spawns `mathpreview-cli serve <buffer> --port <free>` in the
-background, opens a browser tab at `http://127.0.0.1:<port>/`, and starts
+background, opens a browser tab at `http://mathpreview.localhost:<port>/`, and starts
 pushing the buffer on every `TextChanged`. This works even on a buffer
 that has never been `:write`n: the daemon serves a placeholder for the
 missing file and the plugin pushes your buffer right away, so a brand-new
@@ -416,7 +416,7 @@ open), invoke the binary directly:
 mathpreview-cli render path/to/paper.tex -o out.html
 open out.html
 
-# Live-reload server (default 127.0.0.1:23636). Edits to the file on
+# Live-reload server (default mathpreview.localhost:23636). Edits to the file on
 # disk trigger re-renders; without the plugin pushing buffers,
 # you'll re-render on save rather than per-keystroke.
 mathpreview-cli serve path/to/paper.tex
@@ -435,7 +435,7 @@ defaults to:
 ```
 
 and the daemon serves that bundle at
-`http://127.0.0.1:23636/vendor/mathjax/...` directly from the embedded
+`http://mathpreview.localhost:23636/vendor/mathjax/...` directly from the embedded
 in-memory tree. No `npm install`, no CDN access, no LaTeX install, and
 no separate MathJax setup is needed for the HTML/SVG preview, even
 after you move the binary somewhere else on disk.

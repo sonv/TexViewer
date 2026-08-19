@@ -134,12 +134,12 @@ local config = {
   -- (Hyprland), or `swaymsg -t get_tree` (Sway) with the terminal focused.
   jump_window = "nvim",
   -- Per-session URLs, written when start_daemon() picks a port.
-  url = nil,        -- http://127.0.0.1:<port>/buffer
-  cursor_url = nil, -- http://127.0.0.1:<port>/cursor
-  selection_url = nil, -- http://127.0.0.1:<port>/selection
-  search_url = nil, -- http://127.0.0.1:<port>/search
-  jump_url = nil,   -- http://127.0.0.1:<port>/jump
-  debug_url = nil,  -- http://127.0.0.1:<port>/debug
+  url = nil,        -- http://mathpreview.localhost:<port>/buffer
+  cursor_url = nil, -- http://mathpreview.localhost:<port>/cursor
+  selection_url = nil, -- http://mathpreview.localhost:<port>/selection
+  search_url = nil, -- http://mathpreview.localhost:<port>/search
+  jump_url = nil,   -- http://mathpreview.localhost:<port>/jump
+  debug_url = nil,  -- http://mathpreview.localhost:<port>/debug
 }
 
 local uv = vim.uv or vim.loop
@@ -564,7 +564,7 @@ local function scan_daemons(cb)
       pending = pending + 1
       run_system({
         "curl", "--silent", "--max-time", "1",
-        "http://127.0.0.1:" .. tostring(port) .. "/debug",
+        "http://mathpreview.localhost:" .. tostring(port) .. "/debug",
       }, {}, function(res)
         if res and res.code == 0 and res.stdout and res.stdout ~= "" then
           local ok, d = pcall(json_decode, res.stdout)
@@ -591,7 +591,7 @@ end
 local function stop_daemon_at(port, cb)
   run_system({
     "curl", "--silent", "--max-time", "2", "-X", "POST",
-    "http://127.0.0.1:" .. tostring(port) .. "/stop",
+    "http://mathpreview.localhost:" .. tostring(port) .. "/stop",
   }, {}, function(res)
     if cb then cb(res and res.code == 0) end
   end)
@@ -648,7 +648,7 @@ local function maybe_sweep_stale_daemons()
 end
 
 local function set_urls(port)
-  local base = "http://127.0.0.1:" .. tostring(port)
+  local base = "http://mathpreview.localhost:" .. tostring(port)
   config.url = base .. "/buffer"
   config.cursor_url = base .. "/cursor"
   config.selection_url = base .. "/selection"
@@ -679,7 +679,7 @@ end
 -- Open the browser viewer for this daemon.
 local function open_viewer(entry)
   entry.opened = true
-  open_browser("http://127.0.0.1:" .. tostring(entry.port) .. "/")
+  open_browser("http://mathpreview.localhost:" .. tostring(entry.port) .. "/")
 end
 
 -- The daemon is already running and the user ran :MathPreview again. Don't
@@ -691,8 +691,8 @@ end
 -- opening if the count can't be determined. The /debug curl runs async; its
 -- callback is already main-loop-scheduled by run_system.
 local function reuse_or_open_browser(entry)
-  local url = "http://127.0.0.1:" .. tostring(entry.port) .. "/"
-  local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
+  local url = "http://mathpreview.localhost:" .. tostring(entry.port) .. "/"
+  local debug_url = "http://mathpreview.localhost:" .. tostring(entry.port) .. "/debug"
   local function do_open() open_viewer(entry) end
   local function say_reuse()
     entry.opened = true
@@ -1307,7 +1307,7 @@ end
 -- its /debug, so routing knows which daemon owns which file. Async, best-effort;
 -- ignored if the daemon was replaced/stopped meanwhile.
 local function fetch_watched(entry)
-  local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
+  local debug_url = "http://mathpreview.localhost:" .. tostring(entry.port) .. "/debug"
   run_system({ "curl", "--silent", "--max-time", "2", debug_url }, {}, function(res)
     if daemons[entry.root] ~= entry then return end
     if not (res and res.code == 0 and res.stdout and res.stdout ~= "") then return end
@@ -1761,7 +1761,7 @@ local function start_with(cmd, opts)
     end
   end
   vim.notify(
-    ("mathpreview: serving %s on http://127.0.0.1:%d"):format(vim.fn.fnamemodify(root, ":~"), port),
+    ("mathpreview: serving %s on http://mathpreview.localhost:%d"):format(vim.fn.fnamemodify(root, ":~"), port),
     vim.log.levels.INFO)
 end
 
