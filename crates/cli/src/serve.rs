@@ -852,7 +852,17 @@ pub async fn run(
 
     // Log the bind once we know the address — separate from the
     // `eprintln!` below so the panel can show it too.
-    log_event(&state, "info", format!("serving on http://{host}:{port}"));
+    // On the default loopback bind, advertise the browser-facing hostname:
+    // `*.localhost` resolves to loopback inside every modern browser, and a
+    // distinct name lets per-site extension settings (zoom, vimium…) target
+    // the preview without bleeding into other localhost services. A custom
+    // --host must print the real address.
+    let advertised = if bind_is_loopback && host == "127.0.0.1" {
+        format!("http://mathpreview.localhost:{port}")
+    } else {
+        format!("http://{host}:{port}")
+    };
+    log_event(&state, "info", format!("serving on {advertised}"));
     if !bind_is_loopback {
         let warn = format!(
             "binding non-loopback host {host} exposes unauthenticated control \
@@ -916,7 +926,7 @@ pub async fn run(
             std::process::exit(12);
         }
     };
-    elog!("mathpreview serving on http://{addr}");
+    elog!("mathpreview serving on {advertised}");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -977,10 +987,15 @@ fn host_is_loopback(host_header: &str) -> bool {
         // `host` or `host:port` — strip a trailing `:port` if present.
         host.rsplit_once(':').map_or(host, |(h, _)| h)
     };
+    // Any name whose LAST label is `localhost` (`mathpreview.localhost`) is
+    // loopback: RFC 6761 reserves the TLD, browsers resolve it to loopback
+    // themselves, and public DNS cannot serve it — so this cannot reopen
+    // DNS rebinding against the control endpoints. Suffix position matters:
+    // `localhost.evil.com` resolves wherever evil.com's DNS says.
     if hostname
         .rsplit('.')
         .next()
-        .map_or(false, |tld| tld.eq_ignore_ascii_case("localhost"))
+        .is_some_and(|tld| tld.eq_ignore_ascii_case("localhost"))
     {
         return true;
     }
@@ -4646,6 +4661,8 @@ mod tests {
         assert!(host_is_loopback("localhost:23636"));
         assert!(host_is_loopback("LocalHost"));
         assert!(host_is_loopback("mathpreview.localhost"));
+        assert!(host_is_loopback("mathpreview.localhost:23636"));
+        assert!(host_is_loopback("a.b.LOCALHOST"));
         assert!(host_is_loopback("127.5.6.7"));
         assert!(host_is_loopback("[::1]:23636"));
         assert!(host_is_loopback("[::1]"));
@@ -4653,6 +4670,16 @@ mod tests {
         assert!(!host_is_loopback("evil.example.com:23636"));
         assert!(!host_is_loopback("192.168.1.5:23636"));
         assert!(!host_is_loopback("169.254.1.1"));
+        // `.localhost` must be the LAST LABEL — public DNS can resolve all of
+        // these to an attacker's address, so accepting any would reopen
+        // DNS rebinding against the unauthenticated control endpoints.
+        assert!(!host_is_loopback("localhost.evil.com"));
+        assert!(!host_is_loopback("localhost.evil.com:23636"));
+        assert!(!host_is_loopback("evil-localhost"));
+        assert!(!host_is_loopback("mylocalhost:23636"));
+        // Trailing-dot FQDN form is deliberately rejected (conservative;
+        // browsers do not send it for `.localhost` names).
+        assert!(!host_is_loopback("mathpreview.localhost."));
     }
 
     #[test]
@@ -4661,9 +4688,12 @@ mod tests {
         assert!(origin_is_loopback("http://127.0.0.1:23636"));
         assert!(origin_is_loopback("http://localhost:23636"));
         assert!(origin_is_loopback("https://[::1]:23636"));
+        // The custom viewer hostname's origin (the tab the plugin now opens).
+        assert!(origin_is_loopback("http://mathpreview.localhost:23636"));
         // Cross-origin / null origins are rejected.
         assert!(!origin_is_loopback("https://evil.example"));
         assert!(!origin_is_loopback("http://192.168.1.5:23636"));
+        assert!(!origin_is_loopback("http://localhost.evil.com:23636"));
         assert!(!origin_is_loopback("null"));
         assert!(!origin_is_loopback(""));
     }

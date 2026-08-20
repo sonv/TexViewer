@@ -13,6 +13,22 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.28] — 2026-08-20
+
+### Added
+
+- **The preview opens on `http://mathpreview.localhost:<port>`** instead of
+  a bare IP (contributed by @gi1242, #6). Browser extensions and per-site
+  settings — zoom, vimium keybindings, dark-mode toggles — key on the
+  hostname and ignore ports, so previews no longer share a "site" with
+  every other localhost service, and one `mathpreview.localhost` rule
+  covers every preview port. `*.localhost` resolves to loopback inside
+  every modern browser (RFC 6761), and the daemon's Host/Origin guard
+  accepts any name whose last label is `localhost` — still rebinding-safe,
+  since public DNS cannot serve the reserved `.localhost` TLD
+  (`localhost.evil.com` stays rejected). The plugin's internal endpoints
+  stay on `127.0.0.1`, so nothing depends on the OS resolver.
+
 ## [2.1.27] — 2026-08-15
 
 ### Fixed

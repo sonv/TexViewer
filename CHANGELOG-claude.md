@@ -1,5 +1,49 @@
 # CHANGELOG-claude
 
+## 2026-08-20 (PR #6 review: custom viewer hostname)
+
+### Reviewed & merged
+
+- gi1242's PR #6 (`mathpreview.localhost` URLs; Linux-tested only). The
+  host-guard suffix rule is sound — verified the rebinding reasoning
+  (`.localhost` is an RFC 6761 reserved TLD: browsers resolve it to
+  loopback internally, public DNS cannot serve it, and `localhost.evil.com`
+  takes its LAST label so it stays rejected) and added the adversarial
+  tests (`localhost.evil.com`, `evil-localhost`, `mylocalhost`,
+  trailing-dot FQDN → all rejected; `a.b.LOCALHOST` accepted).
+  `origin_is_loopback` delegates to `host_is_loopback`, so the WS origin
+  check followed for free. Merged the PR commit as-is (FF onto dev — the
+  PR base was exactly the dev tip, so GitHub will auto-mark it merged at
+  the next dev→main release push) with an amendment commit on top.
+- **Amendment: split browser-facing vs internal URLs.** The pretty
+  hostname only matters where extensions see it — the tab the plugin
+  opens. The PR also moved all six plugin-internal curl endpoints
+  (buffer/cursor/selection/search/jump/debug + scan/stop/fetch_watched)
+  to the hostname, which (a) newly depends on the OS resolver handling
+  `*.localhost` (fine on this macOS — getaddrinfo returns ::1 AND
+  127.0.0.1 — and on systemd Linux, but "in theory" elsewhere, per the PR
+  body itself), and (b) pays a refused ::1 connect per request since the
+  daemon binds v4 only. Reverted internals to `127.0.0.1` (new
+  `viewer_url()` helper is the single pretty-URL source; startup
+  notify/daemon log advertise it only on the default loopback bind — a
+  custom `--host` prints the real address). Also fixed the PR's
+  `map_or(false, …)` clippy lint.
+- This keeps the friend's preferred shape — unconditional, no config
+  option — because the browser-facing URL works everywhere browsers do,
+  independent of OS resolvers.
+
+### Verified
+
+- Host guard e2e on a live daemon: pretty Host 200 (incl. via the OS
+  resolver end-to-end), `localhost.evil.com` Host 403, IP Host 200.
+- Full viewer pipeline on `http://mathpreview.localhost:<port>` in
+  Chromium AND Playwright WebKit (Safari-class): page loads, WS connects
+  (● live, no reload loop), a disk change re-renders 214 blocks over the
+  socket, math typesets.
+- Plugin soak (headless driver, 800 events): notify shows the pretty URL,
+  internal posts on 127.0.0.1, 80 pushes + 800 cursor posts, zero errors.
+- 394 tests (new host/origin cases), clippy 0, eslint 0, luajit OK.
+
 ## 2026-08-15 (memory leak: editor OOM after days of editing)
 
 ### Report
