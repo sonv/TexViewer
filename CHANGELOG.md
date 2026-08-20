@@ -28,6 +28,14 @@ summary.
   since public DNS cannot serve the reserved `.localhost` TLD
   (`localhost.evil.com` stays rejected). The plugin's internal endpoints
   stay on `127.0.0.1`, so nothing depends on the OS resolver.
+- **The viewer hostname is configurable**: `setup({ viewer_host = … })`
+  takes any `*.localhost` name, `127.0.0.1` to revert to the old address,
+  or the `"{stem}.localhost"` template, which gives each paper its own
+  origin from its filename (`My Paper_v2.tex` →
+  `http://my-paper-v2.localhost:<port>/`) — recognizable tabs and
+  per-paper browser settings, where the shared default gives one-time
+  extension setup covering every preview. A non-loopback `viewer_host`
+  warns at setup instead of silently opening a tab the daemon would 403.
 
 ## [2.1.27] — 2026-08-15
 

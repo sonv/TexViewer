@@ -35,6 +35,12 @@ local PLUGIN_VERSION = "2.1.28"
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
   filetypes = { "tex", "plaintex", "latex" },
+  -- Hostname for the BROWSER-facing viewer URL. Any `*.localhost` name (or
+  -- `localhost` / `127.0.0.1`) passes the daemon's Host guard; a distinct
+  -- name gets its own per-site browser settings (zoom, vimium, dark mode),
+  -- so e.g. `viewer_host = "thesis.localhost"` separates one project's
+  -- preview from the rest. Plugin-internal requests always use 127.0.0.1.
+  viewer_host = "mathpreview.localhost",
   debounce_ms = 40,
   cursor_debounce_ms = 80,
   -- Source-jump (browser → editor) is a long-poll, not a fixed-interval
@@ -671,8 +677,46 @@ end
 -- localhost services. The daemon accepts it: its Host/Origin guard takes any
 -- name whose last label is `localhost` — still rebinding-safe, since public
 -- DNS cannot resolve the reserved `.localhost` TLD.
-local function viewer_url(port)
-  return "http://mathpreview.localhost:" .. tostring(port) .. "/"
+-- Hostname label from a root path's basename: lowercase, non-alphanumerics
+-- collapsed to `-`, trimmed. "paper1_main.tex" → "paper1-main". Empty (or
+-- fully non-alphanumeric) names fall back to "mathpreview".
+local function host_stem(root)
+  local stem = vim.fn.fnamemodify(root or "", ":t:r"):lower()
+  stem = stem:gsub("[^%w]+", "-"):gsub("^%-+", ""):gsub("%-+$", "")
+  if stem == "" then stem = "mathpreview" end
+  return stem
+end
+
+local function viewer_url(port, root)
+  local host = config.viewer_host
+  if not host or host == "" then host = "mathpreview.localhost" end
+  -- `{stem}` expands to the root file's sanitized basename, giving each
+  -- paper its own origin (own zoom/extension settings, recognizable tabs):
+  -- viewer_host = "{stem}.localhost" → http://paper1-main.localhost:<port>/
+  host = host:gsub("{stem}", host_stem(root))
+  return "http://" .. host .. ":" .. tostring(port) .. "/"
+end
+
+-- The daemon's Host guard only accepts loopback names: any `*.localhost`,
+-- `localhost` itself, or a loopback IP. Warn once at setup for anything else
+-- — the browser tab would open and immediately see 403s.
+local viewer_host_warned = false
+local function check_viewer_host()
+  local host = config.viewer_host
+  if not host or host == "" or viewer_host_warned then return end
+  local lower = host:lower()
+  local ok = lower == "localhost"
+    or lower:match("%.localhost$") ~= nil
+    or lower:match("^127%.%d+%.%d+%.%d+$") ~= nil
+    or lower == "[::1]"
+  if not ok then
+    viewer_host_warned = true
+    vim.notify(
+      ("mathpreview: viewer_host %q is not a loopback name the daemon accepts "
+        .. "(use something ending in `.localhost`, or `127.0.0.1`) — the "
+        .. "preview tab will get 403s"):format(host),
+      vim.log.levels.WARN)
+  end
 end
 
 local function open_browser(url)
@@ -697,7 +741,7 @@ end
 -- Open the browser viewer for this daemon.
 local function open_viewer(entry)
   entry.opened = true
-  open_browser(viewer_url(entry.port))
+  open_browser(viewer_url(entry.port, entry.root))
 end
 
 -- The daemon is already running and the user ran :MathPreview again. Don't
@@ -709,7 +753,7 @@ end
 -- opening if the count can't be determined. The /debug curl runs async; its
 -- callback is already main-loop-scheduled by run_system.
 local function reuse_or_open_browser(entry)
-  local url = viewer_url(entry.port)
+  local url = viewer_url(entry.port, entry.root)
   local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
   local function do_open() open_viewer(entry) end
   local function say_reuse()
@@ -1779,7 +1823,7 @@ local function start_with(cmd, opts)
     end
   end
   vim.notify(
-    ("mathpreview: serving %s on %s"):format(vim.fn.fnamemodify(root, ":~"), viewer_url(port)),
+    ("mathpreview: serving %s on %s"):format(vim.fn.fnamemodify(root, ":~"), viewer_url(port, root)),
     vim.log.levels.INFO)
 end
 
@@ -2023,6 +2067,7 @@ function M.setup(opts)
     opts.viewer = nil
   end
   config = vim.tbl_extend("force", config, opts)
+  check_viewer_host()
 end
 
 return M

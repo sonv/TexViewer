@@ -243,6 +243,17 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
     -- Set to false if you don't want :MathPreview to open any viewer at all.
     -- auto_open_browser = true,
 
+    -- Hostname for the browser tab. Any `*.localhost` name works (browsers
+    -- resolve them to loopback themselves) and gets its own per-site
+    -- browser settings — zoom, vimium keybindings, dark mode. The shared
+    -- default means you set those up ONCE for every preview; use
+    -- "{stem}.localhost" to give each paper its own origin instead
+    -- ("My Paper_v2.tex" → my-paper-v2.localhost — recognizable tabs and
+    -- per-paper settings, at the cost of reconfiguring extensions per
+    -- name). `127.0.0.1` reverts to the pre-2.1.28 address.
+    -- Plugin-internal requests always use 127.0.0.1 regardless.
+    -- viewer_host = "mathpreview.localhost",
+
     -- Use a CDN-hosted MathJax instead of the embedded bundle. nil = embedded.
     -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
 

@@ -32,6 +32,26 @@
   option — because the browser-facing URL works everywhere browsers do,
   independent of OS resolvers.
 
+### Added (follow-up requests, same session)
+
+- **Real-Safari verification** on the user's machine: opened
+  `http://mathpreview.localhost:<port>/` via `open -a Safari` against a
+  live daemon → `clients: 1` (page + WS handshake through both guards),
+  then `POST /stop` so the goodbye event closed the tab. Safari resolves
+  `*.localhost` via the macOS system resolver (getaddrinfo → ::1 +
+  127.0.0.1), unlike Chrome/Firefox which hardcode it — both routes work.
+- **`viewer_host` plugin option** (user asked "is there an option?"):
+  any `*.localhost` name, `127.0.0.1` to revert, or `"{stem}.localhost"`
+  — per-paper origins from the sanitized root basename (`host_stem`:
+  lowercase, non-alphanumerics → `-`, empty → "mathpreview";
+  `My Paper_v2.tex` → `my-paper-v2.localhost`, verified e2e against the
+  Host guard). Non-loopback values warn once at setup (the daemon would
+  403 every request). Kept the SHARED default deliberately: the original
+  PR's point is one-time per-site extension setup; `{stem}` is the
+  opt-in for per-paper settings. Theme-toggle question also answered in
+  passing: `toggle-theme` action exists, ships unbound by design (user
+  confirmed: no default binding).
+
 ### Verified
 
 - Host guard e2e on a live daemon: pretty Host 200 (incl. via the OS
