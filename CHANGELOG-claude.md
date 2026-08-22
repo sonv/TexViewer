@@ -1,5 +1,39 @@
 # CHANGELOG-claude
 
+## 2026-08-22 (triage: cursor-sync flapping + "memory overflow again" on Debian)
+
+### Investigated — both reports converge on a stale daemon
+
+- **Report 1** (Gautam draft, line 1267 `\section{Decay…}`): on the friend's
+  Debian, forward sync alternates BY COLUMN between the section and the
+  start of a proof ~500 lines earlier; works on the user's Mac; "could be
+  related to folding". Reproduction attempts on the CURRENT build with the
+  exact file/line: daemon-side `/cursor` resolution is column-stable
+  (`s-rhoDecay`, scroll_only, cols 1–5 identical); full-viewer tests with
+  10 proofs folded ("main only") in BOTH Chromium and Playwright Firefox
+  show one initial settle then a byte-stable scroll position across
+  repeated posts over cols 1–4. Not reproducible on current code in any
+  engine. The symptom — scroll flipping between two anchors on identical
+  input — is the signature of pre-2.1.26 unseeded lazy geometry (estimates
+  swapping under the scroll between motions).
+- **Report 2** ("memory overflow again"): current-code audit shows all
+  daemon caches bounded (log ring `LOG_BUFFER_CAP`, TikZ cache capped with
+  eviction and error entries not retained, path-keyed file cache), and the
+  2.1.27 permit bounds render concurrency; no known growth vector remains.
+  No Docker here, so glibc arena behavior at the bounded peak stays
+  unverified locally — but the TIMELINE is decisive: the friend's OOM log
+  is stamped Aug 14, and v2.1.27 (the memory fix) shipped Aug 15. "Again"
+  fits the same pre-fix binary — or the daemon-reuse trap (plugin upgraded,
+  long-lived daemon never restarted; neovide makes the skew nag easy to
+  miss). Both reports are explained at once by a pre-2.1.26/27 daemon.
+- **Verification steps sent to the reporter**: `mathpreview-cli --version`
+  AND `curl -s http://127.0.0.1:23636/debug | grep version` (the RUNNING
+  daemon's version is the one that matters), upgrade plugin + binary,
+  `:MathPreviewRestart`, retry both. If either recurs ON 2.1.28: for the
+  scroll flap, the /debug version + browser name; for memory, whether
+  `ps` shows a fat `mathpreview-cli` (daemon-side) or many `curl` children
+  under neovide (plugin-side), plus the systemd peak line.
+
 ## 2026-08-20 (PR #6 review: custom viewer hostname)
 
 ### Reviewed & merged
