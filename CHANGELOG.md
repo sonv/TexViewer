@@ -13,6 +13,25 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.29] — 2026-08-28
+
+### Added
+
+- **Rust-free plugin installation is now an explicit option.** The default
+  `install_method = "cargo"` keeps compiling `mathpreview-cli` from the plugin
+  checkout. Users without Rust can select `install_method = "github"` instead:
+  MathPreview downloads the prebuilt release matching the plugin version,
+  operating system, and architecture; verifies its published SHA-256 and
+  archive shape; runs its `--version`; and only then promotes it atomically to
+  a versioned directory under Neovim's data path. A Peek-style
+  `build = "sh scripts/install-prebuilt.sh"` hook prepares it during plugin
+  install/update, while omitting the hook downloads it on first
+  `:MathPreview`. The release binary already embeds MathJax, fonts, JavaScript,
+  and CSS, so GitHub mode needs neither Rust nor a separate MathJax/npm/TeX
+  installation for normal previews (native TikZ remains an opt-in local-TeX
+  feature). Explicit `cmd` paths remain user-owned and override both managed
+  modes.
+
 ## [2.1.28] — 2026-08-20
 
 ### Added

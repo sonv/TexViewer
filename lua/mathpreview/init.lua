@@ -26,14 +26,20 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 
 -- Version this plugin checkout expects the `mathpreview-cli` binary to be.
 -- On :MathPreview we compare it against the binary's `--version`; if this is
--- a source checkout with cargo, a stale/missing binary is (re)installed to
--- match (see ensure_binary). Otherwise we warn once on mismatch — the signal
--- that a fix you "released" isn't actually the binary you're running.
+-- managed by the selected installer, a stale/missing binary is (re)installed
+-- to match (see ensure_binary). User-owned `cmd` paths are only checked and
+-- warned about — the signal that a fix you "released" isn't actually the
+-- binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.28"
+local PLUGIN_VERSION = "2.1.29"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
+  -- How the plugin installs a missing/stale managed binary:
+  --   "cargo"  (default) — compile this checkout with the Rust toolchain
+  --   "github"           — download + verify the matching release binary
+  -- An explicit `cmd` bypasses both methods.
+  install_method = "cargo",
   filetypes = { "tex", "plaintex", "latex" },
   -- Hostname for the BROWSER-facing viewer URL. Any `*.localhost` name (or
   -- `localhost` / `127.0.0.1`) passes the daemon's Host guard; a distinct
@@ -79,12 +85,10 @@ local config = {
   --                     nvim's exit doesn't kill it;
   --                     `:MathPreviewStop` still stops them explicitly.
   close_on_exit = true,
-  -- Where `cargo install` drops the auto-built binary. nil → cargo's default
-  -- (`$CARGO_HOME/bin`, usually `~/.cargo/bin`, which rustup puts on $PATH).
-  -- Set to a prefix like "~/.local" to install to "~/.local/bin/mathpreview-cli"
-  -- instead (passed to `cargo install --root`). If the resulting bin dir isn't
-  -- on your $PATH, the plugin still runs the binary by absolute path and warns
-  -- you once with the line to add.
+  -- Where Cargo drops the auto-built binary. nil → cargo's default
+  -- (`$CARGO_HOME`, usually `~/.cargo`); a value is passed to
+  -- `cargo install --root`. GitHub binaries always use a versioned directory
+  -- under `stdpath("data")/mathpreview`. Both are run by absolute path.
   install_root = nil,
   -- On the first :MathPreview of a session, scan the port range for preview
   -- daemons that look abandoned — no editor attached and no viewer tab open
@@ -211,6 +215,23 @@ local function exe_name()
   return (vim.fn.has("win32") == 1) and "mathpreview-cli.exe" or "mathpreview-cli"
 end
 
+-- Rust target triple used by the release workflow for this host. Keep this in
+-- lockstep with `.github/workflows/release.yml` and scripts/install-prebuilt.sh.
+-- nil means GitHub Releases do not currently carry a compatible binary.
+local function prebuilt_target()
+  local uname = uv.os_uname()
+  local sysname = uname and uname.sysname or ""
+  local machine = uname and uname.machine or ""
+  if sysname == "Darwin" then
+    if machine == "arm64" or machine == "aarch64" then return "aarch64-apple-darwin" end
+    if machine == "x86_64" or machine == "amd64" then return "x86_64-apple-darwin" end
+  elseif sysname == "Linux" then
+    if machine == "arm64" or machine == "aarch64" then return "aarch64-unknown-linux-gnu" end
+    if machine == "x86_64" or machine == "amd64" then return "x86_64-unknown-linux-gnu" end
+  end
+  return nil
+end
+
 -- Directory `cargo install` drops the binary in. Honors `install_root`
 -- (→ "<root>/bin"), then $CARGO_HOME/bin, then the ~/.cargo/bin default.
 local function cargo_bin_dir()
@@ -224,10 +245,17 @@ local function cargo_bin_dir()
   return vim.fn.expand("~/.cargo/bin")
 end
 
--- Absolute path of the `cargo install`-ed binary (whether or not its dir is
--- on $PATH). This is the primary location the plugin runs from.
-local function installed_binary_path()
-  return cargo_bin_dir() .. "/" .. exe_name()
+-- GitHub binaries live outside the plugin checkout so plugin-manager updates
+-- cannot delete them. The default is version + target scoped: two nvim
+-- instances pinned to different releases (or sharing a data dir across hosts)
+-- never replace each other's executable.
+local function github_install_prefix()
+  return vim.fn.stdpath("data") .. "/mathpreview/" .. PLUGIN_VERSION
+    .. "/" .. (prebuilt_target() or "unsupported")
+end
+
+local function github_bin_dir()
+  return github_install_prefix() .. "/bin"
 end
 
 -- `cargo build --release` artifact inside this checkout. Kept only as a
@@ -246,20 +274,50 @@ local function cargo_install_args()
   return args
 end
 
+local function github_install_args()
+  return {
+    "sh",
+    plugin_root() .. "/scripts/install-prebuilt.sh",
+    PLUGIN_VERSION,
+    github_install_prefix(),
+  }
+end
+
+-- Capture every install decision before starting async work. setup() may be
+-- called again while an install is running; callbacks for that install must
+-- keep using the method and destination that its caller selected.
+local function install_spec()
+  local method = config.install_method
+  local bin_dir = method == "github" and github_bin_dir() or cargo_bin_dir()
+  local binary_path = bin_dir .. "/" .. exe_name()
+  local args = method == "github" and github_install_args() or cargo_install_args()
+  return {
+    method = method,
+    bin_dir = bin_dir,
+    binary_path = binary_path,
+    args = args,
+    -- A destination can have only one installer at a time. Distinct methods
+    -- or prefixes queue independently and never inherit one another's waiters.
+    key = method .. "\n" .. binary_path,
+  }
+end
+
 -- True if this checkout has the Rust sources we'd need to compile the binary
 -- (i.e. it's a git/source install, not a binary-only drop).
 local function is_source_checkout()
   return vim.fn.isdirectory(plugin_root() .. "/crates/cli") == 1
 end
 
-local function resolve_cmd()
-  -- Precedence: explicit override > cargo-installed binary (by absolute path,
-  -- so it works even when its dir isn't on $PATH) > whatever `mathpreview-cli`
-  -- is on $PATH > in-checkout build. The installed binary outranks $PATH/
-  -- in-checkout so a fresh install can't be shadowed by a stale leftover.
+local function resolve_cmd(spec)
+  -- Precedence: explicit override > the selected plugin-managed binary (by
+  -- absolute path) > PATH > in-checkout build. GitHub mode is deliberately
+  -- exclusive: selecting it must not silently pick up a Cargo/PATH binary and
+  -- skip the requested download.
   if config.cmd and config.cmd ~= "" then return config.cmd end
-  local installed = installed_binary_path()
+  spec = spec or install_spec()
+  local installed = spec.binary_path
   if vim.fn.executable(installed) == 1 then return installed end
+  if spec.method == "github" then return nil end
   if vim.fn.executable("mathpreview-cli") == 1 then return "mathpreview-cli" end
   local bundled = bundled_binary_path()
   if vim.fn.executable(bundled) == 1 then return bundled end
@@ -269,8 +327,21 @@ end
 -- True if `cmd` is a binary the plugin installs/builds itself (so it's safe
 -- to reinstall on skew). A user-supplied `cmd` or an unrelated $PATH binary
 -- is left alone.
-local function is_managed(cmd)
-  return cmd == installed_binary_path() or cmd == bundled_binary_path()
+local function is_managed(cmd, spec, explicit_cmd)
+  if explicit_cmd then return false end
+  return cmd == spec.binary_path
+    or (spec.method == "cargo" and cmd == bundled_binary_path())
+end
+
+-- Whether the selected managed executable itself (not merely some executable
+-- with the same name) is what the shell resolves from $PATH.
+local function managed_binary_on_path(spec)
+  spec = spec or install_spec()
+  local found = vim.fn.exepath("mathpreview-cli")
+  if not found or found == "" then return false end
+  local actual = vim.fn.resolve(vim.fn.fnamemodify(found, ":p"))
+  local expected = vim.fn.resolve(vim.fn.fnamemodify(spec.binary_path, ":p"))
+  return actual == expected
 end
 
 local function json_encode(value)
@@ -292,18 +363,29 @@ local function run_system(args, opts, on_done)
   -- When unset, behavior is identical to before — the sync POSTs don't use it.
   local on_line = opts.on_stderr_line
   if vim.system then
+    local function start_vim_system(system_opts, callback)
+      local ok, handle = pcall(vim.system, args, system_opts, callback)
+      if ok then return handle end
+      if on_done then
+        vim.schedule(function()
+          on_done({ code = -1, stdout = "", stderr = tostring(handle) })
+        end)
+      end
+      return nil
+    end
     if not on_line then
       -- Returned so a caller can cancel a superseded request (see push_buffer).
-      return vim.system(args, opts, function(res)
+      return start_vim_system(opts, function(res)
         if on_done then vim.schedule(function() on_done(res) end) end
       end)
     end
     -- Streaming variant: forward each stderr line live, still capturing the
     -- full stderr for the final result.
     local err, buf = {}, ""
-    vim.system(args, {
+    start_vim_system({
       cwd = opts.cwd,
       stdin = opts.stdin,
+      timeout = opts.timeout,
       stderr = function(_, data)
         if not data then return end
         err[#err + 1] = data
@@ -326,7 +408,15 @@ local function run_system(args, opts, on_done)
     return
   end
   local stdout, stderr = {}, {}
-  local job = vim.fn.jobstart(args, {
+  local job, timeout_timer
+  local exited, timed_out = false, false
+  local function close_timeout()
+    if not timeout_timer then return end
+    timeout_timer:stop()
+    timeout_timer:close()
+    timeout_timer = nil
+  end
+  local job_opts = {
     cwd = opts.cwd,  -- nil → inherit nvim's cwd
     on_stdout = function(_, data) if data then vim.list_extend(stdout, data) end end,
     on_stderr = function(_, data)
@@ -339,6 +429,12 @@ local function run_system(args, opts, on_done)
       end
     end,
     on_exit = function(_, code)
+      exited = true
+      close_timeout()
+      if timed_out then
+        code = 124
+        stderr[#stderr + 1] = "command timed out after " .. opts.timeout .. " ms"
+      end
       if on_done then
         on_done({
           code = code,
@@ -347,10 +443,26 @@ local function run_system(args, opts, on_done)
         })
       end
     end,
-  })
+  }
+  local started, job_or_err = pcall(vim.fn.jobstart, args, job_opts)
+  if not started then
+    if on_done then
+      on_done({ code = -1, stdout = "", stderr = tostring(job_or_err) })
+    end
+    return
+  end
+  job = job_or_err
   if job <= 0 then
     if on_done then on_done({ code = -1, stderr = "could not start " .. tostring(args[1]) }) end
     return
+  end
+  if opts.timeout and opts.timeout > 0 and not exited then
+    timeout_timer = uv.new_timer()
+    timeout_timer:start(opts.timeout, 0, vim.schedule_wrap(function()
+      if exited then return end
+      timed_out = true
+      vim.fn.jobstop(job)
+    end))
   end
   if opts.stdin then
     vim.fn.chansend(job, opts.stdin)
@@ -386,7 +498,7 @@ end
 -- mismatch means the running binary predates (or postdates) this checkout —
 -- the usual reason a "released" fix isn't the code actually executing.
 local function check_binary_version(cmd)
-  run_system({ cmd, "--version" }, {}, function(res)
+  run_system({ cmd, "--version" }, { timeout = 5000 }, function(res)
     if not res or res.code ~= 0 or not res.stdout then return end
     -- clap prints "mathpreview-cli 0.1.27"; take the last whitespace token.
     local ver = res.stdout:gsub("%s+$", ""):match("(%S+)%s*$")
@@ -396,16 +508,14 @@ local function check_binary_version(cmd)
     version_warned = true
     local rel = semver_cmp(ver, PLUGIN_VERSION) < 0 and "older than" or "newer than"
     vim.notify(
-      ("mathpreview: binary is %s (%s the plugin's expected %s). Reinstall it "
-        .. "(from this checkout: `cargo install --path crates/cli --force`) and "
-        .. ":MathPreviewRestart so fixes match."):format(ver, rel, PLUGIN_VERSION),
+      ("mathpreview: binary is %s (%s the plugin's expected %s). Update that "
+        .. "executable, or remove `cmd` and choose `install_method = \"cargo\"` "
+        .. "or `\"github\"`; then run :MathPreviewRestart.")
+        :format(ver, rel, PLUGIN_VERSION),
       vim.log.levels.WARN)
   end)
 end
 
--- Guards against overlapping installs (e.g. a second :MathPreview while the
--- first is still compiling).
-local installing = false
 -- Guards against overlapping starts: `daemon_job` is only set inside the async
 -- `start_with`, so a second `:MathPreview` during the binary/version check
 -- would otherwise pass the `daemon_job` guard and spawn a duplicate daemon.
@@ -419,46 +529,54 @@ local in_jump = false
 -- Warn at most once per session about the install dir not being on $PATH.
 local path_hinted = false
 
--- If the cargo bin dir isn't on $PATH, tell the user how to add it (the
--- binary still runs via its absolute path; this is for terminal use). Standard
--- fix is to put the dir on PATH in the shell profile.
-local function hint_path_if_needed()
-  if path_hinted or vim.fn.executable("mathpreview-cli") == 1 then
+-- If the managed bin dir isn't on $PATH, tell the user how to add it (the
+-- plugin still runs it via its absolute path; this is only for terminal use).
+local function hint_path_if_needed(spec)
+  -- The default GitHub path is deliberately versioned and plugin-private; it
+  -- should not be added to a shell profile. Cargo's stable bin dir remains a
+  -- useful terminal command, so retain the existing hint for that mode.
+  if spec.method == "github"
+      or path_hinted
+      or managed_binary_on_path(spec) then
     return
   end
   path_hinted = true
-  local dir = cargo_bin_dir()
+  local dir = spec.bin_dir
   vim.notify(
     ("mathpreview: installed to %s, which isn't on your $PATH.\n"
       .. "The plugin runs it by absolute path, but for terminal use add it to "
       .. "your shell profile:\n  export PATH=\"%s:$PATH\"\n"
-      .. "(or set `install_root` / `cmd` in setup()).") :format(dir, dir),
+      .. "(or set `install_root` / `cmd` in setup())."):format(dir, dir),
     vim.log.levels.WARN)
 end
 
--- `cargo install` mathpreview-cli (builds + drops it in the cargo bin dir),
--- async. Notifies on start (so the user waits out the one-time ~30s build) and
--- on finish, then calls on_done(ok) on the main thread. Assumes the caller has
--- confirmed this is a source checkout with cargo available.
+-- Install mathpreview-cli with the configured method, async. Cargo builds this
+-- checkout; GitHub downloads the exact version/target release and verifies its
+-- SHA-256 before replacing the managed binary. Both paths notify on start and
+-- finish, then call on_done(ok) on the main thread.
 local INSTALL_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
--- Callbacks waiting on the single in-flight install. Multiple files can request
--- a start (and thus an install) concurrently now that there's a daemon per
--- root; every one's on_done must fire when the shared build finishes, or the
--- later callers' `starting[root]` guard would stay stuck true forever.
-local install_waiters = {}
+-- Install requests are serialized, and callers selecting the same captured
+-- method + destination share one operation. Requests for another method/path
+-- queue separately instead of inheriting the active install's result.
+local install_active = nil
+local install_requests = {}
+local install_queue = {}
+local start_install
 
-local function auto_install(on_done)
-  if installing then
-    -- One build is already running; ride its result instead of dropping ours.
-    if on_done then install_waiters[#install_waiters + 1] = on_done end
-    return
-  end
-  installing = true
-  install_waiters = on_done and { on_done } or {}
+local function start_next_install()
+  if install_active or #install_queue == 0 then return end
+  local request = table.remove(install_queue, 1)
+  start_install(request)
+end
+
+start_install = function(request)
+  install_active = request
+  local spec = request.spec
   local started = uv.now()
   local frame = 0
-  local step = "" -- latest cargo step, e.g. "compiling mathpreview-core"
+  local method = spec.method
+  local step = "" -- latest step, e.g. "compiling mathpreview-core"
   local progress = uv.new_timer()
   local function stop_progress()
     if progress then
@@ -469,20 +587,23 @@ local function auto_install(on_done)
     -- Clear the cmdline spinner line.
     vim.api.nvim_echo({ { "" } }, false, {})
   end
+  local detail = method == "github"
+      and "downloading verified GitHub release"
+    or "compiling with Cargo (~30s)"
   vim.notify(
-    ("mathpreview: installing mathpreview-cli to %s (first run, ~30s) — please "
-      .. "wait, :MathPreview will start automatically when it finishes…")
-      :format(cargo_bin_dir()),
+    ("mathpreview: installing mathpreview-cli to %s (%s) — please wait; "
+      .. ":MathPreview will start automatically when it finishes…")
+      :format(spec.bin_dir, detail),
     vim.log.levels.INFO)
-  -- Live progress on the cmdline (history=false → not added to :messages) so the
-  -- one-time build doesn't look frozen: a spinner, elapsed seconds, and the
-  -- crate cargo is currently compiling.
+  -- Live progress on the cmdline (history=false → not added to :messages) so
+  -- either one-time install path remains visibly active.
   progress:start(0, 120, vim.schedule_wrap(function()
-    if not installing then return end
+    if install_active ~= request then return end
     frame = frame + 1
     local secs = math.floor((uv.now() - started) / 1000)
     local spin = INSTALL_SPINNER[(frame % #INSTALL_SPINNER) + 1]
-    local msg = ("%s building mathpreview-cli… %ds"):format(spin, secs)
+    local action = method == "github" and "downloading" or "building"
+    local msg = ("%s %s mathpreview-cli… %ds"):format(spin, action, secs)
     if step ~= "" then msg = msg .. "  " .. step end
     vim.api.nvim_echo({ { msg, "Comment" } }, false, {})
   end))
@@ -492,31 +613,58 @@ local function auto_install(on_done)
       step = "compiling " .. crate
     elseif line:match("^%s*Finished") then
       step = "finishing…"
+    elseif method == "github" and line:match("^mathpreview:") then
+      step = line:gsub("^mathpreview:%s*", "")
     end
   end
   run_system(
-    cargo_install_args(),
+    spec.args,
     { cwd = plugin_root(), on_stderr_line = on_stderr_line },
     function(res)
-      installing = false
+      if install_active == request then install_active = nil end
       stop_progress()
       local ok = res and res.code == 0
       if ok then
+        last_status.binary_version = PLUGIN_VERSION
         vim.notify("mathpreview: install complete — starting daemon.", vim.log.levels.INFO)
-        hint_path_if_needed()
+        hint_path_if_needed(spec)
       else
         vim.notify(
-          ("mathpreview: install failed (cargo exit %s). See :messages; you can also "
-            .. "install the binary manually (README) or set `cmd` in setup().\n%s"):format(
-            res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
+          ("mathpreview: %s install failed (exit %s). See :messages; switch "
+            .. "`install_method`, install manually (README), or set `cmd`.\n%s"):format(
+            method, res and res.code or "?", (res and res.stderr or ""):gsub("%s+$", "")),
           vim.log.levels.ERROR)
       end
-      -- Fan out to every caller that requested this build (the first plus any
-      -- that arrived while it ran), then clear the queue.
-      local waiters = install_waiters
-      install_waiters = {}
-      for _, cb in ipairs(waiters) do cb(ok) end
+      install_requests[spec.key] = nil
+      -- Fan out to every caller that selected this exact install. Pass the
+      -- captured destination so callbacks never re-read a later setup().
+      local callback_errors = {}
+      for _, cb in ipairs(request.waiters) do
+        local callback_ok, callback_err = pcall(cb, ok, spec.binary_path)
+        if not callback_ok then callback_errors[#callback_errors + 1] = callback_err end
+      end
+      start_next_install()
+      for _, callback_err in ipairs(callback_errors) do
+        vim.notify(
+          "mathpreview: install completion callback failed: " .. tostring(callback_err),
+          vim.log.levels.ERROR)
+      end
     end)
+end
+
+local function auto_install(spec, on_done)
+  local request = install_requests[spec.key]
+  if request then
+    if on_done then request.waiters[#request.waiters + 1] = on_done end
+    return
+  end
+  request = { spec = spec, waiters = on_done and { on_done } or {} }
+  install_requests[spec.key] = request
+  if install_active then
+    install_queue[#install_queue + 1] = request
+  else
+    start_install(request)
+  end
 end
 
 -- True if `port` is free on 127.0.0.1. We `bind` AND `listen`: libuv sets
@@ -1698,9 +1846,7 @@ local function start_with(cmd, opts)
   local started_at = uv.now()
   local retries_left = opts.port_retries
   if retries_left == nil then retries_left = PORT_SCAN_RANGE end
-  local job = vim.fn.jobstart(
-    spawn_args,
-    {
+  local spawn_opts = {
       -- Detached only when the preview should outlive nvim (close_on_exit=off),
       -- so nvim's exit doesn't take the daemon with it. jobstop still reaches a
       -- detached process, so `:MathPreviewStop`/restart work regardless.
@@ -1756,7 +1902,15 @@ local function start_with(cmd, opts)
           end)
         end
       end,
-    })
+    }
+  local spawned, job_or_err = pcall(vim.fn.jobstart, spawn_args, spawn_opts)
+  if not spawned then
+    vim.notify(
+      "mathpreview: failed to spawn daemon (" .. tostring(job_or_err) .. ")",
+      vim.log.levels.ERROR)
+    return
+  end
+  local job = job_or_err
   if job <= 0 then
     vim.notify("mathpreview: failed to spawn daemon", vim.log.levels.ERROR)
     return
@@ -1827,63 +1981,126 @@ local function start_with(cmd, opts)
     vim.log.levels.INFO)
 end
 
--- Resolve a usable binary — `cargo install`-ing it as needed — then call
--- on_ready(cmd). This gives "auto-install on first use" and "auto-reinstall on
--- plugin update" with no plugin-manager build hook:
---   * no binary + source checkout + cargo → install, then proceed
---   * our installed/in-checkout binary older than this plugin → reinstall
+-- Resolve a usable binary, installing it with the selected method as needed,
+-- then call on_ready(cmd). This gives "auto-install on first use" and
+-- "auto-reinstall on plugin update" with no plugin-manager build hook:
+--   * cargo (default) compiles this checkout with the Rust toolchain
+--   * github downloads the exact version/target release + checksum
+--   * a stale/damaged managed binary → repair it with that method
 --   * current binary → proceed as-is
 --   * a user `cmd` / unrelated $PATH binary → proceed, warn on skew
 -- Every (re)install emits auto_install's "installing… please wait" notice.
 local function ensure_binary(root, on_ready)
-  local cmd = resolve_cmd()
+  local explicit_cmd = config.cmd ~= nil and config.cmd ~= ""
+  local spec = install_spec()
+  local cmd = resolve_cmd(spec)
   local can_build = is_source_checkout() and vim.fn.executable("cargo") == 1
+  local target = prebuilt_target()
+  local installer = plugin_root() .. "/scripts/install-prebuilt.sh"
+  local can_download = target ~= nil
+    and vim.fn.filereadable(installer) == 1
+    and vim.fn.executable("sh") == 1
+    and vim.fn.executable("curl") == 1
+    and vim.fn.executable("tar") == 1
+    and (vim.fn.executable("shasum") == 1 or vim.fn.executable("sha256sum") == 1)
+  local can_install = can_build
+  if spec.method == "github" then can_install = can_download end
+
+  local function install_then_ready(fallback)
+    auto_install(spec, function(ok, installed)
+      if ok and vim.fn.executable(installed) == 1 then
+        on_ready(installed)
+      elseif fallback then
+        -- Preserve the historical Cargo behavior: a failed rebuild may still
+        -- run a prior, parseable executable. GitHub mode is always fail-closed
+        -- because selecting it promises the exact verified release.
+        on_ready(fallback)
+      else
+        -- on_ready won't run; release the in-flight start guard for this root.
+        starting[root] = nil
+        if ok then
+          vim.notify(
+            "mathpreview: install reported success but no binary found at "
+              .. installed .. " — see :messages.",
+            vim.log.levels.ERROR)
+        end
+      end
+    end)
+  end
 
   if not cmd then
-    if can_build then
-      auto_install(function(ok)
-        local got = resolve_cmd()
-        if ok and got then
-          on_ready(got)
-        else
-          -- on_ready won't run; release the in-flight start guard for this root.
-          starting[root] = nil
-          if ok then
-            vim.notify(
-              "mathpreview: install reported success but no binary found at "
-                .. installed_binary_path() .. " — see :messages.",
-              vim.log.levels.ERROR)
-          end
-          -- on failure auto_install already notified with the cargo error.
-        end
-      end)
+    if can_install then
+      install_then_ready(nil)
     else
       starting[root] = nil
-      vim.notify(
-        "mathpreview: `mathpreview-cli` not found on $PATH" ..
-        (is_source_checkout() and " and `cargo` is unavailable to install it. " or ". ") ..
-        "Install the binary first (see README), or set `cmd = '/path/to/mathpreview-cli'` in setup().",
+      local reason
+      if spec.method == "github" then
+        reason = target
+            and "the GitHub installer needs `sh`, `curl`, `tar`, and `shasum`/`sha256sum`"
+          or "GitHub Releases do not provide a binary for this OS/architecture"
+      else
+        reason = "`cargo` is unavailable to compile it"
+      end
+      vim.notify(("mathpreview: no usable `mathpreview-cli`; %s. Switch "
+          .. "`install_method`, install manually (README), or set "
+          .. "`cmd = '/path/to/mathpreview-cli'`."):format(reason),
         vim.log.levels.ERROR)
     end
     return
   end
 
-  -- A binary exists. If it's one we manage and we can compile, reinstall it
-  -- when it's older than this plugin checkout (the reinstall-on-update path).
+  -- A binary exists. Probe plugin-managed files before launching them. GitHub
+  -- cache entries must report this exact plugin version; malformed, damaged,
+  -- older, or newer entries are all replaced. Cargo retains its historical
+  -- no-downgrade behavior but repairs an unreadable binary and upgrades an old
+  -- one. Explicit `cmd` always remains user-owned, even when its string happens
+  -- to equal a managed destination.
   -- A user `cmd` / unrelated $PATH binary isn't ours to touch — just run the
   -- async skew check (which warns) and use it as-is.
-  if can_build and is_managed(cmd) then
-    run_system({ cmd, "--version" }, {}, function(res)
-      local ver = (res and res.code == 0 and res.stdout)
-        and res.stdout:gsub("%s+$", ""):match("(%S+)%s*$") or nil
+  if is_managed(cmd, spec, explicit_cmd) then
+    run_system({ cmd, "--version" }, { timeout = 5000 }, function(res)
+      local output = (res and res.code == 0 and res.stdout)
+        and res.stdout:gsub("%s+$", "") or nil
+      local ver
+      if output then
+        if spec.method == "github" then
+          ver = output:match("^mathpreview%-cli (%S+)$")
+        else
+          ver = output:match("(%S+)%s*$")
+        end
+      end
       if ver then last_status.binary_version = ver end
-      if ver and semver_cmp(ver, PLUGIN_VERSION) < 0 then
+      local needs_repair = ver == nil
+        or (spec.method == "github"
+          and output ~= "mathpreview-cli " .. PLUGIN_VERSION)
+        or (spec.method == "cargo" and ver and semver_cmp(ver, PLUGIN_VERSION) < 0)
+      if needs_repair and can_install then
+        local reason = ver and ("reports " .. ver) or "failed its version check"
         vim.notify(
-          ("mathpreview: binary %s is older than plugin %s — reinstalling…")
-            :format(ver, PLUGIN_VERSION),
+          ("mathpreview: managed binary %s (expected %s) — reinstalling…")
+            :format(reason, PLUGIN_VERSION),
           vim.log.levels.INFO)
-        auto_install(function(ok) on_ready((ok and resolve_cmd()) or cmd) end)
+        local fallback = spec.method == "cargo" and ver and cmd or nil
+        install_then_ready(fallback)
+      elseif needs_repair then
+        if spec.method == "cargo" and ver then
+          -- No compiler is available, but an older parseable Cargo/PATH binary
+          -- can retain the plugin's historical warn-and-run behavior.
+          check_binary_version(cmd)
+          on_ready(cmd)
+        else
+          starting[root] = nil
+          local requirement = spec.method == "github"
+              and "the GitHub installer prerequisites are unavailable"
+            or "`cargo` is unavailable"
+          vim.notify(
+            ("mathpreview: managed %s binary is unusable and cannot be repaired "
+              .. "because %s. See :messages, switch `install_method`, or set "
+              .. "an explicit `cmd`."):format(spec.method, requirement),
+            vim.log.levels.ERROR)
+        end
       else
+        if ver ~= PLUGIN_VERSION then check_binary_version(cmd) end
         on_ready(cmd)
       end
     end)
@@ -1961,6 +2178,7 @@ end
 function M.status()
   local age = uv.hrtime() / 1e6 - last_status.last_push_ms
   local buf = vim.api.nvim_get_current_buf()
+  local spec = install_spec()
   return {
     daemon_running = daemon_job ~= nil,
     daemons_running = daemon_count(),  -- total across all open files
@@ -1978,8 +2196,10 @@ function M.status()
     last_push_ago_ms = (last_status.last_push_ms > 0) and math.floor(age) or nil,
     last_error = last_status.last_error,
     cmd = resolve_cmd(),
-    install_dir = cargo_bin_dir(),
-    install_dir_on_path = vim.fn.executable("mathpreview-cli") == 1,
+    install_method = config.install_method,
+    install_dir = spec.bin_dir,
+    release_target = prebuilt_target(),
+    install_dir_on_path = managed_binary_on_path(spec),
     plugin_version = PLUGIN_VERSION,
     binary_version = last_status.binary_version,  -- nil until first :MathPreview
     nvim_version = vim.version() and (vim.version().major .. "." .. vim.version().minor) or "?",
@@ -2050,11 +2270,17 @@ end
 -- debounce, or to disable browser auto-open:
 --
 --   require("mathpreview").setup({
+--     install_method = "github", -- default: "cargo"
 --     cmd = "/usr/local/bin/mathpreview-cli",
 --     auto_open_browser = false,
 --   })
 function M.setup(opts)
   opts = opts or {}
+  if opts.install_method ~= nil
+      and opts.install_method ~= "cargo"
+      and opts.install_method ~= "github" then
+    error("mathpreview: `install_method` must be \"cargo\" or \"github\"", 2)
+  end
   if opts.viewer ~= nil then
     if opts.viewer ~= "browser" and not viewer_migration_warned then
       viewer_migration_warned = true

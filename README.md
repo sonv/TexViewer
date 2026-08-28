@@ -131,32 +131,57 @@ daemon thereafter.
 
 ### 1. The binary
 
-> **Shortcut:** if you have a Rust toolchain, you can skip this section
-> entirely. On first `:MathPreview` with no binary found, the plugin runs
-> **`cargo install --path crates/cli`** from its own checkout (you'll get an
-> "installing… please wait" notice; ~30s once), dropping `mathpreview-cli` in
-> your cargo bin dir (`~/.cargo/bin`, which rustup puts on `$PATH`). It
-> reinstalls automatically when the plugin updates ahead of the binary. If
-> the install dir isn't on your `$PATH`, the plugin still runs the binary by
-> absolute path and warns you once with the line to add (or set `install_root`
-> to choose where it goes). This section is for installing the binary yourself
-> — no Rust toolchain, or you prefer the tarball.
+The plugin can install its missing or stale binary in either of two ways:
+
+- **`install_method = "cargo"` (default):** compile this checkout with
+  `cargo install --path crates/cli --force`. This requires a Rust toolchain.
+- **`install_method = "github"`:** download the prebuilt binary for this exact
+  plugin version and OS/architecture from GitHub Releases, verify its published
+  SHA-256 checksum, test its reported version, and store it under Neovim's data
+  directory. This does **not** require Rust.
+
+Both binaries contain the same embedded MathJax bundle, New Computer Modern
+fonts, viewer JavaScript, and CSS. Neither mode requires a separate MathJax,
+Node/npm, or TeX installation; only the optional native TikZ renderer needs a
+local TeX toolchain.
+
+Installation happens automatically on the first `:MathPreview` when Cargo mode
+cannot resolve a usable binary, or when GitHub mode lacks its exact managed
+release. Managed binaries are checked again after plugin updates. A
+plugin-manager build hook can move that work to install/update time so the first
+preview opens immediately; the examples below show both choices.
 
 Pick whichever fits your toolchain:
 
-**Pre-built tarball** (no Rust toolchain needed). Download the matching
-archive from the [Releases page](https://github.com/sonv/TexViewer/releases),
-extract it, and put `mathpreview-cli` somewhere on your `$PATH`:
+**Verified GitHub binary** (no Rust toolchain needed). Once this repo is in
+your plugin manager's checkout, its installer selects the matching release:
 
 ```sh
-# macOS arm64 example — substitute your platform / version
-curl -sSL https://github.com/sonv/TexViewer/releases/download/v0.1.0/mathpreview-cli-v0.1.0-darwin-arm64.tar.gz \
-  | tar xz -C /usr/local/bin/
-mathpreview-cli --version
+sh scripts/install-prebuilt.sh
 ```
 
-On first run macOS Gatekeeper will quarantine the binary; either right-click
-→ Open in Finder once, or run `xattr -d com.apple.quarantine $(which mathpreview-cli)`.
+Then select that managed binary in your nvim config (running the script alone
+does not change the default):
+
+```lua
+require("mathpreview").setup({ install_method = "github" })
+```
+
+The installer needs `sh`, `curl`, `tar`, and either `shasum` (macOS) or
+`sha256sum` (Linux). It supports macOS on arm64/x86_64 and current GNU/Linux
+release binaries on arm64/x86_64 with glibc 2.34 or newer. Alpine/musl and a
+stock NixOS without a GNU compatibility loader are not supported; use Cargo on
+those systems. The script verifies the matching `.sha256`, archive shape, and
+reported version, and refuses an incompatible binary before replacing an
+existing one.
+
+You can instead download the matching archive and `.sha256` manually from the
+[Releases page](https://github.com/sonv/TexViewer/releases), verify it with
+`shasum -a 256 -c <archive>.sha256` (or `sha256sum -c`), extract it, and point
+`setup({ cmd = "/absolute/path/to/mathpreview-cli" })` at it. A manual `cmd` is
+user-managed and is never overwritten by the plugin. If macOS Gatekeeper blocks
+a browser-downloaded binary, clear only that file's quarantine attribute with
+`xattr -d com.apple.quarantine /absolute/path/to/mathpreview-cli`.
 
 **`cargo install`** (Rust users): builds from source, picks up the
 embedded MathJax + NCM font assets the same way the release binary does.
@@ -181,12 +206,12 @@ cargo install --path crates/cli --force   # → ~/.cargo/bin/mathpreview-cli (on
 > `<prefix>/bin`), matching the plugin's `install_root` option.
 >
 > **Binary resolution order** (how the plugin decides which binary to run):
-> explicit `cmd` in `setup()` → the cargo-installed binary (by absolute path,
-> so it works even if its dir isn't on `$PATH`) → `mathpreview-cli` on
-> `$PATH` → a leftover `target/release/` build. `:MathPreviewStatus` shows the
-> resolved path, version, and whether the install dir is on `$PATH`; a failed
-> daemon spawn prints the binary path plus the daemon's stderr — check those
-> first if you ever see the "old version."
+> explicit `cmd` in `setup()` → the binary managed by the selected
+> `install_method`. Cargo mode then falls back to `mathpreview-cli` on `$PATH`
+> and a leftover `target/release/` build; GitHub mode is exclusive so an old
+> Cargo/PATH binary cannot silently bypass the requested release download.
+> `:MathPreviewStatus` shows the method, release target, resolved path, and
+> versions.
 
 ### 2. The nvim plugin
 
@@ -206,9 +231,8 @@ The minimal version — drop into your `lazy` spec:
   ft = { "tex", "plaintex", "latex" },
   -- Install/update the binary on every plugin update (Rust toolchain
   -- required). Optional: without it the plugin still auto-installs on first
-  -- :MathPreview, but the binary then stays put until the next plugin update
-  -- (a version-skew warning nudges you). With it, `:Lazy update` keeps the
-  -- binary in lockstep — no skew.
+  -- :MathPreview and refreshes stale managed binaries on the first start after
+  -- an update. With it, `:Lazy update` prepares the binary immediately.
   build = "cargo install --path crates/cli --force",
 }
 ```
@@ -218,6 +242,29 @@ The hook (and the auto-install fallback) run `cargo install`, which drops
 rustup). The `build` hook just moves the install to update time so your first
 `:MathPreview` is instant; leaving it off only means the binary is installed
 lazily on first use.
+
+For a **Rust-free install using the verified GitHub binary**, use this instead:
+
+```lua
+{
+  "sonv/TexViewer",
+  ft = { "tex", "plaintex", "latex" },
+  -- Optional, Peek-style install/update hook. Omit it to download on the first
+  -- :MathPreview instead.
+  build = "sh scripts/install-prebuilt.sh",
+  opts = {
+    install_method = "github",
+  },
+  config = function(_, opts)
+    require("mathpreview").setup(opts)
+  end,
+}
+```
+
+Do not combine `install_method = "github"` with the Cargo `build` hook: Lazy
+runs the hook before `setup()`, so that would still require Rust. The release
+installer and first-use fallback use the same versioned path under
+`stdpath("data")/mathpreview`.
 
 The fuller version with lazy-load triggers and an explicit `opts` table:
 
@@ -232,12 +279,19 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
   build = "cargo install --path crates/cli --force",
   -- All `opts` keys are optional; the defaults work for the standard case.
   opts = {
+    -- How to install a missing/stale managed binary.
+    -- "cargo" (default) compiles locally; "github" downloads and verifies
+    -- the matching GitHub Release without requiring Rust.
+    -- install_method = "cargo",
+
     -- Absolute path to the binary if it isn't on $PATH.
     -- cmd = "/usr/local/bin/mathpreview-cli",
 
-    -- Where the auto-install / `build` hook puts the binary. nil = cargo
-    -- default (~/.cargo/bin). A prefix like "~/.local" installs to
-    -- "~/.local/bin/mathpreview-cli" (passed to `cargo install --root`).
+    -- Optional Cargo install prefix. nil = cargo's default (~/.cargo); a
+    -- prefix like "~/.local" puts the compiled binary in ~/.local/bin.
+    -- GitHub mode always uses a versioned stdpath("data") location.
+    -- When using a Cargo build hook, give it the same `--root`; otherwise omit
+    -- the hook and let the first-use installer honor this setting.
     -- install_root = nil,
 
     -- Set to false if you don't want :MathPreview to open any viewer at all.
@@ -292,6 +346,10 @@ use {
 }
 ```
 
+For the Rust-free GitHub binary, replace `run` with
+`run = "sh scripts/install-prebuilt.sh"` and set
+`install_method = "github"` inside `setup()`.
+
 #### vim-plug
 
 In your `init.vim` (or wherever your plug block lives):
@@ -302,11 +360,16 @@ In your `init.vim` (or wherever your plug block lives):
 Plug 'sonv/TexViewer', { 'do': 'cargo install --path crates/cli --force' }
 ```
 
+For the Rust-free GitHub binary, use
+`{ 'do': 'sh scripts/install-prebuilt.sh' }` instead, then set
+`install_method = "github"` in the Lua `setup()` call below.
+
 Then in `init.lua` (or a `lua << EOF` block in `init.vim`), if you want
 to override any defaults:
 
 ```lua
 require("mathpreview").setup({
+  -- install_method = "github", -- opt-in prebuilt release; default is cargo
   -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
 })
 ```
@@ -324,36 +387,44 @@ next launch:
 ```sh
 mkdir -p ~/.config/nvim/pack/sonv/start
 git clone https://github.com/sonv/TexViewer ~/.config/nvim/pack/sonv/start/mathpreview
-# Optional: pre-install so the first :MathPreview is instant. If you skip
-# this, the plugin auto-installs on first use (Rust toolchain required).
-# Either way the binary lands in ~/.cargo/bin (on $PATH via rustup).
+# Optional default: compile now so the first :MathPreview is instant. If you
+# skip this, cargo mode compiles automatically on first use.
 ( cd ~/.config/nvim/pack/sonv/start/mathpreview && cargo install --path crates/cli --force )
+
+# Rust-free alternative: download + verify the matching GitHub binary now.
+# Also put install_method = "github" in setup(), as shown above.
+( cd ~/.config/nvim/pack/sonv/start/mathpreview && sh scripts/install-prebuilt.sh )
 ```
 
-The four `:MathPreview*` commands become available without any
+The `:MathPreview*` commands become available without any
 `init.lua` edit. To pin to a release tag instead of tracking `main`:
 
 ```sh
 cd ~/.config/nvim/pack/sonv/start/mathpreview
-git checkout v0.1.0
+git checkout vX.Y.Z   # choose a published tag from the Releases page
 ```
 
 To override defaults, add a `require("mathpreview").setup({ … })` call
 to your `init.lua` (any time after nvim startup is fine; the plugin
 defers daemon work until you actually run `:MathPreview`).
 
-To update later: `git pull` from inside that directory, then re-run the
-`cargo install --path crates/cli --force` step so the binary tracks the
-plugin (or just run `:MathPreview` — it reinstalls on detecting skew). To
-remove: `rm -rf` it.
+To update later: `git pull` from inside that directory, then re-run the command
+for your chosen installation method (or just run `:MathPreview` — it reinstalls
+on detecting skew). Removing the plugin checkout leaves GitHub binaries under
+`stdpath("data")/mathpreview` (the exact selected `install_dir` appears in
+`:MathPreviewStatus`); remove old version directories there when no pinned nvim
+configuration still needs them. This is deliberately not automatic, because
+two nvim profiles may track different plugin versions.
 
 #### Updating the binary
 
 The plugin and binary version together (`PLUGIN_VERSION` is bumped in lockstep
-with the crate). There are two ways the binary tracks a plugin update:
+with the crate). The selected `install_method` is used consistently for both
+first install and managed updates. There are two times installation can run:
 
-1. **With a `build` hook** (`cargo install …` in your spec) — your plugin
-   manager reinstalls the binary whenever it updates the plugin:
+1. **At plugin-manager install/update time** — use the Cargo build hook for the
+   default compile mode, or `sh scripts/install-prebuilt.sh` for GitHub mode.
+   Your plugin manager prepares the matching binary before first use:
 
    ```vim
    :Lazy update TexViewer   " pulls new commits AND runs the build hook
@@ -362,10 +433,15 @@ with the crate). There are two ways the binary tracks a plugin update:
 
    (packer: `:PackerSync`; vim-plug: `:PlugUpdate sonv/TexViewer`.)
 
-2. **Without a hook** — on the next `:MathPreview`, if the plugin is newer
-   than the binary, the plugin reinstalls it automatically (you'll see
-   `binary X older than plugin Y — reinstalling…`). It also auto-installs the
-   first time when no binary is found.
+   If Cargo mode sets `install_root`, either add the same `--root <prefix>` to
+   its build hook or omit the hook; the first-use installer reads Lua setup,
+   while a plugin manager's shell hook does not.
+
+2. **On first use** — omit the build hook. On the next `:MathPreview`, the
+   plugin compiles or downloads according to `install_method` when the managed
+   binary is missing or stale. GitHub mode never silently falls back to Cargo;
+   an unpublished version, unsupported platform, or incompatible GNU/Linux
+   binary produces a clear error and leaves any prior executable untouched.
 
 Either way, confirm what's live with:
 
@@ -374,8 +450,9 @@ Either way, confirm what's live with:
 ```
 
 then `:MathPreviewRestart` so a running daemon picks up the new binary. If
-`install_dir_on_path` is `false`, the binary still works (run by absolute
-path) but won't be on your shell `$PATH` until you add that dir.
+`install_dir_on_path` is `false`, the binary still works by absolute path.
+That is expected for GitHub mode's versioned, plugin-private directory; Cargo
+users may add their stable Cargo bin directory to the shell `$PATH`.
 
 ### 3. Use it
 
@@ -1219,12 +1296,16 @@ are fine for the standard case. Override only if you need to:
 
 ```lua
 require("mathpreview").setup({
-  cmd = "/usr/local/bin/mathpreview-cli", -- non-$PATH binary location
+  -- "cargo" compiles locally (default); "github" downloads the exact
+  -- published release, verifies SHA-256, and needs no Rust toolchain.
+  install_method = "cargo",
+  -- An explicit path overrides install_method and is never overwritten.
+  -- cmd = "/usr/local/bin/mathpreview-cli",
   auto_open_browser = false,              -- skip the browser launch on :MathPreview
   -- nil = use the binary's embedded MathJax bundle (offline default).
   -- Set to any MathJax 4 build URL to load over the network instead —
   -- the plugin forwards it to the daemon as --mathjax-url.
-  mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+  -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
   filetypes = { "tex", "plaintex", "latex" },
   debounce_ms = 40,
   cursor_debounce_ms = 80,
@@ -1336,9 +1417,10 @@ function(jump) … end` hook — it runs right after the cursor moves.
 
 **Troubleshooting.** If `:MathPreviewStatus` shows `daemon_running =
 false` after `:MathPreview`, check `:messages` for the spawn error
-(usually "binary not found" — set `cmd` in `setup()` to an absolute
-path). If `last_error` is set, that's curl's view of the daemon (port
-mismatch, daemon crashed, etc.); `:MathPreviewRestart` usually fixes it.
+(usually an unavailable compiler/release — switch `install_method`, or set
+`cmd` in `setup()` to an absolute path). If `last_error` is set, that's curl's
+view of the daemon (port mismatch, daemon crashed, etc.);
+`:MathPreviewRestart` usually fixes it.
 
 ## How it stays fast
 
@@ -1394,8 +1476,11 @@ plugin/                 auto-sourced by nvim — registers :MathPreview commands
   └ mathpreview.lua       command stubs that lazy-require lua/mathpreview
 examples/               demo .tex paper + companion .sty
 scripts/
+  ├ install-prebuilt.sh   download + verify the matching GitHub release binary
   ├ vendor-mathjax.sh     refresh vendor/mathjax/ from npm
   └ vendor-newcm-text.sh  refresh vendor/newcm-text/ from npm
+.github/workflows/
+  └ release.yml           test/package four release targets + checksums
 CHANGELOG-GPT.md        codex session changelog
 CHANGELOG-claude.md     claude session changelog
 DESIGN.md               full design document
@@ -1433,9 +1518,10 @@ See `DESIGN.md` for the full backlog.
   at source-word granularity for prose and element granularity for math
   and refs. Full SyncTeX-style precision for exact display rows or
   glyph-level positions is still future work.
-- **◯ CI: GitHub Actions.** `cargo fmt --check`, `cargo clippy -D
-  warnings`, `cargo test`, `npm run lint`, and a headless nvim plugin
-  smoke test. No `.github/workflows/` today.
+- **◯ Full per-change CI.** Release tags already build and test all four binary
+  targets and verify the prebuilt-installer contract. Add PR/push gates for
+  `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
+  `npm run lint`, and a headless nvim plugin smoke test.
 - **◯ Browser-level interaction tests.** Today's regression coverage is
   cargo tests + eslint. A small headless-browser harness (Playwright) on
   the rendered shell would catch CSS regressions, toolbar interactions,

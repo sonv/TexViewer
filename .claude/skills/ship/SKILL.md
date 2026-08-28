@@ -1,6 +1,6 @@
 ---
 name: ship
-description: TexViewer/mathpreview's ship-and-release discipline — the per-change checklist (verify e2e, quality gates, lockstep version bump, WS-protocol pairing, CHANGELOG, push to dev) and the release flow (FF main, tag, CI, publish). Use this skill whenever making ANY code change in this repo — bug fix, feature, perf work, or plugin edit — and whenever the user asks to release, publish, cut a version, or reports a bug that "still" happens after a fix (stale-binary diagnosis). Consult it BEFORE committing, bumping versions, or touching WS message shapes.
+description: TexViewer/mathpreview's ship-and-release discipline — the per-change checklist (verify e2e, quality gates, lockstep version bump, WS-protocol pairing, CHANGELOG, push to dev) and the release flow (tag, CI, publish assets, then FF main). Use this skill whenever making ANY code change in this repo — bug fix, feature, perf work, or plugin edit — and whenever the user asks to release, publish, cut a version, or reports a bug that "still" happens after a fix (stale-binary diagnosis). Consult it BEFORE committing, bumping versions, or touching WS message shapes.
 ---
 
 # Shipping a change to mathpreview
@@ -13,14 +13,17 @@ the *why* or a measurement recipe. This file is the operational path.
 
 A bug that "still" happens after a fix is usually a **stale binary**, not code:
 
-1. `~/.cargo/bin/mathpreview-cli --version` — does it predate the fix?
+1. `:MathPreviewStatus` — which `cmd` and `install_method` are selected, and
+   does `binary_version` predate `plugin_version`? Run that exact
+   `<resolved-cmd> --version` directly when needed.
 2. Is the *running* daemon current? `ps aux | grep mathpreview-cli` for the
    port, then `curl -s http://127.0.0.1:<port>/debug -H 'Host: 127.0.0.1:<port>'`
    — check `ws_protocol` (matches serve.rs?) and `clients` (is a tab even
    connected?). The daemon-reuse path skips the plugin's auto-rebuild, so an
    old process can outlive many plugin updates.
-3. Fix: `cargo install --path crates/cli --force` (from the checkout), then the
-   user runs `:MathPreviewRestart`.
+3. Fix: re-run the selected installer
+   (`cargo install --path crates/cli --force` or
+   `sh scripts/install-prebuilt.sh`), then the user runs `:MathPreviewRestart`.
 
 Only after the running binary is proven current, debug the code — and
 reproduce against the user's **real file** when one is implicated, not just a
@@ -80,9 +83,10 @@ Work happens on `dev`. For every change:
    `date -u +%Y-%m-%d` (check it — sessions cross midnight).
 7. **Commit** (root cause + mechanism + what was verified in the body;
    `Co-Authored-By` trailer) and **push to `dev`**.
-8. If the user is actively testing, offer to `cargo install` the new binary
-   for them (+ `:MathPreviewRestart`) — pushing alone changes nothing on
-   their machine.
+8. If the user is actively testing, offer to run the matching Cargo/GitHub
+   installer for them (+ `:MathPreviewRestart`) — pushing alone changes
+   nothing on their machine. An unpublished dev version has no GitHub asset,
+   so use Cargo until its release exists.
 
 ## Release checklist
 
@@ -95,23 +99,27 @@ Only on explicit user request. `dev → main` is always a fast-forward.
    - Cargo.toml = Cargo.lock = PLUGIN_VERSION = the version being tagged
    - WS protocol constants match (serve.rs ↔ footer.js)
    - CHANGELOG entry exists and is dated
-2. `git push origin dev:main`
-3. `git tag -a vX.Y.Z <sha> -m "release: vX.Y.Z — <summary>"` then push the
+2. `git tag -a vX.Y.Z <sha> -m "release: vX.Y.Z — <summary>"` then push the
    tag. Transient SSH failures happen: verify with
    `git ls-remote --tags origin vX.Y.Z`, retry if missing.
-4. CI (`release.yml`, fires on `v*` tags) builds + tests 4 targets and creates
+3. CI (`release.yml`, fires on `v*` tags) builds + tests 4 targets, verifies the
+   prebuilt installer against every packaged artifact, and creates
    a **draft** release. Find the run
    (`gh run list --workflow=release.yml --event=push`), watch it in the
    background (`gh run watch <id> --exit-status`).
-5. While CI runs, write curated release notes: theme-grouped highlights
+4. While CI runs, write curated release notes: theme-grouped highlights
    distilled from the CHANGELOG span since the previous release, ending with
    the standard binaries/checksums line (and a WS-bump note when applicable).
-6. On success: confirm the draft has **14 assets** (4 daemon tarballs +
-   3 `-locus-` gui tarballs, each with a `.sha256`), then
+5. On success: confirm the draft has **8 assets** (4 daemon tarballs, each with
+   a `.sha256`), then
    `gh release edit vX.Y.Z --notes-file <notes> --draft=false --latest`,
    and give the release a title (`--title "vX.Y.Z — <short theme list>"`).
-7. Verify: `isDraft=false`, `Latest` marker in `gh release list`, and report
-   the release URL.
+6. Verify the release is public and its exact-version archive + checksum URLs
+   return successfully, then `git push origin dev:main`. Publishing assets
+   first prevents GitHub-mode plugin updates from observing a new main commit
+   before its required binary exists.
+7. Verify: `isDraft=false`, `Latest` marker in `gh release list`, `origin/main`
+   equals the tagged dev SHA, and report the release URL.
 
 ## Invariants worth re-reading before touching them
 

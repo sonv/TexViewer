@@ -24,9 +24,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag name to use when running manually (e.g. v0.0.0-dryrun). Not pushed; only used in the artifact filenames."
+        description: "Optional tag name for a manual dry run. Leave blank to use v<Cargo.toml version>; if set, it must match that version."
         required: false
-        default: "v0.0.0-dryrun"
+        default: ""
 
 # Opt every JavaScript-based action in this workflow into the Node.js 24
 # runtime now. As of mid-2026 the major actions/* releases (checkout,
@@ -80,6 +80,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Resolve release version
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION=$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            TAG="$INPUT_TAG"
+            [[ -n "$TAG" ]] || TAG="v$VERSION"
+          else
+            TAG="$REF_NAME"
+          fi
+          if [[ "$TAG" != "v$VERSION" ]]; then
+            echo "tag $TAG does not match Cargo.toml version $VERSION" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (pinned 2026-06-25)
         with:
@@ -113,13 +136,40 @@ jobs:
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }} -p mathpreview-cli
 
+      # README and the installer promise that GNU/Linux artifacts run with
+      # glibc 2.34+. Building on Ubuntu 22.04 alone does not enforce that ABI:
+      # a future dependency could import a newer symbol without failing CI.
+      - name: Enforce Linux glibc 2.34 ceiling
+        if: contains(matrix.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINARY="target/${{ matrix.target }}/release/mathpreview-cli"
+          GLIBC_NODES=$(
+            readelf --version-info "$BINARY" \
+              | grep -oE 'GLIBC_[A-Za-z0-9_.]+' \
+              | sort -u
+          )
+          NONNUMERIC=$(printf '%s\n' "$GLIBC_NODES" \
+            | grep -Ev '^GLIBC_[0-9]+(\.[0-9]+)*$' || true)
+          if [[ -n "$NONNUMERIC" ]]; then
+            echo "$BINARY imports unsupported glibc ABI nodes:" >&2
+            echo "$NONNUMERIC" >&2
+            exit 1
+          fi
+          MAX_GLIBC=$(printf '%s\n' "$GLIBC_NODES" | sort -V | tail -1)
+          if [[ "$(printf '%s\n' GLIBC_2.34 "$MAX_GLIBC" | sort -V | tail -1)" != "GLIBC_2.34" ]]; then
+            echo "$BINARY requires $MAX_GLIBC; release ceiling is GLIBC_2.34" >&2
+            exit 1
+          fi
+
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
           # The tag drives the archive name. On tag-triggered runs github.ref_name
           # is "v0.1.0"; on workflow_dispatch it's the manual input.
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="${{ steps.release.outputs.tag }}"
           NAME="mathpreview-cli-${TAG}-${{ matrix.target }}"
           mkdir -p staging dist
           cp "target/${{ matrix.target }}/release/mathpreview-cli" staging/
@@ -130,6 +180,27 @@ jobs:
           (cd staging && tar czf "../dist/${NAME}.tar.gz" mathpreview-cli)
           (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
           ls -lh dist/
+
+      # Exercise the same checksum, one-file archive, executable, and exact
+      # --version checks that the nvim plugin uses. Serving the just-built
+      # files through curl's file:// transport catches any drift between the
+      # release naming contract and scripts/install-prebuilt.sh before upload.
+      - name: Verify prebuilt installer contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release.outputs.tag }}"
+          VERSION="${{ steps.release.outputs.version }}"
+          RELEASE_ROOT="$RUNNER_TEMP/mathpreview-release"
+          INSTALL_ROOT="$RUNNER_TEMP/mathpreview-install"
+          mkdir -p "$RELEASE_ROOT/$TAG"
+          cp dist/* "$RELEASE_ROOT/$TAG/"
+          MATHPREVIEW_RELEASE_BASE_URL="file://$RELEASE_ROOT" \
+            sh scripts/install-prebuilt.sh \
+              "$VERSION" "$INSTALL_ROOT" "${{ matrix.target }}"
+          test -x "$INSTALL_ROOT/bin/mathpreview-cli"
+          test "$("$INSTALL_ROOT/bin/mathpreview-cli" --version)" = \
+            "mathpreview-cli $VERSION"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -145,7 +216,7 @@ jobs:
     # Skip the GitHub-Release step on manual dry runs: artifacts upload
     # to the Actions tab where you can download them, but no Releases
     # entry is created. Only real tag pushes create draft releases.
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     permissions:
       contents: write

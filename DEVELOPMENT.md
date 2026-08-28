@@ -9,8 +9,9 @@ automatically when working in this repo. Keep the two in sync.
 
 The nvim plugin (`lua/mathpreview/init.lua`) and the `mathpreview-cli` binary
 install **separately**: the plugin updates with a `:Lazy update`, the binary
-only when something rebuilds it. The plugin auto-reinstalls a stale binary on a
-*fresh* `:MathPreview` start, but the daemon-reuse path (which lets
+only when the selected installer compiles or downloads it. The plugin
+auto-reinstalls a stale managed binary on a *fresh* `:MathPreview` start, but
+the daemon-reuse path (which lets
 `:MathPreview` reuse an open tab) skips that check — so a running daemon can
 keep serving an old binary long after the plugin updated. Every mechanism below
 exists to keep those two halves — plus the *third* half-installed thing, the
@@ -33,8 +34,9 @@ browser tab's cached client JS — from skewing silently:
    for "it still doesn't work" reports, the *running* daemon (`/debug` reports
    `ws_protocol` and connected `clients`; `ps` + binary mtime tell you what's
    actually executing). The most common phantom bug is a **stale binary**:
-   check `~/.cargo/bin/mathpreview-cli --version` before touching code. Fix:
-   `cargo install --path crates/cli --force` + `:MathPreviewRestart`.
+   use `:MathPreviewStatus` to find the resolved `cmd`, `install_method`, and
+   versions before touching code. Re-run the matching Cargo/GitHub installer,
+   then `:MathPreviewRestart`.
 2. **Fix, then verify end-to-end** (see cookbook below). Client/plugin code
    can't be exercised headlessly here — compensate with served-bundle greps,
    protocol-level WS observation, and adversarial review for anything
@@ -62,18 +64,23 @@ browser tab's cached client JS — from skewing silently:
 Only on explicit request — releases are outward-facing. The flow:
 
 1. **Pre-flight**: clean tree; `origin/main` is an ancestor of `origin/dev`
-   (the merge is always a fast-forward: `git push origin dev:main`); the tag is
-   free; Cargo.toml = Cargo.lock = PLUGIN_VERSION; WS protocol pair matches;
-   CHANGELOG has the entry.
+   (the eventual merge must be a fast-forward); the tag is free; Cargo.toml =
+   Cargo.lock = PLUGIN_VERSION; WS protocol pair matches; CHANGELOG has the
+   entry.
 2. **Tag**: annotated `vX.Y.Z` on the dev head; push it. Transient SSH failures
    happen — verify with `git ls-remote --tags` and retry.
 3. **CI** (`.github/workflows/release.yml`) builds and tests 4 targets (macOS
-   arm64/x86_64, Linux x86_64/arm64) and creates a **draft** release with
-   tarballs + SHA-256 checksums. Watch it: `gh run watch <id> --exit-status`.
+   arm64/x86_64, Linux x86_64/arm64), runs the prebuilt installer against each
+   packaged artifact, and creates a **draft** release with tarballs + SHA-256
+   checksums. Watch it: `gh run watch <id> --exit-status`.
 4. **Publish**: replace the auto-notes with curated, theme-grouped notes
    distilled from the CHANGELOG span since the previous release, then
    `gh release edit vX.Y.Z --notes-file … --draft=false --latest`. Verify
    `isDraft=false`, the Latest marker, and 8 assets.
+5. **Fast-forward main last**: after the exact-version archive and checksum URLs
+   are public, run `git push origin dev:main` and verify `origin/main` equals the
+   tag. This avoids a window where GitHub-mode plugin updates see new code whose
+   required release binary is still unavailable.
 
 ## Verification cookbook
 
