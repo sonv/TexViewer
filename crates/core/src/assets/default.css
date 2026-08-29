@@ -2435,7 +2435,13 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   border-radius: 4px;
   padding: 8px 12px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  font-size: 13px;
+  /* This fixed overlay sits outside main#page's CSS zoom. Keep cloned
+     document content at its configured natural size when fit-to-width
+     shrinks the page, and follow the scale once zoom enlarges the page. */
+  font-size: max(
+    var(--body-font-size),
+    calc(var(--body-font-size) * var(--page-scale, 1))
+  );
   line-height: 1.45;
   /* Wide enough to show typical display equations without truncation; if a
      long expression still overflows the box gives it a horizontal scroll

@@ -6690,6 +6690,29 @@ mod tests {
     }
 
     #[test]
+    fn hover_preview_uses_readable_document_scale() {
+        let css = super::shell::DEFAULT_CSS;
+        let start = css.find(".hover-preview {").expect("hover preview rule");
+        let tail = &css[start..];
+        let end = tail.find("\n}").expect("hover preview rule end");
+        let rule = &tail[..end];
+
+        assert!(
+            rule.contains(concat!(
+                "font-size: max(\n",
+                "    var(--body-font-size),\n",
+                "    calc(var(--body-font-size) * var(--page-scale, 1))\n",
+                "  );"
+            )),
+            "hover preview must follow document sizing: {rule}"
+        );
+        assert!(
+            !rule.contains("font-size: 13px"),
+            "hover preview regressed to a fixed small font: {rule}"
+        );
+    }
+
+    #[test]
     fn viewer_shell_contains_index_and_page_modes() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),

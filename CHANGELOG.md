@@ -13,6 +13,17 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.30] — 2026-08-29
+
+### Fixed
+
+- **Reference hover previews are now readable at the document's size.** The
+  floating `\ref`/`\eqref`/`\cite` preview no longer forces cloned text and
+  MathJax equations into a fixed 13px font. It uses the configured document
+  font size as a floor and follows zoom once the page is enlarged beyond its
+  natural size, while preserving the existing viewport bounds and overflow
+  behavior.
+
 ## [2.1.29] — 2026-08-28
 
 ### Added

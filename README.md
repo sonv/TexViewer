@@ -598,8 +598,10 @@ a Rust roundtrip unless they are controlling the daemon itself.
   entry (typeset math preserved) instead of scrolling to it — click again
   or the `×` to unpin, use `↔` to expand it horizontally over the text, and
   drag the `⋮⋮` grip to reorder. Hovering a `\ref`/`\cite` shows a quick,
-  proof-less preview regardless of mode. A left-margin refkey chip (needs
-  `keys` on) now toggles its card the same way; the `:` command line keeps
+  proof-less preview regardless of mode. The preview stays at least as large
+  as the configured document font and follows zoom once the page is enlarged
+  beyond natural size. A left-margin refkey chip (needs `keys` on) now toggles
+  its card the same way; the `:` command line keeps
   explicit `:pin`/`:unpin`/`:clear` commands with Tab fuzzy-completion (`:q`
   closes the viewer tab when the browser permits it, which it does for a
   freshly opened preview tab; otherwise it
