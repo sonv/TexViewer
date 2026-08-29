@@ -90,8 +90,9 @@ pub(super) fn wrap_in_shell(
     // Config-driven overrides emitted after the bundled CSS so they win
     // by source order, and as a separate `<script>` so client JS can read
     // the values at init without round-tripping through localStorage.
+    let hover_preview_scale = f64::from(opts.viewer_config.hover_preview_scale) / 100.0;
     let mut config_css = format!(
-        ":root {{ --body-font-size: {}px; --ui-font-size: {}px; }}",
+        ":root {{ --body-font-size: {}px; --ui-font-size: {}px; --hover-preview-scale: {hover_preview_scale:.2}; }}",
         opts.viewer_config.font_size, opts.viewer_config.ui_font_size,
     );
     // A4 page margin. Precedence: explicit `page-margin` config > the
@@ -138,7 +139,7 @@ pub(super) fn wrap_in_shell(
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, hoverPreviewScale: {hover_preview_scale}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
@@ -151,6 +152,7 @@ pub(super) fn wrap_in_shell(
         keybindings = keybindings_js,
         keybinding_aliases = keybinding_aliases_js,
         key_sequence_timeout_ms = opts.viewer_config.key_sequence_timeout_ms,
+        hover_preview_scale = opts.viewer_config.hover_preview_scale,
         // Seeded so applyViewerConfig can detect the FIRST live change (its
         // reload guard treats `undefined` as not-yet-seen; without this seed
         // the first flip after page load was silently swallowed). `null` =
@@ -392,6 +394,9 @@ pub(super) fn wrap_in_shell(
         </label>
         <label>UI font size (px)
           <input type="number" id="config-ui-font-size" min="9" max="20" step="1">
+        </label>
+        <label title="Reference and citation hover previews. 100% matches document text. Fit-to-width never shrinks them; zooming in still enlarges them.">Hover preview size (%)
+          <input type="number" id="config-hover-preview-scale" min="100" max="300" step="10">
         </label>
         <label>Page margin (mm)
           <input type="number" id="config-page-margin" min="5" max="60" step="1"

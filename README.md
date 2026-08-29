@@ -599,9 +599,10 @@ a Rust roundtrip unless they are controlling the daemon itself.
   or the `×` to unpin, use `↔` to expand it horizontally over the text, and
   drag the `⋮⋮` grip to reorder. Hovering a `\ref`/`\cite` shows a quick,
   proof-less preview regardless of mode. The preview stays at least as large
-  as the configured document font and follows zoom once the page is enlarged
-  beyond natural size. A left-margin refkey chip (needs `keys` on) now toggles
-  its card the same way; the `:` command line keeps
+  as the configured document font by default; **Hover preview size** in the
+  config panel can magnify it from 100–300%. It follows zoom once the page is
+  enlarged beyond natural size. A left-margin refkey chip (needs `keys` on)
+  now toggles its card the same way; the `:` command line keeps
   explicit `:pin`/`:unpin`/`:clear` commands with Tab fuzzy-completion (`:q`
   closes the viewer tab when the browser permits it, which it does for a
   freshly opened preview tab; otherwise it
@@ -751,6 +752,7 @@ overrides, applied per field with last-wins semantics:
 # ~/.config/mathpreview/config.toml — applies to every paper
 [viewer]
 font-size = 18                  # body text size in CSS pixels
+hover-preview-scale = 100       # 100..300% of body size for ref/cite previews
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
 fancy-theorems = true           # false = plain, PDF-like theorem formatting
 typeset-mode = "local"          # | "background" — see below
@@ -895,6 +897,13 @@ local content and comments, and validates the complete result before replacing
 the selected file. The adjacent
 **MathJax config** tab keeps the generated-config inspector and raw JavaScript
 override with the same save targets.
+
+**Hover preview size** writes `hover-preview-scale` as a percentage from 100
+to 300. At 100%, a floating `\ref`/`\eqref`/`\cite` preview matches the body
+font and fit-to-width never shrinks it below that natural size. Larger values
+magnify both prose and MathJax content proportionally; zooming the page above
+100% enlarges the preview further. The control shows the effective inherited
+value, but an untouched value is not copied into the selected config scope.
 
 MathJax follows prose and display conventions separately. Inline formulas may
 break at TeX-valid operators so they can continue naturally onto the next text

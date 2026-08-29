@@ -3695,6 +3695,27 @@ mod tests {
         assert!(out.html.contains(r#"id="config-mode-viewer""#));
         assert!(out.html.contains(r#"id="config-mode-mathjax""#));
         assert!(out.html.contains(r#"id="config-font-size""#));
+        assert!(out
+            .html
+            .contains(r#"id="config-hover-preview-scale" min="100" max="300""#));
+        assert!(out.html.contains("Hover preview size (%)"));
+        assert!(out.html.contains("hoverPreviewScale: 100"));
+        assert!(out
+            .html
+            .contains("values['viewer.hover-preview-scale'] = hoverScale"));
+        assert!(out
+            .html
+            .contains("window.__mpConfig.hoverPreviewScale = cfg.hover_preview_scale"));
+        assert!(out
+            .html
+            .contains("setProperty('--hover-preview-scale', nextHoverScale)"));
+        assert!(out
+            .html
+            .contains("positionHoverPreview(hoverPreviewEl, hoverPreviewSource)"));
+        assert!(out
+            .html
+            .contains("e.target.id === 'config-hover-preview-scale'"));
+        assert!(out.html.contains("hoverScaleEl.dataset.dirty === 'true'"));
         assert!(out.html.contains(r#"id="config-source-jump-trigger""#));
         assert!(out.html.contains(r#"id="config-typeset-mode""#));
         assert!(out.html.contains(r#"id="config-fancy-theorems""#));
@@ -3776,6 +3797,21 @@ mod tests {
         assert!(out
             .html
             .contains("Global <code>~/.config/mathpreview/config.toml</code>"));
+    }
+
+    #[test]
+    fn hover_preview_scale_is_seeded_into_css_and_client_config() {
+        let mut opts = HtmlOptions::default();
+        opts.viewer_config.hover_preview_scale = 175;
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\nConfig\n\\end{document}\n".to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert!(out.html.contains("--hover-preview-scale: 1.75;"));
+        assert!(out.html.contains("hoverPreviewScale: 175"));
     }
 
     #[test]
@@ -6700,8 +6736,8 @@ mod tests {
         assert!(
             rule.contains(concat!(
                 "font-size: max(\n",
-                "    var(--body-font-size),\n",
-                "    calc(var(--body-font-size) * var(--page-scale, 1))\n",
+                "    calc(var(--body-font-size) * var(--hover-preview-scale, 1)),\n",
+                "    calc(var(--body-font-size) * var(--page-scale, 1) * var(--hover-preview-scale, 1))\n",
                 "  );"
             )),
             "hover preview must follow document sizing: {rule}"

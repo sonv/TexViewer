@@ -263,6 +263,9 @@
                      e.target.id === 'macros-toml-input')) {
       markMacroEditorDirty(e.target);
     }
+    if (e.target && e.target.id === 'config-hover-preview-scale') {
+      e.target.dataset.dirty = 'true';
+    }
   });
   // Macros dialog wiring: file picker + scope radio change.
   document.addEventListener('change', function(e) {

@@ -51,7 +51,7 @@ use mathpreview_core::{
     HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "76";
+const WS_PROTOCOL_VERSION: &str = "77";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -451,6 +451,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
         "viewer_config": {
             "font_size": viewer_config.font_size,
             "ui_font_size": viewer_config.ui_font_size,
+            "hover_preview_scale": viewer_config.hover_preview_scale,
             "default_page_mode": viewer_config.default_page_mode.as_str(),
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
@@ -3231,9 +3232,10 @@ async fn render_cached(
                     state,
                     "info",
                     format!(
-                        "config reloaded: font-size={}, ui-font-size={}, source-jump-trigger={}, default-page-mode={}, default-theme={}, fancy-theorems={}",
+                        "config reloaded: font-size={}, ui-font-size={}, hover-preview-scale={}%, source-jump-trigger={}, default-page-mode={}, default-theme={}, fancy-theorems={}",
                         resolved.viewer.font_size,
                         resolved.viewer.ui_font_size,
+                        resolved.viewer.hover_preview_scale,
                         resolved.viewer.source_jump_trigger.as_str(),
                         resolved.viewer.default_page_mode.as_str(),
                         resolved.viewer.default_theme.as_str(),
@@ -3359,7 +3361,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
 /// for logging.
 async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usize, &'static str) {
     // The current viewer config rides along with every render so the
-    // client can re-apply `--body-font-size` and `__mpConfig` values
+    // client can re-apply font/hover sizing and `__mpConfig` values
     // live — `.mathpreview.toml` edits or `POST /config/set` no
     // longer require a tab reload to take effect. Snapshot it before taking
     // the broadcast lock to avoid nesting lock acquisitions.
@@ -3386,6 +3388,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
     let viewer_config_json = serde_json::json!({
         "font_size": viewer_config.font_size,
         "ui_font_size": viewer_config.ui_font_size,
+        "hover_preview_scale": viewer_config.hover_preview_scale,
         "default_page_mode": viewer_config.default_page_mode.as_str(),
         "default_theme": viewer_config.default_theme.as_str(),
         "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
@@ -4804,6 +4807,10 @@ toggle-theme = "T"
         let values = std::collections::BTreeMap::from([
             ("viewer.font-size".to_string(), serde_json::json!(21)),
             (
+                "viewer.hover-preview-scale".to_string(),
+                serde_json::json!(180),
+            ),
+            (
                 "viewer.fancy-theorems".to_string(),
                 serde_json::json!(false),
             ),
@@ -4824,6 +4831,7 @@ toggle-theme = "T"
             .unwrap()
             .resolve();
         assert_eq!(resolved.viewer.font_size, 21);
+        assert_eq!(resolved.viewer.hover_preview_scale, 180);
         assert!(!resolved.viewer.fancy_theorems);
         assert_eq!(resolved.viewer.default_page_mode.as_str(), "dynamic");
         assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
@@ -4845,6 +4853,7 @@ toggle-theme = "T"
         let merged = merge_config_editor_values(sparse, &values, &label).unwrap();
         assert!(merged.contains("font-size = 20"));
         assert!(merged.contains("default-theme = \"dark\""));
+        assert!(!merged.contains("hover-preview-scale"));
         assert!(!merged.contains("[keybindings]"));
         assert!(!merged.contains("[keybindings.aliases]"));
 
@@ -5472,13 +5481,18 @@ Second paragraph here.
         assert!(!is_latest_render_attempt(&state, older));
         assert!(is_latest_render_attempt(&state, newer));
 
-        state.viewer_config.write().await.fancy_theorems = false;
+        {
+            let mut viewer_config = state.viewer_config.write().await;
+            viewer_config.fancy_theorems = false;
+            viewer_config.hover_preview_scale = 170;
+        }
         let debug_response = serve_debug(axum::extract::State(state.clone())).await;
         let debug_bytes = axum::body::to_bytes(debug_response.into_body(), usize::MAX)
             .await
             .unwrap();
         let debug: serde_json::Value = serde_json::from_slice(&debug_bytes).unwrap();
         assert_eq!(debug["viewer_config"]["fancy_theorems"], false);
+        assert_eq!(debug["viewer_config"]["hover_preview_scale"], 170);
         assert_eq!(debug["viewer_config"]["theorem_numbering"], "auto");
         assert_eq!(debug["viewer_config"]["keybinding_aliases"]["J"], "5j");
         assert_eq!(
@@ -5493,6 +5507,7 @@ Second paragraph here.
         broadcast_render(&state, out, latest).await;
         let payload: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
         assert_eq!(payload["viewer_config"]["fancy_theorems"], false);
+        assert_eq!(payload["viewer_config"]["hover_preview_scale"], 170);
         assert_eq!(payload["viewer_config"]["theorem_numbering"], "auto");
         assert_eq!(payload["viewer_config"]["keybinding_aliases"]["K"], "5k");
         assert_eq!(

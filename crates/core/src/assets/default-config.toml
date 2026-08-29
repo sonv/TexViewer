@@ -4,6 +4,7 @@
 [viewer]
 font-size = 18
 ui-font-size = 12
+hover-preview-scale = 100 # Percent of document size; range 100..300.
 default-page-mode = "a4"
 default-theme = "system"
 theorem-numbering = "auto"

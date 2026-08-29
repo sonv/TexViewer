@@ -3027,6 +3027,17 @@
     if (!isFinite(uiFontSize) || uiFontSize <= 0) uiFontSize = 12;
     var uifs = document.getElementById('config-ui-font-size');
     if (uifs) uifs.value = String(uiFontSize);
+    var hoverPreviewScale = parseInt(cfg.hoverPreviewScale, 10);
+    if (!isFinite(hoverPreviewScale) || hoverPreviewScale < 100 || hoverPreviewScale > 300) {
+      hoverPreviewScale = 100;
+    }
+    var hps = document.getElementById('config-hover-preview-scale');
+    if (hps) {
+      hps.value = String(hoverPreviewScale);
+      // This is the effective cascade value. Do not copy it into another
+      // scope unless the user intentionally edits this control.
+      hps.dataset.dirty = 'false';
+    }
     // Empty keeps the selected file's existing TOML value, or keeps following
     // document geometry when it has no explicit page-margin setting.
     var pm = document.getElementById('config-page-margin');
@@ -3235,6 +3246,16 @@
       if (isFinite(uiFontSize) && uiFontSize > 0) {
         values['viewer.ui-font-size'] = uiFontSize;
       }
+      var hoverScaleEl = document.getElementById('config-hover-preview-scale');
+      if (hoverScaleEl && hoverScaleEl.dataset.dirty === 'true') {
+        var hoverScale = Number(hoverScaleEl.value);
+        if (!isFinite(hoverScale) || Math.floor(hoverScale) !== hoverScale ||
+            hoverScale < 100 || hoverScale > 300) {
+          setConfigFeedback('Hover preview size must be a whole number from 100–300%.', false);
+          return;
+        }
+        values['viewer.hover-preview-scale'] = hoverScale;
+      }
       var pmEl = document.getElementById('config-page-margin');
       if (pmEl && pmEl.value.trim() !== '') {
         var pmVal = parseInt(pmEl.value, 10);
@@ -3342,9 +3363,9 @@
   }
 
   // Apply a freshly-pushed viewer config snapshot from the daemon
-  // without reloading the tab. `font_size` updates the CSS variable
-  // that the body font reads from; `source_jump_trigger` updates the
-  // `__mpConfig` object the click handlers consult; default page mode
+  // without reloading the tab. Font and hover-preview sizes update CSS
+  // variables; `source_jump_trigger` updates the `__mpConfig` object the
+  // click handlers consult; default page mode
   // / theme are init-only on the client (the user's localStorage
   // toggles already win for the current tab) so we just stash them
   // for new windows / private mode that read this tab's state.
@@ -3373,7 +3394,22 @@
       );
       syncTopbarHeight();
     }
+    if (typeof cfg.hover_preview_scale === 'number') {
+      var nextHoverScale = String(cfg.hover_preview_scale / 100);
+      if (document.documentElement.style.getPropertyValue('--hover-preview-scale') !==
+          nextHoverScale) {
+        document.documentElement.style.setProperty('--hover-preview-scale', nextHoverScale);
+        // The popup is fixed to coordinates measured at its old size. Re-fit
+        // an open preview immediately so enlarging it cannot push it offscreen.
+        if (hoverPreviewEl && hoverPreviewSource) {
+          positionHoverPreview(hoverPreviewEl, hoverPreviewSource);
+        }
+      }
+    }
     window.__mpConfig = window.__mpConfig || {};
+    if (typeof cfg.hover_preview_scale === 'number') {
+      window.__mpConfig.hoverPreviewScale = cfg.hover_preview_scale;
+    }
     if (cfg.source_jump_trigger) window.__mpConfig.sourceJumpTrigger = cfg.source_jump_trigger;
     if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
     if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
@@ -3462,6 +3498,7 @@
     var vc = snapshot.viewer_config || {};
     row('font-size', vc.font_size + ' px');
     row('ui-font-size', vc.ui_font_size + ' px');
+    row('hover-preview size', vc.hover_preview_scale + '%');
     row('source-jump trigger', vc.source_jump_trigger);
     row('default page mode', vc.default_page_mode);
     row('default theme', vc.default_theme);

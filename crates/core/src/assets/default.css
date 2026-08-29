@@ -87,6 +87,9 @@
      it overrides --body-font-size. Children in those subtrees use `em` so
      they all scale from this one value. */
   --ui-font-size: 12px;
+  /* Reference/citation hover previews use this unitless multiplier. The
+     daemon maps [viewer] hover-preview-scale = 100..300 to 1..3. */
+  --hover-preview-scale: 1;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -2439,8 +2442,8 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
      document content at its configured natural size when fit-to-width
      shrinks the page, and follow the scale once zoom enlarges the page. */
   font-size: max(
-    var(--body-font-size),
-    calc(var(--body-font-size) * var(--page-scale, 1))
+    calc(var(--body-font-size) * var(--hover-preview-scale, 1)),
+    calc(var(--body-font-size) * var(--page-scale, 1) * var(--hover-preview-scale, 1))
   );
   line-height: 1.45;
   /* Wide enough to show typical display equations without truncation; if a

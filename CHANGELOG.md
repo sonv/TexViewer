@@ -13,6 +13,23 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.31] — 2026-08-29
+
+### Added
+
+- **Reference hover preview size is configurable.** The browser config panel
+  now offers **Hover preview size (%)** from 100–300, backed by
+  `[viewer] hover-preview-scale`. It scales preview prose and MathJax content
+  relative to the document font, applies live to open tabs, and repositions an
+  already-open popup to keep it inside the viewport. The effective inherited
+  value is shown without being copied into another config scope unless the
+  user edits it.
+
+### Changed
+
+- WebSocket protocol 76 → 77 makes existing tabs reload once onto the new live
+  viewer-config field.
+
 ## [2.1.30] — 2026-08-29
 
 ### Fixed

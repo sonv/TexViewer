@@ -464,6 +464,10 @@ pub struct ViewerConfig {
     /// the index/pages side panel (TOC) independently of the document font.
     /// Default 12.
     pub ui_font_size: Option<u32>,
+    /// Size of floating reference/citation hover previews as a percentage of
+    /// the document font. `100` keeps them at the natural document size;
+    /// larger values magnify them. Range 100–300, default 100.
+    pub hover_preview_scale: Option<u32>,
     /// Initial page mode for new clients. localStorage still wins once
     /// the user toggles in-browser; this sets the *default* for a
     /// fresh tab. `"a4"` or `"dynamic"`.
@@ -649,6 +653,7 @@ pub struct ResolvedConfig {
 pub struct ResolvedViewerConfig {
     pub font_size: u32,
     pub ui_font_size: u32,
+    pub hover_preview_scale: u32,
     pub default_page_mode: PageMode,
     pub default_theme: Theme,
     pub source_jump_trigger: SourceJumpTrigger,
@@ -700,6 +705,7 @@ impl Default for ResolvedConfig {
             viewer: ResolvedViewerConfig {
                 font_size: 18,
                 ui_font_size: 12,
+                hover_preview_scale: 100,
                 default_page_mode: PageMode::A4,
                 default_theme: Theme::System,
                 source_jump_trigger: SourceJumpTrigger::CmdClick,
@@ -780,6 +786,10 @@ impl Config {
                     .viewer
                     .ui_font_size
                     .unwrap_or(defaults.viewer.ui_font_size),
+                hover_preview_scale: self
+                    .viewer
+                    .hover_preview_scale
+                    .unwrap_or(defaults.viewer.hover_preview_scale),
                 default_page_mode: self
                     .viewer
                     .default_page_mode
@@ -839,6 +849,7 @@ impl Config {
                 .entry(source)
                 .or_insert(expansion);
         }
+        config.validate_viewer(label)?;
         config.validate_keybindings(label)?;
         let mut canonical_aliases = BTreeMap::new();
         for (source, expansion) in std::mem::take(&mut config.keybindings.aliases) {
@@ -948,6 +959,18 @@ impl Config {
         }
         Ok(())
     }
+
+    fn validate_viewer(&self, label: &Path) -> Result<()> {
+        if let Some(scale) = self.viewer.hover_preview_scale {
+            if !(100..=300).contains(&scale) {
+                bail!(
+                    "viewer hover-preview-scale must be between 100 and 300 percent in {}; got {scale}",
+                    label.display()
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ViewerConfig {
@@ -957,6 +980,9 @@ impl ViewerConfig {
         }
         if other.ui_font_size.is_some() {
             self.ui_font_size = other.ui_font_size;
+        }
+        if other.hover_preview_scale.is_some() {
+            self.hover_preview_scale = other.hover_preview_scale;
         }
         if other.default_page_mode.is_some() {
             self.default_page_mode = other.default_page_mode;
@@ -1067,6 +1093,7 @@ mod tests {
         assert_eq!(cfg, ResolvedConfig::default());
         assert_eq!(cfg.viewer.font_size, 18);
         assert_eq!(cfg.viewer.ui_font_size, 12);
+        assert_eq!(cfg.viewer.hover_preview_scale, 100);
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
         assert!(!cfg.viewer.render_tikz);
         assert!(cfg.viewer.fancy_theorems);
@@ -1117,6 +1144,7 @@ mod tests {
 [viewer]
 font-size = 22
 ui-font-size = 15
+hover-preview-scale = 160
 render-tikz = true
 fancy-theorems = false
 
@@ -1127,6 +1155,7 @@ trigger = "double-click"
         let resolved = cfg.resolve();
         assert_eq!(resolved.viewer.font_size, 22);
         assert_eq!(resolved.viewer.ui_font_size, 15);
+        assert_eq!(resolved.viewer.hover_preview_scale, 160);
         assert!(resolved.viewer.render_tikz);
         assert!(!resolved.viewer.fancy_theorems);
         assert_eq!(
@@ -1136,10 +1165,36 @@ trigger = "double-click"
     }
 
     #[test]
+    fn hover_preview_scale_is_bounded() {
+        for scale in [99, 301] {
+            let error = Config::parse(
+                &format!("[viewer]\nhover-preview-scale = {scale}\n"),
+                Path::new("test.toml"),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("between 100 and 300 percent"),
+                "unexpected error for {scale}: {error:#}"
+            );
+        }
+
+        for scale in [100, 300] {
+            let resolved = Config::parse(
+                &format!("[viewer]\nhover-preview-scale = {scale}\n"),
+                Path::new("test.toml"),
+            )
+            .unwrap()
+            .resolve();
+            assert_eq!(resolved.viewer.hover_preview_scale, scale);
+        }
+    }
+
+    #[test]
     fn merge_later_wins_per_field() {
         let mut lower = Config::parse(
             r#"[viewer]
 font-size = 16
+hover-preview-scale = 140
 fancy-theorems = false
 [viewer.source-jump]
 trigger = "alt-click"
@@ -1158,6 +1213,7 @@ font-size = 20
         let resolved = lower.resolve();
         // higher overrode font-size:
         assert_eq!(resolved.viewer.font_size, 20);
+        assert_eq!(resolved.viewer.hover_preview_scale, 140);
         // higher omitted fancy-theorems, so the lower layer survived:
         assert!(!resolved.viewer.fancy_theorems);
         // higher omitted source-jump, so lower's value survived:
