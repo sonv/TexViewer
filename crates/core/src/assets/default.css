@@ -1947,7 +1947,7 @@ body.margin-left-expanded aside#margin-left .margin-card.expanded {
   opacity: 0.5;
   cursor: not-allowed;
 }
-/* Config dialog: two horizontal tabs share one Project / Global / Custom
+/* Config dialog: horizontal tabs share one Project / Global / Custom
    target selector. The viewer tab is deliberately a real TOML editor so the
    complete keymap and future settings remain configurable without another
    bespoke form control. */

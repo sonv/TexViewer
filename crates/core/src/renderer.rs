@@ -4610,7 +4610,26 @@ mod tests {
         .unwrap();
 
         assert!(out.html.contains(r#"id="config-mode-viewer""#));
+        assert!(out.html.contains(r#"id="config-mode-markdown""#));
         assert!(out.html.contains(r#"id="config-mode-mathjax""#));
+        assert!(out.html.contains("Markdown config"));
+        assert!(out.html.contains(r#"id="config-markdown-colon-fences""#));
+        assert!(out.html.contains("Recognize <code>:::</code> blocks"));
+        assert!(out.html.contains("markdownColonFences: true"));
+        assert!(out.html.contains("colonFences.dataset.dirty !== 'true'"));
+        assert!(out
+            .html
+            .contains("values: { 'markdown.colon-fences': colonFences.checked }"));
+        assert!(out
+            .html
+            .contains("e.target.id === 'config-markdown-colon-fences'"));
+        assert!(out
+            .html
+            .contains("window.__mpConfig.markdownColonFences = cfg.markdown_colon_fences"));
+        assert!(out.html.contains("No Markdown override changes to save."));
+        assert!(out.html.contains("Save Markdown config"));
+        assert!(out.html.contains("refreshMarkdownConfigControl"));
+        assert!(out.html.contains("snapshot.markdown_config.colon_fences"));
         assert!(out.html.contains(r#"id="config-font-size""#));
         assert!(out
             .html
@@ -4785,6 +4804,20 @@ mod tests {
         .unwrap();
 
         assert!(out.html.contains("fancyTheorems: false"));
+    }
+
+    #[test]
+    fn config_shell_seeds_disabled_markdown_colon_fences() {
+        let mut opts = HtmlOptions::default();
+        opts.markdown_config.colon_fences = false;
+        let out = crate::render_document_from_source(
+            Path::new("notes.md"),
+            "# Config\n".to_string(),
+            &opts,
+        )
+        .unwrap();
+
+        assert!(out.html.contains("markdownColonFences: false"));
     }
 
     #[test]

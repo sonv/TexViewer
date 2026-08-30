@@ -303,6 +303,10 @@
       e.target.dataset.dirty = 'true';
       return;
     }
+    if (e.target && e.target.id === 'config-markdown-colon-fences') {
+      e.target.dataset.dirty = 'true';
+      return;
+    }
     if (e.target && e.target.name === 'config-mode') {
       syncConfigMode(false);
       return;

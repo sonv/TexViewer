@@ -239,7 +239,9 @@ images, raw HTML, or leading YAML front matter stay literal.
 Colon-fence recognition is enabled by default. Setting
 `markdown.colon-fences = false` disables all of the colon forms in this
 section, including Bookdown and Quarto theorem fences; alternate custom-block
-boundaries can remain enabled independently as described below.
+boundaries can remain enabled independently as described below. The same
+switch is available as **Recognize `:::` blocks** in the config dialog's
+**Markdown config** tab.
 
 ### Custom Markdown blocks
 
@@ -1141,9 +1143,18 @@ Setting an action itself to `[]` disables all its shortcuts. To reuse a key for
 another viewer action, disable or replace its old action first, then assign the
 key to the new action.
 
-The toolbar **config** dialog's **Viewer config** tab provides structured
-controls for the common settings, followed by a full TOML editor for advanced
-settings and keybindings. Pick **Project (local)** or **Global** and it loads
+The toolbar **config** dialog has dedicated **Viewer config**, **Markdown
+config**, and **MathJax config** tabs. The Markdown tab's **Recognize `:::`
+blocks** checkbox controls compact MathPreview, Bookdown, and Quarto colon
+fences; configured alternate start/end markers remain active when it is off.
+The checkbox shows the effective inherited value but writes an override only
+after the user changes it, so merely inspecting another save scope cannot
+shadow its lower-level setting. Custom block formats and boundary templates
+remain available through TOML.
+
+The **Viewer config** tab provides structured controls for the other common
+settings, followed by a full TOML editor for advanced settings, Markdown
+blocks, and keybindings. Pick **Project (local)** or **Global** and it loads
 that file exactly when present; for a missing file it starts with a minimal
 override. Omitted settings keep flowing from lower config layers and built-in
 defaults—the dialog never materializes missing keybindings into a higher scope.
@@ -1154,9 +1165,8 @@ If another editor changes the selected file after it loads, Save stops and asks
 you to reload instead of overwriting that newer version.
 Save merges the structured controls into the editor text, preserves the other
 local content and comments, and validates the complete result before replacing
-the selected file. The adjacent
-**MathJax config** tab keeps the generated-config inspector and raw JavaScript
-override with the same save targets.
+the selected file. The **MathJax config** tab keeps the generated-config
+inspector and raw JavaScript override with the same save targets.
 
 **Hover preview size** writes `hover-preview-scale` as a percentage from 100
 to 300. At 100%, a floating `\ref`/`\eqref`/`\cite` preview matches the body

@@ -2983,6 +2983,7 @@
   }
 
   var configLoadSeq = 0;
+  var markdownConfigLoadSeq = 0;
 
   function viewerConfigSparseDraft() {
     return '# Add only settings to override at this scope.\n'
@@ -3073,6 +3074,13 @@
       // after an intentional toggle so changing Save-to scope cannot copy an
       // inherited enablement into another config file.
       renderTikz.dataset.dirty = 'false';
+    }
+    var colonFences = document.getElementById('config-markdown-colon-fences');
+    if (colonFences) {
+      colonFences.checked = cfg.markdownColonFences !== false;
+      // This is the effective cascade value. Do not copy it into another
+      // scope unless the user intentionally changes the checkbox.
+      colonFences.dataset.dirty = 'false';
     }
     var mjx = document.getElementById('config-mathjax-config');
     if (mjx) {
@@ -3174,22 +3182,58 @@
     }
   }
 
+  // Fetch the live effective Markdown value when this tab opens. Static TeX
+  // HTML deliberately does not embed Markdown-only settings, so this also
+  // keeps the panel accurate when a user opens it from a running TeX preview.
+  async function refreshMarkdownConfigControl() {
+    if (currentConfigMode() !== 'markdown') return;
+    var checkbox = document.getElementById('config-markdown-colon-fences');
+    if (!checkbox) return;
+    var seq = ++markdownConfigLoadSeq;
+    if (checkbox.dataset.dirty !== 'true') checkbox.disabled = true;
+    try {
+      var res = await fetch('/debug', { cache: 'no-store' });
+      if (!res.ok) return;
+      var snapshot = await res.json();
+      var value = snapshot && snapshot.markdown_config &&
+        snapshot.markdown_config.colon_fences;
+      if (seq !== markdownConfigLoadSeq || currentConfigMode() !== 'markdown' ||
+          checkbox.dataset.dirty === 'true' || typeof value !== 'boolean') return;
+      checkbox.checked = value;
+      window.__mpConfig = window.__mpConfig || {};
+      window.__mpConfig.markdownColonFences = value;
+    } catch (e) { /* a disconnected daemon is already shown in the toolbar */ }
+    finally {
+      if (seq === markdownConfigLoadSeq && currentConfigMode() === 'markdown') {
+        checkbox.disabled = false;
+      }
+    }
+  }
+
   function syncConfigMode(forceReload) {
     // Switching away cancels an in-flight scope read so it cannot overwrite
     // the other tab's feedback or a newer draft.
     configLoadSeq++;
+    markdownConfigLoadSeq++;
     var mode = currentConfigMode();
     var viewerPanel = document.getElementById('config-mode-viewer');
+    var markdownPanel = document.getElementById('config-mode-markdown');
     var mathjaxPanel = document.getElementById('config-mode-mathjax');
     if (viewerPanel) viewerPanel.hidden = mode !== 'viewer';
+    if (markdownPanel) markdownPanel.hidden = mode !== 'markdown';
     if (mathjaxPanel) mathjaxPanel.hidden = mode !== 'mathjax';
     var save = document.getElementById('config-dialog-save');
     if (save) {
-      save.textContent = mode === 'viewer' ? 'Save viewer config' : 'Save MathJax config';
+      save.textContent = mode === 'viewer'
+        ? 'Save viewer config'
+        : mode === 'markdown'
+          ? 'Save Markdown config'
+          : 'Save MathJax config';
       if (mode !== 'viewer') save.disabled = false;
     }
     setConfigFeedback('', false);
     if (mode === 'viewer') loadViewerConfigForScope(!!forceReload);
+    if (mode === 'markdown') refreshMarkdownConfigControl();
   }
 
   function syncConfigCustomPathEnabled() {
@@ -3212,26 +3256,31 @@
     syncConfigMode(true);
     dlg.showModal();
     setTimeout(function() {
-      var target = currentConfigMode() === 'viewer'
+      var mode = currentConfigMode();
+      var target = mode === 'viewer'
         ? document.getElementById('config-font-size')
-        : document.getElementById('config-mathjax-config');
+        : mode === 'markdown'
+          ? document.getElementById('config-markdown-colon-fences')
+          : document.getElementById('config-mathjax-config');
       if (target) target.focus();
     }, 0);
   }
 
   function closeConfigDialog() {
     configLoadSeq++;
+    markdownConfigLoadSeq++;
     var dlg = configDialogEl();
     if (dlg && dlg.open) dlg.close();
   }
 
   async function submitConfigDialog() {
     var sc = currentConfigScope();
+    var configMode = currentConfigMode();
     if (sc.scope === 'custom' && !sc.path) {
       setConfigFeedback('Custom path is required for scope=custom.', false);
       return;
     }
-    if (currentConfigMode() === 'viewer') {
+    if (configMode === 'viewer') {
       var editor = viewerConfigEditorEl();
       if (!editor) return;
       var scopeKey = sc.scope + ':' + (sc.path || '');
@@ -3318,6 +3367,55 @@
             ? '● wrote viewer config → ' + writtenFile +
               ' (saved only; add it with --config to apply)'
             : '● wrote viewer config → ' + writtenFile
+        );
+        closeConfigDialog();
+      } catch (e) {
+        setConfigFeedback(String(e && e.message || e), false);
+      }
+      return;
+    }
+
+    if (configMode === 'markdown') {
+      var colonFences = document.getElementById('config-markdown-colon-fences');
+      if (!colonFences || colonFences.dataset.dirty !== 'true') {
+        setConfigFeedback('No Markdown override changes to save.', true);
+        return;
+      }
+      var markdownPayload = {
+        scope: sc.scope,
+        values: { 'markdown.colon-fences': colonFences.checked },
+      };
+      if (sc.path) markdownPayload.path = sc.path;
+      setConfigFeedback('Saving…', true);
+      try {
+        var markdownRes = await fetch('/config/set', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(markdownPayload),
+        });
+        var markdownBody = null;
+        try { markdownBody = await markdownRes.json(); } catch (e) {}
+        if (!markdownRes.ok) {
+          setConfigFeedback((markdownBody && markdownBody.error) || 'save failed', false);
+          return;
+        }
+        var markdownFile = markdownBody && markdownBody.file
+          ? markdownBody.file
+          : '(file)';
+        colonFences.dataset.dirty = 'false';
+        if (markdownBody && markdownBody.active !== false &&
+            typeof markdownBody.markdown_colon_fences === 'boolean') {
+          window.__mpConfig = window.__mpConfig || {};
+          window.__mpConfig.markdownColonFences = markdownBody.markdown_colon_fences;
+          colonFences.checked = markdownBody.markdown_colon_fences;
+        }
+        setStatus(
+          'live',
+          markdownBody && markdownBody.active === false
+            ? '● wrote Markdown config → ' + markdownFile +
+              ' (saved only; add it with --config to apply)'
+            : '● wrote Markdown config → ' + markdownFile
         );
         closeConfigDialog();
       } catch (e) {
@@ -3462,6 +3560,13 @@
     if (typeof cfg.fancy_theorems === 'boolean') {
       window.__mpConfig.fancyTheorems = cfg.fancy_theorems;
     }
+    if (typeof cfg.markdown_colon_fences === 'boolean') {
+      window.__mpConfig.markdownColonFences = cfg.markdown_colon_fences;
+      var colonFences = document.getElementById('config-markdown-colon-fences');
+      if (colonFences && colonFences.dataset.dirty !== 'true') {
+        colonFences.checked = cfg.markdown_colon_fences;
+      }
+    }
     // The page margin is baked into config_css in the <head> (screen padding
     // + @page print margin), which a body patch can't touch — reload when the
     // effective value flips. null (default/no override) is a valid value, so
@@ -3505,6 +3610,8 @@
     row('theorem numbering', vc.theorem_numbering);
     row('fancy theorem boxes', vc.fancy_theorems ? 'on' : 'off');
     row('render TikZ', vc.render_tikz ? 'on' : 'off');
+    var mc = snapshot.markdown_config || {};
+    row('Markdown ::: blocks', mc.colon_fences === false ? 'off' : 'on');
     row('WS protocol', snapshot.ws_protocol);
     section('editor template');
     lines.push(escapeHtml(snapshot.editor_cmd || '(none)'));

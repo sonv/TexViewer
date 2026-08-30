@@ -51,7 +51,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "79";
+const WS_PROTOCOL_VERSION: &str = "80";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -154,6 +154,10 @@ struct AppState {
     /// the *live* value lives here.
     config_paths: Arc<Vec<PathBuf>>,
     viewer_config: Arc<RwLock<mathpreview_core::ResolvedViewerConfig>>,
+    /// Effective Markdown settings mirrored alongside `viewer_config` so
+    /// config-panel controls stay current after live TOML edits. The renderer
+    /// still consumes its own cloned snapshot in `HtmlOptions`.
+    markdown_config: Arc<RwLock<mathpreview_core::ResolvedMarkdownConfig>>,
     /// The editor's active `/` search semantics (last `POST /search` payload).
     /// Replayed to each newly-connected WS client so a reloaded tab (or one
     /// opened late) shows the highlight — the broadcast alone would be lost,
@@ -366,6 +370,7 @@ fn log_event(state: &AppState, level: &'static str, message: String) {
 /// Read-only; safe to call at any time.
 async fn serve_debug(State(state): State<AppState>) -> Response {
     let viewer_config = state.viewer_config.read().await.clone();
+    let markdown_config = state.markdown_config.read().await.clone();
     let session_macros = state.session_macros.read().await.clone();
     // The document's geometry margin (if any), for the effective-margin echo.
     let geometry_margin_mm = state
@@ -470,6 +475,9 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "key_sequence_timeout_ms": viewer_config.key_sequence_timeout_ms,
             "page_margin_mm": mathpreview_core::effective_page_margin_mm(
                 &viewer_config, geometry_margin_mm),
+        },
+        "markdown_config": {
+            "colon_fences": markdown_config.colon_fences,
         },
         "config_paths": config_paths,
         "macro_paths": macro_paths,
@@ -786,6 +794,7 @@ pub async fn run(
     let (watch_tx, watch_rx) = std_mpsc::channel::<HashSet<PathBuf>>();
     let last_blocks = initial.blocks.clone();
     let initial_viewer_config = opts.viewer_config.clone();
+    let initial_markdown_config = opts.markdown_config.clone();
     let state = AppState {
         opts,
         current: Arc::new(RwLock::new(initial)),
@@ -806,6 +815,7 @@ pub async fn run(
         session_macros: Arc::new(RwLock::new(Vec::new())),
         config_paths: Arc::new(config_paths),
         viewer_config: Arc::new(RwLock::new(initial_viewer_config)),
+        markdown_config: Arc::new(RwLock::new(initial_markdown_config)),
         search_query: Arc::new(RwLock::new(EditorSearch::default())),
         last_cursor: Arc::new(RwLock::new(None)),
         file_content_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -2293,6 +2303,10 @@ async fn serve_config_set(
                 .into_response();
         }
     };
+    let active = prospective.is_some();
+    let effective_colon_fences = prospective
+        .as_ref()
+        .map(|resolved| resolved.markdown.colon_fences);
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return (
@@ -2318,6 +2332,7 @@ async fn serve_config_set(
 
     if let Some(resolved) = prospective {
         *state.viewer_config.write().await = resolved.viewer;
+        *state.markdown_config.write().await = resolved.markdown;
     }
 
     if let Err(e) = trigger_rerender(&state, &root_file).await {
@@ -2337,7 +2352,13 @@ async fn serve_config_set(
             target.display(),
         ),
     );
-    Json(serde_json::json!({ "file": target, "fields": req.values.len() })).into_response()
+    Json(serde_json::json!({
+        "file": target,
+        "fields": req.values.len(),
+        "active": active,
+        "markdown_colon_fences": effective_colon_fences,
+    }))
+    .into_response()
 }
 
 /// Request body for `POST /config/read` / `POST /config/write`.
@@ -2463,6 +2484,9 @@ async fn serve_config_write(
             }
         };
     let active = prospective.is_some();
+    let effective_colon_fences = prospective
+        .as_ref()
+        .map(|resolved| resolved.markdown.colon_fences);
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return (
@@ -2485,6 +2509,7 @@ async fn serve_config_write(
     // the write (text macros still reload per render).
     if let Some(resolved) = prospective {
         *state.viewer_config.write().await = resolved.viewer;
+        *state.markdown_config.write().await = resolved.markdown;
     }
     if let Err(e) = trigger_rerender(&state, &root_file).await {
         log_event(
@@ -2498,7 +2523,13 @@ async fn serve_config_write(
         "info",
         format!("config: wrote {}", target.display()),
     );
-    Json(serde_json::json!({ "file": target, "active": active, "content": body })).into_response()
+    Json(serde_json::json!({
+        "file": target,
+        "active": active,
+        "content": body,
+        "markdown_colon_fences": effective_colon_fences,
+    }))
+    .into_response()
 }
 
 fn validate_config_file(content: &str, label: &Path) -> Result<(), String> {
@@ -3340,15 +3371,28 @@ async fn live_render_options(state: &AppState) -> HtmlOptions {
         Ok(resolved) => {
             render_opts.text_macros = resolved.text_macros.clone();
             render_opts.markdown_config = resolved.markdown.clone();
-            let mut guard = state.viewer_config.write().await;
-            if *guard != resolved.viewer {
-                *guard = resolved.viewer.clone();
-                drop(guard);
+            let viewer_changed = {
+                let mut guard = state.viewer_config.write().await;
+                let changed = *guard != resolved.viewer;
+                if changed {
+                    *guard = resolved.viewer.clone();
+                }
+                changed
+            };
+            let markdown_changed = {
+                let mut guard = state.markdown_config.write().await;
+                let changed = *guard != resolved.markdown;
+                if changed {
+                    *guard = resolved.markdown.clone();
+                }
+                changed
+            };
+            if viewer_changed || markdown_changed {
                 log_event(
                     state,
                     "info",
                     format!(
-                        "config reloaded: font-size={}, ui-font-size={}, hover-preview-scale={}%, source-jump-trigger={}, default-page-mode={}, default-theme={}, fancy-theorems={}",
+                        "config reloaded: font-size={}, ui-font-size={}, hover-preview-scale={}%, source-jump-trigger={}, default-page-mode={}, default-theme={}, fancy-theorems={}, markdown-colon-fences={}",
                         resolved.viewer.font_size,
                         resolved.viewer.ui_font_size,
                         resolved.viewer.hover_preview_scale,
@@ -3356,6 +3400,7 @@ async fn live_render_options(state: &AppState) -> HtmlOptions {
                         resolved.viewer.default_page_mode.as_str(),
                         resolved.viewer.default_theme.as_str(),
                         resolved.viewer.fancy_theorems,
+                        resolved.markdown.colon_fences,
                     ),
                 );
             }
@@ -3624,12 +3669,13 @@ fn semantic_macro_definitions(macros: &[ExtractedMacro]) -> Vec<(&str, &str, u8,
 /// update `last_blocks` and `current`. Returns the operation count and a short
 /// update-kind label for logging.
 async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usize, &'static str) {
-    // The current viewer config rides along with every render so the
-    // client can re-apply font/hover sizing and `__mpConfig` values
+    // The current viewer and Markdown config ride along with every render so
+    // the client can re-apply font/hover sizing and `__mpConfig` values
     // live — `.mathpreview.toml` edits or `POST /config/set` no
     // longer require a tab reload to take effect. Snapshot it before taking
     // the broadcast lock to avoid nesting lock acquisitions.
     let viewer_config = state.viewer_config.read().await.clone();
+    let markdown_config = state.markdown_config.read().await.clone();
 
     // Hold the `last_blocks` write lock across the whole diff → commit →
     // broadcast critical section. This serializes concurrent renders so one
@@ -3685,6 +3731,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "theorem_numbering": viewer_config.theorem_numbering.as_str(),
         "fancy_theorems": viewer_config.fancy_theorems,
         "render_tikz": viewer_config.render_tikz,
+        "markdown_colon_fences": markdown_config.colon_fences,
         "keybindings": viewer_config.keybindings,
         "keybinding_aliases": viewer_config.keybinding_aliases,
         "key_sequence_timeout_ms": viewer_config.key_sequence_timeout_ms,
@@ -5357,6 +5404,109 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn markdown_checkbox_reports_effective_cascade_and_inactive_saves() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-markdown-checkbox-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("notes.md");
+        let global = dir.join("global.toml");
+        let project = dir.join(".mathpreview.toml");
+        let inactive = dir.join("inactive.toml");
+        std::fs::write(&root, "# Notes\n").unwrap();
+        std::fs::write(&global, "[markdown]\ncolon-fences = true\n").unwrap();
+        std::fs::write(&project, "[markdown]\ncolon-fences = true\n").unwrap();
+
+        let initial = mathpreview_core::render_document_from_source(
+            &root,
+            "# Notes\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let mut state = app_state_for_output(initial);
+        state.config_paths = Arc::new(vec![global.clone(), project.clone()]);
+
+        // Changing the lower global layer succeeds, but the response reports
+        // the higher project layer's still-effective `true` value.
+        let response = serve_config_set(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigSetRequest {
+                scope: "custom".to_string(),
+                path: Some(global.display().to_string()),
+                values: std::collections::BTreeMap::from([(
+                    "markdown.colon-fences".to_string(),
+                    serde_json::json!(false),
+                )]),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["active"], true);
+        assert_eq!(payload["markdown_colon_fences"], true);
+        assert!(state.markdown_config.read().await.colon_fences);
+        assert!(std::fs::read_to_string(&global)
+            .unwrap()
+            .contains("colon-fences = false"));
+
+        // An unrelated custom file is validated and written, but must neither
+        // claim to be active nor mutate the live checkbox snapshot.
+        let response = serve_config_set(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigSetRequest {
+                scope: "custom".to_string(),
+                path: Some(inactive.display().to_string()),
+                values: std::collections::BTreeMap::from([(
+                    "markdown.colon-fences".to_string(),
+                    serde_json::json!(false),
+                )]),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["active"], false);
+        assert!(payload["markdown_colon_fences"].is_null());
+        assert!(state.markdown_config.read().await.colon_fences);
+
+        // Changing the highest active layer updates both the response and the
+        // live state used by the next WebSocket config snapshot.
+        let response = serve_config_set(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigSetRequest {
+                scope: "project".to_string(),
+                path: None,
+                values: std::collections::BTreeMap::from([(
+                    "markdown.colon-fences".to_string(),
+                    serde_json::json!(false),
+                )]),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["active"], true);
+        assert_eq!(payload["markdown_colon_fences"], false);
+        assert!(!state.markdown_config.read().await.colon_fences);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn structured_editor_save_preserves_existing_local_config_content() {
         let label = PathBuf::from(".mathpreview.toml");
@@ -5368,6 +5518,13 @@ mathjax-config = "window.MathJax.svg.displayOverflow = 'scroll';"
 
 [text-macros]
 SV = "<strong>#1</strong>"
+
+[markdown.blocks.warning]
+label = "Warning"
+
+[markdown.block-syntaxes.jinja-result]
+start = 'BEGIN {name}'
+end = 'END'
 
 [keybindings]
 toggle-theme = "T"
@@ -5386,6 +5543,10 @@ toggle-theme = "T"
                 "viewer.default-page-mode".to_string(),
                 serde_json::json!("dynamic"),
             ),
+            (
+                "markdown.colon-fences".to_string(),
+                serde_json::json!(false),
+            ),
         ]);
 
         let merged = merge_config_editor_values(local, &values, &label).unwrap();
@@ -5393,6 +5554,8 @@ toggle-theme = "T"
         assert!(merged.contains("wrap-equations = false"));
         assert!(merged.contains("mathjax-config = \"window.MathJax"));
         assert!(merged.contains("SV = \"<strong>#1</strong>\""));
+        assert!(merged.contains("[markdown.blocks.warning]"));
+        assert!(merged.contains("[markdown.block-syntaxes.jinja-result]"));
         assert!(merged.contains("toggle-theme = \"T\""));
 
         let resolved = mathpreview_core::Config::parse(&merged, &label)
@@ -5402,6 +5565,12 @@ toggle-theme = "T"
         assert_eq!(resolved.viewer.hover_preview_scale, 180);
         assert!(!resolved.viewer.fancy_theorems);
         assert_eq!(resolved.viewer.default_page_mode.as_str(), "dynamic");
+        assert!(!resolved.markdown.colon_fences);
+        assert!(resolved.markdown.blocks.contains_key("warning"));
+        assert!(resolved
+            .markdown
+            .block_syntaxes
+            .contains_key("jinja-result"));
         assert_eq!(resolved.viewer.keybindings["toggle-theme"], ["T"]);
     }
 
@@ -6034,6 +6203,9 @@ Second paragraph here.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            markdown_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedMarkdownConfig::default(),
+            )),
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -6055,6 +6227,7 @@ Second paragraph here.
             viewer_config.fancy_theorems = false;
             viewer_config.hover_preview_scale = 170;
         }
+        state.markdown_config.write().await.colon_fences = false;
         let debug_response = serve_debug(axum::extract::State(state.clone())).await;
         let debug_bytes = axum::body::to_bytes(debug_response.into_body(), usize::MAX)
             .await
@@ -6069,6 +6242,7 @@ Second paragraph here.
             "b"
         );
         assert_eq!(debug["viewer_config"]["key_sequence_timeout_ms"], 750);
+        assert_eq!(debug["markdown_config"]["colon_fences"], false);
 
         let mut rx = state.tx.subscribe();
         let out = state.current.read().await.clone();
@@ -6084,6 +6258,7 @@ Second paragraph here.
             "b"
         );
         assert_eq!(payload["viewer_config"]["key_sequence_timeout_ms"], 750);
+        assert_eq!(payload["viewer_config"]["markdown_colon_fences"], false);
     }
 
     #[test]
@@ -6444,6 +6619,9 @@ Second paragraph here.
             config_paths: Arc::new(Vec::new()),
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
+            )),
+            markdown_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedMarkdownConfig::default(),
             )),
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
@@ -6948,6 +7126,9 @@ Second paragraph here.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            markdown_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedMarkdownConfig::default(),
+            )),
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -7073,6 +7254,9 @@ Second paragraph here.
             config_paths: Arc::new(Vec::new()),
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
+            )),
+            markdown_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedMarkdownConfig::default(),
             )),
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
@@ -7242,6 +7426,9 @@ Second paragraph here.
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
             )),
+            markdown_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedMarkdownConfig::default(),
+            )),
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),
             file_content_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -7372,6 +7559,9 @@ Second paragraph here.
             config_paths: Arc::new(Vec::new()),
             viewer_config: Arc::new(RwLock::new(
                 mathpreview_core::ResolvedConfig::default().viewer,
+            )),
+            markdown_config: Arc::new(RwLock::new(
+                mathpreview_core::ResolvedMarkdownConfig::default(),
             )),
             search_query: Arc::new(RwLock::new(EditorSearch::default())),
             last_cursor: Arc::new(RwLock::new(None)),

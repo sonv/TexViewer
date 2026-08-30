@@ -139,7 +139,7 @@ pub(super) fn wrap_in_shell(
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, hoverPreviewScale: {hover_preview_scale}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, markdownColonFences: {markdown_colon_fences}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, hoverPreviewScale: {hover_preview_scale}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
@@ -147,6 +147,11 @@ pub(super) fn wrap_in_shell(
         fancy = opts.viewer_config.fancy_theorems,
         tsm = opts.viewer_config.typeset_mode.as_str(),
         tikz = opts.viewer_config.render_tikz,
+        // Markdown-only config must remain byte-for-byte inert for TeX HTML.
+        // A live TeX viewer fetches the effective Markdown value when this
+        // panel opens, without changing the document's rendered HTML.
+        markdown_colon_fences = opts.document_format == crate::DocumentFormat::Latex
+            || opts.markdown_config.colon_fences,
         mjx = mathjax_config_js,
         mjx_packages = mathjax_packages_js,
         keybindings = keybindings_js,
@@ -381,12 +386,14 @@ pub(super) fn wrap_in_shell(
   <form method="dialog" class="macros-dialog-form" id="config-dialog-form">
     <h2 class="macros-dialog-title">Config</h2>
     <p class="macros-dialog-hint">
-      Edit the viewer's TOML or the MathJax override, then save it for this
-      project or every paper.
+      Configure the viewer, Markdown parsing, or MathJax, then save the
+      override for this project or every paper.
     </p>
     <div class="config-tabs" role="tablist" aria-label="Configuration type">
       <label class="config-tab"><input type="radio" name="config-mode" value="viewer" checked>
         Viewer config</label>
+      <label class="config-tab"><input type="radio" name="config-mode" value="markdown">
+        Markdown config</label>
       <label class="config-tab"><input type="radio" name="config-mode" value="mathjax">
         MathJax config</label>
     </div>
@@ -469,6 +476,26 @@ pub(super) fn wrap_in_shell(
                 rows="18" spellcheck="false" autocomplete="off">{default_config_html}</textarea>
       <textarea id="config-keybindings-reference" hidden readonly
                 aria-hidden="true">{keybinding_reference_html}</textarea>
+    </section>
+    <section class="config-panel config-fields" id="config-mode-markdown" role="tabpanel" hidden>
+      <p class="macros-dialog-hint">
+        Choose which Markdown container syntax MathPreview owns. This setting
+        affects Markdown previews only; LaTeX rendering is unchanged.
+      </p>
+      <fieldset class="macros-dialog-scope config-fields">
+        <legend>Block syntax</legend>
+        <label class="config-checkbox"
+               title="Recognize compact MathPreview, Bookdown, and Quarto blocks beginning with three or more colons.">
+          <span>Recognize <code>:::</code> blocks</span>
+          <input type="checkbox" id="config-markdown-colon-fences" disabled>
+        </label>
+      </fieldset>
+      <p class="macros-dialog-hint config-editor-hint">
+        Uncheck this when another Markdown extension owns colon fences.
+        Project-defined start/end markers remain enabled. Configure those with
+        <code>[markdown.block-syntaxes.ID]</code> in the Viewer config tab's
+        TOML editor or directly in <code>.mathpreview.toml</code>.
+      </p>
     </section>
     <section class="config-panel config-fields" id="config-mode-mathjax" role="tabpanel" hidden>
       <details class="config-mjx-current">

@@ -13,6 +13,24 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.38] — 2026-08-30
+
+### Added
+
+- **The config dialog now has a dedicated Markdown tab.** Its inheritance-safe
+  **Recognize `:::` blocks** checkbox enables or disables compact MathPreview,
+  Bookdown, and Quarto colon fences for Project, Global, or Custom config
+  targets. Alternate start/end markers remain configurable through TOML.
+
+### Fixed
+
+- **Markdown controls follow the effective live config without flattening the
+  cascade.** Opening or changing save scopes does not materialize an inherited
+  checkbox value. Active saves report and broadcast the post-cascade result,
+  while inactive custom files are clearly saved without changing the running
+  preview. Existing comments, custom block formats, delimiter templates,
+  keybindings, and LaTeX rendering remain untouched.
+
 ## [2.1.37] — 2026-08-30
 
 ### Added
