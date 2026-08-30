@@ -1548,7 +1548,31 @@ body.page-crop .refkey-layer .refkey-chip { opacity: 0.88; }
   --md-custom-background: var(--paper);
   margin: 0.9em 0;
 }
+.md-custom-kind-theorem { --md-custom-accent: var(--thm-c-theorem); }
+.md-custom-kind-lemma,
 .md-custom-kind-proof { --md-custom-accent: var(--thm-c-lemma); }
+.md-custom-kind-proposition { --md-custom-accent: var(--thm-c-proposition); }
+.md-custom-kind-corollary { --md-custom-accent: var(--thm-c-corollary); }
+.md-custom-kind-definition,
+.md-custom-kind-hypothesis { --md-custom-accent: var(--thm-c-definition); }
+.md-custom-kind-remark,
+.md-custom-kind-solution { --md-custom-accent: var(--thm-c-remark); }
+.md-custom-kind-example,
+.md-custom-kind-exercise,
+.md-custom-kind-algorithm { --md-custom-accent: var(--thm-c-example); }
+.md-custom-kind-conjecture { --md-custom-accent: var(--thm-c-conjecture); }
+.md-theorem-anchor { position: relative; top: -0.35em; }
+.md-cross-reference {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.14em;
+}
+.md-cross-reference.is-unresolved {
+  color: var(--muted);
+  font-weight: inherit;
+  text-decoration: underline dotted;
+}
 .md-custom-plain { padding: 0.1em 0; }
 .md-custom-bordered {
   padding: 0.5em 0.8em 0.56em;

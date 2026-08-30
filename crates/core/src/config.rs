@@ -717,9 +717,9 @@ pub struct ResolvedConfig {
     pub text_macros: HashMap<String, TextMacro>,
 }
 
-/// Effective Markdown custom-block formats, including the built-in `proof`
-/// format unless a config layer disabled it. Disabled entries are omitted, so
-/// parsers can use map membership as the recognition check.
+/// Effective Markdown custom-block formats, including the built-in semantic
+/// theorem/proof names unless a config layer disabled one. Disabled entries
+/// are omitted, so parsers can use map membership as the recognition check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMarkdownConfig {
     pub blocks: BTreeMap<String, ResolvedMarkdownBlock>,
@@ -787,19 +787,38 @@ pub fn effective_page_margin_mm(
 
 impl Default for ResolvedMarkdownConfig {
     fn default() -> Self {
-        Self {
-            blocks: BTreeMap::from([(
-                "proof".to_string(),
-                ResolvedMarkdownBlock {
-                    label: "Proof".to_string(),
-                    appearance: MarkdownBlockAppearance::Plain,
-                    reveal: MarkdownBlockReveal::Blur,
-                    accent: None,
-                    background: None,
-                    italic: false,
-                },
-            )]),
+        let mut blocks = BTreeMap::new();
+        for name in [
+            "theorem",
+            "lemma",
+            "corollary",
+            "proposition",
+            "conjecture",
+            "definition",
+            "example",
+            "exercise",
+            "hypothesis",
+            "solution",
+            "remark",
+            "algorithm",
+        ] {
+            blocks.insert(
+                name.to_string(),
+                ResolvedMarkdownBlock::custom_default(name),
+            );
         }
+        blocks.insert(
+            "proof".to_string(),
+            ResolvedMarkdownBlock {
+                label: "Proof".to_string(),
+                appearance: MarkdownBlockAppearance::Plain,
+                reveal: MarkdownBlockReveal::Blur,
+                accent: None,
+                background: None,
+                italic: false,
+            },
+        );
+        Self { blocks }
     }
 }
 

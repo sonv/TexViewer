@@ -13,6 +13,39 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.36] — 2026-08-30
+
+### Added
+
+- **Markdown theorem previews understand both Bookdown and Quarto.** Pandoc
+  fenced divs using Bookdown classes such as `::: {.theorem #key}` or Quarto
+  typed IDs such as `::: {#thm-key}` now render configurable, numbered theorem
+  blocks. The built-in union covers the standard theorem, lemma, corollary,
+  proposition, conjecture, definition, example, exercise, hypothesis, remark,
+  solution, algorithm, and proof forms while preserving each dialect's
+  numbering rules.
+- **Theorem references resolve in their native style.** Bookdown
+  `\@ref(thm:key)` links display a bare number, while Quarto `@thm-key` links
+  display the kind and number. Forward references work, counters are
+  independent per kind, duplicate targets receive unique DOM anchors, and the
+  two dialect namespaces remain deliberately distinct.
+
+### Fixed
+
+- **Quarto heading titles retain precise source sync.** A theorem's first
+  direct heading is promoted into its visible header without duplicate body
+  output, while its exact source span remains a click-back target. Existing
+  compact custom blocks such as `:::proof Title` keep their prior generic,
+  unnumbered behavior, and LaTeX parsing and rendering remain unchanged.
+
+### Security
+
+- **Pandoc theorem attributes stay data-only.** Titles and IDs are bounded and
+  escaped; unknown attributes are ignored rather than reflected into HTML;
+  ambiguous, malformed, unclosed, or excessively nested divs remain literal.
+  Theorem-looking syntax inside code, math, links, images, raw HTML, or leading
+  YAML front matter is never interpreted.
+
 ## [2.1.35] — 2026-08-30
 
 ### Added

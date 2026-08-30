@@ -12,10 +12,15 @@ use github_slugger::slug as github_heading_slug;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use unicase::UniCase;
 
-use crate::ast::{MarkdownAlignment, Node, NodeKind, Pos, Span};
+use crate::ast::{
+    MarkdownAlignment, MarkdownReferenceStyle, MarkdownTheoremDialect, MarkdownTheoremMeta, Node,
+    NodeKind, Pos, Span,
+};
 use crate::config::ResolvedMarkdownConfig;
 
 const MAX_MARKDOWN_CUSTOM_BLOCK_NESTING: usize = 32;
+const MAX_MARKDOWN_INLINE_HTML_NESTING: usize = 128;
+const MAX_MARKDOWN_PANDOC_ATTRIBUTES: usize = 64;
 
 /// Parse one Markdown source file into the shared source-spanned AST.
 pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
@@ -30,7 +35,9 @@ pub fn parse_with_config(
 ) -> Result<Vec<Node>> {
     let options = markdown_options();
     let custom_blocks = find_markdown_custom_blocks(source, options, config);
+    let references = find_markdown_cross_references(source, options);
     let masked_source = mask_markdown_custom_block_markers(source, &custom_blocks);
+    let masked_source = mask_markdown_cross_references(&masked_source, &references);
     let (parser_source, delimiter_overrides) = protect_tex_math_delimiters(&masked_source, options);
     let positions = LineIndex::new(source);
     let mut roots = Vec::new();
@@ -57,7 +64,7 @@ pub fn parse_with_config(
                     Some(NodeKind::MarkdownCodeBlock { .. })
                 );
                 let text_nodes = markdown_text_nodes(
-                    source,
+                    &parser_source,
                     &text,
                     range.clone(),
                     &positions,
@@ -162,6 +169,9 @@ pub fn parse_with_config(
         return Err(anyhow!("unbalanced Markdown parser containers"));
     }
     wrap_markdown_custom_blocks(&mut roots, &custom_blocks, &positions, file);
+    integrate_markdown_cross_references(&mut roots, &references, source, &positions, file);
+    promote_markdown_theorem_headings(&mut roots);
+    assign_markdown_theorems_and_references(&mut roots, config);
     assign_markdown_heading_anchors(&mut roots);
     resolve_markdown_heading_links(&mut roots);
     assign_markdown_footnote_targets(&mut roots);
@@ -173,6 +183,7 @@ struct MarkdownCustomBlockMatch {
     name: String,
     title: Option<String>,
     content_key: String,
+    theorem: Option<MarkdownTheoremMeta>,
     opening: Range<usize>,
     closing: Range<usize>,
 }
@@ -181,18 +192,283 @@ struct MarkdownCustomBlockMatch {
 struct MarkdownCustomBlockOpen {
     name: String,
     title: Option<String>,
+    theorem: Option<MarkdownTheoremMeta>,
     range: Range<usize>,
 }
 
-enum MarkdownCustomBlockMarker<'a> {
+enum MarkdownCustomBlockMarker {
     Open {
         indent: usize,
-        name: &'a str,
-        title: Option<&'a str>,
+        opening: Option<MarkdownCustomBlockOpening>,
     },
     Close {
         indent: usize,
     },
+}
+
+struct MarkdownCustomBlockOpening {
+    name: String,
+    title: Option<String>,
+    theorem: Option<MarkdownTheoremMeta>,
+}
+
+#[derive(Clone, Copy)]
+struct MarkdownTheoremSpec {
+    name: &'static str,
+    prefix: &'static str,
+    bookdown: bool,
+    bookdown_numbered: bool,
+    quarto: bool,
+}
+
+const MARKDOWN_THEOREM_SPECS: &[MarkdownTheoremSpec] = &[
+    MarkdownTheoremSpec {
+        name: "theorem",
+        prefix: "thm",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "lemma",
+        prefix: "lem",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "corollary",
+        prefix: "cor",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "proposition",
+        prefix: "prp",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "conjecture",
+        prefix: "cnj",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "definition",
+        prefix: "def",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "example",
+        prefix: "exm",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "exercise",
+        prefix: "exr",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "hypothesis",
+        prefix: "hyp",
+        bookdown: true,
+        bookdown_numbered: true,
+        quarto: false,
+    },
+    MarkdownTheoremSpec {
+        name: "solution",
+        prefix: "sol",
+        bookdown: true,
+        bookdown_numbered: false,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "remark",
+        prefix: "rem",
+        bookdown: true,
+        bookdown_numbered: false,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "algorithm",
+        prefix: "alg",
+        bookdown: false,
+        bookdown_numbered: false,
+        quarto: true,
+    },
+    MarkdownTheoremSpec {
+        name: "proof",
+        prefix: "",
+        bookdown: true,
+        bookdown_numbered: false,
+        quarto: false,
+    },
+];
+
+fn markdown_theorem_by_name(name: &str) -> Option<MarkdownTheoremSpec> {
+    MARKDOWN_THEOREM_SPECS
+        .iter()
+        .copied()
+        .find(|spec| spec.name == name)
+}
+
+fn markdown_quarto_theorem_id(identifier: &str) -> Option<(MarkdownTheoremSpec, &str)> {
+    MARKDOWN_THEOREM_SPECS.iter().copied().find_map(|spec| {
+        if !spec.quarto {
+            return None;
+        }
+        let suffix = identifier.strip_prefix(spec.prefix)?.strip_prefix('-')?;
+        valid_quarto_theorem_identifier(suffix).then_some((spec, suffix))
+    })
+}
+
+fn markdown_theorem_meta(
+    spec: MarkdownTheoremSpec,
+    dialect: MarkdownTheoremDialect,
+    identifier: Option<String>,
+) -> MarkdownTheoremMeta {
+    let numbered = match dialect {
+        MarkdownTheoremDialect::Bookdown => spec.bookdown_numbered,
+        MarkdownTheoremDialect::Quarto => true,
+    };
+    MarkdownTheoremMeta {
+        dialect,
+        prefix: spec.prefix.to_string(),
+        identifier: numbered.then_some(identifier).flatten(),
+        anchor: None,
+        title_span: None,
+        numbered,
+        number: None,
+    }
+}
+
+/// Mark source regions where block fences and semantic references are data,
+/// not Markdown prose. The leading YAML range is detected explicitly because
+/// the current CommonMark/GFM rendering profile intentionally does not enable
+/// pulldown-cmark's metadata extension.
+fn protect_markdown_literal_ranges(source: &str, options: Options, protected: &mut [bool]) {
+    let (math_aware_source, _) = protect_tex_math_delimiters(source, options);
+    let mut inline_html = Vec::<(String, usize)>::new();
+    let mut inline_html_overflow_from = None;
+    for (event, range) in Parser::new_ext(&math_aware_source, options).into_offset_iter() {
+        if let Event::InlineHtml(html) = &event {
+            match markdown_inline_html_tag(html) {
+                Some((name, false, false)) => {
+                    if inline_html.len() < MAX_MARKDOWN_INLINE_HTML_NESTING {
+                        inline_html.push((name, range.start));
+                    } else {
+                        inline_html_overflow_from.get_or_insert(range.start);
+                    }
+                }
+                Some((name, true, _)) => {
+                    if let Some(index) = inline_html
+                        .iter()
+                        .rposition(|(open, _)| open.eq_ignore_ascii_case(&name))
+                    {
+                        let (_, start) = &inline_html[index];
+                        protect_range(protected, *start..range.end);
+                        inline_html.truncate(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        match event {
+            Event::Start(
+                Tag::CodeBlock(_)
+                | Tag::HtmlBlock
+                | Tag::MetadataBlock(_)
+                | Tag::Link { .. }
+                | Tag::Image { .. },
+            )
+            | Event::Code(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_) => protect_range(protected, range),
+            _ => {}
+        }
+    }
+    if let Some(range) = leading_markdown_yaml_range(source) {
+        protect_range(protected, range);
+    }
+    if let Some(start) = inline_html_overflow_from {
+        // Extremely deep or adversarial raw HTML degrades conservatively: its
+        // remainder stays literal without growing or repeatedly scanning an
+        // unbounded tag stack.
+        protect_range(protected, start..source.len());
+    }
+}
+
+/// Return `(name, closing, self_closing)` for ordinary inline HTML tags. Paired
+/// tags delimit raw HTML islands whose contents must stay outside viewer
+/// extensions even though CommonMark reports the text between them normally.
+fn markdown_inline_html_tag(html: &str) -> Option<(String, bool, bool)> {
+    let html = html.trim();
+    let body = html.strip_prefix('<')?.strip_suffix('>')?.trim();
+    if body.starts_with(['!', '?']) {
+        return None;
+    }
+    let (closing, body) = match body.strip_prefix('/') {
+        Some(body) => (true, body.trim_start()),
+        None => (false, body),
+    };
+    let name_end = body
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '-' | ':')))
+        .unwrap_or(body.len());
+    if name_end == 0 {
+        return None;
+    }
+    let name = body[..name_end].to_ascii_lowercase();
+    let void = matches!(
+        name.as_str(),
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    );
+    Some((
+        name,
+        closing,
+        !closing && (body.trim_end().ends_with('/') || void),
+    ))
+}
+
+fn leading_markdown_yaml_range(source: &str) -> Option<Range<usize>> {
+    let mut offset = 0;
+    let mut lines = source.split_inclusive('\n');
+    let first = lines.next()?;
+    if first.trim_end_matches(['\r', '\n']) != "---" {
+        return None;
+    }
+    offset += first.len();
+    for line in lines {
+        offset += line.len();
+        if matches!(line.trim_end_matches(['\r', '\n']), "---" | "...") {
+            return Some(0..offset);
+        }
+    }
+    None
 }
 
 /// Find configured `:::name` blocks before masking their boundary lines. The
@@ -206,57 +482,39 @@ fn find_markdown_custom_blocks(
     config: &ResolvedMarkdownConfig,
 ) -> Vec<MarkdownCustomBlockMatch> {
     let mut protected = vec![false; source.len()];
-    // Pulldown-cmark sees dollar math natively, while MathPreview also accepts
-    // `\(...\)` and `\[...\]`. Run the byte-preserving delimiter prepass for
-    // immunity discovery only, then continue scanning marker text from the
-    // original source so titles retain their exact spelling.
-    let (math_aware_source, _) = protect_tex_math_delimiters(source, options);
-    for (event, range) in Parser::new_ext(&math_aware_source, options).into_offset_iter() {
-        match event {
-            Event::Start(Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::MetadataBlock(_))
-            | Event::Code(_)
-            | Event::InlineMath(_)
-            | Event::DisplayMath(_)
-            | Event::Html(_)
-            | Event::InlineHtml(_) => protect_range(&mut protected, range),
-            _ => {}
-        }
-    }
+    protect_markdown_literal_ranges(source, options, &mut protected);
 
-    let mut open = Vec::new();
+    let mut open: Vec<Option<MarkdownCustomBlockOpen>> = Vec::new();
     let mut overflow_depth = 0usize;
     let mut matched = Vec::new();
     let mut line_start = 0;
     for line in source.split_inclusive('\n') {
         let line_end = line_start + line.len();
         let range = line_start..line_end;
-        if let Some(marker) = markdown_custom_block_marker(line) {
-            let indent = match marker {
+        if let Some(marker) = markdown_custom_block_marker(line, config) {
+            let indent = match &marker {
                 MarkdownCustomBlockMarker::Open { indent, .. }
-                | MarkdownCustomBlockMarker::Close { indent } => indent,
+                | MarkdownCustomBlockMarker::Close { indent } => *indent,
             };
             let marker_byte = line_start + indent;
             if !protected.get(marker_byte).copied().unwrap_or(false) {
                 match marker {
-                    MarkdownCustomBlockMarker::Open { name, title, .. }
-                        if config.blocks.contains_key(name) =>
-                    {
-                        if overflow_depth > 0
-                            || open.len() >= MAX_MARKDOWN_CUSTOM_BLOCK_NESTING
-                        {
+                    MarkdownCustomBlockMarker::Open { opening, .. } => {
+                        if overflow_depth > 0 || open.len() >= MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
                             overflow_depth = overflow_depth.saturating_add(1);
                         } else {
-                            open.push(MarkdownCustomBlockOpen {
-                                name: name.to_string(),
-                                title: title.map(str::to_string),
+                            open.push(opening.map(|opening| MarkdownCustomBlockOpen {
+                                name: opening.name,
+                                title: opening.title,
+                                theorem: opening.theorem,
                                 range,
-                            });
+                            }));
                         }
                     }
                     MarkdownCustomBlockMarker::Close { .. } => {
                         if overflow_depth > 0 {
                             overflow_depth -= 1;
-                        } else if let Some(opening) = open.pop() {
+                        } else if let Some(Some(opening)) = open.pop() {
                             let content = source
                                 .get(opening.range.end..range.start)
                                 .unwrap_or_default();
@@ -264,12 +522,12 @@ fn find_markdown_custom_blocks(
                                 name: opening.name,
                                 title: opening.title,
                                 content_key: markdown_custom_block_content_key(content),
+                                theorem: opening.theorem,
                                 opening: opening.range,
                                 closing: range,
                             });
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -287,7 +545,10 @@ fn markdown_custom_block_content_key(content: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn markdown_custom_block_marker(line: &str) -> Option<MarkdownCustomBlockMarker<'_>> {
+fn markdown_custom_block_marker(
+    line: &str,
+    config: &ResolvedMarkdownConfig,
+) -> Option<MarkdownCustomBlockMarker> {
     let indent = line
         .as_bytes()
         .iter()
@@ -296,24 +557,278 @@ fn markdown_custom_block_marker(line: &str) -> Option<MarkdownCustomBlockMarker<
     if indent > 3 {
         return None;
     }
-    let body = line
-        .get(indent..)?
-        .trim_end_matches(['\r', '\n'])
-        .strip_prefix(":::")?;
+    let body = line.get(indent..)?.trim_end_matches(['\r', '\n']);
+    let fence_len = body.bytes().take_while(|byte| *byte == b':').count();
+    if fence_len < 3 {
+        return None;
+    }
+    let body = body.get(fence_len..)?;
     if body.trim_matches([' ', '\t']).is_empty() {
         return Some(MarkdownCustomBlockMarker::Close { indent });
     }
-    if body.starts_with(char::is_whitespace) {
+
+    let opening = if body.starts_with(char::is_whitespace) {
+        let body = body.trim_matches([' ', '\t']);
+        if body.starts_with('{') {
+            let (attributes, consumed) = parse_markdown_pandoc_attributes(body)?;
+            if !body[consumed..]
+                .chars()
+                .all(|ch| ch == ':' || ch == ' ' || ch == '\t')
+            {
+                return None;
+            }
+            markdown_pandoc_block_opening(attributes, config)
+        } else {
+            let mut words = body.split_ascii_whitespace();
+            let name = words.next()?;
+            if words.any(|word| !word.chars().all(|ch| ch == ':')) {
+                return None;
+            }
+            markdown_named_block_opening(name, None, None, MarkdownTheoremDialect::Bookdown, config)
+        }
+    } else {
+        let name_end = body.find(char::is_whitespace).unwrap_or(body.len());
+        let name = &body[..name_end];
+        let title = clean_markdown_block_title(body[name_end..].trim_matches([' ', '\t']));
+        config
+            .blocks
+            .contains_key(name)
+            .then(|| MarkdownCustomBlockOpening {
+                name: name.to_string(),
+                title,
+                // The compact MathPreview syntax predates semantic theorem
+                // blocks. Keep it purely presentational for compatibility.
+                theorem: None,
+            })
+    };
+
+    Some(MarkdownCustomBlockMarker::Open { indent, opening })
+}
+
+#[derive(Default)]
+struct MarkdownPandocAttributes {
+    classes: Vec<String>,
+    identifier: Option<String>,
+    name: Option<String>,
+    title: Option<String>,
+}
+
+fn parse_markdown_pandoc_attributes(input: &str) -> Option<(MarkdownPandocAttributes, usize)> {
+    let bytes = input.as_bytes();
+    if bytes.first() != Some(&b'{') {
         return None;
     }
-    let name_end = body.find(char::is_whitespace).unwrap_or(body.len());
-    let name = &body[..name_end];
-    let title = body[name_end..].trim_matches([' ', '\t']);
-    Some(MarkdownCustomBlockMarker::Open {
-        indent,
+    let mut attributes = MarkdownPandocAttributes::default();
+    let mut attribute_count = 0usize;
+    let mut i = 1;
+    loop {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        match bytes.get(i).copied()? {
+            b'}' => return Some((attributes, i + 1)),
+            prefix @ (b'.' | b'#') => {
+                attribute_count += 1;
+                if attribute_count > MAX_MARKDOWN_PANDOC_ATTRIBUTES {
+                    return None;
+                }
+                let start = i + 1;
+                i = start;
+                while bytes
+                    .get(i)
+                    .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'}')
+                {
+                    i += 1;
+                }
+                if i == start {
+                    return None;
+                }
+                let value = input.get(start..i)?.to_string();
+                if value.len() > 128 {
+                    return None;
+                }
+                if prefix == b'.' {
+                    attributes.classes.push(value);
+                } else if attributes.identifier.replace(value).is_some() {
+                    return None;
+                }
+            }
+            _ => {
+                attribute_count += 1;
+                if attribute_count > MAX_MARKDOWN_PANDOC_ATTRIBUTES {
+                    return None;
+                }
+                let key_start = i;
+                while bytes.get(i).is_some_and(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
+                }) {
+                    i += 1;
+                }
+                if i == key_start {
+                    return None;
+                }
+                let key = input.get(key_start..i)?;
+                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                    i += 1;
+                }
+                if bytes.get(i) != Some(&b'=') {
+                    return None;
+                }
+                i += 1;
+                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                    i += 1;
+                }
+                let (value, end) = parse_markdown_attribute_value(input, i)?;
+                if value.len() > 2048 {
+                    return None;
+                }
+                i = end;
+                match key {
+                    "name" if attributes.name.is_none() => attributes.name = Some(value),
+                    "title" if attributes.title.is_none() => attributes.title = Some(value),
+                    "name" | "title" => return None,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn parse_markdown_attribute_value(input: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = input.as_bytes();
+    let quote = bytes
+        .get(start)
+        .copied()
+        .filter(|byte| matches!(byte, b'\'' | b'"'));
+    if let Some(quote) = quote {
+        let mut value = String::new();
+        let mut i = start + 1;
+        while i < bytes.len() {
+            if bytes[i] == quote {
+                return Some((value, i + 1));
+            }
+            let ch = input.get(i..)?.chars().next()?;
+            if ch == '\\' {
+                i += ch.len_utf8();
+                let escaped = input.get(i..)?.chars().next()?;
+                value.push(escaped);
+                i += escaped.len_utf8();
+            } else {
+                value.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        None
+    } else {
+        let mut end = start;
+        while bytes
+            .get(end)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'}')
+        {
+            end += 1;
+        }
+        (end > start).then(|| (input[start..end].to_string(), end))
+    }
+}
+
+fn markdown_pandoc_block_opening(
+    attributes: MarkdownPandocAttributes,
+    config: &ResolvedMarkdownConfig,
+) -> Option<MarkdownCustomBlockOpening> {
+    let title = attributes
+        .name
+        .as_deref()
+        .and_then(clean_markdown_block_title)
+        .or_else(|| {
+            attributes
+                .title
+                .as_deref()
+                .and_then(clean_markdown_block_title)
+        });
+    let identifier = match attributes.identifier.as_deref() {
+        Some(identifier) if valid_markdown_theorem_identifier(identifier) => Some(identifier),
+        Some(_) => return None,
+        None => None,
+    };
+
+    if let Some((spec, suffix)) = identifier.and_then(markdown_quarto_theorem_id) {
+        return config
+            .blocks
+            .contains_key(spec.name)
+            .then(|| MarkdownCustomBlockOpening {
+                name: spec.name.to_string(),
+                title,
+                theorem: Some(markdown_theorem_meta(
+                    spec,
+                    MarkdownTheoremDialect::Quarto,
+                    Some(suffix.to_string()),
+                )),
+            });
+    }
+
+    let mut semantic_names = attributes.classes.iter().filter(|class| {
+        config.blocks.contains_key(class.as_str())
+            && markdown_theorem_by_name(class).is_some_and(|spec| spec.bookdown)
+    });
+    let semantic_name = semantic_names.next();
+    if semantic_names.next().is_some() {
+        return None;
+    }
+    let name = semantic_name.or_else(|| {
+        attributes
+            .classes
+            .iter()
+            .find(|class| config.blocks.contains_key(class.as_str()))
+    })?;
+    markdown_named_block_opening(
         name,
-        title: (!title.is_empty()).then_some(title),
+        title,
+        identifier.map(str::to_string),
+        MarkdownTheoremDialect::Bookdown,
+        config,
+    )
+}
+
+fn markdown_named_block_opening(
+    name: &str,
+    title: Option<String>,
+    identifier: Option<String>,
+    dialect: MarkdownTheoremDialect,
+    config: &ResolvedMarkdownConfig,
+) -> Option<MarkdownCustomBlockOpening> {
+    config.blocks.contains_key(name).then(|| {
+        let theorem = markdown_theorem_by_name(name)
+            .filter(|spec| dialect != MarkdownTheoremDialect::Bookdown || spec.bookdown)
+            .map(|spec| markdown_theorem_meta(spec, dialect, identifier));
+        MarkdownCustomBlockOpening {
+            name: name.to_string(),
+            title,
+            theorem,
+        }
     })
+}
+
+fn clean_markdown_block_title(title: &str) -> Option<String> {
+    (!title.is_empty() && title.chars().count() <= 512 && !title.chars().any(char::is_control))
+        .then(|| title.to_string())
+}
+
+fn valid_markdown_theorem_identifier(identifier: &str) -> bool {
+    let bytes = identifier.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b':' | b'_' | b'.' | b'/' | b'-')
+        })
+}
+
+fn valid_quarto_theorem_identifier(identifier: &str) -> bool {
+    let bytes = identifier.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
 }
 
 fn mask_markdown_custom_block_markers(source: &str, blocks: &[MarkdownCustomBlockMatch]) -> String {
@@ -458,6 +973,7 @@ fn integrate_markdown_custom_blocks(
                 name: block.name.clone(),
                 title: block.title.clone(),
                 content_key: block.content_key.clone(),
+                theorem: block.theorem.clone(),
             },
             span: positions.span(file, whole_start, whole_end),
             children,
@@ -466,6 +982,424 @@ fn integrate_markdown_custom_blocks(
     }
     output.extend(nodes);
     output
+}
+
+#[derive(Debug)]
+struct MarkdownCrossReferenceMatch {
+    prefix: String,
+    identifier: String,
+    style: MarkdownReferenceStyle,
+    range: Range<usize>,
+}
+
+fn find_markdown_cross_references(
+    source: &str,
+    options: Options,
+) -> Vec<MarkdownCrossReferenceMatch> {
+    let mut protected = vec![false; source.len()];
+    protect_markdown_literal_ranges(source, options, &mut protected);
+    protect_markdown_fence_lines(source, &mut protected);
+    let eligible = markdown_text_event_ranges(source, options);
+
+    let bytes = source.as_bytes();
+    let mut matches = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let starts_visible_escape = bytes[i] == b'\\'
+            && eligible.get(i + 1).copied().unwrap_or(false)
+            && !protected.get(i + 1).copied().unwrap_or(true);
+        if protected[i] || (!eligible[i] && !starts_visible_escape) {
+            i += 1;
+            continue;
+        }
+
+        if bytes[i] == b'\\'
+            && is_unescaped_backslash(bytes, i)
+            && source[i..].starts_with("\\@ref(")
+        {
+            let body_start = i + "\\@ref(".len();
+            let search_end = body_start.saturating_add(260).min(source.len());
+            if let Some(offset) = bytes[body_start..search_end]
+                .iter()
+                .position(|byte| *byte == b')')
+            {
+                let end = body_start + offset;
+                let body = &source[body_start..end];
+                if let Some((prefix, identifier)) = body.split_once(':') {
+                    let supported = MARKDOWN_THEOREM_SPECS
+                        .iter()
+                        .any(|spec| spec.bookdown_numbered && spec.prefix == prefix);
+                    let range = i..end + 1;
+                    if supported
+                        && valid_markdown_theorem_identifier(identifier)
+                        // CommonMark treats the leading backslash as escape
+                        // syntax, so its byte is outside the emitted Text
+                        // range even though the following `@ref(...)` is
+                        // visible prose.
+                        && markdown_reference_starts_in_prose(i + 1, &eligible, &protected)
+                    {
+                        matches.push(MarkdownCrossReferenceMatch {
+                            prefix: prefix.to_string(),
+                            identifier: identifier.to_string(),
+                            style: MarkdownReferenceStyle::Bookdown,
+                            range,
+                        });
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if bytes[i] == b'@'
+            && (i == 0
+                || (!bytes[i - 1].is_ascii_alphanumeric() && !matches!(bytes[i - 1], b'_' | b'\\')))
+        {
+            let rest = &source[i + 1..];
+            if let Some(spec) = MARKDOWN_THEOREM_SPECS.iter().copied().find(|spec| {
+                spec.quarto
+                    && rest.starts_with(spec.prefix)
+                    && rest[spec.prefix.len()..].starts_with('-')
+            }) {
+                let identifier_start = i + 1 + spec.prefix.len() + 1;
+                let mut end = identifier_start;
+                while bytes.get(end).is_some_and(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
+                }) {
+                    end += 1;
+                }
+                let range = i..end;
+                if end > identifier_start
+                    && valid_quarto_theorem_identifier(&source[identifier_start..end])
+                    && markdown_reference_starts_in_prose(i, &eligible, &protected)
+                {
+                    matches.push(MarkdownCrossReferenceMatch {
+                        prefix: spec.prefix.to_string(),
+                        identifier: source[identifier_start..end].to_string(),
+                        style: MarkdownReferenceStyle::Quarto,
+                        range,
+                    });
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    matches
+}
+
+/// Limit reference recognition to source ranges that pulldown-cmark exposes as
+/// visible prose. This excludes metadata that never becomes a text node—such
+/// as footnote labels and reference-link destinations—so masking cannot alter
+/// unrelated Markdown structure before the real parse.
+fn markdown_text_event_ranges(source: &str, options: Options) -> Vec<bool> {
+    let (math_aware_source, _) = protect_tex_math_delimiters(source, options);
+    let mut eligible = vec![false; source.len()];
+    for (event, range) in Parser::new_ext(&math_aware_source, options).into_offset_iter() {
+        if matches!(event, Event::Text(_)) {
+            let end = range.end.min(eligible.len());
+            for item in &mut eligible[range.start.min(end)..end] {
+                *item = true;
+            }
+        }
+    }
+    eligible
+}
+
+fn markdown_reference_starts_in_prose(at: usize, eligible: &[bool], protected: &[bool]) -> bool {
+    eligible.get(at).copied().unwrap_or(false) && !protected.get(at).copied().unwrap_or(true)
+}
+
+/// A fence-looking line is structural metadata even when its attributes name
+/// an unknown or malformed block. Keep references on that line literal while
+/// still allowing ordinary prose in an unknown block's body to be parsed.
+fn protect_markdown_fence_lines(source: &str, protected: &mut [bool]) {
+    let mut line_start = 0usize;
+    for line in source.split_inclusive('\n') {
+        let indent = line
+            .as_bytes()
+            .iter()
+            .take_while(|byte| **byte == b' ')
+            .count();
+        let marker_byte = line_start + indent;
+        if indent <= 3
+            && line
+                .as_bytes()
+                .get(indent..)
+                .is_some_and(|body| body.iter().take_while(|byte| **byte == b':').count() >= 3)
+            && !protected.get(marker_byte).copied().unwrap_or(false)
+        {
+            protect_range(protected, line_start..line_start + line.len());
+        }
+        line_start += line.len();
+    }
+}
+
+fn mask_markdown_cross_references(
+    source: &str,
+    references: &[MarkdownCrossReferenceMatch],
+) -> String {
+    let mut masked = source.as_bytes().to_vec();
+    for reference in references {
+        for byte in &mut masked[reference.range.clone()] {
+            if !matches!(*byte, b'\r' | b'\n') {
+                *byte = b'r';
+            }
+        }
+    }
+    String::from_utf8(masked).expect("ASCII masking preserves UTF-8")
+}
+
+fn integrate_markdown_cross_references(
+    nodes: &mut Vec<Node>,
+    references: &[MarkdownCrossReferenceMatch],
+    source: &str,
+    positions: &LineIndex<'_>,
+    file: &Path,
+) {
+    for node in nodes.iter_mut() {
+        integrate_markdown_cross_references(
+            &mut node.children,
+            references,
+            source,
+            positions,
+            file,
+        );
+    }
+
+    let mut output = Vec::with_capacity(nodes.len());
+    for node in std::mem::take(nodes) {
+        let NodeKind::MarkdownText(text) = &node.kind else {
+            output.push(node);
+            continue;
+        };
+        let start = node.span.start.byte as usize;
+        let end = node.span.end.byte as usize;
+        if text.len() != end.saturating_sub(start) {
+            output.push(node);
+            continue;
+        }
+        let first = references.partition_point(|reference| reference.range.end <= start);
+        let contained: Vec<_> = references[first..]
+            .iter()
+            .take_while(|reference| reference.range.start < end)
+            .filter(|reference| start <= reference.range.start && reference.range.end <= end)
+            .collect();
+        if contained.is_empty() {
+            output.push(node);
+            continue;
+        }
+
+        let mut cursor = start;
+        for reference in contained {
+            if cursor < reference.range.start {
+                output.push(Node {
+                    kind: NodeKind::MarkdownText(
+                        text[cursor - start..reference.range.start - start].to_string(),
+                    ),
+                    span: positions.span(file, cursor, reference.range.start),
+                    children: Vec::new(),
+                });
+            }
+            output.push(Node {
+                kind: NodeKind::MarkdownCrossReference {
+                    prefix: reference.prefix.clone(),
+                    identifier: reference.identifier.clone(),
+                    raw: source[reference.range.clone()].to_string(),
+                    style: reference.style,
+                    anchor: None,
+                    display: None,
+                },
+                span: positions.span(file, reference.range.start, reference.range.end),
+                children: Vec::new(),
+            });
+            cursor = reference.range.end;
+        }
+        if cursor < end {
+            output.push(Node {
+                kind: NodeKind::MarkdownText(text[cursor - start..].to_string()),
+                span: positions.span(file, cursor, end),
+                children: Vec::new(),
+            });
+        }
+    }
+    *nodes = output;
+}
+
+fn promote_markdown_theorem_headings(nodes: &mut [Node]) {
+    for node in nodes {
+        let consume_heading = matches!(
+            &node.kind,
+            NodeKind::MarkdownCustomBlock {
+                title: None,
+                theorem: Some(MarkdownTheoremMeta {
+                    dialect: MarkdownTheoremDialect::Quarto,
+                    ..
+                }),
+                ..
+            }
+        ) && matches!(
+            node.children.first().map(|child| &child.kind),
+            Some(NodeKind::MarkdownHeading { .. })
+        );
+        if consume_heading {
+            let heading_span = node.children[0].span.clone();
+            let mut title = String::new();
+            markdown_heading_text(&node.children[0].children, &mut title);
+            let title = title.trim();
+            if !title.is_empty() && title.chars().count() <= 512 {
+                node.children.remove(0);
+                if let NodeKind::MarkdownCustomBlock {
+                    title: current,
+                    theorem,
+                    ..
+                } = &mut node.kind
+                {
+                    *current = Some(title.to_string());
+                    if let Some(theorem) = theorem {
+                        theorem.title_span = Some(heading_span);
+                    }
+                }
+            }
+        }
+        promote_markdown_theorem_headings(&mut node.children);
+    }
+}
+
+#[derive(Clone)]
+struct MarkdownTheoremTarget {
+    anchor: String,
+    label: String,
+    number: String,
+}
+
+fn markdown_theorem_target_key(
+    dialect: MarkdownTheoremDialect,
+    prefix: &str,
+    identifier: &str,
+) -> String {
+    let dialect = match dialect {
+        MarkdownTheoremDialect::Bookdown => 'b',
+        MarkdownTheoremDialect::Quarto => 'q',
+    };
+    format!("{dialect}\0{prefix}\0{identifier}")
+}
+
+fn markdown_theorem_anchor_base(prefix: &str, identifier: &str) -> String {
+    let identifier: String = identifier
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{prefix}-{identifier}")
+}
+
+fn assign_markdown_theorems_and_references(nodes: &mut [Node], config: &ResolvedMarkdownConfig) {
+    fn assign_blocks(
+        nodes: &mut [Node],
+        config: &ResolvedMarkdownConfig,
+        counters: &mut HashMap<String, u32>,
+        targets: &mut HashMap<String, MarkdownTheoremTarget>,
+        used_anchors: &mut HashSet<String>,
+        next_suffix: &mut HashMap<String, u32>,
+    ) {
+        for node in nodes {
+            if let NodeKind::MarkdownCustomBlock {
+                name,
+                theorem: Some(theorem),
+                ..
+            } = &mut node.kind
+            {
+                if theorem.numbered {
+                    let counter = counters.entry(theorem.prefix.clone()).or_default();
+                    *counter += 1;
+                    theorem.number = Some(counter.to_string());
+                }
+                if let (Some(identifier), Some(number)) =
+                    (theorem.identifier.as_deref(), theorem.number.as_deref())
+                {
+                    let anchor = unique_markdown_target(
+                        markdown_theorem_anchor_base(&theorem.prefix, identifier),
+                        used_anchors,
+                        next_suffix,
+                    );
+                    theorem.anchor = Some(anchor.clone());
+                    if let Some(format) = config.blocks.get(name) {
+                        targets
+                            .entry(markdown_theorem_target_key(
+                                theorem.dialect,
+                                &theorem.prefix,
+                                identifier,
+                            ))
+                            .or_insert_with(|| MarkdownTheoremTarget {
+                                anchor,
+                                label: format.label.clone(),
+                                number: number.to_string(),
+                            });
+                    }
+                }
+            }
+            assign_blocks(
+                &mut node.children,
+                config,
+                counters,
+                targets,
+                used_anchors,
+                next_suffix,
+            );
+        }
+    }
+
+    fn resolve_references(nodes: &mut [Node], targets: &HashMap<String, MarkdownTheoremTarget>) {
+        for node in nodes {
+            if let NodeKind::MarkdownCrossReference {
+                prefix,
+                identifier,
+                style,
+                anchor,
+                display,
+                ..
+            } = &mut node.kind
+            {
+                let dialect = match *style {
+                    MarkdownReferenceStyle::Bookdown => MarkdownTheoremDialect::Bookdown,
+                    MarkdownReferenceStyle::Quarto => MarkdownTheoremDialect::Quarto,
+                };
+                if let Some(target) =
+                    targets.get(&markdown_theorem_target_key(dialect, prefix, identifier))
+                {
+                    *anchor = Some(target.anchor.clone());
+                    *display = Some(match *style {
+                        MarkdownReferenceStyle::Bookdown => target.number.clone(),
+                        MarkdownReferenceStyle::Quarto => {
+                            format!("{} {}", target.label, target.number)
+                        }
+                    });
+                }
+            }
+            resolve_references(&mut node.children, targets);
+        }
+    }
+
+    let mut counters = HashMap::new();
+    let mut targets = HashMap::new();
+    let mut used_anchors = HashSet::new();
+    let mut next_suffix = HashMap::new();
+    assign_blocks(
+        nodes,
+        config,
+        &mut counters,
+        &mut targets,
+        &mut used_anchors,
+        &mut next_suffix,
+    );
+    resolve_references(nodes, &targets);
 }
 
 fn markdown_options() -> Options {
@@ -698,6 +1632,9 @@ fn markdown_heading_text(nodes: &[Node], out: &mut String) {
             | NodeKind::MarkdownRawHtml(text)
             | NodeKind::InlineMath(text) => out.push_str(text),
             NodeKind::MarkdownFootnoteReference { label, .. } => out.push_str(label),
+            NodeKind::MarkdownCrossReference { raw, display, .. } => {
+                out.push_str(display.as_deref().unwrap_or(raw));
+            }
             NodeKind::MarkdownSoftBreak | NodeKind::MarkdownHardBreak => out.push(' '),
             _ => markdown_heading_text(&node.children, out),
         }
@@ -1138,6 +2075,539 @@ mod tests {
         assert!(all_nodes(&proof.children)
             .iter()
             .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+    }
+
+    #[test]
+    fn bookdown_and_quarto_theorems_share_semantics_but_keep_reference_styles() {
+        let source = concat!(
+            "Bookdown says Theorem \\@ref(thm:pyth); Quarto says @lem-unique.\n\n",
+            "::: {.theorem #pyth name=\"Pythagorean theorem\" data-latex=\"\"}\n",
+            "For a right triangle, **boldly** use $a^2+b^2=c^2$.\n",
+            ":::\n\n",
+            ":::: {#lem-unique}\n",
+            "## Unique factorization\n\n",
+            "Every integer has the expected factorization.\n",
+            "::::\n",
+        );
+        let nodes = parse(source, Path::new("theorems.md")).unwrap();
+        let theorem = custom_block(&nodes, "theorem");
+        let lemma = custom_block(&nodes, "lemma");
+
+        assert!(matches!(
+            &theorem.kind,
+            NodeKind::MarkdownCustomBlock {
+                title,
+                theorem: Some(MarkdownTheoremMeta {
+                    dialect: MarkdownTheoremDialect::Bookdown,
+                    prefix,
+                    identifier: Some(identifier),
+                    number: Some(number),
+                    anchor: Some(anchor),
+                    title_span: None,
+                    numbered: true,
+                }),
+                ..
+            } if title.as_deref() == Some("Pythagorean theorem")
+                && prefix == "thm"
+                && identifier == "pyth"
+                && number == "1"
+                && anchor == "thm-pyth"
+        ));
+        assert!(all_nodes(&theorem.children)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownStrong)));
+        assert!(matches!(
+            &lemma.kind,
+            NodeKind::MarkdownCustomBlock {
+                title,
+                theorem: Some(MarkdownTheoremMeta {
+                    dialect: MarkdownTheoremDialect::Quarto,
+                    prefix,
+                    identifier: Some(identifier),
+                    number: Some(number),
+                    anchor: Some(anchor),
+                    title_span: Some(_),
+                    numbered: true,
+                }),
+                ..
+            } if title.as_deref() == Some("Unique factorization")
+                && prefix == "lem"
+                && identifier == "unique"
+                && number == "1"
+                && anchor == "lem-unique"
+        ));
+        assert!(!lemma
+            .children
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownHeading { .. })));
+
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference {
+                    raw,
+                    anchor,
+                    display,
+                    ..
+                } => Some((raw.as_str(), anchor.as_deref(), display.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            references,
+            [
+                ("\\@ref(thm:pyth)", Some("thm-pyth"), Some("1")),
+                ("@lem-unique", Some("lem-unique"), Some("Lemma 1")),
+            ]
+        );
+    }
+
+    #[test]
+    fn theorem_dialects_keep_numbering_and_resolution_rules_distinct() {
+        let source = concat!(
+            "::: {.remark #book-note name=\"Aside\"}\nBookdown.\n:::\n\n",
+            "::: {#rem-quarto-note}\n## Aside\nQuarto.\n:::\n\n",
+            "::: {.solution #book-solution}\nBookdown.\n:::\n\n",
+            "::: {#sol-quarto-solution name=\"Answer\"}\nQuarto.\n:::\n\n",
+            "@rem-quarto-note @sol-quarto-solution ",
+            "\\@ref(rem:book-note) \\@ref(sol:book-solution)\n",
+        );
+        let nodes = parse(source, Path::new("dialects.md")).unwrap();
+        let remarks: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock {
+                    name,
+                    theorem: Some(theorem),
+                    ..
+                } if name == "remark" || name == "solution" => Some((name.as_str(), theorem)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(remarks.len(), 4);
+        assert!(!remarks[0].1.numbered);
+        assert_eq!(remarks[1].1.number.as_deref(), Some("1"));
+        assert!(!remarks[2].1.numbered);
+        assert_eq!(remarks[3].1.number.as_deref(), Some("1"));
+
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference { raw, display, .. } => {
+                    Some((raw.as_str(), display.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            references,
+            [
+                ("@rem-quarto-note", Some("Remark 1")),
+                ("@sol-quarto-solution", Some("Solution 1")),
+            ],
+            "Bookdown never recognizes remark/solution references"
+        );
+    }
+
+    #[test]
+    fn theorem_counters_are_per_kind_and_shared_across_surface_syntaxes() {
+        let source = concat!(
+            "::: {.theorem #book-a}\nBook A.\n:::\n\n",
+            "::: {#thm-quarto-a}\nQuarto A.\n:::\n\n",
+            "::: {.lemma #book-lemma}\nLemma.\n:::\n\n",
+            "::: {.theorem #book-b}\nBook B.\n:::\n\n",
+            "\\@ref(thm:book-a) @thm-quarto-a ",
+            "\\@ref(thm:quarto-a) @thm-book-a\n",
+        );
+        let nodes = parse(source, Path::new("mixed-counters.md")).unwrap();
+        let numbered: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock {
+                    theorem: Some(theorem),
+                    ..
+                } if theorem.numbered => Some((theorem.prefix.as_str(), theorem.number.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            numbered,
+            [
+                ("thm", Some("1")),
+                ("thm", Some("2")),
+                ("lem", Some("1")),
+                ("thm", Some("3")),
+            ]
+        );
+
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference { raw, display, .. } => {
+                    Some((raw.as_str(), display.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            references,
+            [
+                ("\\@ref(thm:book-a)", Some("1")),
+                ("@thm-quarto-a", Some("Theorem 2")),
+                ("\\@ref(thm:quarto-a)", None),
+                ("@thm-book-a", None),
+            ],
+            "targets never acquire aliases in the other dialect"
+        );
+    }
+
+    #[test]
+    fn duplicate_theorem_identifiers_get_unique_anchors_and_first_target_wins() {
+        let source = concat!(
+            "::: {.theorem #duplicate}\nFirst.\n:::\n\n",
+            "::: {.theorem #duplicate}\nSecond.\n:::\n\n",
+            "See \\@ref(thm:duplicate).\n",
+        );
+        let nodes = parse(source, Path::new("duplicate-targets.md")).unwrap();
+        let targets: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock {
+                    theorem: Some(theorem),
+                    ..
+                } => Some((theorem.number.as_deref(), theorem.anchor.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            targets,
+            [
+                (Some("1"), Some("thm-duplicate")),
+                (Some("2"), Some("thm-duplicate-1")),
+            ]
+        );
+        let reference = all_nodes(&nodes)
+            .into_iter()
+            .find_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference {
+                    anchor, display, ..
+                } => Some((anchor.as_deref(), display.as_deref())),
+                _ => None,
+            })
+            .expect("reference node");
+        assert_eq!(reference, (Some("thm-duplicate"), Some("1")));
+    }
+
+    #[test]
+    fn algorithm_is_quarto_only_and_ambiguous_or_invalid_bookdown_divs_stay_literal() {
+        let source = concat!(
+            "::: {.algorithm #plain-alg}\nGeneric algorithm.\n:::\n\n",
+            "::: {#alg-quarto}\nSemantic algorithm.\n:::\n\n",
+            "::: {.theorem .lemma #ambiguous}\nAmbiguous.\n:::\n\n",
+            "::: {.theorem #invalid!}\nInvalid identifier.\n:::\n\n",
+            "\\@ref(alg:plain-alg) @alg-quarto\n",
+        );
+        let nodes = parse(source, Path::new("algorithm.md")).unwrap();
+        let algorithms: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { name, theorem, .. } if name == "algorithm" => {
+                    Some(theorem.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(algorithms.len(), 2);
+        assert!(algorithms[0].is_none());
+        assert!(matches!(
+            algorithms[1],
+            Some(MarkdownTheoremMeta {
+                dialect: MarkdownTheoremDialect::Quarto,
+                number: Some(number),
+                ..
+            }) if number == "1"
+        ));
+        assert_eq!(
+            all_nodes(&nodes)
+                .into_iter()
+                .filter(|node| matches!(node.kind, NodeKind::MarkdownCrossReference { .. }))
+                .count(),
+            1,
+            "Bookdown has no alg: reference namespace"
+        );
+        let literal: String = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(literal.contains(".theorem .lemma #ambiguous"));
+        assert!(literal.contains(".theorem #invalid!"));
+        assert!(literal.contains("@ref(alg:plain-alg)"));
+    }
+
+    #[test]
+    fn every_theorem_kind_has_the_expected_bookdown_and_quarto_contract() {
+        let expected = [
+            ("theorem", "thm", true, true, true),
+            ("lemma", "lem", true, true, true),
+            ("corollary", "cor", true, true, true),
+            ("proposition", "prp", true, true, true),
+            ("conjecture", "cnj", true, true, true),
+            ("definition", "def", true, true, true),
+            ("example", "exm", true, true, true),
+            ("exercise", "exr", true, true, true),
+            ("hypothesis", "hyp", true, true, false),
+            ("solution", "sol", true, false, true),
+            ("remark", "rem", true, false, true),
+            ("algorithm", "alg", false, false, true),
+            ("proof", "", true, false, false),
+        ];
+        let actual: Vec<_> = MARKDOWN_THEOREM_SPECS
+            .iter()
+            .map(|spec| {
+                (
+                    spec.name,
+                    spec.prefix,
+                    spec.bookdown,
+                    spec.bookdown_numbered,
+                    spec.quarto,
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+
+        for (name, prefix, bookdown, bookdown_numbered, quarto) in expected {
+            let bookdown_source = format!("::: {{.{name} #book-key}}\nBody.\n:::\n");
+            let bookdown_nodes = parse(&bookdown_source, Path::new("bookdown-kinds.md")).unwrap();
+            let bookdown_block = custom_block(&bookdown_nodes, name);
+            match &bookdown_block.kind {
+                NodeKind::MarkdownCustomBlock {
+                    theorem: Some(theorem),
+                    ..
+                } if bookdown => {
+                    assert_eq!(theorem.dialect, MarkdownTheoremDialect::Bookdown);
+                    assert_eq!(theorem.prefix, prefix);
+                    assert_eq!(theorem.numbered, bookdown_numbered);
+                }
+                NodeKind::MarkdownCustomBlock { theorem: None, .. } if !bookdown => {}
+                other => panic!("unexpected Bookdown contract for {name}: {other:#?}"),
+            }
+
+            if quarto {
+                let quarto_source = format!("::: {{#{prefix}-quarto-key}}\nBody.\n:::\n");
+                let quarto_nodes = parse(&quarto_source, Path::new("quarto-kinds.md")).unwrap();
+                let quarto_block = custom_block(&quarto_nodes, name);
+                assert!(matches!(
+                    &quarto_block.kind,
+                    NodeKind::MarkdownCustomBlock {
+                        theorem: Some(MarkdownTheoremMeta {
+                            dialect: MarkdownTheoremDialect::Quarto,
+                            prefix: found_prefix,
+                            numbered: true,
+                            ..
+                        }),
+                        ..
+                    } if found_prefix == prefix
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_theorem_references_keep_exact_unicode_byte_spans() {
+        let source = concat!(
+            "::: {.theorem #book}\nBook.\n:::\n\n",
+            "::: {#thm-quarto}\nQuarto.\n:::\n\n",
+            "λ: \\@ref(thm:book),—@thm-quarto.\n",
+        );
+        let path = Path::new("λ-theorems.md");
+        let nodes = parse(source, path).unwrap();
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter(|node| matches!(node.kind, NodeKind::MarkdownCrossReference { .. }))
+            .collect();
+        assert_eq!(references.len(), 2);
+        for node in references {
+            let NodeKind::MarkdownCrossReference { raw, .. } = &node.kind else {
+                unreachable!()
+            };
+            let start = node.span.start.byte as usize;
+            let end = node.span.end.byte as usize;
+            assert_eq!(&source[start..end], raw);
+            assert_eq!(node.span, LineIndex::new(source).span(path, start, end));
+        }
+    }
+
+    #[test]
+    fn overlong_unclosed_bookdown_reference_with_unicode_stays_literal() {
+        let source = format!("Before \\@ref(thm:{} after.\n", "€".repeat(100));
+        let nodes = parse(&source, Path::new("unicode-reference.md")).unwrap();
+        assert!(!all_nodes(&nodes)
+            .into_iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownCrossReference { .. })));
+        let visible: String = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(visible.contains("@ref(thm:"));
+        assert!(visible.contains('€'));
+    }
+
+    #[test]
+    fn excessive_inline_html_nesting_disables_extensions_conservatively() {
+        let source = format!(
+            "{}@thm-hidden\n",
+            "<span>".repeat(MAX_MARKDOWN_INLINE_HTML_NESTING + 1)
+        );
+        let mut protected = vec![false; source.len()];
+        protect_markdown_literal_ranges(&source, markdown_options(), &mut protected);
+        let reference_start = source.find("@thm-hidden").unwrap();
+        assert!(protected[reference_start]);
+
+        let nodes = parse(&source, Path::new("deep-inline-html.md")).unwrap();
+        assert!(!all_nodes(&nodes)
+            .into_iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownCrossReference { .. })));
+    }
+
+    #[test]
+    fn pandoc_fences_nest_with_variable_lengths_and_unknown_divs_stay_literal() {
+        let source = concat!(
+            ":::: {#thm-outer} ::::::\n",
+            "Outer body.\n\n",
+            "::: {.unknown style=\"color:red\"}\n",
+            "Unknown body.\n",
+            "::::::\n\n",
+            "::: {.proof}\n",
+            "Known proof.\n",
+            ":::::\n",
+            ":::\n",
+        );
+        let nodes = parse(source, Path::new("nested-pandoc.md")).unwrap();
+        let theorem = custom_block(&nodes, "theorem");
+        let proof = custom_block(&theorem.children, "proof");
+        assert!(matches!(
+            &proof.kind,
+            NodeKind::MarkdownCustomBlock {
+                theorem: Some(MarkdownTheoremMeta {
+                    numbered: false,
+                    ..
+                }),
+                ..
+            }
+        ));
+        let text: String = all_nodes(&theorem.children)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("::: {.unknown style=\"color:red\"}"));
+        assert!(text.contains("Unknown body."));
+    }
+
+    #[test]
+    fn theorem_references_are_inert_in_literals_links_and_leading_yaml() {
+        let source = concat!(
+            "---\n",
+            "title: '@thm-yaml'\n",
+            "note: '::: {#thm-yaml}'\n",
+            "---\n\n",
+            "`@thm-code` [@thm-link](#thm-real) <b>@thm-html</b>\n\n",
+            "$$@thm-math$$\n\n",
+            "::: {#thm-real}\nReal.\n:::\n\n",
+            "@thm-real and mail@thm-real.test\n",
+        );
+        let nodes = parse(source, Path::new("inert-references.md")).unwrap();
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference { raw, .. } => Some(raw.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(references, ["@thm-real"]);
+    }
+
+    #[test]
+    fn theorem_reference_scanning_preserves_footnote_and_link_metadata() {
+        let source = concat!(
+            "::: {#thm-key}\nTarget.\n:::\n\n",
+            "Use[^@thm-key] and [external][doc].\n\n",
+            "[^@thm-key]: The note may still cite @thm-key in its body.\n\n",
+            "[doc]: https://example.test/@thm-key\n",
+        );
+        let nodes = parse(source, Path::new("reference-metadata.md")).unwrap();
+
+        let footnote_reference = all_nodes(&nodes)
+            .into_iter()
+            .find_map(|node| match &node.kind {
+                NodeKind::MarkdownFootnoteReference { label, target } => {
+                    Some((label.as_str(), target.as_str()))
+                }
+                _ => None,
+            })
+            .expect("footnote reference");
+        let footnote_definition = all_nodes(&nodes)
+            .into_iter()
+            .find_map(|node| match &node.kind {
+                NodeKind::MarkdownFootnoteDefinition { label, target } => {
+                    Some((label.as_str(), target.as_str()))
+                }
+                _ => None,
+            })
+            .expect("footnote definition");
+        assert_eq!(footnote_reference.0, "@thm-key");
+        assert_eq!(footnote_definition.0, "@thm-key");
+        assert!(!footnote_reference.1.is_empty());
+        assert_eq!(footnote_reference.1, footnote_definition.1);
+
+        let destination = all_nodes(&nodes)
+            .into_iter()
+            .find_map(|node| match &node.kind {
+                NodeKind::MarkdownLink { destination, .. } => Some(destination.as_str()),
+                _ => None,
+            })
+            .expect("reference link");
+        assert_eq!(destination, "https://example.test/@thm-key");
+
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference { raw, display, .. } => {
+                    Some((raw.as_str(), display.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(references, [("@thm-key", Some("Theorem 1"))]);
+    }
+
+    #[test]
+    fn theorem_references_in_unknown_or_malformed_fence_metadata_stay_literal() {
+        let source = concat!(
+            "::: {#thm-key}\nTarget.\n:::\n\n",
+            "::: {.unknown title=\"@thm-key\"}\nUnknown body.\n:::\n\n",
+            "::: {.theorem #bad! title=\"@thm-key\"}\nMalformed body.\n:::\n",
+        );
+        let nodes = parse(source, Path::new("literal-fence-metadata.md")).unwrap();
+        assert!(!all_nodes(&nodes)
+            .into_iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownCrossReference { .. })));
+        let literal: String = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literal.matches("@thm-key").count(), 2);
     }
 
     #[test]

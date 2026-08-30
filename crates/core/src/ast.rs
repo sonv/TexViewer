@@ -28,6 +28,44 @@ pub struct Span {
     pub end: Pos,
 }
 
+/// Numbering and link metadata for a semantic Markdown theorem-like block.
+///
+/// Bookdown and Quarto use different surface syntax, but both normalize to
+/// this representation before rendering. `number` is absent for proof-like
+/// environments, while `anchor` is present only for a unique, referenceable
+/// authored identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkdownTheoremMeta {
+    pub dialect: MarkdownTheoremDialect,
+    pub prefix: String,
+    pub identifier: Option<String>,
+    pub anchor: Option<String>,
+    /// Exact source span of a Quarto heading promoted into the block header.
+    /// Keeping it after promotion preserves precise click-to-source sync.
+    #[serde(default)]
+    pub title_span: Option<Span>,
+    pub numbered: bool,
+    pub number: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkdownTheoremDialect {
+    Bookdown,
+    Quarto,
+}
+
+/// Which ecosystem's visible-reference convention an authored Markdown
+/// cross-reference uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkdownReferenceStyle {
+    /// `\@ref(thm:key)` prints the bare number in Bookdown.
+    Bookdown,
+    /// `@thm-key` prints the kind word and number in Quarto.
+    Quarto,
+}
+
 /// Roles understood by the renderer. Unknown role strings degrade to `Standard`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -215,6 +253,21 @@ pub enum NodeKind {
         /// Live reveal state is restored only when this identity is unchanged.
         #[serde(default)]
         content_key: String,
+        /// Present when this configured block uses Bookdown/Quarto theorem
+        /// semantics rather than being a purely presentational custom block.
+        #[serde(default)]
+        theorem: Option<MarkdownTheoremMeta>,
+    },
+    /// A Bookdown (`\@ref(thm:key)`) or Quarto (`@thm-key`) reference.
+    /// Resolution happens after all theorem blocks have received numbers so
+    /// forward references work without a separate project-wide engine.
+    MarkdownCrossReference {
+        prefix: String,
+        identifier: String,
+        raw: String,
+        style: MarkdownReferenceStyle,
+        anchor: Option<String>,
+        display: Option<String>,
     },
     /// Plain Markdown prose. It must never pass through the LaTeX text-mode
     /// command parser; the renderer only HTML-escapes it.

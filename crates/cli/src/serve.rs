@@ -6259,12 +6259,12 @@ Second paragraph here.
         std::fs::create_dir_all(&dir).unwrap();
         let root = dir.join("notes.md");
         let config = dir.join("blocks.toml");
-        let source = ":::exercise Live title\nBody with $x$.\n:::\n";
+        let source = ":::warning Live title\nBody with $x$.\n:::\n";
         std::fs::write(
             &config,
             concat!(
-                "[markdown.blocks.exercise]\n",
-                "label = \"Exercise\"\n",
+                "[markdown.blocks.warning]\n",
+                "label = \"Warning\"\n",
                 "appearance = \"card\"\n",
                 "reveal = \"blur\"\n",
             ),
@@ -6277,7 +6277,7 @@ Second paragraph here.
             &HtmlOptions::default(),
         )
         .unwrap();
-        assert!(!initial.body_html.contains("md-custom-kind-exercise"));
+        assert!(!initial.body_html.contains("md-custom-kind-warning"));
         let mut state = app_state_for_output(initial);
         state.config_paths = Arc::new(vec![config.clone()]);
         state
@@ -6287,7 +6287,7 @@ Second paragraph here.
             .insert(root.clone(), source.to_string());
 
         let (rendered, _) = render_cached(&state, &root).await.unwrap();
-        assert!(rendered.body_html.contains("md-custom-kind-exercise"));
+        assert!(rendered.body_html.contains("md-custom-kind-warning"));
         assert!(rendered.body_html.contains("md-custom-card"));
         assert!(rendered.body_html.contains("md-custom-reveal-blur"));
         assert!(rendered.body_html.contains("Live title"));

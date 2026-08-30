@@ -16,8 +16,15 @@ typeset-mode = "local"
 [viewer.source-jump]
 trigger = "cmd-click"
 
-# Markdown custom blocks use `:::name Optional title` ... `:::` in the source.
-# The built-in proof block starts blurred and reveals from its heading button.
+# Markdown custom blocks use compact `:::name Optional title` fences; semantic
+# theorem blocks also accept Bookdown `::: {.theorem #key}` and Quarto
+# `::: {#thm-key}` Pandoc fences. Built-in semantic names are theorem, lemma,
+# corollary, proposition, conjecture, definition, example, exercise,
+# hypothesis (Bookdown), remark, solution, algorithm (Quarto), and proof.
+# The same entries control their safe presentation. Generic custom blocks are
+# not numbered.
+# The built-in proof block is unnumbered, starts blurred, and reveals from its
+# heading button.
 [markdown.blocks.proof]
 label = "Proof"
 appearance = "plain" # plain | bordered | card
@@ -26,7 +33,9 @@ italic = false
 # accent = "#2f9e44"    # Optional; only #RGB or #RRGGBB.
 # background = "#eefbf1" # Optional; only #RGB or #RRGGBB.
 
-# Define any 1–32 character name matching [a-z][a-z0-9_-]*.
+# Restyle a built-in theorem name, or define any 1–32 character custom name
+# matching [a-z][a-z0-9_-]*. Styling does not change theorem prefixes or
+# numbering rules.
 # [markdown.blocks.exercise]
 # label = "Exercise"
 # appearance = "card"

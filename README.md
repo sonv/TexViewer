@@ -157,10 +157,91 @@ One-shot renders use absolute `file:` image URLs rooted at that directory, so
 images also resolve when `-o` points elsewhere or HTML is redirected from
 stdout. Keep the source images in place when opening the rendered HTML.
 
+### Markdown theorems and references
+
+MathPreview understands both Bookdown-style theorem classes and Quarto-style
+typed IDs inside Pandoc fenced divs. They render through the same configurable
+block formats, but keep the source dialect's reference spelling and visible
+text.
+
+A Bookdown theorem names its kind with a class and keeps the reference key in a
+separate ID:
+
+```markdown
+::: {.theorem #pyth name="Pythagorean theorem"}
+For a right triangle, $a^2+b^2=c^2$.
+:::
+
+The relation follows from Theorem \@ref(thm:pyth).
+```
+
+The heading is `Theorem 1 (Pythagorean theorem)`. The reference itself renders
+as the bare number `1`, matching Bookdown; prose such as `Theorem` belongs in
+the source around it.
+
+A Quarto theorem encodes both the kind and key in its ID:
+
+```markdown
+:::: {#lem-unique}
+## Unique factorization
+
+Every integer has the expected factorization.
+::::
+
+See @lem-unique.
+```
+
+Here the first direct heading becomes the theorem title, so the block heading
+is `Lemma 1 (Unique factorization)` and the reference renders as `Lemma 1`.
+The supported kind and prefix pairs are:
+
+| Kind | Bookdown class / reference key | Quarto ID / reference |
+| --- | --- | --- |
+| Theorem | `.theorem` / `thm:key` | `#thm-key` / `@thm-key` |
+| Lemma | `.lemma` / `lem:key` | `#lem-key` / `@lem-key` |
+| Corollary | `.corollary` / `cor:key` | `#cor-key` / `@cor-key` |
+| Proposition | `.proposition` / `prp:key` | `#prp-key` / `@prp-key` |
+| Conjecture | `.conjecture` / `cnj:key` | `#cnj-key` / `@cnj-key` |
+| Definition | `.definition` / `def:key` | `#def-key` / `@def-key` |
+| Example | `.example` / `exm:key` | `#exm-key` / `@exm-key` |
+| Exercise | `.exercise` / `exr:key` | `#exr-key` / `@exr-key` |
+| Hypothesis | `.hypothesis` / `hyp:key` | — |
+| Remark | `.remark`, unnumbered | `#rem-key` / `@rem-key` |
+| Solution | `.solution`, unnumbered | `#sol-key` / `@sol-key` |
+| Algorithm | — | `#alg-key` / `@alg-key` |
+| Proof | `.proof`, unnumbered | `.proof`, unnumbered |
+
+Bookdown references use the complete spelling `\@ref(prefix:key)`. Bookdown
+remarks, solutions, and proofs have no theorem number or theorem reference;
+Quarto remarks, solutions, and algorithms are numbered. Proofs are unnumbered
+in both styles and use the blurred `proof` format by default. Each prefix has
+an independent document-wide counter, and Bookdown and Quarto blocks of the
+same kind share that counter. Numbering does not reset at headings.
+
+The two reference namespaces deliberately stay distinct: `\@ref(thm:key)`
+resolves only a Bookdown `.theorem #key`, while `@thm-key` resolves only a
+Quarto `#thm-key`. An unresolved reference remains visible as its original
+source instead of silently linking to a similarly named target from the other
+dialect.
+
+Use `name="..."` for an explicit plain-text title; `title="..."` is also
+accepted as a fallback. `name` wins when both are present. When neither is
+present, Quarto consumes the first direct Markdown heading as the title;
+Bookdown leaves such a heading in the block body. Fences may use three or more
+colons, their closing run need not have the same length, and up to three
+leading spaces are accepted. Semantic theorem syntax requires the Pandoc form
+with whitespace after the opening colons, such as `::: {.theorem}` or
+`::: {#thm-key}`. The compact `:::theorem Optional title` spelling remains a
+generic MathPreview custom block for backward compatibility and is not
+numbered. Theorem-looking fences and references inside code, math, links,
+images, raw HTML, or leading YAML front matter stay literal.
+
 ### Custom Markdown blocks
 
-MathPreview includes a blurred `proof` block and lets projects define their
-own semantic formats. A block starts and ends on its own line:
+The theorem formats above and the blurred `proof` format use the same safe
+custom-block registry. Projects can restyle those built-ins or define their
+own formats. MathPreview's compact custom-block syntax starts and ends on its
+own line:
 
 ```markdown
 :::proof Proof of the main estimate
@@ -175,17 +256,18 @@ replacing that body conceals it again so a new spoiler is never revealed by
 stale UI state. Proofs print unblurred. Blur is only a visual reading aid—not a
 way to hide secrets from the generated page or its source.
 
-Define additional block names in the config panel's TOML editor, in the global
-config, or in a project's `.mathpreview.toml`. Names are 1–32 lowercase ASCII
-characters matching `[a-z][a-z0-9_-]*`:
+Restyle a built-in name or define an additional block in the config panel's
+TOML editor, in the global config, or in a project's `.mathpreview.toml`. New
+names are 1–32 lowercase ASCII characters matching `[a-z][a-z0-9_-]*`; this
+example defines a `warning` block:
 
 ```toml
-[markdown.blocks.exercise]
-label = "Exercise"
+[markdown.blocks.warning]
+label = "Warning"
 appearance = "card"       # plain | bordered | card
 reveal = "always"         # always | blur
-accent = "#8a5cd0"        # optional; #RGB or #RRGGBB only
-background = "#f6f1ff"   # optional; #RGB or #RRGGBB only
+accent = "#c92a2a"        # optional; #RGB or #RRGGBB only
+background = "#fff5f5"   # optional; #RGB or #RRGGBB only
 italic = false
 ```
 
@@ -193,17 +275,21 @@ The text after the block name is an optional plain-text title. Known blocks may
 be nested up to 32 levels, and up to three leading spaces are accepted. Deeper,
 unknown, malformed, or unclosed blocks remain literal Markdown so a typo or
 pathological document does not silently consume the rest of the file. Set
-`enabled = false` to disable the built-in `proof` block or a format inherited
+`enabled = false` to disable a built-in theorem/proof name or a format inherited
 from a global config. Configured labels must be trimmed, control-free plain text
 of 1–80 characters. Labels and titles are escaped, colors are strictly
-validated, and custom formats never accept HTML, CSS, URLs, or JavaScript. Raw
-HTML inside a block remains inert just like raw HTML elsewhere.
+validated, and custom formats never accept HTML, CSS, URLs, or JavaScript.
+Pandoc attributes other than the recognized class, ID, `name`, and `title` are
+ignored rather than copied into the preview DOM. Raw HTML inside a block remains
+inert just like raw HTML elsewhere.
 
 Markdown support is intentionally single-file for now: each `.md` or
-`.markdown` file is its own preview root. Markdown citations, cross-references,
-LaTeX theorem/proof roles, TikZ semantics, and multi-file includes are not
-interpreted yet. These remain available to `.tex` projects through the LaTeX
-frontend.
+`.markdown` file is its own preview root. The Bookdown and Quarto spellings
+above are compatibility syntax; MathPreview does not run R, knitr, Pandoc,
+Bookdown, or Quarto, and `.Rmd` / `.qmd` are not Markdown preview extensions.
+Markdown citations, general cross-references outside the theorem forms above,
+LaTeX theorem/proof roles, heading-based theorem resets, and multi-file
+includes are not interpreted yet. TikZ remains a LaTeX-frontend feature.
 
 Markdown does not add another runtime dependency. It is parsed by the same
 compiled `mathpreview-cli`, whether that binary was built with Cargo or

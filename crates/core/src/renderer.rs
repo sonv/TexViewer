@@ -1482,6 +1482,9 @@ fn markdown_plain_text(nodes: &[Node]) -> String {
             NodeKind::MarkdownText(text)
             | NodeKind::MarkdownInlineCode(text)
             | NodeKind::MarkdownRawHtml(text) => out.push_str(text),
+            NodeKind::MarkdownCrossReference { raw, display, .. } => {
+                out.push_str(display.as_deref().unwrap_or(raw));
+            }
             NodeKind::InlineMath(math) => {
                 out.push('$');
                 out.push_str(math);
@@ -2181,6 +2184,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             name,
             title,
             content_key,
+            theorem,
         } => {
             let Some(format) = ctx.markdown_config.blocks.get(name) else {
                 // Programmatically-constructed ASTs can contain a format that
@@ -2191,8 +2195,22 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             };
             let id = ctx.idgen.next("md");
             let title_key = title.as_deref().unwrap_or("");
-            let label = title.as_deref().unwrap_or(&format.label);
-            record_container(ctx, &id, &n.span, Some(label));
+            let label = if let Some(theorem) = theorem {
+                let mut label = format.label.clone();
+                if let Some(number) = &theorem.number {
+                    label.push(' ');
+                    label.push_str(number);
+                }
+                if let Some(title) = title {
+                    label.push_str(" (");
+                    label.push_str(title);
+                    label.push(')');
+                }
+                label
+            } else {
+                title.clone().unwrap_or_else(|| format.label.clone())
+            };
+            record_container(ctx, &id, &n.span, Some(&label));
             let kind = sanitize_id(name);
             let appearance = format.appearance.as_str();
             let reveal = format.reveal.as_str();
@@ -2207,6 +2225,19 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 ""
             };
             let style = markdown_block_style(format);
+            let title_sync = theorem
+                .as_ref()
+                .and_then(|theorem| theorem.title_span.as_ref())
+                .map(|span| {
+                    let title_id = ctx.idgen.next("md");
+                    record(ctx, &title_id, span, Some(&label));
+                    format!(
+                        r#" id="{}" data-src="{}""#,
+                        escape_attr(&title_id),
+                        escape_attr(&data_src(span)),
+                    )
+                })
+                .unwrap_or_default();
             write!(
                 out,
                 r#"<section class="md-custom-block md-custom-{appearance} md-custom-reveal-{reveal} md-custom-kind-{kind}{italic}{concealed}" id="{id}" data-src="{src}" data-md-custom-name="{name}" data-md-custom-title="{title_key}" data-md-custom-content="{content_key}"{style}>"#,
@@ -2223,23 +2254,65 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 style = style,
             )
             .unwrap();
+            if let Some(anchor) = theorem
+                .as_ref()
+                .and_then(|theorem| theorem.anchor.as_deref())
+            {
+                write!(
+                    out,
+                    r#"<a class="md-theorem-anchor" id="mdr:{anchor}" aria-hidden="true"></a>"#,
+                    anchor = escape_attr(anchor),
+                )
+                .unwrap();
+            }
             if reveal == "blur" {
                 write!(
                     out,
-                    r#"<button type="button" class="md-custom-head md-custom-toggle" aria-expanded="false"><span class="md-custom-title">{label}</span><span class="md-custom-toggle-state">Reveal</span></button><div class="md-custom-body" inert aria-hidden="true">"#,
-                    label = escape_html(label),
+                    r#"<button type="button" class="md-custom-head md-custom-toggle" aria-expanded="false"><span class="md-custom-title"{title_sync}>{label}</span><span class="md-custom-toggle-state">Reveal</span></button><div class="md-custom-body" inert aria-hidden="true">"#,
+                    title_sync = title_sync,
+                    label = escape_html(&label),
                 )
                 .unwrap();
             } else {
                 write!(
                     out,
-                    r#"<div class="md-custom-head"><span class="md-custom-title">{label}</span></div><div class="md-custom-body">"#,
-                    label = escape_html(label),
+                    r#"<div class="md-custom-head"><span class="md-custom-title"{title_sync}>{label}</span></div><div class="md-custom-body">"#,
+                    title_sync = title_sync,
+                    label = escape_html(&label),
                 )
                 .unwrap();
             }
             write_children(out, &n.children, ctx);
             out.push_str("</div></section>");
+        }
+        NodeKind::MarkdownCrossReference {
+            raw,
+            anchor,
+            display,
+            ..
+        } => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, display.as_deref());
+            if let (Some(anchor), Some(display)) = (anchor, display) {
+                write!(
+                    out,
+                    r##"<a class="md-cross-reference" id="{id}" data-src="{src}" href="#mdr:{anchor}">{display}</a>"##,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                    anchor = escape_attr(anchor),
+                    display = escape_html(display),
+                )
+                .unwrap();
+            } else {
+                write!(
+                    out,
+                    r#"<span class="md-cross-reference is-unresolved" id="{id}" data-src="{src}">{raw}</span>"#,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                    raw = escape_html(raw),
+                )
+                .unwrap();
+            }
         }
         NodeKind::MarkdownInlineCode(code) => {
             let id = ctx.idgen.next("md");
@@ -4778,6 +4851,13 @@ mod tests {
             .body_html
             .contains(r#"<div class="md-custom-body" inert aria-hidden="true">"#));
         assert!(out.body_html.contains("Main result"));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="md-custom-title">Main result</span>"#));
+        assert!(
+            !out.body_html.contains("md-theorem-anchor"),
+            "the compact legacy spelling must remain a generic custom block"
+        );
         assert!(out.body_html.contains(r#"class="md-strong""#));
         assert!(out.body_html.contains(r#"class="math inline""#));
         assert!(out
@@ -4787,6 +4867,83 @@ mod tests {
             .any(|entry| entry.label.as_deref() == Some("Main result")));
         assert!(out.html.contains("setMarkdownCustomBlockRevealed"));
         assert!(out.html.contains("copyMarkdownCustomBlockState"));
+    }
+
+    #[test]
+    fn markdown_bookdown_and_quarto_theorems_render_labels_numbers_and_links_safely() {
+        let source = concat!(
+            "Bookdown: \\@ref(thm:pyth). Quarto: @lem-unique.\n\n",
+            "::: {.theorem #pyth name=\"A & <B>\" style=\"position:fixed\" onclick=\"alert(1)\"}\n",
+            "Bookdown body.\n",
+            ":::\n\n",
+            ":::: {#lem-unique name=\"Unique factorization\" data-extra=\"ignored\"}\n",
+            "Quarto body.\n",
+            "::::\n",
+        );
+        let out = render_markdown(source, &HtmlOptions::default());
+
+        assert!(out
+            .body_html
+            .contains(r#"<span class="md-custom-title">Theorem 1 (A &amp; &lt;B&gt;)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<span class="md-custom-title">Lemma 1 (Unique factorization)</span>"#));
+        assert!(out
+            .body_html
+            .contains(r#"<a class="md-theorem-anchor" id="mdr:thm-pyth" aria-hidden="true"></a>"#));
+        assert!(out.body_html.contains(
+            r#"<a class="md-theorem-anchor" id="mdr:lem-unique" aria-hidden="true"></a>"#
+        ));
+        assert!(out.body_html.contains(r##"href="#mdr:thm-pyth">1</a>"##));
+        assert!(out
+            .body_html
+            .contains(r##"href="#mdr:lem-unique">Lemma 1</a>"##));
+        assert!(!out.body_html.contains("position:fixed"));
+        assert!(!out.body_html.contains("onclick"));
+        assert!(!out.body_html.contains("data-extra"));
+        assert!(!out.body_html.contains("<B>"));
+
+        for (raw, display) in [("\\@ref(thm:pyth)", "1"), ("@lem-unique", "Lemma 1")] {
+            let start_col = source.find(raw).unwrap() as u32 + 1;
+            let entry = out
+                .sync
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.start.line == 1
+                        && entry.start.col == start_col
+                        && entry.label.as_deref() == Some(display)
+                })
+                .unwrap_or_else(|| panic!("missing exact source-sync leaf for {raw}"));
+            assert_eq!(entry.end.col, start_col + raw.len() as u32);
+        }
+    }
+
+    #[test]
+    fn markdown_quarto_heading_title_is_promoted_and_rendered_once() {
+        let out = render_markdown(
+            concat!(
+                "::: {#thm-heading-title}\n",
+                "## Heading title\n\n",
+                "The theorem body.\n",
+                ":::\n",
+            ),
+            &HtmlOptions::default(),
+        );
+
+        assert!(out.body_html.contains(r#"class="md-custom-title" id="md-"#));
+        assert!(out
+            .body_html
+            .contains(r#"data-src="notes.md:2:1">Theorem 1 (Heading title)</span>"#));
+        assert!(!out.body_html.contains(r#"class="md-heading""#));
+        assert_eq!(
+            text_content(&out.body_html)
+                .matches("Heading title")
+                .count(),
+            1,
+            "the promoted heading must not remain in the theorem body: {}",
+            out.body_html
+        );
     }
 
     #[test]
@@ -4835,6 +4992,58 @@ mod tests {
         assert_eq!(after.blocks.len(), 1);
         assert_ne!(before.blocks[0].diff_hash, after.blocks[0].diff_hash);
         assert!(after.body_html.contains("Solution"));
+    }
+
+    #[test]
+    fn markdown_theorem_config_changes_appearance_and_diff_hash_not_content_identity() {
+        use crate::config::MarkdownBlockAppearance;
+
+        fn theorem_block(out: &crate::RenderOutput) -> &crate::RenderedBlock {
+            out.blocks
+                .iter()
+                .find(|block| block.html.contains(r#"data-md-custom-name="theorem""#))
+                .expect("rendered theorem block")
+        }
+
+        fn content_identity(html: &str) -> &str {
+            let marker = r#"data-md-custom-content=""#;
+            let value = html.split_once(marker).unwrap().1;
+            value.split_once('"').unwrap().0
+        }
+
+        let source = "::: {#thm-config name=\"Configured\"}\nBody.\n:::\n";
+        let before = render_markdown(source, &HtmlOptions::default());
+        let shifted = render_markdown(
+            &format!("An unrelated paragraph.\n\n{source}"),
+            &HtmlOptions::default(),
+        );
+        let mut configured_opts = HtmlOptions::default();
+        let format = configured_opts
+            .markdown_config
+            .blocks
+            .get_mut("theorem")
+            .unwrap();
+        format.label = "Result".to_string();
+        format.appearance = MarkdownBlockAppearance::Card;
+        format.accent = Some("#123abc".to_string());
+        let configured = render_markdown(source, &configured_opts);
+
+        let before_block = theorem_block(&before);
+        let shifted_block = theorem_block(&shifted);
+        let configured_block = theorem_block(&configured);
+        assert_eq!(before_block.diff_hash, shifted_block.diff_hash);
+        assert_ne!(before_block.diff_hash, configured_block.diff_hash);
+        assert_eq!(
+            content_identity(&before.body_html),
+            content_identity(&configured.body_html)
+        );
+        assert!(configured.body_html.contains("md-custom-card"));
+        assert!(configured
+            .body_html
+            .contains(r#"style="--md-custom-accent:#123abc""#));
+        assert!(configured
+            .body_html
+            .contains(r#"<span class="md-custom-title">Result 1 (Configured)</span>"#));
     }
 
     #[test]
@@ -4919,7 +5128,7 @@ mod tests {
 
     #[test]
     fn markdown_block_config_is_exactly_inert_for_tex_rendering() {
-        use crate::config::{MarkdownBlockAppearance, MarkdownBlockReveal, ResolvedMarkdownBlock};
+        use crate::config::{MarkdownBlockAppearance, MarkdownBlockReveal};
 
         let source = concat!(
             "\\documentclass{article}\n",
@@ -4937,17 +5146,17 @@ mod tests {
         )
         .unwrap();
         let mut custom_opts = HtmlOptions::default();
-        custom_opts.markdown_config.blocks.insert(
-            "anything".to_string(),
-            ResolvedMarkdownBlock {
-                label: "Anything".to_string(),
-                appearance: MarkdownBlockAppearance::Card,
-                reveal: MarkdownBlockReveal::Blur,
-                accent: Some("#abc".to_string()),
-                background: Some("#123456".to_string()),
-                italic: true,
-            },
-        );
+        let theorem = custom_opts
+            .markdown_config
+            .blocks
+            .get_mut("theorem")
+            .unwrap();
+        theorem.label = "Anything".to_string();
+        theorem.appearance = MarkdownBlockAppearance::Card;
+        theorem.reveal = MarkdownBlockReveal::Blur;
+        theorem.accent = Some("#abc".to_string());
+        theorem.background = Some("#123456".to_string());
+        theorem.italic = true;
         let custom = crate::render_project_from_source(
             Path::new("paper.tex"),
             source.to_string(),
