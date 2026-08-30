@@ -4757,6 +4757,9 @@ mod tests {
         )));
         assert!(reference.contains("# [markdown.blocks.proof]"));
         assert!(reference.contains("# [markdown.blocks.exercise]"));
+        assert!(reference.contains("# [markdown]"));
+        assert!(reference.contains("# colon-fences = true"));
+        assert!(reference.contains("# [markdown.block-syntaxes.jinja-result]"));
         assert!(reference.contains("# appearance = \"card\""));
         assert!(reference.contains("# [keybindings.aliases]"));
         assert!(reference.contains("# One shortcut string or an array is accepted."));
@@ -4829,6 +4832,54 @@ mod tests {
 
     fn render_markdown(source: &str, opts: &HtmlOptions) -> crate::RenderOutput {
         crate::render_document_from_source(Path::new("notes.md"), source.to_string(), opts).unwrap()
+    }
+
+    #[test]
+    fn configured_jinja_result_blocks_render_end_to_end() {
+        let config = crate::Config::parse(
+            r#"[markdown]
+colon-fences = false
+
+[markdown.block-syntaxes.jinja-result]
+start = [
+  '{% call result("{name}", "{title}") %}',
+  '{% call result("{name}") %}',
+]
+end = '{% endcall %}'
+"#,
+            Path::new(".mathpreview.toml"),
+        )
+        .unwrap()
+        .resolve();
+        let opts = HtmlOptions {
+            markdown_config: config.markdown,
+            ..HtmlOptions::default()
+        };
+        let source = concat!(
+            "{% call result(\"definition\", \"Poisson distribution\") %}\n",
+            "A variable $X$ has mean $\\lambda$.\n",
+            "{% endcall %}\n\n",
+            "{% call result(\"proposition\") %}\n",
+            "$$\\lim_{N \\to \\infty} p_N = p.$$\n",
+            "{% endcall %}\n",
+        );
+        let out = render_markdown(source, &opts);
+
+        assert_eq!(out.body_html.matches("data-md-custom-name=").count(), 2);
+        assert!(out.body_html.contains(
+            r#"data-md-custom-name="definition" data-md-custom-title="Poisson distribution""#
+        ));
+        assert!(out
+            .body_html
+            .contains(r#"data-md-custom-name="proposition""#));
+        assert!(out.body_html.contains("Poisson distribution"));
+        assert!(out.body_html.contains(r#"class="math inline""#));
+        assert!(out.body_html.contains(r#"class="math display""#));
+        assert!(!out.body_html.contains("{% call result"));
+        assert!(!out.body_html.contains("{% endcall %}"));
+        assert!(!out.body_html.contains("md-theorem-anchor"));
+        assert!(out.sync.entries.iter().any(|entry| entry.start.line == 2));
+        assert!(out.sync.entries.iter().any(|entry| entry.start.line == 6));
     }
 
     #[test]
@@ -5128,7 +5179,9 @@ mod tests {
 
     #[test]
     fn markdown_block_config_is_exactly_inert_for_tex_rendering() {
-        use crate::config::{MarkdownBlockAppearance, MarkdownBlockReveal};
+        use crate::config::{
+            MarkdownBlockAppearance, MarkdownBlockReveal, ResolvedMarkdownBlockSyntax,
+        };
 
         let source = concat!(
             "\\documentclass{article}\n",
@@ -5157,6 +5210,14 @@ mod tests {
         theorem.accent = Some("#abc".to_string());
         theorem.background = Some("#123456".to_string());
         theorem.italic = true;
+        custom_opts.markdown_config.colon_fences = false;
+        custom_opts.markdown_config.block_syntaxes.insert(
+            "jinja-result".to_string(),
+            ResolvedMarkdownBlockSyntax {
+                start: vec![r#"{% call result("{name}") %}"#.to_string()],
+                end: "{% endcall %}".to_string(),
+            },
+        );
         let custom = crate::render_project_from_source(
             Path::new("paper.tex"),
             source.to_string(),

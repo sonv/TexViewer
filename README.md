@@ -236,6 +236,11 @@ generic MathPreview custom block for backward compatibility and is not
 numbered. Theorem-looking fences and references inside code, math, links,
 images, raw HTML, or leading YAML front matter stay literal.
 
+Colon-fence recognition is enabled by default. Setting
+`markdown.colon-fences = false` disables all of the colon forms in this
+section, including Bookdown and Quarto theorem fences; alternate custom-block
+boundaries can remain enabled independently as described below.
+
 ### Custom Markdown blocks
 
 The theorem formats above and the blurred `proof` format use the same safe
@@ -271,17 +276,89 @@ background = "#fff5f5"   # optional; #RGB or #RRGGBB only
 italic = false
 ```
 
-The text after the block name is an optional plain-text title. Known blocks may
-be nested up to 32 levels, and up to three leading spaces are accepted. Deeper,
-unknown, malformed, or unclosed blocks remain literal Markdown so a typo or
-pathological document does not silently consume the rest of the file. Set
+#### Alternate block boundaries
+
+Three or more colons are Pandoc's fenced-div syntax, rather than a standard
+Python-Markdown code fence, but Markdown extensions may still assign those
+lines another meaning. MathPreview does not claim every `:::blah` block: a
+paired colon fence is transformed only when its name is built in or configured,
+and unknown names remain literal. If even that name-scoped behavior conflicts
+with another renderer used by a project, turn colon fences off and describe the
+project's own boundary lines instead:
+
+```toml
+[markdown]
+colon-fences = false
+
+[markdown.block-syntaxes.jinja-result]
+start = [
+  '{% call result("{name}", "{title}") %}',
+  '{% call result("{name}") %}',
+]
+end = '{% endcall %}'
+```
+
+With that configuration, these existing notes render as a configured
+`definition` block with the title `Poisson distribution`, followed by an
+untitled `proposition` block:
+
+```markdown
+{% call result("definition", "Poisson distribution") %}
+We say $X$ follows the Poisson distribution if
+$$
+  \P(X = k) = \frac{e^{-\lambda}\lambda^k}{k!}.
+$$
+{% endcall %}
+
+{% call result("proposition") %}
+For every $N$, suppose $X_N \sim \Binom(N, \lambda/N)$.
+{% endcall %}
+```
+
+`start` accepts either one template string or an array. `{name}` is required
+exactly once and selects an enabled entry from `[markdown.blocks]`; `{title}`
+may occur at most once and captures an optional plain-text title. Use separate
+start templates for titled and untitled forms that share an end marker.
+Templates match complete lines literally after up to three leading spaces;
+trailing spaces and tabs are ignored. Internal whitespace, quote style,
+function name, and any extra arguments must match.
+For example, notes using single quotes need corresponding single-quoted start
+templates, and the two templates above do not match `label=`, `card=true`, a
+`proof(...)` call, or a computed Jinja title.
+
+Syntax IDs follow the same `[a-z][a-z0-9_-]*` grammar and 32-character limit
+as block names. At most 32 syntaxes may be enabled, with 1–16 start templates
+per syntax. A higher-priority config replaces a syntax declaration as a unit;
+use `enabled = false` under the same syntax ID to disable an inherited one.
+
+This is boundary recognition, not a Jinja interpreter: MathPreview neither
+executes the tags nor evaluates expressions or keyword arguments. Matched
+boundary lines are omitted from the preview and the body is parsed as ordinary
+Markdown. These alternate blocks use the selected custom presentation only;
+they are generic and unnumbered, and do not create Bookdown or Quarto reference
+targets. Delimiter-looking lines inside code, math, links, images, raw HTML, or
+leading YAML front matter remain literal. An exact template match with an
+unknown block name, a stray end marker, or a recognized opener without a
+matching end remains literal. A line that does not match any listed start
+template is ordinary Markdown: if such an unlisted opener is nested inside a
+configured block and uses the same literal end marker, its next end marker
+will close the configured block. List every opener shape that may be nested
+under a shared closer—for example, add a separate `card=true` template when
+your notes use that form. Custom syntaxes retain the same 32-level nesting
+bound as colon-fenced blocks.
+
+In the compact colon form, the text after the block name is an optional
+plain-text title. Known blocks may be nested up to 32 levels, and up to three
+leading spaces are accepted. Unknown or unclosed recognized fences remain
+literal; an invalid colon-looking line is ordinary Markdown and does not add a
+nesting level. Parsing beyond 32 nested levels fails closed. Set
 `enabled = false` to disable a built-in theorem/proof name or a format inherited
 from a global config. Configured labels must be trimmed, control-free plain text
 of 1–80 characters. Labels and titles are escaped, colors are strictly
 validated, and custom formats never accept HTML, CSS, URLs, or JavaScript.
 Pandoc attributes other than the recognized class, ID, `name`, and `title` are
-ignored rather than copied into the preview DOM. Raw HTML inside a block remains
-inert just like raw HTML elsewhere.
+ignored rather than copied into the preview DOM. Raw HTML inside a block
+remains inert just like raw HTML elsewhere.
 
 Markdown support is intentionally single-file for now: each `.md` or
 `.markdown` file is its own preview root. The Bookdown and Quarto spellings

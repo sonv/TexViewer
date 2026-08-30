@@ -19,6 +19,8 @@ use crate::ast::{
 use crate::config::ResolvedMarkdownConfig;
 
 const MAX_MARKDOWN_CUSTOM_BLOCK_NESTING: usize = 32;
+const MAX_MARKDOWN_CUSTOM_BLOCK_NAME_BYTES: usize = 32;
+const MAX_MARKDOWN_CUSTOM_BLOCK_MARKER_BYTES: usize = 4_096;
 const MAX_MARKDOWN_INLINE_HTML_NESTING: usize = 128;
 const MAX_MARKDOWN_PANDOC_ATTRIBUTES: usize = 64;
 
@@ -35,8 +37,8 @@ pub fn parse_with_config(
 ) -> Result<Vec<Node>> {
     let options = markdown_options();
     let custom_blocks = find_markdown_custom_blocks(source, options, config);
-    let references = find_markdown_cross_references(source, options);
-    let masked_source = mask_markdown_custom_block_markers(source, &custom_blocks);
+    let references = find_markdown_cross_references(source, options, &custom_blocks.marker_lines);
+    let masked_source = mask_markdown_custom_block_markers(source, &custom_blocks.blocks);
     let masked_source = mask_markdown_cross_references(&masked_source, &references);
     let (parser_source, delimiter_overrides) = protect_tex_math_delimiters(&masked_source, options);
     let positions = LineIndex::new(source);
@@ -168,7 +170,7 @@ pub fn parse_with_config(
     if !stack.is_empty() {
         return Err(anyhow!("unbalanced Markdown parser containers"));
     }
-    wrap_markdown_custom_blocks(&mut roots, &custom_blocks, &positions, file);
+    wrap_markdown_custom_blocks(&mut roots, &custom_blocks.blocks, &positions, file);
     integrate_markdown_cross_references(&mut roots, &references, source, &positions, file);
     promote_markdown_theorem_headings(&mut roots);
     assign_markdown_theorems_and_references(&mut roots, config);
@@ -196,16 +198,49 @@ struct MarkdownCustomBlockOpen {
     range: Range<usize>,
 }
 
-enum MarkdownCustomBlockMarker {
-    Open {
-        indent: usize,
-        opening: Option<MarkdownCustomBlockOpening>,
-    },
-    Close {
-        indent: usize,
-    },
+#[derive(Debug, Default)]
+struct MarkdownCustomBlockScan {
+    blocks: Vec<MarkdownCustomBlockMatch>,
+    /// Every unprotected line that has the shape of an enabled block marker,
+    /// including unknown and unclosed markers. Cross-reference syntax on
+    /// these structural lines must remain metadata rather than visible prose.
+    marker_lines: Vec<Range<usize>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkdownCustomBlockFamily {
+    ColonFence,
+    Configured(usize),
+}
+
+#[derive(Debug)]
+struct MarkdownCustomBlockFrame {
+    /// More than one family is retained only for an ambiguous opening line.
+    /// Such a frame is always opaque but still shields an enclosing block
+    /// from either possible closer.
+    families: Vec<MarkdownCustomBlockFamily>,
+    opening: Option<MarkdownCustomBlockOpen>,
+}
+
+#[derive(Debug)]
+struct MarkdownCustomBlockOverflow {
+    /// The first family set seen beyond the renderable nesting limit.
+    families: Vec<MarkdownCustomBlockFamily>,
+    depth: usize,
+    /// Once overflow nesting becomes ambiguous, extension parsing remains
+    /// disabled for the rest of the document so tracked outer frames stay
+    /// literal without retaining an unbounded overflow stack.
+    poisoned: bool,
+}
+
+enum MarkdownCustomBlockMarker {
+    Open {
+        opening: Option<MarkdownCustomBlockOpening>,
+    },
+    Close,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MarkdownCustomBlockOpening {
     name: String,
     title: Option<String>,
@@ -471,69 +506,388 @@ fn leading_markdown_yaml_range(source: &str) -> Option<Range<usize>> {
     None
 }
 
-/// Find configured `:::name` blocks before masking their boundary lines. The
-/// first CommonMark pass supplies the immunity ranges: marker-looking lines in
-/// code, math, metadata, and raw HTML must remain literal source for the real
-/// parse. Only pairs that actually close are returned, so unknown, stray, and
-/// unclosed markers are never modified.
+#[derive(Debug)]
+struct MarkdownLiteralBlockSyntax<'a> {
+    family: MarkdownCustomBlockFamily,
+    starts: Vec<MarkdownLiteralBlockTemplate<'a>>,
+    end: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MarkdownLiteralBlockTemplate<'a> {
+    prefix: &'a str,
+    between: Option<&'a str>,
+    suffix: &'a str,
+}
+
+/// Find configured block pairs before masking their boundary lines. The first
+/// CommonMark pass supplies immunity ranges: marker-looking lines in code,
+/// math, metadata, and raw HTML remain literal source for the real parse.
+/// Only known pairs that actually close are returned for masking; unknown,
+/// stray, malformed, and unclosed markers remain authored text.
 fn find_markdown_custom_blocks(
     source: &str,
     options: Options,
     config: &ResolvedMarkdownConfig,
-) -> Vec<MarkdownCustomBlockMatch> {
+) -> MarkdownCustomBlockScan {
     let mut protected = vec![false; source.len()];
     protect_markdown_literal_ranges(source, options, &mut protected);
+    let literal_syntaxes = markdown_literal_block_syntaxes(config);
 
-    let mut open: Vec<Option<MarkdownCustomBlockOpen>> = Vec::new();
-    let mut overflow_depth = 0usize;
-    let mut matched = Vec::new();
+    let mut open = Vec::<MarkdownCustomBlockFrame>::new();
+    let mut overflow = None::<MarkdownCustomBlockOverflow>;
+    let mut scan = MarkdownCustomBlockScan::default();
     let mut line_start = 0;
     for line in source.split_inclusive('\n') {
         let line_end = line_start + line.len();
         let range = line_start..line_end;
-        if let Some(marker) = markdown_custom_block_marker(line, config) {
-            let indent = match &marker {
-                MarkdownCustomBlockMarker::Open { indent, .. }
-                | MarkdownCustomBlockMarker::Close { indent } => *indent,
-            };
-            let marker_byte = line_start + indent;
-            if !protected.get(marker_byte).copied().unwrap_or(false) {
-                match marker {
-                    MarkdownCustomBlockMarker::Open { opening, .. } => {
-                        if overflow_depth > 0 || open.len() >= MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
-                            overflow_depth = overflow_depth.saturating_add(1);
-                        } else {
-                            open.push(opening.map(|opening| MarkdownCustomBlockOpen {
-                                name: opening.name,
-                                title: opening.title,
-                                theorem: opening.theorem,
-                                range,
-                            }));
-                        }
-                    }
-                    MarkdownCustomBlockMarker::Close { .. } => {
-                        if overflow_depth > 0 {
-                            overflow_depth -= 1;
-                        } else if let Some(Some(opening)) = open.pop() {
-                            let content = source
-                                .get(opening.range.end..range.start)
-                                .unwrap_or_default();
-                            matched.push(MarkdownCustomBlockMatch {
-                                name: opening.name,
-                                title: opening.title,
-                                content_key: markdown_custom_block_content_key(content),
-                                theorem: opening.theorem,
-                                opening: opening.range,
-                                closing: range,
-                            });
-                        }
-                    }
+        let Some((indent, body)) = markdown_custom_block_line(line) else {
+            line_start = line_end;
+            continue;
+        };
+        let marker_byte = line_start + indent;
+        if protected.get(marker_byte).copied().unwrap_or(false) {
+            line_start = line_end;
+            continue;
+        }
+
+        let colon_marker = config
+            .colon_fences
+            .then(|| markdown_custom_block_marker(line, config))
+            .flatten();
+        let colon_shaped =
+            config.colon_fences && body.bytes().take_while(|byte| *byte == b':').count() >= 3;
+        let mut closing_families = Vec::new();
+        let mut opening_candidates = Vec::new();
+        match colon_marker {
+            Some(MarkdownCustomBlockMarker::Close) => {
+                closing_families.push(MarkdownCustomBlockFamily::ColonFence);
+            }
+            Some(MarkdownCustomBlockMarker::Open { opening }) => {
+                opening_candidates.push((MarkdownCustomBlockFamily::ColonFence, opening));
+            }
+            None => {}
+        }
+
+        if body.len() <= MAX_MARKDOWN_CUSTOM_BLOCK_MARKER_BYTES {
+            for syntax in &literal_syntaxes {
+                if body == syntax.end {
+                    closing_families.push(syntax.family);
                 }
+                if let Some(opening) = markdown_literal_block_opening(body, syntax, config) {
+                    opening_candidates.push((syntax.family, opening));
+                }
+            }
+        }
+        if colon_shaped || !closing_families.is_empty() || !opening_candidates.is_empty() {
+            scan.marker_lines.push(range.clone());
+        }
+
+        if let Some(state) = overflow.as_mut() {
+            if state.poisoned {
+                line_start = line_end;
+                continue;
+            }
+            if !closing_families.is_empty() {
+                if state
+                    .families
+                    .iter()
+                    .any(|family| closing_families.contains(family))
+                {
+                    state.depth -= 1;
+                    if state.depth == 0 {
+                        overflow = None;
+                    }
+                } else {
+                    state.poisoned = true;
+                }
+                line_start = line_end;
+                continue;
+            }
+            if !opening_candidates.is_empty() {
+                let families: Vec<_> = opening_candidates
+                    .into_iter()
+                    .map(|(family, _)| family)
+                    .collect();
+                if state.families == families {
+                    state.depth = state.depth.saturating_add(1);
+                } else {
+                    state.poisoned = true;
+                }
+                line_start = line_end;
+                continue;
+            }
+            line_start = line_end;
+            continue;
+        }
+
+        // Close only the current top family. If this line is also a valid
+        // opening for another family, an unmatched closer must not suppress
+        // that opening; searching down the stack would create overlapping
+        // source spans and let a stray closer steal an enclosing block.
+        let mut closed = false;
+        if !closing_families.is_empty()
+            && open.last().is_some_and(|frame| {
+                frame
+                    .families
+                    .iter()
+                    .any(|family| closing_families.contains(family))
+            })
+        {
+            let frame = open.pop().expect("matching custom-block frame exists");
+            if let Some(opening) = frame.opening {
+                let content = source
+                    .get(opening.range.end..range.start)
+                    .unwrap_or_default();
+                scan.blocks.push(MarkdownCustomBlockMatch {
+                    name: opening.name,
+                    title: opening.title,
+                    content_key: markdown_custom_block_content_key(content),
+                    theorem: opening.theorem,
+                    opening: opening.range,
+                    closing: range.clone(),
+                });
+            }
+            closed = true;
+        }
+        if closed {
+            line_start = line_end;
+            continue;
+        }
+
+        if !opening_candidates.is_empty() {
+            if open.len() >= MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
+                let families: Vec<_> = opening_candidates
+                    .into_iter()
+                    .map(|(family, _)| family)
+                    .collect();
+                overflow = Some(MarkdownCustomBlockOverflow {
+                    families,
+                    depth: 1,
+                    poisoned: false,
+                });
+            } else {
+                let opening = (opening_candidates.len() == 1)
+                    .then(|| opening_candidates[0].1.clone())
+                    .flatten()
+                    .map(|opening| MarkdownCustomBlockOpen {
+                        name: opening.name,
+                        title: opening.title,
+                        theorem: opening.theorem,
+                        range,
+                    });
+                open.push(MarkdownCustomBlockFrame {
+                    families: opening_candidates
+                        .into_iter()
+                        .map(|(family, _)| family)
+                        .collect(),
+                    opening,
+                });
             }
         }
         line_start = line_end;
     }
-    matched
+    scan
+}
+
+fn markdown_custom_block_line(line: &str) -> Option<(usize, &str)> {
+    let indent = line
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b' ')
+        .count();
+    if indent > 3 {
+        return None;
+    }
+    let body = line
+        .get(indent..)?
+        .trim_end_matches(['\r', '\n'])
+        .trim_end_matches([' ', '\t']);
+    Some((indent, body))
+}
+
+fn markdown_literal_block_syntaxes(
+    config: &ResolvedMarkdownConfig,
+) -> Vec<MarkdownLiteralBlockSyntax<'_>> {
+    config
+        .block_syntaxes
+        .values()
+        .enumerate()
+        .filter_map(|(index, syntax)| {
+            let starts: Vec<_> = syntax
+                .start
+                .iter()
+                .filter_map(|template| markdown_literal_block_template(template))
+                .collect();
+            (!starts.is_empty() && !syntax.end.is_empty() && !syntax.end.contains(['\r', '\n']))
+                .then_some(MarkdownLiteralBlockSyntax {
+                    family: MarkdownCustomBlockFamily::Configured(index),
+                    starts,
+                    end: &syntax.end,
+                })
+        })
+        .collect()
+}
+
+fn markdown_literal_block_template(template: &str) -> Option<MarkdownLiteralBlockTemplate<'_>> {
+    if template.is_empty()
+        || template.len() > MAX_MARKDOWN_CUSTOM_BLOCK_MARKER_BYTES
+        || template.contains(['\r', '\n'])
+    {
+        return None;
+    }
+    let name_start = template.find("{name}")?;
+    let name_end = name_start + "{name}".len();
+    if template[name_end..].contains("{name}") {
+        return None;
+    }
+    let title_start = template.find("{title}");
+    if title_start.is_some_and(|start| start < name_end) {
+        return None;
+    }
+    if let Some(title_start) = title_start {
+        let title_end = title_start + "{title}".len();
+        if template[title_end..].contains("{title}") {
+            return None;
+        }
+        Some(MarkdownLiteralBlockTemplate {
+            prefix: &template[..name_start],
+            between: Some(&template[name_end..title_start]),
+            suffix: &template[title_end..],
+        })
+    } else {
+        Some(MarkdownLiteralBlockTemplate {
+            prefix: &template[..name_start],
+            between: None,
+            suffix: &template[name_end..],
+        })
+    }
+}
+
+fn markdown_literal_block_opening(
+    line: &str,
+    syntax: &MarkdownLiteralBlockSyntax<'_>,
+    config: &ResolvedMarkdownConfig,
+) -> Option<Option<MarkdownCustomBlockOpening>> {
+    let mut found = false;
+    let mut selected = None::<MarkdownCustomBlockOpening>;
+    let mut ambiguous = false;
+    for template in &syntax.starts {
+        let Some(opening) = markdown_literal_block_template_opening(line, *template, config) else {
+            continue;
+        };
+        found = true;
+        let Some(opening) = opening else {
+            // A broad title-less variant can have the same fixed prefix and
+            // suffix as a more specific titled form. An invalid capture from
+            // that broad variant must not make the valid titled match
+            // ambiguous; if no variant is valid, the frame remains opaque.
+            continue;
+        };
+        match &selected {
+            Some(existing) if *existing != opening => ambiguous = true,
+            Some(_) => {}
+            None => selected = Some(opening),
+        }
+    }
+    found.then_some(if ambiguous { None } else { selected })
+}
+
+fn markdown_literal_block_template_opening(
+    line: &str,
+    template: MarkdownLiteralBlockTemplate<'_>,
+    config: &ResolvedMarkdownConfig,
+) -> Option<Option<MarkdownCustomBlockOpening>> {
+    let rest = line
+        .strip_prefix(template.prefix)?
+        .strip_suffix(template.suffix)?;
+    let captured = if let Some(between) = template.between {
+        // Match enabled names directly instead of splitting at the first
+        // separator. Separators such as `-` are legal inside a block name;
+        // the longest matching enabled name is therefore the unambiguous,
+        // most-specific interpretation.
+        if !rest.contains(between) {
+            return None;
+        }
+        let bytes = rest.as_bytes();
+        let mut captured = None;
+        for name_end in 1..=bytes.len().min(MAX_MARKDOWN_CUSTOM_BLOCK_NAME_BYTES) {
+            let byte = bytes[name_end - 1];
+            let valid_name_byte = if name_end == 1 {
+                byte.is_ascii_lowercase()
+            } else {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            };
+            if !valid_name_byte {
+                break;
+            }
+            let name = &rest[..name_end];
+            let Some((name, _)) = config.blocks.get_key_value(name) else {
+                continue;
+            };
+            let Some(raw_title) = rest[name_end..].strip_prefix(between) else {
+                continue;
+            };
+            let Some(title) = markdown_literal_block_title(raw_title, template) else {
+                continue;
+            };
+            // Prefixes are visited shortest-to-longest, so replacement keeps
+            // the most-specific enabled name without scanning the registry.
+            captured = Some((name, title));
+        }
+        captured
+    } else {
+        config
+            .blocks
+            .get_key_value(rest)
+            .map(|(name, _)| (name, None))
+    };
+    Some(captured.map(|(name, title)| MarkdownCustomBlockOpening {
+        name: name.to_string(),
+        title,
+        // Literal delimiter templates only choose presentation. They do not
+        // imply Bookdown/Quarto numbering or reference semantics.
+        theorem: None,
+    }))
+}
+
+fn markdown_literal_block_title(
+    raw: &str,
+    template: MarkdownLiteralBlockTemplate<'_>,
+) -> Option<Option<String>> {
+    let quote = template.between.and_then(|between| {
+        let before = between.chars().next_back()?;
+        let after = template.suffix.chars().next()?;
+        (before == after && matches!(before, '\'' | '"')).then_some(before)
+    });
+    let title = if let Some(quote) = quote {
+        let mut decoded = String::with_capacity(raw.len());
+        let mut chars = raw.chars();
+        while let Some(ch) = chars.next() {
+            if ch == quote {
+                return None;
+            }
+            if ch == '\\' {
+                let escaped = chars.next()?;
+                if escaped == quote || escaped == '\\' {
+                    decoded.push(escaped);
+                } else {
+                    decoded.push(ch);
+                    decoded.push(escaped);
+                }
+            } else {
+                decoded.push(ch);
+            }
+        }
+        decoded
+    } else {
+        raw.to_string()
+    };
+    if title.is_empty() {
+        Some(None)
+    } else {
+        clean_markdown_block_title(&title).map(Some)
+    }
 }
 
 fn markdown_custom_block_content_key(content: &str) -> String {
@@ -564,7 +918,7 @@ fn markdown_custom_block_marker(
     }
     let body = body.get(fence_len..)?;
     if body.trim_matches([' ', '\t']).is_empty() {
-        return Some(MarkdownCustomBlockMarker::Close { indent });
+        return Some(MarkdownCustomBlockMarker::Close);
     }
 
     let opening = if body.starts_with(char::is_whitespace) {
@@ -602,7 +956,7 @@ fn markdown_custom_block_marker(
             })
     };
 
-    Some(MarkdownCustomBlockMarker::Open { indent, opening })
+    Some(MarkdownCustomBlockMarker::Open { opening })
 }
 
 #[derive(Default)]
@@ -995,10 +1349,13 @@ struct MarkdownCrossReferenceMatch {
 fn find_markdown_cross_references(
     source: &str,
     options: Options,
+    marker_lines: &[Range<usize>],
 ) -> Vec<MarkdownCrossReferenceMatch> {
     let mut protected = vec![false; source.len()];
     protect_markdown_literal_ranges(source, options, &mut protected);
-    protect_markdown_fence_lines(source, &mut protected);
+    for range in marker_lines {
+        protect_range(&mut protected, range.clone());
+    }
     let eligible = markdown_text_event_ranges(source, options);
 
     let bytes = source.as_bytes();
@@ -1109,31 +1466,6 @@ fn markdown_text_event_ranges(source: &str, options: Options) -> Vec<bool> {
 
 fn markdown_reference_starts_in_prose(at: usize, eligible: &[bool], protected: &[bool]) -> bool {
     eligible.get(at).copied().unwrap_or(false) && !protected.get(at).copied().unwrap_or(true)
-}
-
-/// A fence-looking line is structural metadata even when its attributes name
-/// an unknown or malformed block. Keep references on that line literal while
-/// still allowing ordinary prose in an unknown block's body to be parsed.
-fn protect_markdown_fence_lines(source: &str, protected: &mut [bool]) {
-    let mut line_start = 0usize;
-    for line in source.split_inclusive('\n') {
-        let indent = line
-            .as_bytes()
-            .iter()
-            .take_while(|byte| **byte == b' ')
-            .count();
-        let marker_byte = line_start + indent;
-        if indent <= 3
-            && line
-                .as_bytes()
-                .get(indent..)
-                .is_some_and(|body| body.iter().take_while(|byte| **byte == b':').count() >= 3)
-            && !protected.get(marker_byte).copied().unwrap_or(false)
-        {
-            protect_range(protected, line_start..line_start + line.len());
-        }
-        line_start += line.len();
-    }
 }
 
 fn mask_markdown_cross_references(
@@ -2043,6 +2375,21 @@ mod tests {
         config
     }
 
+    fn config_with_jinja_result_syntax() -> ResolvedMarkdownConfig {
+        let mut config = ResolvedMarkdownConfig::default();
+        config.block_syntaxes.insert(
+            "jinja-result".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec![
+                    r#"{% call result("{name}", "{title}") %}"#.to_string(),
+                    r#"{% call result("{name}") %}"#.to_string(),
+                ],
+                end: "{% endcall %}".to_string(),
+            },
+        );
+        config
+    }
+
     #[test]
     fn default_parser_recognizes_proof_blocks_with_plain_titles_and_exact_spans() {
         let path = Path::new("proof.md");
@@ -2075,6 +2422,323 @@ mod tests {
         assert!(all_nodes(&proof.children)
             .iter()
             .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+    }
+
+    #[test]
+    fn literal_templates_render_the_users_jinja_result_blocks() {
+        let config = config_with_jinja_result_syntax();
+        let source = concat!(
+            r#"{% call result("definition", "Poisson distribution") %}"#,
+            "\n",
+            "We say $X \\sim \\Pois(\\lambda)$ when\n",
+            "$$\\P(X=k)=e^{-\\lambda}\\lambda^k/k!.$$\n",
+            "{% endcall %}\n\n",
+            r#"{% call result("proposition") %}"#,
+            "\n",
+            "For every $N \\in \\N$, the binomial probabilities converge.\n",
+            "{% endcall %}\n",
+        );
+        let nodes = parse_with_config(source, Path::new("jinja.md"), &config).unwrap();
+        let blocks: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock {
+                    name,
+                    title,
+                    theorem,
+                    ..
+                } => Some((name.as_str(), title.as_deref(), theorem.as_ref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].0, "definition");
+        assert_eq!(blocks[0].1, Some("Poisson distribution"));
+        assert!(blocks[0].2.is_none(), "custom syntax stays presentational");
+        assert_eq!(blocks[1].0, "proposition");
+        assert_eq!(blocks[1].1, None);
+        assert!(blocks[1].2.is_none());
+        assert!(all_nodes(&nodes)
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body.contains("Pois"))));
+        assert!(all_nodes(&nodes)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::DisplayMath { .. })));
+    }
+
+    #[test]
+    fn titled_literal_templates_choose_the_longest_enabled_name_prefix() {
+        let mut config = config_with_block("guided");
+        let format = config
+            .blocks
+            .get("proof")
+            .expect("default proof format")
+            .clone();
+        config.blocks.insert("guided-exercise".to_string(), format);
+        config.block_syntaxes.insert(
+            "dash-title".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec!["BEGIN {name}-{title}".to_string()],
+                end: "END".to_string(),
+            },
+        );
+        let source = "BEGIN guided-exercise-Poisson distribution\nBody.\nEND\n";
+
+        let nodes = parse_with_config(source, Path::new("longest-name.md"), &config).unwrap();
+        assert!(matches!(
+            &custom_block(&nodes, "guided-exercise").kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("Poisson distribution")
+        ));
+        assert!(!all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownCustomBlock { name, .. } if name == "guided"
+        )));
+    }
+
+    #[test]
+    fn literal_start_end_overlap_uses_the_current_top_family() {
+        let mut config = ResolvedMarkdownConfig::default();
+        config.block_syntaxes.insert(
+            "end-owner".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec!["OUTER {name}".to_string()],
+                end: "BEGIN definition".to_string(),
+            },
+        );
+        config.block_syntaxes.insert(
+            "start-owner".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec!["BEGIN {name}".to_string()],
+                end: "DONE".to_string(),
+            },
+        );
+
+        let top_level = parse_with_config(
+            "BEGIN definition\nBody.\nDONE\n",
+            Path::new("start-end-top.md"),
+            &config,
+        )
+        .unwrap();
+        assert!(matches!(
+            &custom_block(&top_level, "definition").kind,
+            NodeKind::MarkdownCustomBlock { title: None, .. }
+        ));
+
+        let nested = parse_with_config(
+            "OUTER proof\nBody.\nBEGIN definition\nTail.\nDONE\n",
+            Path::new("start-end-nested.md"),
+            &config,
+        )
+        .unwrap();
+        let names: Vec<_> = all_nodes(&nested)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["proof"]);
+    }
+
+    #[test]
+    fn colon_and_literal_overlap_uses_the_current_top_family() {
+        let mut config = ResolvedMarkdownConfig::default();
+        config.block_syntaxes.insert(
+            "literal".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec!["BEGIN {name}".to_string()],
+                end: ":::proof".to_string(),
+            },
+        );
+
+        let top_level = parse_with_config(
+            ":::proof\nBody.\n:::\n",
+            Path::new("colon-overlap-top.md"),
+            &config,
+        )
+        .unwrap();
+        assert!(matches!(
+            &custom_block(&top_level, "proof").kind,
+            NodeKind::MarkdownCustomBlock { title: None, .. }
+        ));
+
+        let nested = parse_with_config(
+            "BEGIN definition\nBody.\n:::proof\nTail.\n:::\n",
+            Path::new("colon-overlap-nested.md"),
+            &config,
+        )
+        .unwrap();
+        let names: Vec<_> = all_nodes(&nested)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["definition"]);
+    }
+
+    #[test]
+    fn colon_fences_can_be_disabled_without_disabling_literal_templates() {
+        let mut config = config_with_jinja_result_syntax();
+        config.colon_fences = false;
+        let source = concat!(
+            ":::proof Colon proof\ncolon body\n:::\n\n",
+            "::: {#thm-colon}\nPandoc body.\n:::\n\n",
+            r#"{% call result("definition") %}"#,
+            "\ncustom body\n{% endcall %}\n",
+        );
+        let nodes = parse_with_config(source, Path::new("no-colons.md"), &config).unwrap();
+        let blocks: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, ["definition"]);
+        let literal: String = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(literal.contains(":::proof Colon proof"));
+        assert!(literal.contains("::: {#thm-colon}"));
+    }
+
+    #[test]
+    fn literal_and_colon_families_nest_without_cross_closing() {
+        let config = config_with_jinja_result_syntax();
+        let source = concat!(
+            ":::proof Outer\n",
+            r#"{% call result("definition", "Inner") %}"#,
+            "\n",
+            "::: \n",
+            "inner tail\n",
+            "{% endcall %}\n",
+            "outer tail\n",
+            ":::\n",
+        );
+        let nodes = parse_with_config(source, Path::new("mixed-delimiters.md"), &config).unwrap();
+        assert_eq!(nodes.len(), 1);
+        let proof = custom_block(&nodes, "proof");
+        let definition = custom_block(&proof.children, "definition");
+        let inner_text: String = all_nodes(&definition.children)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(inner_text.contains(":::"));
+        assert!(inner_text.contains("inner tail"));
+        let outer_text: String = all_nodes(&proof.children)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(outer_text.contains("outer tail"));
+    }
+
+    #[test]
+    fn unknown_and_protected_literal_markers_cannot_steal_a_closer() {
+        let config = config_with_jinja_result_syntax();
+        let source = concat!(
+            "---\n",
+            "template: '{% call result(\"definition\") %}'\n",
+            "ending: '{% endcall %}'\n",
+            "---\n\n",
+            r#"{% call result("definition") %}"#,
+            "\n",
+            r#"{% call result("not-configured") %}"#,
+            "\nunknown body\n{% endcall %}\n",
+            "```jinja\n{% endcall %}\n```\n\n",
+            "$$\n{% endcall %}\n$$\n\n",
+            "<div>\n{% endcall %}\n</div>\n\n",
+            "outer tail\n{% endcall %}\n",
+        );
+        let nodes = parse_with_config(source, Path::new("protected-literal.md"), &config).unwrap();
+        let definition = custom_block(&nodes, "definition");
+        assert_eq!(
+            all_nodes(&nodes)
+                .iter()
+                .filter(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. }))
+                .count(),
+            1
+        );
+        let literal: String = all_nodes(&definition.children)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                NodeKind::MarkdownRawHtml(html) => Some(html.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(literal.contains("not-configured"));
+        assert!(literal.contains("outer tail"));
+        assert!(all_nodes(&definition.children).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownCodeBlock { code, .. } if code.contains("{% endcall %}")
+        )));
+    }
+
+    #[test]
+    fn references_on_literal_template_markers_stay_structural() {
+        let config = config_with_jinja_result_syntax();
+        let source = concat!(
+            "::: {#thm-key}\nTarget.\n:::\n\n",
+            r#"{% call result("definition", "See @thm-key") %}"#,
+            "\nBody reference @thm-key.\n{% endcall %}\n",
+        );
+        let nodes = parse_with_config(source, Path::new("marker-reference.md"), &config).unwrap();
+        let references: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCrossReference { raw, .. } => Some(raw.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(references, ["@thm-key"]);
+        assert!(matches!(
+            &custom_block(&nodes, "definition").kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("See @thm-key")
+        ));
+    }
+
+    #[test]
+    fn literal_templates_keep_crlf_unicode_spans_and_decode_quoted_escapes() {
+        let config = config_with_jinja_result_syntax();
+        let path = Path::new("jinja-unicode.md");
+        let source = concat!(
+            "Before λ.\r\n\r\n",
+            "  {% call result(\"definition\", \"Café \\\"quoted\\\" 😀\\\\path\") %}  \r\n",
+            "Body é.\r\n",
+            "  {% endcall %}\t\r\n",
+        );
+        let nodes = parse_with_config(source, path, &config).unwrap();
+        let definition = custom_block(&nodes, "definition");
+        assert!(matches!(
+            &definition.kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("Café \"quoted\" 😀\\path")
+        ));
+        let opening = source.find("  {% call").unwrap();
+        assert_eq!(
+            definition.span,
+            LineIndex::new(source).span(path, opening, source.len())
+        );
+        let body_start = source.find("Body").unwrap();
+        let body = all_nodes(&definition.children)
+            .into_iter()
+            .find(|node| matches!(&node.kind, NodeKind::MarkdownText(text) if text == "Body"))
+            .expect("body source-sync leaf");
+        assert_eq!(body.span.start, LineIndex::new(source).pos(body_start));
     }
 
     #[test]
@@ -2737,10 +3401,10 @@ mod tests {
         );
         let config = ResolvedMarkdownConfig::default();
         let matched = find_markdown_custom_blocks(source, markdown_options(), &config);
-        assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].title.as_deref(), Some("Matched"));
+        assert_eq!(matched.blocks.len(), 1);
+        assert_eq!(matched.blocks[0].title.as_deref(), Some("Matched"));
 
-        let masked = mask_markdown_custom_block_markers(source, &matched);
+        let masked = mask_markdown_custom_block_markers(source, &matched.blocks);
         assert!(masked.contains(":::unknown Literal"));
         assert!(masked.contains(":::proof Unclosed"));
         assert!(!masked.contains(":::proof Matched"));
@@ -2980,6 +3644,83 @@ mod tests {
                 .matches(r#"data-md-custom-name="proof""#)
                 .count(),
             MAX_MARKDOWN_CUSTOM_BLOCK_NESTING,
+        );
+    }
+
+    #[test]
+    fn literal_overflow_cannot_be_unwound_by_colon_closers() {
+        let config = config_with_jinja_result_syntax();
+        let mut source = ":::proof\n".repeat(MAX_MARKDOWN_CUSTOM_BLOCK_NESTING);
+        source.push_str(r#"{% call result("definition") %}"#);
+        source.push_str("\nDeep body.\n");
+        for _ in 0..=MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
+            source.push_str(":::\n");
+        }
+
+        let nodes = parse_with_config(&source, Path::new("literal-overflow.md"), &config).unwrap();
+        assert_eq!(
+            all_nodes(&nodes)
+                .iter()
+                .filter(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. }))
+                .count(),
+            0,
+            "colon closers must not release an unclosed literal overflow frame",
+        );
+    }
+
+    #[test]
+    fn colon_overflow_cannot_be_unwound_by_literal_closers() {
+        let config = config_with_jinja_result_syntax();
+        let mut source = String::new();
+        for _ in 0..MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
+            source.push_str(r#"{% call result("definition") %}"#);
+            source.push('\n');
+        }
+        source.push_str(":::proof\nDeep body.\n");
+        for _ in 0..=MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
+            source.push_str("{% endcall %}\n");
+        }
+
+        let nodes = parse_with_config(&source, Path::new("colon-overflow.md"), &config).unwrap();
+        assert_eq!(
+            all_nodes(&nodes)
+                .iter()
+                .filter(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. }))
+                .count(),
+            0,
+            "literal closers must not release an unclosed colon overflow frame",
+        );
+    }
+
+    #[test]
+    fn alternating_overflow_families_poison_extension_parsing_without_growing_state() {
+        let config = config_with_jinja_result_syntax();
+        let depth = 4_096;
+        let mut source = ":::proof\n".repeat(MAX_MARKDOWN_CUSTOM_BLOCK_NESTING);
+        for index in 0..depth {
+            if index % 2 == 0 {
+                source.push_str(r#"{% call result("definition") %}"#);
+                source.push('\n');
+            } else {
+                source.push_str(":::proof\n");
+            }
+        }
+        source.push_str("Deep body.\n");
+        for index in 0..depth {
+            if index % 2 == 0 {
+                source.push_str("{% endcall %}\n");
+            } else {
+                source.push_str(":::\n");
+            }
+        }
+        for _ in 0..MAX_MARKDOWN_CUSTOM_BLOCK_NESTING {
+            source.push_str(":::\n");
+        }
+
+        let scan = find_markdown_custom_blocks(&source, markdown_options(), &config);
+        assert!(
+            scan.blocks.is_empty(),
+            "ambiguous overflow must keep all tracked outer frames literal",
         );
     }
 

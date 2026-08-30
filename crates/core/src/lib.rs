@@ -28,7 +28,8 @@ pub use ast::{Node, NodeKind, Pos, Role, Span};
 pub use config::{
     discover_config_files, effective_page_margin_mm, load_and_merge as load_and_merge_config,
     Config, MarkdownBlockAppearance, MarkdownBlockReveal, PageMode, ResolvedConfig,
-    ResolvedMarkdownBlock, ResolvedMarkdownConfig, ResolvedViewerConfig, SourceJumpTrigger, Theme,
+    ResolvedMarkdownBlock, ResolvedMarkdownBlockSyntax, ResolvedMarkdownConfig,
+    ResolvedViewerConfig, SourceJumpTrigger, Theme,
 };
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{

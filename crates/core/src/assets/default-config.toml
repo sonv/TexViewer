@@ -16,8 +16,14 @@ typeset-mode = "local"
 [viewer.source-jump]
 trigger = "cmd-click"
 
-# Markdown custom blocks use compact `:::name Optional title` fences; semantic
-# theorem blocks also accept Bookdown `::: {.theorem #key}` and Quarto
+# Markdown custom blocks use `:::` fences by default, including compact
+# `:::name Optional title` blocks and Bookdown/Quarto Pandoc attribute fences.
+# Set this to false when another Markdown extension owns colon fences; use a
+# custom block syntax below for MathPreview-specific containers instead.
+[markdown]
+colon-fences = true
+
+# Semantic theorem blocks also accept Bookdown `::: {.theorem #key}` and Quarto
 # `::: {#thm-key}` Pandoc fences. Built-in semantic names are theorem, lemma,
 # corollary, proposition, conjecture, definition, example, exercise,
 # hypothesis (Bookdown), remark, solution, algorithm (Quarto), and proof.
@@ -43,6 +49,22 @@ italic = false
 # accent = "#8a5cd0"
 # background = "#f6f1ff"
 # italic = false
+
+# Additional custom-block syntaxes match complete marker lines (up to three
+# leading spaces; trailing spaces/tabs ignored). `start` accepts one string or
+# an ordered array, must capture `{name}`, and may capture a later `{title}`.
+# `end` is literal. Names still resolve through `[markdown.blocks]`.
+# Enable at most 32 syntax IDs matching [a-z][a-z0-9_-]*, with 1–16 starts each.
+# Higher config scopes replace a declaration as a unit; use `enabled = false`
+# under the same ID to disable an inherited syntax. List every opener form that
+# may be nested under a shared end marker—the markers are not executed as Jinja.
+# This Jinja-style example accepts both titled and untitled `result(...)` calls:
+# [markdown.block-syntaxes.jinja-result]
+# start = [
+#   '{% call result("{name}", "{title}") %}',
+#   '{% call result("{name}") %}',
+# ]
+# end = '{% endcall %}'
 
 # One shortcut string or an array is accepted. Use [] to disable an action.
 # Removing a key from its action leaves it untouched for the browser or an

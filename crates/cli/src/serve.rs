@@ -514,6 +514,7 @@ async fn load_and_merge_config_cached(
             merged.merge(layer);
         }
     }
+    merged.validate_merged(Path::new("<merged config>"))?;
     Ok(merged.resolve())
 }
 
@@ -2277,6 +2278,21 @@ async fn serve_config_set(
         }
     }
 
+    let proposed = doc.to_string();
+    let prospective = match validate_config_cascade_with_override(
+        state.config_paths.as_ref(),
+        &target,
+        &proposed,
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    };
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return (
@@ -2288,7 +2304,7 @@ async fn serve_config_set(
                 .into_response();
         }
     }
-    if let Err(e) = std::fs::write(&target, doc.to_string()) {
+    if let Err(e) = std::fs::write(&target, proposed) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -2297,23 +2313,19 @@ async fn serve_config_set(
         )
             .into_response();
     }
+    invalidate_cached_path(&state, &target).await;
     drop(save_guard);
 
-    // Re-read the config cascade from disk so the live `viewer_config`
-    // reflects the value we just wrote. Failures here are non-fatal:
-    // the file was saved successfully; we just couldn't refresh in
-    // place. The user can restart the daemon to pick it up.
-    match mathpreview_core::load_and_merge_config(state.config_paths.as_ref()) {
-        Ok((resolved, _)) => {
-            *state.viewer_config.write().await = resolved.viewer;
-        }
-        Err(e) => {
-            log_event(&state, "error", format!("config reload failed: {e:#}"));
-        }
+    if let Some(resolved) = prospective {
+        *state.viewer_config.write().await = resolved.viewer;
     }
 
     if let Err(e) = trigger_rerender(&state, &root_file).await {
-        log_event(&state, "warn", format!("config-set re-render failed: {e:#}"));
+        log_event(
+            &state,
+            "warn",
+            format!("config-set re-render failed: {e:#}"),
+        );
     }
 
     log_event(
@@ -2412,15 +2424,6 @@ async fn serve_config_write(
                 .into_response();
         }
     };
-    if let Some(parent) = target.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("mkdir {} failed: {e}", parent.display()) })),
-            )
-                .into_response();
-        }
-    }
     let body = format!("{}\n", merged_content.trim_end_matches(['\n', '\r']));
     let save_guard = state.file_save_lock.lock().await;
     if let Some(expected) = req.expected_content.as_deref() {
@@ -2448,6 +2451,27 @@ async fn serve_config_write(
                 .into_response();
         }
     }
+    let prospective =
+        match validate_config_cascade_with_override(state.config_paths.as_ref(), &target, &body) {
+            Ok(config) => config,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": error })),
+                )
+                    .into_response();
+            }
+        };
+    let active = prospective.is_some();
+    if let Some(parent) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("mkdir {} failed: {e}", parent.display()) })),
+            )
+                .into_response();
+        }
+    }
     if let Err(e) = std::fs::write(&target, &body) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2455,10 +2479,11 @@ async fn serve_config_write(
         )
             .into_response();
     }
+    invalidate_cached_path(&state, &target).await;
     drop(save_guard);
-    // Refresh the live viewer config (text-macros reload per render anyway).
-    if let Ok((resolved, _)) = mathpreview_core::load_and_merge_config(state.config_paths.as_ref())
-    {
+    // Refresh the live viewer config from the exact cascade validated before
+    // the write (text macros still reload per render).
+    if let Some(resolved) = prospective {
         *state.viewer_config.write().await = resolved.viewer;
     }
     if let Err(e) = trigger_rerender(&state, &root_file).await {
@@ -2468,13 +2493,6 @@ async fn serve_config_write(
             format!("config-write re-render failed: {e:#}"),
         );
     }
-    let target_canonical = target.canonicalize().ok();
-    let active = state.config_paths.iter().any(|path| {
-        path == &target
-            || target_canonical
-                .as_ref()
-                .is_some_and(|target_path| path.canonicalize().ok().as_ref() == Some(target_path))
-    });
     log_event(
         &state,
         "info",
@@ -2487,6 +2505,76 @@ fn validate_config_file(content: &str, label: &Path) -> Result<(), String> {
     mathpreview_core::Config::parse(content, label)
         .map(|_| ())
         .map_err(|e| format!("invalid config: {e:#}"))
+}
+
+/// Validate the exact config text a panel save would write without first
+/// mutating the file. When `target` participates in the active cascade, its
+/// on-disk layer is replaced in memory and the effective Markdown delimiter
+/// registry is revalidated across every scope.
+fn validate_config_cascade_with_override(
+    paths: &[PathBuf],
+    target: &Path,
+    proposed: &str,
+) -> Result<Option<mathpreview_core::ResolvedConfig>, String> {
+    let proposed = mathpreview_core::Config::parse(proposed, target)
+        .map_err(|e| format!("invalid config: {e:#}"))?;
+    let active = paths.iter().any(|path| same_config_path(path, target));
+    if !active {
+        return Ok(None);
+    }
+
+    let mut merged = mathpreview_core::Config::default();
+    for path in paths {
+        if same_config_path(path, target) {
+            merged.merge(proposed.clone());
+        } else if let Some(layer) = mathpreview_core::Config::load_optional(path)
+            .map_err(|e| format!("invalid effective config: {e:#}"))?
+        {
+            merged.merge(layer);
+        }
+    }
+    merged
+        .validate_merged(Path::new("<prospective merged config>"))
+        .map_err(|e| format!("invalid effective config: {e:#}"))?;
+    Ok(Some(merged.resolve()))
+}
+
+fn same_config_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || resolve_missing_path(left)
+            .zip(resolve_missing_path(right))
+            .is_some_and(|(left, right)| left == right)
+}
+
+/// Resolve an existing path normally, or canonicalize its nearest existing
+/// ancestor and append the missing suffix. The latter is essential for a
+/// first project-config save reached through a symlinked document directory.
+fn resolve_missing_path(path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Some(canonical);
+    }
+
+    let mut ancestor = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut canonical) = ancestor.canonicalize() {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return Some(canonical);
+        }
+        missing.push(ancestor.file_name()?.to_os_string());
+        ancestor = ancestor.parent()?;
+    }
+}
+
+async fn invalidate_cached_path(state: &AppState, target: &Path) {
+    state
+        .file_content_cache
+        .write()
+        .await
+        .retain(|path, _| !same_config_path(path, target));
 }
 
 fn merge_config_editor_values(
@@ -4753,9 +4841,10 @@ mod tests {
         is_buffer_renderable, is_buffer_renderable_with_preamble, is_latest_render_attempt,
         merge_config_editor_values, origin_is_loopback, preamble_fingerprint,
         project_asset_response, render_cached, search_sync_payload, select_tikz_engine,
-        semantic_macro_definitions, serve_buffer_push, serve_cursor, serve_debug, serve_print,
-        serve_selection, tikz_document, tikz_error_svg, tikz_hash_from_path,
-        validate_override_content, watched_event_paths, websocket_needs_reload, AppState,
+        semantic_macro_definitions, serve_buffer_push, serve_config_set, serve_config_write,
+        serve_cursor, serve_debug, serve_print, serve_selection, tikz_document, tikz_error_svg,
+        tikz_hash_from_path, validate_config_cascade_with_override, validate_override_content,
+        watched_event_paths, websocket_needs_reload, AppState, ConfigFileRequest, ConfigSetRequest,
         DocumentFormat, EditorSearch, PatchOp, PlanSlot, RangeRequest, SearchRequest,
         SourceRequest, PROJECT_SVG_CSP, WS_PROTOCOL_VERSION,
     };
@@ -5021,6 +5110,251 @@ mod tests {
             error.contains("unknown keybinding action"),
             "unexpected error: {error}",
         );
+    }
+
+    #[test]
+    fn prospective_config_save_validates_the_effective_cascade_without_writing() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-config-cascade-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let global = dir.join("global.toml");
+        let project = dir.join("project.toml");
+        std::fs::write(
+            &global,
+            "[markdown.block-syntaxes.shared]\nstart = 'BEGIN {name}'\nend = 'END GLOBAL'\n",
+        )
+        .unwrap();
+        let original =
+            "[markdown.block-syntaxes.project]\nstart = 'PROJECT {name}'\nend = 'END PROJECT'\n";
+        std::fs::write(&project, original).unwrap();
+        let paths = vec![global.clone(), project.clone()];
+
+        let duplicate =
+            "[markdown.block-syntaxes.project]\nstart = 'BEGIN {name}'\nend = 'END PROJECT'\n";
+        let error = validate_config_cascade_with_override(&paths, &project, duplicate).unwrap_err();
+        assert!(error.contains("duplicate Markdown block start pattern"));
+        assert_eq!(std::fs::read_to_string(&project).unwrap(), original);
+
+        // The prospective layer replaces, rather than merges with, the
+        // target's current on-disk contents.
+        std::fs::write(&project, duplicate).unwrap();
+        let replacement = "[markdown.block-syntaxes.project]\nstart = 'REPLACEMENT {name}'\nend = 'END REPLACEMENT'\n";
+        let resolved = validate_config_cascade_with_override(&paths, &project, replacement)
+            .unwrap()
+            .expect("the project config is active");
+        assert_eq!(resolved.markdown.block_syntaxes.len(), 2);
+
+        let tombstone = "[markdown.block-syntaxes.shared]\nenabled = false\n\n[markdown.block-syntaxes.project]\nstart = 'BEGIN {name}'\nend = 'END PROJECT'\n";
+        let resolved = validate_config_cascade_with_override(&paths, &project, tombstone)
+            .unwrap()
+            .expect("the project config is active");
+        assert!(!resolved.markdown.block_syntaxes.contains_key("shared"));
+        assert!(resolved.markdown.block_syntaxes.contains_key("project"));
+
+        let inactive = dir.join("inactive.toml");
+        assert!(validate_config_cascade_with_override(
+            &paths,
+            &inactive,
+            "[viewer]\nfont-size = 20\n"
+        )
+        .unwrap()
+        .is_none());
+        assert!(validate_config_cascade_with_override(
+            &paths,
+            &inactive,
+            "[viewer]\nfont-sze = 20\n"
+        )
+        .is_err());
+
+        // Before a project config exists, startup discovery may retain its
+        // relative spelling while the panel resolves the same target from the
+        // canonical document root. That first save is still an active layer
+        // and must be checked against the global config.
+        let relative_project = PathBuf::from(format!(
+            ".mathpreview-missing-{}-{unique}.toml",
+            std::process::id()
+        ));
+        let absolute_project = std::env::current_dir().unwrap().join(&relative_project);
+        assert!(!absolute_project.exists());
+        let error = validate_config_cascade_with_override(
+            &[global.clone(), relative_project],
+            &absolute_project,
+            duplicate,
+        )
+        .unwrap_err();
+        assert!(error.contains("duplicate Markdown block start pattern"));
+
+        #[cfg(unix)]
+        {
+            let real = dir.join("real-project");
+            let link = dir.join("linked-project");
+            std::fs::create_dir_all(&real).unwrap();
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let error = validate_config_cascade_with_override(
+                &[global.clone(), link.join(".mathpreview.toml")],
+                &real.join(".mathpreview.toml"),
+                duplicate,
+            )
+            .unwrap_err();
+            assert!(error.contains("duplicate Markdown block start pattern"));
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn config_save_routes_validate_before_writing_and_refresh_cached_config() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-config-routes-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("notes.md");
+        let global = dir.join("global.toml");
+        let project = dir.join(".mathpreview.toml");
+        std::fs::write(&root, "# Notes\n").unwrap();
+        std::fs::write(
+            &global,
+            "[markdown.block-syntaxes.global]\nstart = 'BEGIN {name}'\nend = 'END GLOBAL'\n",
+        )
+        .unwrap();
+        let original =
+            "[markdown.block-syntaxes.project]\nstart = 'PROJECT {name}'\nend = 'END PROJECT'\n";
+        std::fs::write(&project, original).unwrap();
+
+        let initial = mathpreview_core::render_document_from_source(
+            &root,
+            "# Notes\n".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let mut state = app_state_for_output(initial);
+        state.config_paths = Arc::new(vec![global, project.clone()]);
+
+        let set_response = serve_config_set(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigSetRequest {
+                scope: "project".to_string(),
+                path: None,
+                values: std::collections::BTreeMap::from([(
+                    "markdown.block-syntaxes.project.start".to_string(),
+                    serde_json::json!("BEGIN {name}"),
+                )]),
+            }),
+        )
+        .await;
+        assert_eq!(set_response.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(&project).unwrap(), original);
+
+        let duplicate =
+            "[markdown.block-syntaxes.project]\nstart = 'BEGIN {name}'\nend = 'END PROJECT'\n";
+        let write_response = serve_config_write(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigFileRequest {
+                scope: "project".to_string(),
+                path: None,
+                content: duplicate.to_string(),
+                expected_content: Some(original.to_string()),
+                values: std::collections::BTreeMap::new(),
+            }),
+        )
+        .await;
+        assert_eq!(write_response.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(&project).unwrap(), original);
+
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let alias = nested.join("..").join(".mathpreview.toml");
+        let mtime = std::fs::metadata(&project)
+            .unwrap()
+            .modified()
+            .ok();
+        {
+            let mut cache = state.file_content_cache.write().await;
+            for key in [project.clone(), alias.clone()] {
+                cache.insert(
+                    key,
+                    super::CachedFile {
+                        mtime,
+                        content: Some(original.to_string()),
+                    },
+                );
+            }
+        }
+
+        let replacement = "[markdown.block-syntaxes.project]\nstart = 'FRESH {name}'\nend = 'END PROJECT'\n";
+        let valid_response = serve_config_write(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigFileRequest {
+                scope: "project".to_string(),
+                path: None,
+                content: replacement.to_string(),
+                expected_content: Some(original.to_string()),
+                values: std::collections::BTreeMap::new(),
+            }),
+        )
+        .await;
+        assert_eq!(valid_response.status(), axum::http::StatusCode::OK);
+        assert!(std::fs::read_to_string(&project)
+            .unwrap()
+            .contains("FRESH {name}"));
+        let cache = state.file_content_cache.read().await;
+        assert!(!cache.contains_key(&alias));
+        assert!(cache
+            .get(&project)
+            .and_then(|entry| entry.content.as_deref())
+            .is_some_and(|content| content.contains("FRESH {name}")));
+        drop(cache);
+
+        let fresh = std::fs::read_to_string(&project).unwrap();
+        let mtime = std::fs::metadata(&project)
+            .unwrap()
+            .modified()
+            .ok();
+        {
+            let mut cache = state.file_content_cache.write().await;
+            for key in [project.clone(), alias.clone()] {
+                cache.insert(
+                    key,
+                    super::CachedFile {
+                        mtime,
+                        content: Some(fresh.clone()),
+                    },
+                );
+            }
+        }
+        let set_response = serve_config_set(
+            axum::extract::State(state.clone()),
+            axum::Json(ConfigSetRequest {
+                scope: "project".to_string(),
+                path: None,
+                values: std::collections::BTreeMap::from([(
+                    "markdown.block-syntaxes.project.start".to_string(),
+                    serde_json::json!("SET {name}"),
+                )]),
+            }),
+        )
+        .await;
+        assert_eq!(set_response.status(), axum::http::StatusCode::OK);
+        let cache = state.file_content_cache.read().await;
+        assert!(!cache.contains_key(&alias));
+        assert!(cache
+            .get(&project)
+            .and_then(|entry| entry.content.as_deref())
+            .is_some_and(|content| content.contains("SET {name}")));
+        drop(cache);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

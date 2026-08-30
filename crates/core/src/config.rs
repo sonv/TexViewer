@@ -140,12 +140,58 @@ pub struct Config {
 }
 
 /// Sparse `[markdown]` configuration. Each named block is merged field by
-/// field across config layers before its defaults are filled in.
+/// field across config layers before its defaults are filled in. Named custom
+/// block syntaxes are complete declarations instead: a higher layer replaces
+/// the lower declaration with the same ID atomically.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct MarkdownConfig {
+    /// Recognize `:::` blocks, including compact MathPreview blocks and Pandoc
+    /// attribute fences used by Bookdown and Quarto.
+    pub colon_fences: Option<bool>,
     #[serde(default)]
     pub blocks: BTreeMap<String, MarkdownBlockConfig>,
+    /// Additional line-oriented delimiter pairs. Start patterns capture one
+    /// configured block name with `{name}` and may capture a title with
+    /// `{title}`; end markers are matched literally.
+    #[serde(default)]
+    pub block_syntaxes: BTreeMap<String, MarkdownBlockSyntaxConfig>,
+}
+
+/// One sparse `[markdown.block-syntaxes.ID]` declaration.
+///
+/// `start` accepts either one string or an ordered array. Enabled entries must
+/// declare both `start` and `end` in the same config layer because declarations
+/// replace atomically across the cascade. `enabled = false` is a tombstone and
+/// may omit both fields.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct MarkdownBlockSyntaxConfig {
+    #[serde(default, deserialize_with = "deserialize_optional_string_list")]
+    pub start: Option<Vec<String>>,
+    pub end: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+fn deserialize_optional_string_list<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringList {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(
+        Option::<StringList>::deserialize(deserializer)?.map(|value| match value {
+            StringList::One(value) => vec![value],
+            StringList::Many(values) => values,
+        }),
+    )
 }
 
 /// One sparse `[markdown.blocks.NAME]` declaration.
@@ -722,7 +768,18 @@ pub struct ResolvedConfig {
 /// are omitted, so parsers can use map membership as the recognition check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMarkdownConfig {
+    /// Whether any `:::` fences are recognized, including Bookdown/Quarto
+    /// Pandoc attribute fences and compact MathPreview blocks.
+    pub colon_fences: bool,
     pub blocks: BTreeMap<String, ResolvedMarkdownBlock>,
+    /// Complete, validated custom delimiter declarations keyed by syntax ID.
+    pub block_syntaxes: BTreeMap<String, ResolvedMarkdownBlockSyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMarkdownBlockSyntax {
+    pub start: Vec<String>,
+    pub end: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -818,7 +875,11 @@ impl Default for ResolvedMarkdownConfig {
                 italic: false,
             },
         );
-        Self { blocks }
+        Self {
+            colon_fences: true,
+            blocks,
+            block_syntaxes: BTreeMap::new(),
+        }
     }
 }
 
@@ -902,6 +963,19 @@ impl Config {
         for (source, expansion) in other.legacy_keybinding_aliases {
             self.keybindings.aliases.insert(source, expansion);
         }
+    }
+
+    fn validate(&self, label: &Path) -> Result<()> {
+        self.validate_viewer(label)?;
+        self.validate_markdown(label)?;
+        self.validate_keybindings(label)
+    }
+
+    /// Revalidate only invariants that can newly conflict across otherwise
+    /// valid config layers. Existing viewer and keybinding cascade behavior is
+    /// intentionally unchanged.
+    pub fn validate_merged(&self, label: &Path) -> Result<()> {
+        self.validate_markdown(label)
     }
 
     /// Collapse this partial config into the resolved shape used by the
@@ -1000,9 +1074,7 @@ impl Config {
                 .entry(source)
                 .or_insert(expansion);
         }
-        config.validate_viewer(label)?;
-        config.validate_markdown(label)?;
-        config.validate_keybindings(label)?;
+        config.validate(label)?;
         let mut canonical_aliases = BTreeMap::new();
         for (source, expansion) in std::mem::take(&mut config.keybindings.aliases) {
             let canonical = canonical_keybinding(&source);
@@ -1125,6 +1197,18 @@ impl Config {
     }
 
     fn validate_markdown(&self, label: &Path) -> Result<()> {
+        let enabled_syntax_count = self
+            .markdown
+            .block_syntaxes
+            .values()
+            .filter(|syntax| syntax.enabled != Some(false))
+            .count();
+        if enabled_syntax_count > MAX_MARKDOWN_BLOCK_SYNTAXES {
+            bail!(
+                "too many Markdown block syntaxes in {}; expected at most {MAX_MARKDOWN_BLOCK_SYNTAXES}",
+                label.display()
+            );
+        }
         for (name, block) in &self.markdown.blocks {
             if !valid_markdown_block_name(name) {
                 bail!(
@@ -1159,8 +1243,141 @@ impl Config {
                 }
             }
         }
+        let mut starts = BTreeMap::<&str, &str>::new();
+        for (id, syntax) in &self.markdown.block_syntaxes {
+            if !valid_markdown_block_name(id) {
+                bail!(
+                    "invalid Markdown block syntax ID {id:?} in {}; expected 1–32 lowercase ASCII characters matching [a-z][a-z0-9_-]*",
+                    label.display()
+                );
+            }
+            if syntax.enabled == Some(false) {
+                continue;
+            }
+            let syntax_starts = syntax.start.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Markdown block syntax {id:?} in {} is enabled but has no start pattern",
+                    label.display()
+                )
+            })?;
+            let end = syntax.end.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Markdown block syntax {id:?} in {} is enabled but has no end marker",
+                    label.display()
+                )
+            })?;
+            if syntax_starts.is_empty() || syntax_starts.len() > MAX_MARKDOWN_BLOCK_SYNTAX_STARTS {
+                bail!(
+                    "Markdown block syntax {id:?} in {} must have 1–{MAX_MARKDOWN_BLOCK_SYNTAX_STARTS} start patterns",
+                    label.display()
+                );
+            }
+            validate_markdown_block_end(id, end, label)?;
+            for start in syntax_starts {
+                validate_markdown_block_start(id, start, label)?;
+                if let Some(owner) = starts.insert(start, id) {
+                    bail!(
+                        "duplicate Markdown block start pattern {start:?} for syntaxes {owner:?} and {id:?} in {}",
+                        label.display()
+                    );
+                }
+            }
+        }
         Ok(())
     }
+}
+
+const MAX_MARKDOWN_BLOCK_SYNTAXES: usize = 32;
+const MAX_MARKDOWN_BLOCK_SYNTAX_STARTS: usize = 16;
+const MAX_MARKDOWN_BLOCK_SYNTAX_TEMPLATE_BYTES: usize = 512;
+
+fn validate_markdown_block_start(id: &str, start: &str, label: &Path) -> Result<()> {
+    validate_markdown_block_template(id, "start pattern", start, label)?;
+    let name_positions: Vec<_> = start.match_indices("{name}").map(|(at, _)| at).collect();
+    if name_positions.len() != 1 {
+        bail!(
+            "Markdown block syntax {id:?} start pattern in {} must contain exactly one {{name}} placeholder",
+            label.display()
+        );
+    }
+    let title_positions: Vec<_> = start.match_indices("{title}").map(|(at, _)| at).collect();
+    if title_positions.len() > 1 {
+        bail!(
+            "Markdown block syntax {id:?} start pattern in {} may contain at most one {{title}} placeholder",
+            label.display()
+        );
+    }
+    if let Some(&title_at) = title_positions.first() {
+        let name_end = name_positions[0] + "{name}".len();
+        if title_at < name_end {
+            bail!(
+                "Markdown block syntax {id:?} start pattern in {} must place {{title}} after {{name}} with literal text between them",
+                label.display()
+            );
+        }
+        if title_at == name_end {
+            bail!(
+                "Markdown block syntax {id:?} start pattern in {} must place literal text between {{name}} and {{title}}",
+                label.display()
+            );
+        }
+    }
+    validate_markdown_block_placeholders(id, start, true, label)
+}
+
+fn validate_markdown_block_end(id: &str, end: &str, label: &Path) -> Result<()> {
+    validate_markdown_block_template(id, "end marker", end, label)?;
+    validate_markdown_block_placeholders(id, end, false, label)
+}
+
+fn validate_markdown_block_template(
+    id: &str,
+    field: &str,
+    value: &str,
+    label: &Path,
+) -> Result<()> {
+    if value.is_empty()
+        || value.len() > MAX_MARKDOWN_BLOCK_SYNTAX_TEMPLATE_BYTES
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        bail!(
+            "invalid {field} for Markdown block syntax {id:?} in {}; markers must be trimmed, single-line, control-free strings of 1–{MAX_MARKDOWN_BLOCK_SYNTAX_TEMPLATE_BYTES} bytes",
+            label.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_markdown_block_placeholders(
+    id: &str,
+    template: &str,
+    allow_known: bool,
+    label: &Path,
+) -> Result<()> {
+    for (open, _) in template.match_indices('{') {
+        let Some(relative_close) = template[open + 1..].find('}') else {
+            continue;
+        };
+        let placeholder = &template[open + 1..open + 1 + relative_close];
+        let bytes = placeholder.as_bytes();
+        let identifier = !bytes.is_empty()
+            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+            && bytes[1..]
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'));
+        if !identifier {
+            continue;
+        }
+        if allow_known && matches!(placeholder, "name" | "title") {
+            continue;
+        }
+        bail!(
+            "unknown placeholder {{{placeholder}}} in Markdown block syntax {id:?} in {}; start patterns allow only {{name}} and {{title}}, and end markers are literal",
+            label.display()
+        );
+    }
+    Ok(())
 }
 
 fn valid_markdown_block_name(name: &str) -> bool {
@@ -1180,6 +1397,9 @@ fn valid_markdown_block_color(color: &str) -> bool {
 
 impl MarkdownConfig {
     fn merge(&mut self, other: MarkdownConfig) {
+        if other.colon_fences.is_some() {
+            self.colon_fences = other.colon_fences;
+        }
         for (name, block) in other.blocks {
             if let Some(existing) = self.blocks.get_mut(&name) {
                 existing.merge(block);
@@ -1187,10 +1407,16 @@ impl MarkdownConfig {
                 self.blocks.insert(name, block);
             }
         }
+        // Syntax declarations are deliberately atomic. This keeps an enabled
+        // higher layer from accidentally inheriting half of a delimiter pair.
+        for (id, syntax) in other.block_syntaxes {
+            self.block_syntaxes.insert(id, syntax);
+        }
     }
 
     fn resolve(self) -> ResolvedMarkdownConfig {
         let mut resolved = ResolvedMarkdownConfig::default();
+        resolved.colon_fences = self.colon_fences.unwrap_or(resolved.colon_fences);
         for (name, block) in self.blocks {
             let defaults = resolved
                 .blocks
@@ -1198,6 +1424,15 @@ impl MarkdownConfig {
                 .unwrap_or_else(|| ResolvedMarkdownBlock::custom_default(&name));
             if block.enabled.unwrap_or(true) {
                 resolved.blocks.insert(name, block.resolve(defaults));
+            }
+        }
+        for (id, syntax) in self.block_syntaxes {
+            if syntax.enabled.unwrap_or(true) {
+                if let (Some(start), Some(end)) = (syntax.start, syntax.end) {
+                    resolved
+                        .block_syntaxes
+                        .insert(id, ResolvedMarkdownBlockSyntax { start, end });
+                }
             }
         }
         resolved
@@ -1329,6 +1564,7 @@ pub fn load_and_merge(paths: &[PathBuf]) -> Result<(ResolvedConfig, Vec<PathBuf>
             applied.push(p.clone());
         }
     }
+    merged.validate_merged(Path::new("<merged config>"))?;
     Ok((merged.resolve(), applied))
 }
 
@@ -1372,6 +1608,329 @@ mod tests {
         let cfg = Config::parse(DEFAULT_CONFIG_TEMPLATE, Path::new("<default-config>"))
             .expect("the config-dialog template must remain valid");
         assert_eq!(cfg.resolve(), ResolvedConfig::default());
+    }
+
+    #[test]
+    fn markdown_block_syntaxes_accept_string_or_ordered_array_starts() {
+        let configured = Config::parse(
+            r#"[markdown]
+colon-fences = false
+
+[markdown.block-syntaxes.jinja-result]
+start = [
+  '{% call result("{name}", "{title}") %}',
+  '{% call result("{name}") %}',
+]
+end = '{% endcall %}'
+
+[markdown.block-syntaxes.directive]
+start = 'BEGIN {name}'
+end = 'END'
+"#,
+            Path::new("syntaxes.toml"),
+        )
+        .unwrap()
+        .resolve();
+
+        assert!(!configured.markdown.colon_fences);
+        assert_eq!(configured.markdown.block_syntaxes.len(), 2);
+        assert_eq!(
+            configured.markdown.block_syntaxes["jinja-result"].start,
+            [
+                r#"{% call result("{name}", "{title}") %}"#,
+                r#"{% call result("{name}") %}"#,
+            ]
+        );
+        assert_eq!(
+            configured.markdown.block_syntaxes["jinja-result"].end,
+            "{% endcall %}"
+        );
+        assert_eq!(
+            configured.markdown.block_syntaxes["directive"].start,
+            ["BEGIN {name}"]
+        );
+        assert_eq!(configured.markdown.block_syntaxes["directive"].end, "END");
+    }
+
+    #[test]
+    fn markdown_block_syntaxes_replace_atomically_and_support_tombstones() {
+        let mut lower = Config::parse(
+            r#"[markdown]
+colon-fences = false
+
+[markdown.block-syntaxes.result]
+start = ['OPEN {name}', 'OPEN {name}: {title}']
+end = 'CLOSE'
+
+[markdown.block-syntaxes.keep]
+start = 'KEEP {name}'
+end = 'DONE'
+"#,
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let higher = Config::parse(
+            r#"[markdown]
+colon-fences = true
+
+[markdown.block-syntaxes.result]
+start = 'BEGIN {name}'
+end = 'END'
+"#,
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        lower.merge(higher);
+        let replaced = lower.clone().resolve();
+        assert!(replaced.markdown.colon_fences);
+        assert_eq!(
+            replaced.markdown.block_syntaxes["result"].start,
+            ["BEGIN {name}"]
+        );
+        assert_eq!(replaced.markdown.block_syntaxes["result"].end, "END");
+        assert!(replaced.markdown.block_syntaxes.contains_key("keep"));
+
+        let tombstone = Config::parse(
+            "[markdown.block-syntaxes.result]\nenabled = false\n",
+            Path::new("cli.toml"),
+        )
+        .unwrap();
+        lower.merge(tombstone);
+        let disabled = lower.resolve();
+        assert!(!disabled.markdown.block_syntaxes.contains_key("result"));
+        assert!(disabled.markdown.block_syntaxes.contains_key("keep"));
+    }
+
+    #[test]
+    fn markdown_block_syntaxes_require_complete_enabled_declarations() {
+        for source in [
+            "[markdown.block-syntaxes.result]\nend = 'END'\n",
+            "[markdown.block-syntaxes.result]\nstart = 'BEGIN {name}'\n",
+            "[markdown.block-syntaxes.result]\nstart = []\nend = 'END'\n",
+        ] {
+            let error = Config::parse(source, Path::new("incomplete-syntax.toml")).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("Markdown block syntax"),
+                "unexpected error: {error:#}"
+            );
+        }
+
+        let disabled = Config::parse(
+            "[markdown.block-syntaxes.result]\nenabled = false\n",
+            Path::new("disabled-syntax.toml"),
+        )
+        .unwrap()
+        .resolve();
+        assert!(disabled.markdown.block_syntaxes.is_empty());
+    }
+
+    #[test]
+    fn markdown_block_syntax_ids_and_counts_are_bounded() {
+        for id in ["", "Result", "1result", "result.dot", "résultat"] {
+            let source = format!(
+                "[markdown.block-syntaxes.{id:?}]\nstart = 'BEGIN {{name}}'\nend = 'END'\n"
+            );
+            let error = Config::parse(&source, Path::new("invalid-syntax-id.toml")).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("invalid Markdown block syntax ID"),
+                "unexpected error for {id:?}: {error:#}"
+            );
+        }
+
+        let long_id = "a".repeat(33);
+        let source =
+            format!("[markdown.block-syntaxes.{long_id}]\nstart = 'BEGIN {{name}}'\nend = 'END'\n");
+        assert!(format!(
+            "{:#}",
+            Config::parse(&source, Path::new("long-syntax-id.toml")).unwrap_err()
+        )
+        .contains("invalid Markdown block syntax ID"));
+
+        let too_many = (0..=MAX_MARKDOWN_BLOCK_SYNTAXES)
+            .map(|index| {
+                format!(
+                    "[markdown.block-syntaxes.s{index}]\nstart = 'BEGIN {index} {{name}}'\nend = 'END {index}'\n"
+                )
+            })
+            .collect::<String>();
+        assert!(format!(
+            "{:#}",
+            Config::parse(&too_many, Path::new("many-syntaxes.toml")).unwrap_err()
+        )
+        .contains("too many Markdown block syntaxes"));
+    }
+
+    #[test]
+    fn markdown_block_syntax_templates_are_literal_and_bounded() {
+        let invalid_starts = [
+            "BEGIN",
+            "BEGIN {name} THEN {name}",
+            "BEGIN {title} THEN {name}",
+            "BEGIN {name}{title}",
+            "BEGIN {name}: {title} / {title}",
+            "BEGIN {name} {script}",
+            " BEGIN {name}",
+            "BEGIN {name} ",
+            "BEGIN\t{name}",
+            "BEGIN\n{name}",
+        ];
+        for start in invalid_starts {
+            let source =
+                format!("[markdown.block-syntaxes.result]\nstart = {start:?}\nend = 'END'\n");
+            assert!(
+                Config::parse(&source, Path::new("invalid-start.toml")).is_err(),
+                "invalid start accepted: {start:?}"
+            );
+        }
+
+        let too_long = format!(
+            "{}{{name}}",
+            "x".repeat(MAX_MARKDOWN_BLOCK_SYNTAX_TEMPLATE_BYTES)
+        );
+        let source =
+            format!("[markdown.block-syntaxes.result]\nstart = {too_long:?}\nend = 'END'\n");
+        assert!(format!(
+            "{:#}",
+            Config::parse(&source, Path::new("long-start.toml")).unwrap_err()
+        )
+        .contains("1–512 bytes"));
+
+        for end in ["", " END", "END ", "END\t", "{name}", "{anything}"] {
+            let source = format!(
+                "[markdown.block-syntaxes.result]\nstart = 'BEGIN {{name}}'\nend = {end:?}\n"
+            );
+            assert!(
+                Config::parse(&source, Path::new("invalid-end.toml")).is_err(),
+                "invalid end accepted: {end:?}"
+            );
+        }
+
+        let starts = (0..=MAX_MARKDOWN_BLOCK_SYNTAX_STARTS)
+            .map(|index| format!("BEGIN {index} {{name}}"))
+            .map(|start| format!("{start:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!("[markdown.block-syntaxes.result]\nstart = [{starts}]\nend = 'END'\n");
+        assert!(format!(
+            "{:#}",
+            Config::parse(&source, Path::new("many-starts.toml")).unwrap_err()
+        )
+        .contains("must have 1–16 start patterns"));
+    }
+
+    #[test]
+    fn markdown_block_syntax_start_patterns_must_be_unique() {
+        for source in [
+            r#"[markdown.block-syntaxes.result]
+start = ['BEGIN {name}', 'BEGIN {name}']
+end = 'END'
+"#,
+            r#"[markdown.block-syntaxes.first]
+start = 'BEGIN {name}'
+end = 'END FIRST'
+
+[markdown.block-syntaxes.second]
+start = 'BEGIN {name}'
+end = 'END SECOND'
+"#,
+        ] {
+            let error = Config::parse(source, Path::new("duplicate-start.toml")).unwrap_err();
+            assert!(format!("{error:#}").contains("duplicate Markdown block start pattern"));
+        }
+    }
+
+    #[test]
+    fn merged_markdown_block_syntaxes_are_revalidated() {
+        let mut lower = Config::parse(
+            r#"[markdown.block-syntaxes.global]
+start = 'BEGIN {name}'
+end = 'END GLOBAL'
+"#,
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let higher = Config::parse(
+            r#"[markdown.block-syntaxes.project]
+start = 'BEGIN {name}'
+end = 'END PROJECT'
+"#,
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        lower.merge(higher);
+
+        let error = lower
+            .validate_merged(Path::new("<merged config>"))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("duplicate Markdown block start pattern"));
+
+        let mut lower = Config::default();
+        let mut higher = Config::default();
+        for index in 0..(MAX_MARKDOWN_BLOCK_SYNTAXES / 2 + 1) {
+            lower.markdown.block_syntaxes.insert(
+                format!("global-{index}"),
+                MarkdownBlockSyntaxConfig {
+                    start: Some(vec![format!("GLOBAL {index} {{name}}")]),
+                    end: Some(format!("END GLOBAL {index}")),
+                    enabled: None,
+                },
+            );
+            higher.markdown.block_syntaxes.insert(
+                format!("project-{index}"),
+                MarkdownBlockSyntaxConfig {
+                    start: Some(vec![format!("PROJECT {index} {{name}}")]),
+                    end: Some(format!("END PROJECT {index}")),
+                    enabled: None,
+                },
+            );
+        }
+        lower.merge(higher);
+        let error = lower
+            .validate_merged(Path::new("<merged config>"))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("too many Markdown block syntaxes"));
+
+        let mut lower = Config::default();
+        for index in 0..MAX_MARKDOWN_BLOCK_SYNTAXES {
+            lower.markdown.block_syntaxes.insert(
+                format!("syntax-{index}"),
+                MarkdownBlockSyntaxConfig {
+                    start: Some(vec![format!("OPEN {index} {{name}}")]),
+                    end: Some(format!("CLOSE {index}")),
+                    enabled: None,
+                },
+            );
+        }
+        let higher = Config::parse(
+            r#"[markdown.block-syntaxes.syntax-0]
+enabled = false
+
+[markdown.block-syntaxes.replacement]
+start = 'REPLACEMENT {name}'
+end = 'END REPLACEMENT'
+"#,
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        lower.merge(higher);
+        lower
+            .validate_merged(Path::new("<merged config>"))
+            .expect("a tombstone and replacement keep the effective count at 32");
+
+        let mut lower = Config::parse(
+            "[keybindings]\nopen-search = 'x'\n",
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let higher = Config::parse(
+            "[keybindings]\ntoggle-theme = 'x'\n",
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        lower.merge(higher);
+        lower
+            .validate_merged(Path::new("<merged config>"))
+            .expect("Markdown cascade checks must not change existing keybinding layering");
     }
 
     #[test]

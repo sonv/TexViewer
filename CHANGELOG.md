@@ -13,6 +13,36 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.37] — 2026-08-30
+
+### Added
+
+- **Markdown custom blocks can use project-defined boundary lines.**
+  `[markdown.block-syntaxes.ID]` accepts one or more literal start templates
+  with a required `{name}`, an optional `{title}`, and a literal end marker.
+  This supports existing Jinja-style notes such as
+  `{% call result("definition", "Title") %}` without executing Jinja or
+  requiring authors to rewrite their files.
+- **Colon fences can be released to another Markdown extension.** Set
+  `[markdown] colon-fences = false` to disable compact, Bookdown, and Quarto
+  `:::` recognition while keeping configured alternate boundaries active.
+
+### Fixed
+
+- **Custom delimiters retain safe nesting and precise Markdown behavior.**
+  Different delimiter families cannot cross-close, excessive or ambiguous
+  nesting fails closed with bounded memory, marker-looking text inside code,
+  math, metadata, links, images, or raw HTML remains literal, and titles and
+  body math keep their source-sync spans.
+- **Layered delimiter settings save atomically from the config panel.** The
+  effective global/project/custom cascade is validated before either config
+  save route writes, including first saves through relative or symlinked
+  project paths. Successful writes invalidate cached aliases before rerendering
+  so the new delimiter registry takes effect immediately.
+- **LaTeX remains isolated from Markdown delimiter settings.** Disabling colon
+  fences or adding alternate block syntaxes does not change TeX HTML, block
+  hashes, or source-sync output.
+
 ## [2.1.36] — 2026-08-30
 
 ### Added
