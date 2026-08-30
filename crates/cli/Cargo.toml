@@ -8,8 +8,8 @@ homepage.workspace = true
 authors.workspace = true
 readme.workspace = true
 rust-version.workspace = true
-description = "Live-rendering LaTeX preview daemon for nvim/vimtex (the companion binary to the mathpreview.nvim plugin). Serves an interactive HTML view over WebSocket with role-tagged proofs, clickable cross-references, and a pinned-margin column."
-keywords = ["latex", "preview", "mathjax", "neovim", "vimtex"]
+description = "Live-rendering LaTeX and Markdown preview daemon for Neovim (the companion binary to the mathpreview.nvim plugin). Serves an interactive HTML view over WebSocket with source sync, clickable cross-references, and a pinned-margin column."
+keywords = ["latex", "markdown", "preview", "mathjax", "neovim"]
 categories = ["command-line-utilities", "rendering", "web-programming::http-server"]
 
 [lib]

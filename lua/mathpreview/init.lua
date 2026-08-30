@@ -4,8 +4,8 @@
 -- this repo. The user-facing commands are registered by plugin/mathpreview.lua;
 -- this file holds the implementation that those commands lazy-require:
 --
---     :MathPreview         start the daemon for the current .tex buffer and
---                          open the viewer in a browser tab
+--     :MathPreview         start the daemon for the current TeX or Markdown
+--                          buffer and open the viewer in a browser tab
 --     :MathPreviewStop     kill the daemon
 --     :MathPreviewRestart  stop + start
 --     :MathPreviewClean    find + stop abandoned daemons (no editor/viewer)
@@ -31,7 +31,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- warned about — the signal that a fix you "released" isn't actually the
 -- binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.31"
+local PLUGIN_VERSION = "2.1.32"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -40,7 +40,8 @@ local config = {
   --   "github"           — download + verify the matching release binary
   -- An explicit `cmd` bypasses both methods.
   install_method = "cargo",
-  filetypes = { "tex", "plaintex", "latex" },
+  -- Neovim reports both `.md` and `.markdown` files as `markdown`.
+  filetypes = { "tex", "plaintex", "latex", "markdown" },
   -- Hostname for the BROWSER-facing viewer URL. Any `*.localhost` name (or
   -- `localhost` / `127.0.0.1`) passes the daemon's Host guard; a distinct
   -- name gets its own per-site browser settings (zoom, vimium, dark mode),
@@ -154,8 +155,9 @@ local config = {
 
 local uv = vim.uv or vim.loop
 
--- One daemon (and browser tab) PER root .tex file, so `:e other.tex` +
--- :MathPreview opens its own viewer instead of reusing the first file's.
+-- One daemon (and browser tab) per root document, so opening another supported
+-- file and running :MathPreview creates its own viewer instead of reusing the
+-- first file's.
 -- `daemons` is the registry, keyed by absolute root path; each entry is
 -- `{ job, port, root, opened, jump_seq }` (`opened` = we've opened/reused a tab
 -- this session; `jump_seq` = that daemon's last source-jump sequence).
@@ -167,19 +169,21 @@ local daemons = {}
 -- buffer has no daemon.
 local daemon_job = nil   -- active daemon's jobid, or nil
 local daemon_port = nil  -- active daemon's port
-local daemon_root = nil  -- active daemon's root .tex path
+local daemon_root = nil  -- active daemon's root document path
 -- Roots we're deliberately stopping (M.stop/M.restart), so the daemon's on_exit
 -- doesn't mistake the SIGTERM for a port-bind race and auto-restart it.
 local stopping = {}
 
--- Push state (carried across pushes for :MathPreviewStatus).
-local timer = nil
+-- Push state (carried across pushes for :MathPreviewStatus). Timers and
+-- in-flight uploads are per buffer: editing document B must not cancel or
+-- reroute a still-pending update for document A.
+local push_timers = {}
 local cursor_timer = nil
 local selection_timer = nil
--- The one in-flight buffer-push curl (vim.system handle); a newer push kills
--- it. nil on the jobstart fallback path (no handle) — that path stays as
--- before.
-local push_job = nil
+-- `vim.system` handles keyed by bufnr. A newer snapshot of the SAME buffer can
+-- supersede its older upload, while different buffers remain independent.
+-- Values are nil on the jobstart fallback path (no cancellable handle).
+local push_jobs = {}
 local last_jump_seq = 0
 -- When each buffer last changed (ms, keyed by bufnr). Cursor posts within
 -- TYPING_WINDOW_MS of an edit IN THE SAME BUFFER are tagged `typing: true`
@@ -677,8 +681,13 @@ local function port_is_free(port)
   local sock = uv.new_tcp()
   if not sock then return false end
   local ok = pcall(function()
-    assert(sock:bind("127.0.0.1", port))
-    assert(sock:listen(128, function() end))
+    -- luv historically returned 0 on success; Neovim 0.12's luv returns nil
+    -- with no error. Accept both forms while still rejecting soft
+    -- `(nil, error)` / `(false, error)` failures and raised errors.
+    local bound, bind_err = sock:bind("127.0.0.1", port)
+    assert(bound ~= false and bind_err == nil, bind_err)
+    local listening, listen_err = sock:listen(128, function() end)
+    assert(listening ~= false and listen_err == nil, listen_err)
   end)
   sock:close()
   return ok
@@ -946,64 +955,71 @@ local function reuse_or_open_browser(entry)
     end)
 end
 
--- Resolve the .tex root for the current buffer. For now: just the buffer's
--- own path, since the daemon does its own project-root walk. If the buffer
--- has no name we error out — auto-spawn needs a concrete file path to pass
--- on the command line.
+-- Resolve the entry path for the current document. This is the buffer's own
+-- path: the daemon applies format-specific root handling (TeX project walk or
+-- single-file Markdown). Auto-spawn needs a concrete path on the command line.
 local function current_root()
   local path = vim.api.nvim_buf_get_name(0)
   if path == nil or path == "" then
-    return nil, "current buffer has no name; open a .tex file first"
+    return nil, "current buffer has no name; open a TeX or Markdown file first"
   end
   return path, nil
 end
 
-local function push_buffer(edit_buf, edit_cursor)
-  if not daemon_job then return end
-  local buf = vim.api.nvim_get_current_buf()
+local function buffer_cursor(buf)
+  local ok, cursor = pcall(vim.api.nvim_buf_get_mark, buf, ".")
+  if ok and cursor and cursor[1] > 0 then return cursor end
+  if vim.api.nvim_get_current_buf() == buf then
+    return vim.api.nvim_win_get_cursor(0)
+  end
+  return { 1, 0 }
+end
+
+-- Push a snapshot of the explicitly captured buffer to the explicitly
+-- captured daemon. Never consult the current window or active daemon here:
+-- both can change while the debounce timer or async startup is pending.
+local function push_buffer(buf, edit_cursor, entry)
+  if not entry or daemons[entry.root] ~= entry then return end
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
   local path = vim.api.nvim_buf_get_name(buf)
   if path == "" then
-    last_status.last_error = "current buffer has no name"
+    last_status.last_error = "preview buffer has no name"
     return
   end
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local ok, lines = pcall(vim.api.nvim_buf_get_lines, buf, 0, -1, false)
+  if not ok then return end
   local body = table.concat(lines, "\n")
   -- TextChanged captures the caret that produced this exact buffer state.
   -- Sampling only after the debounce lets a quick cursor move detach the
   -- caret from the dangerous transient token it just inserted.
-  local cursor = edit_buf == buf and edit_cursor or vim.api.nvim_win_get_cursor(0)
+  local cursor = edit_cursor or buffer_cursor(buf)
   local args = {
     "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "5",
     "--header", "X-Mathpreview-Path: " .. path,
     "--header", ("X-Mathpreview-Cursor: %d:%d"):format(cursor[1], cursor[2] + 1),
     "--data-binary", "@-",
     "-X", "POST",
-    config.url,
+    "http://127.0.0.1:" .. tostring(entry.port) .. "/buffer",
   }
-  -- One in-flight buffer push at a time. A newer push supersedes the older one
-  -- entirely (the daemon renders whole buffers, never deltas), so an in-flight
-  -- curl still uploading the previous state is pure waste — and on a long
-  -- file, where each render outlasts the debounce, those curls piled up
-  -- unbounded (a soak measured 100+ concurrent curl processes, each holding a
-  -- whole-buffer stdin pipe, inside the editor's process tree — memory that a
-  -- systemd unit accounts against the editor). Kill it before starting the
-  -- next; the daemon side coalesces superseded pushes too, so a killed upload
-  -- costs nothing but the bytes already sent.
+  -- One in-flight push per buffer. A newer snapshot of this buffer supersedes
+  -- the older one entirely (the daemon renders whole buffers, never deltas),
+  -- but an update for another buffer or daemon must still arrive.
   -- Liveness guard: a job that already exited (but whose on_done hasn't been
   -- delivered yet — vim.system closes the handle in _on_exit, the callback
   -- arrives a tick later via vim.schedule) has a closed uv handle whose kill
   -- would go straight to kill(2) on a possibly-recycled PID. Never signal a
   -- closed handle.
-  if push_job and push_job.kill
-      and not (push_job.is_closing and push_job:is_closing()) then
-    pcall(push_job.kill, push_job, 15)
+  local previous = push_jobs[buf]
+  if previous and previous.kill
+      and not (previous.is_closing and previous:is_closing()) then
+    pcall(previous.kill, previous, 15)
   end
   -- Declare before the closure is created: `local job = f(function() job end)`
   -- would make the inner `job` a GLOBAL (nil) because the local isn't bound
-  -- until after the call, so push_job would never clear.
+  -- until after the call, so the per-buffer slot would never clear.
   local job
   job = run_system(args, { stdin = body }, function(res)
-    if job and push_job == job then push_job = nil end
+    if job and push_jobs[buf] == job then push_jobs[buf] = nil end
     -- Killed by a newer push (vim.system reports signal=15, code=0): not an
     -- error and not this push's status to report.
     if res and res.signal and res.signal ~= 0 then return end
@@ -1014,7 +1030,7 @@ local function push_buffer(edit_buf, edit_cursor)
       last_status.last_error = nil
     end
   end)
-  push_job = job
+  push_jobs[buf] = job
   last_status.pushes = last_status.pushes + 1
   last_status.last_push_ms = uv.hrtime() / 1e6
 end
@@ -1466,17 +1482,6 @@ local function stop_jump_poll()
   jump_poll_gen = jump_poll_gen + 1
 end
 
-local function debounced_push(buf)
-  if not daemon_job then return end
-  if timer then timer:stop(); timer:close() end
-  local edit_cursor = vim.api.nvim_win_get_cursor(0)
-  timer = uv.new_timer()
-  timer:start(config.debounce_ms, 0, vim.schedule_wrap(function()
-    push_buffer(buf, edit_cursor)
-    if timer then timer:close(); timer = nil end
-  end))
-end
-
 local function debounced_cursor()
   if not daemon_job or not config.sync then return end
   if cursor_timer then cursor_timer:stop(); cursor_timer:close() end
@@ -1604,6 +1609,31 @@ local function activate_for_current_buffer()
   -- daemon (harmless: an unrelated file is rejected by the daemon).
   local entry = daemon_for_file(vim.api.nvim_buf_get_name(0))
   if entry then activate(entry) end
+end
+
+local function debounced_push(buf)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
+  local path = vim.api.nvim_buf_get_name(buf)
+  -- Prefer the daemon that owns the changed buffer. The active daemon is the
+  -- compatibility fallback for a project child whose watched-file set has not
+  -- arrived from /debug yet; capture it now so a later buffer switch cannot
+  -- reroute this snapshot.
+  local entry = daemon_for_file(path) or active_entry()
+  if not entry then return end
+  local edit_cursor = buffer_cursor(buf)
+  local previous = push_timers[buf]
+  if previous then previous:stop(); previous:close() end
+  local pending = uv.new_timer()
+  push_timers[buf] = pending
+  pending:start(config.debounce_ms, 0, vim.schedule_wrap(function()
+    -- The uv timer callback and its scheduled Lua callback are separate turns.
+    -- An edit can supersede/close this timer in between; then this stale
+    -- callback must neither close the replacement nor push an old snapshot.
+    if push_timers[buf] ~= pending then return end
+    push_timers[buf] = nil
+    if not pending:is_closing() then pending:close() end
+    push_buffer(buf, edit_cursor, entry)
+  end))
 end
 
 -- Tear down on nvim exit (VimLeavePre). With `close_on_exit = false` the
@@ -1785,6 +1815,7 @@ local function start_with(cmd, opts)
   -- Prefer the root pinned by the caller (M.start / restart) so an async binary
   -- resolve or a buffer switch in between can't re-root us onto another file.
   local root, err = opts.root, nil
+  local start_buf, start_path = opts.buf, opts.buf_path
   if not root then root, err = current_root() end
   -- The in-flight start for this root has resolved; clear its guard now that
   -- we're committing to (or bailing out of) the actual spawn.
@@ -1919,7 +1950,8 @@ local function start_with(cmd, opts)
   -- global (push routing) — only needed once, when the first daemon starts.
   local first = daemon_count() == 0
   local entry =
-    { job = job, port = port, root = root, cmd = cmd, opened = false, jump_seq = 0 }
+    { job = job, port = port, root = root, cmd = cmd, opened = false,
+      jump_seq = 0, buf = start_buf, buf_path = start_path }
   stopping[root] = nil
   daemons[root] = entry
   if first then attach_autocmds() end
@@ -1940,19 +1972,27 @@ local function start_with(cmd, opts)
   vim.defer_fn(function()
     if daemons[root] == entry then fetch_watched(entry) end
   end, 700)
-  -- A root that isn't on disk yet (a never-saved buffer): the daemon came up
-  -- serving an empty placeholder — push the buffer so its content renders
-  -- without waiting for the first edit. Two attempts: the first can race the
-  -- daemon's bind on a cold start, and a repeat push of identical content is
-  -- a cheap server-side no-op when the first one landed.
-  if vim.fn.filereadable(root) == 0 then
-    local function push_if_current()
-      if daemons[root] == entry and vim.api.nvim_buf_get_name(0) == root then
-        push_buffer()
+  -- A never-saved OR modified start buffer can differ from the bytes the new
+  -- daemon read from disk. This includes edits made while ensure_binary() was
+  -- still resolving, before TextChanged autocmds existed. Keep the captured
+  -- buffer/path instead of consulting the window that happens to be current
+  -- when the delayed startup push fires. Two attempts cover a cold bind race;
+  -- a repeat identical snapshot is a cheap server-side no-op.
+  local function start_buffer_needs_push()
+    if not start_buf or not vim.api.nvim_buf_is_valid(start_buf) then return false end
+    if vim.api.nvim_buf_get_name(start_buf) ~= start_path then return false end
+    return opts.initial_sync
+      or vim.fn.filereadable(start_path) == 0
+      or vim.bo[start_buf].modified
+  end
+  if start_buffer_needs_push() then
+    local function push_start_buffer()
+      if daemons[root] == entry and start_buffer_needs_push() then
+        push_buffer(start_buf, buffer_cursor(start_buf), entry)
       end
     end
-    vim.defer_fn(push_if_current, 400)
-    vim.defer_fn(push_if_current, 1600)
+    vim.defer_fn(push_start_buffer, 400)
+    vim.defer_fn(push_start_buffer, 1600)
   end
   -- Skip the open on a restart that rebound the same port: the existing
   -- viewer survives the restart (the daemon dies silently, no goodbye) and
@@ -2129,6 +2169,27 @@ function M.start(opts)
     vim.notify("mathpreview: " .. err, vim.log.levels.ERROR)
     return
   end
+  -- Pin the editor buffer as well as the root across async binary resolution.
+  -- The root tells the daemon what to serve; the buffer is the authoritative
+  -- unsaved snapshot that may need an initial /buffer push after it binds.
+  local start_buf = opts.buf
+  if not start_buf then
+    local current = vim.api.nvim_get_current_buf()
+    local current_path = vim.api.nvim_buf_get_name(current)
+    if current_path ~= "" and canon(current_path) == canon(root) then
+      start_buf = current
+    else
+      local candidate = vim.fn.bufnr(root)
+      if candidate and candidate >= 0 then start_buf = candidate end
+    end
+  end
+  if start_buf and vim.api.nvim_buf_is_valid(start_buf) then
+    opts.buf = start_buf
+    opts.buf_path = opts.buf_path or vim.api.nvim_buf_get_name(start_buf)
+    opts.initial_sync = opts.initial_sync
+      or vim.fn.filereadable(opts.buf_path) == 0
+      or vim.bo[start_buf].modified
+  end
   -- Already serving THIS file → make it active and reuse its tab (don't open a
   -- duplicate). A different file falls through and starts its own daemon + tab.
   local entry = daemons[root]
@@ -2147,7 +2208,7 @@ function M.start(opts)
 end
 
 -- The daemon for the current buffer's file, else the active one (so :MathStop /
--- :MathRestart in a non-.tex buffer still act on the preview you were last in).
+-- :MathRestart in an unsupported buffer still act on the last preview).
 local function target_entry()
   return daemon_for_file(vim.api.nvim_buf_get_name(0)) or active_entry()
 end
@@ -2168,11 +2229,28 @@ function M.restart()
   -- Remember the port so the restart can rebind it and let the open tab
   -- reconnect, instead of opening a fresh one each time.
   local prev_port, root = entry.port, entry.root
+  -- If restart was requested from a watched child, preserve that modified
+  -- buffer; otherwise keep the root buffer captured by the original start.
+  local current_buf = vim.api.nvim_get_current_buf()
+  local current_path = vim.api.nvim_buf_get_name(current_buf)
+  local restart_buf = daemon_for_file(current_path) == entry and current_buf or entry.buf
+  local restart_path = restart_buf and vim.api.nvim_buf_is_valid(restart_buf)
+      and vim.api.nvim_buf_get_name(restart_buf) or entry.buf_path
+  local initial_sync = restart_buf and vim.api.nvim_buf_is_valid(restart_buf)
+      and (vim.fn.filereadable(restart_path) == 0 or vim.bo[restart_buf].modified)
   -- restart=true kills the daemon SILENTLY (no goodbye), so the tab survives
   -- and reconnects to the rebound port — M.stop() would close it.
   stop_entry(entry, { restart = true })
   -- Give the OS a moment to release the port before re-binding.
-  vim.defer_fn(function() M.start({ prev_port = prev_port, root = root }) end, 200)
+  vim.defer_fn(function()
+    M.start({
+      prev_port = prev_port,
+      root = root,
+      buf = restart_buf,
+      buf_path = restart_path,
+      initial_sync = initial_sync,
+    })
+  end, 200)
 end
 
 function M.status()

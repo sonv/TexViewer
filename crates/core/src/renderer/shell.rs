@@ -197,6 +197,15 @@ pub(super) fn wrap_in_shell(
         }
         None => String::new(),
     };
+    let document_format = opts.document_format.as_str();
+    let print_button_html = match opts.document_format {
+        crate::DocumentFormat::Latex => {
+            r#"<button class="print-button" id="print-button" data-viewer-action="print-pdf" type="button" title="compile and open the PDF">print</button>"#
+        }
+        crate::DocumentFormat::Markdown => {
+            r#"<button class="print-button" id="print-button" data-viewer-action="browser-print" type="button" title="open the browser print dialog">print</button>"#
+        }
+    };
     write!(
         out,
         r#"<!doctype html>
@@ -210,7 +219,7 @@ pub(super) fn wrap_in_shell(
 <script>{config_js}</script>
 {engine_head}
 </head>
-<body class="page-mode-a4">
+<body class="page-mode-a4" data-document-format="{document_format}">
 <header class="topbar">
   <!-- Row 1: identity (doc title + source path) on the left, live-reload
        status pill on the right. Keeps the most-glanced-at info clean and
@@ -244,7 +253,7 @@ pub(super) fn wrap_in_shell(
       <button data-mode="all" data-viewer-action="proof-all" type="button" class="active">all</button>
     </span>
     <span class="topbar-actions-spacer"></span>
-    <button class="print-button" id="print-button" data-viewer-action="print-pdf" type="button" title="compile and open the PDF">print</button>
+    {print_button_html}
     <button class="server-restart" id="server-restart" data-viewer-action="restart-server" type="button" title="restart preview server">restart</button>
     <button class="server-stop" id="server-stop" data-viewer-action="stop-server" type="button" title="stop preview server">stop</button>
   </div>
@@ -268,7 +277,7 @@ pub(super) fn wrap_in_shell(
   <nav class="side-list" id="side-index" aria-label="document index"></nav>
 </aside>
 <div id="page-shell">
-  <main id="page" data-proof-mode="all" data-refkeys="hidden">
+  <main id="page" data-proof-mode="all" data-refkeys="hidden" data-document-format="{document_format}">
 {body}
   </main>
 </div>

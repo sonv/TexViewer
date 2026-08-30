@@ -9,7 +9,7 @@ vim.g.loaded_mathpreview = 1
 
 vim.api.nvim_create_user_command("MathPreview", function()
   require("mathpreview").start()
-end, { desc = "Start the mathpreview daemon and open the browser viewer" })
+end, { desc = "Preview the current TeX or Markdown document in a browser" })
 
 vim.api.nvim_create_user_command("MathPreviewStop", function()
   require("mathpreview").stop()
@@ -29,4 +29,4 @@ end, { desc = "Show mathpreview daemon and plugin status" })
 
 vim.api.nvim_create_user_command("MathPreviewDebug", function()
   require("mathpreview").debug()
-end, { desc = "Show mathpreview resolved settings and config/macro paths" })
+end, { desc = "Show mathpreview resolved settings and consulted config paths" })

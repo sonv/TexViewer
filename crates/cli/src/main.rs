@@ -1,5 +1,5 @@
-//! mathpreview-cli — Step 1 surface: render a `.tex` project to a single
-//! self-contained HTML file.
+//! mathpreview-cli — render LaTeX or Markdown documents to self-contained
+//! HTML, or serve them with live updates.
 
 use std::fs;
 use std::io::{self, Write};
@@ -8,12 +8,16 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use mathpreview_core::{render_project, Engine, HtmlOptions, MathJaxEngine};
+use mathpreview_core::{render_document, DocumentFormat, Engine, HtmlOptions, MathJaxEngine};
 
-use mathpreview_cli::{build_serve_opts, serve};
+use mathpreview_cli::{build_serve_opts, serve, static_markdown_asset_base};
 
 #[derive(Parser, Debug)]
-#[command(name = "mathpreview-cli", version, about = "LaTeX preview renderer")]
+#[command(
+    name = "mathpreview-cli",
+    version,
+    about = "Live LaTeX and Markdown preview renderer"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -21,9 +25,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Resolve the project root for any file and emit a single HTML preview.
+    /// Render a LaTeX or Markdown document as a single HTML preview.
     Render {
-        /// Input file. Project root is auto-detected.
+        /// Input document. LaTeX project roots are auto-detected.
         input: PathBuf,
         /// Output HTML path. Use `-` for stdout.
         #[arg(short, long, default_value = "-")]
@@ -47,14 +51,14 @@ enum Cmd {
         #[arg(long = "config", value_name = "FILE")]
         config: Vec<PathBuf>,
     },
-    /// Print the extracted preamble (macros + packages) MathJax will see —
-    /// mirrors `latex-preview.nvim`'s debug command.
+    /// Print resolved document metadata and, for LaTeX, the extracted
+    /// preamble (macros + packages) MathJax will see.
     Debug { input: PathBuf },
     /// Serve a live-reloading preview over HTTP + WebSocket. Re-renders on
-    /// any change to project files; pushes updated `#page` HTML to every
+    /// document change; pushes updated `#page` HTML to every
     /// connected browser tab.
     Serve {
-        /// Input file. Project root is auto-detected.
+        /// Input document. LaTeX project roots are auto-detected.
         input: PathBuf,
         /// Host to bind. Defaults to loopback (127.0.0.1). A non-loopback host
         /// such as 0.0.0.0 exposes the unauthenticated control endpoints (file
@@ -144,12 +148,13 @@ fn main() -> Result<()> {
                 title,
                 macro_overrides,
                 viewer_config,
+                local_asset_base: static_markdown_asset_base(&input)?,
                 ..HtmlOptions::default()
             };
             if let Some(url) = mathjax_url {
                 opts.engine = Engine::MathJax(MathJaxEngine::new(url));
             }
-            let result = render_project(&input, &opts)
+            let result = render_document(&input, &opts)
                 .with_context(|| format!("rendering {}", input.display()))?;
 
             if output.as_os_str() == "-" {
@@ -157,19 +162,29 @@ fn main() -> Result<()> {
             } else {
                 fs::write(&output, &result.html)
                     .with_context(|| format!("writing {}", output.display()))?;
-                eprintln!(
-                    "rendered {} ({} macros, {} packages) → {}",
-                    result.root_file.display(),
-                    result.preamble.macros.len(),
-                    result.preamble.packages_long.len(),
-                    output.display(),
-                );
+                match result.format {
+                    DocumentFormat::Latex => eprintln!(
+                        "rendered {} ({} macros, {} packages) → {}",
+                        result.root_file.display(),
+                        result.preamble.macros.len(),
+                        result.preamble.packages_long.len(),
+                        output.display(),
+                    ),
+                    DocumentFormat::Markdown => eprintln!(
+                        "rendered Markdown {} → {}",
+                        result.root_file.display(),
+                        output.display(),
+                    ),
+                }
             }
         }
         Cmd::Debug { input } => {
             let opts = HtmlOptions::default();
-            let result = render_project(&input, &opts)
+            let result = render_document(&input, &opts)
                 .with_context(|| format!("rendering {}", input.display()))?;
+            println!("# document format");
+            println!("{}", result.format.as_str());
+            println!();
             println!("# root file");
             println!("{}", result.root_file.display());
             println!();
@@ -177,23 +192,25 @@ fn main() -> Result<()> {
             for f in &result.included_files {
                 println!("  {}", f.display());
             }
-            println!();
-            println!("# packages → MathJax extensions");
-            for (name, ext) in result
-                .preamble
-                .packages_short
-                .iter()
-                .zip(result.preamble.packages_long.iter())
-            {
-                println!("  {name}  →  {ext}");
-            }
-            if !result.preamble.unmapped_packages.is_empty() {
-                println!("\n# unmapped packages (ignored by MathJax)");
-                for p in &result.preamble.unmapped_packages {
-                    println!("  {p}");
+            if result.format == DocumentFormat::Latex {
+                println!();
+                println!("# packages → MathJax extensions");
+                for (name, ext) in result
+                    .preamble
+                    .packages_short
+                    .iter()
+                    .zip(result.preamble.packages_long.iter())
+                {
+                    println!("  {name}  →  {ext}");
+                }
+                if !result.preamble.unmapped_packages.is_empty() {
+                    println!("\n# unmapped packages (ignored by MathJax)");
+                    for p in &result.preamble.unmapped_packages {
+                        println!("  {p}");
+                    }
                 }
             }
-            println!("\n# macros ({})", result.preamble.macros.len());
+            println!("\n# MathJax macros ({})", result.preamble.macros.len());
             for m in &result.preamble.macros {
                 if let Some(d) = &m.default {
                     println!(

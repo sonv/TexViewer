@@ -13,6 +13,41 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.32] — 2026-08-30
+
+### Added
+
+- **Markdown documents now use the full browser preview.** `.md` and
+  `.markdown` files get CommonMark prose plus tables, task lists,
+  strikethrough, code, links, document-local images, and MathJax math with
+  `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`. Live buffer updates, UTF-8
+  source sync, search, themes, sizing controls, and browser printing work
+  through the same CLI and Neovim plugin as LaTeX. Raw Markdown HTML is shown
+  inertly instead of being injected into the viewer.
+- **Markdown needs no additional runtime.** The parser is compiled into both
+  Cargo-built and GitHub release binaries, and live previews continue to use
+  the MathJax bundle embedded in that binary. The plugin enables Neovim's
+  `markdown` filetype by default.
+
+### Fixed
+
+- **Editor snapshots stay attached to the buffer that produced them.** A
+  modified document is pushed immediately after startup or restart, even if
+  the user switches buffers while the daemon starts. Debounces and in-flight
+  uploads are now per buffer, so rapid edits in two previewed documents cannot
+  cancel or reroute one another.
+- **Preview port detection works with Neovim 0.12.** The plugin accepts luv's
+  new nil-without-error success result while continuing to reject occupied
+  ports.
+- **Macro-only edits refresh MathJax exactly once.** When the effective macro
+  definitions change, the server commits the new render before issuing the
+  existing full-page reload event; equivalent source spellings remain on the
+  compact patch path.
+- **Local Markdown assets resolve safely and consistently.** Live SVG assets
+  are served with MIME-sniffing protection and a script-free sandbox policy.
+  One-shot HTML uses encoded absolute `file:` image URLs rooted beside the
+  Markdown source, so images still load when the output is written elsewhere.
+
 ## [2.1.31] — 2026-08-29
 
 ### Added

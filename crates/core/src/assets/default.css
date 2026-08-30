@@ -1503,6 +1503,45 @@ body.page-crop .refkey-layer .refkey-chip { opacity: 0.88; }
 .latex-list.description { display: grid; grid-template-columns: max-content 1fr; column-gap: 0.6em; padding-left: 0; }
 .latex-list.description .item-marker { font-weight: 600; }
 .latex-list .item-body { margin-bottom: 0.12em; }
+
+/* CommonMark/GFM frontend. Markdown owns its paragraph rhythm rather than
+   inheriting LaTeX's first-line indentation, while reusing the viewer's page,
+   table, list, math, and source-sync primitives. */
+.md-para { margin: 0.68em 0; text-indent: 0; }
+.md-heading { text-align: left; }
+.md-link { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.14em; }
+.md-url-rejected { color: var(--muted); text-decoration: line-through dotted; }
+.md-image { display: block; max-width: 100%; height: auto; margin: 0.8em auto; }
+.md-inline-code,
+.md-code-block,
+.md-raw-html,
+.md-raw-html-block {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+.md-inline-code,
+.md-raw-html { padding: 0.08em 0.28em; border-radius: 3px; background: rgba(127, 127, 127, 0.12); }
+.md-code-block,
+.md-raw-html-block {
+  margin: 0.8em 0;
+  padding: 0.72em 0.9em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.45;
+  background: rgba(127, 127, 127, 0.07);
+}
+.md-code-block code { color: inherit; background: transparent; font: inherit; }
+.md-list .md-para { margin: 0.15em 0; }
+.md-task-marker { margin: 0 0.45em 0 -1.25em; vertical-align: baseline; accent-color: var(--accent); }
+.md-rule { margin: 1.3em 0; border: 0; border-top: 1px solid var(--border-strong); }
+.md-table th { font-weight: 700; border-bottom: 1px solid var(--border-strong); }
+.md-table td { border-bottom: 1px solid var(--border); }
+.md-footnote { margin: 0.45em 0; font-size: 0.9em; color: var(--muted); }
+body[data-document-format="markdown"] .refkey-toggle,
+body[data-document-format="markdown"] .margin-toggle,
+body[data-document-format="markdown"] .proof-toggle { display: none; }
 /* Render-warnings panel. Lives *outside* the white paper box so any
    list of unmapped packages / skipped macros doesn't masquerade as
    trailing whitespace inside the paper. Kept in its familiar amber

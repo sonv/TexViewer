@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use mathpreview_core::{Engine, HtmlOptions, MathJaxEngine};
 
 pub mod serve;
@@ -9,6 +10,25 @@ pub mod serve;
 /// Default `--editor` template for Cmd/Ctrl-click "reveal source": jump to the
 /// source line in a running nvim (uses `$NVIM_LISTEN_ADDRESS`, else `$NVIM`).
 pub const DEFAULT_EDITOR: &str = r#"nvim --server "${NVIM_LISTEN_ADDRESS:-$NVIM}" --remote-send "<C-\\><C-N>:e +{line} {file}<CR>""#;
+
+/// Resolve the image URL base used by a one-shot Markdown render. This is
+/// intentionally independent of the output path: HTML written elsewhere (or
+/// redirected from stdout) still resolves local images beside the source.
+pub fn static_markdown_asset_base(input: &Path) -> Result<Option<String>> {
+    if mathpreview_core::DocumentFormat::from_path(input)
+        != Some(mathpreview_core::DocumentFormat::Markdown)
+    {
+        return Ok(None);
+    }
+    let canonical = std::fs::canonicalize(input)
+        .with_context(|| format!("resolving Markdown source {}", input.display()))?;
+    let directory = canonical
+        .parent()
+        .context("Markdown source has no containing directory")?;
+    mathpreview_core::renderer::file_url_base_for_directory(directory)
+        .map(Some)
+        .context("Markdown source directory is not representable as a file URL")
+}
 
 /// Build the serve-mode `HtmlOptions` and resolved config-file list shared by
 /// the `serve` daemon and browser viewer.
@@ -45,8 +65,47 @@ pub fn build_serve_opts(
         macro_overrides,
         viewer_config,
         tikz_asset_base: Some("/tikz/".to_string()),
+        local_asset_base: Some("/assets/".to_string()),
         text_macros,
         ..HtmlOptions::default()
     };
     (opts, config_files)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn static_markdown_base_is_source_rooted_for_file_and_stdout_output() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mathpreview notes 100%20real λ-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("notes.md");
+        fs::write(&input, "![figure](fig.png)\n").unwrap();
+
+        let base = static_markdown_asset_base(&input).unwrap().unwrap();
+        assert!(base.starts_with("file:"));
+        assert!(base.contains("mathpreview%20notes%20100%2520real%20%CE%BB-"));
+        assert!(base.ends_with('/'));
+        // Output destination is deliberately not an input to the helper, so
+        // `-o elsewhere/out.html` and stdout redirection behave identically.
+        assert_eq!(static_markdown_asset_base(&input).unwrap(), Some(base));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn static_asset_base_is_not_set_for_latex() {
+        assert_eq!(
+            static_markdown_asset_base(Path::new("missing.tex")).unwrap(),
+            None
+        );
+    }
 }

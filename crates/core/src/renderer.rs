@@ -7,14 +7,15 @@
 //! swap and does not require changing the AST walk.
 
 use std::fmt::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use std::collections::HashMap;
 
 use crate::ast::{
-    EnvironmentBoundary, ListKind, Node, NodeKind, Pos, RefKind, Span, TextAlignment,
+    EnvironmentBoundary, ListKind, MarkdownAlignment, Node, NodeKind, Pos, RefKind, Span,
+    TextAlignment,
 };
 use crate::bibtex::{BibEntry, BibStyle};
 use crate::engines::Engine;
@@ -47,6 +48,9 @@ use util::{
 
 #[derive(Debug, Clone)]
 pub struct HtmlOptions {
+    /// Source frontend used for format-aware viewer chrome and rendering.
+    /// Generic entry points set this automatically from the input path.
+    pub document_format: crate::DocumentFormat,
     /// Math engine used to typeset math nodes in the browser. Default is
     /// [`crate::engines::MathJaxEngine`] pointed at the jsdelivr CDN.
     pub engine: Engine,
@@ -77,6 +81,10 @@ pub struct HtmlOptions {
     /// `/tikz/`; standalone HTML leaves it unset so it never emits dead
     /// server-relative image URLs.
     pub tikz_asset_base: Option<String>,
+    /// Base URL for local document assets in live-server mode. Markdown
+    /// relative images are rewritten below this route; standalone HTML keeps
+    /// their original relative URLs by leaving this unset.
+    pub local_asset_base: Option<String>,
     /// Exact root-document preamble used to compile isolated TikZ diagrams.
     /// Populated internally after the project loader splits the document.
     pub latex_preamble: Option<String>,
@@ -89,6 +97,7 @@ pub struct HtmlOptions {
 impl Default for HtmlOptions {
     fn default() -> Self {
         Self {
+            document_format: crate::DocumentFormat::Latex,
             engine: Engine::default(),
             title: "mathpreview".into(),
             source_path: None,
@@ -96,6 +105,7 @@ impl Default for HtmlOptions {
             macro_overrides: Vec::new(),
             viewer_config: crate::config::ResolvedConfig::default().viewer,
             tikz_asset_base: None,
+            local_asset_base: None,
             latex_preamble: None,
             text_macros: std::collections::HashMap::new(),
         }
@@ -131,6 +141,8 @@ pub struct RenderOutput {
     /// Internal server state, never part of the WebSocket/debug JSON payload.
     #[serde(skip)]
     pub tikz_assets: HashMap<String, TikzAsset>,
+    /// Frontend that produced this output.
+    pub format: crate::DocumentFormat,
 }
 
 /// Both forms of the rendered output, returned together so `render_project`
@@ -229,6 +241,7 @@ pub fn render(
         render_tikz: opts.viewer_config.render_tikz,
         fancy_theorems: opts.viewer_config.fancy_theorems,
         tikz_asset_base: opts.tikz_asset_base.as_deref(),
+        local_asset_base: opts.local_asset_base.as_deref(),
         latex_preamble: opts.latex_preamble.as_deref().unwrap_or(""),
     };
 
@@ -548,7 +561,7 @@ fn starts_generated_id_attr(rest: &str) -> bool {
     // IdGen::next) also lets this stripper match them without ever matching a
     // label-derived id like `thm-2-1` (from `\label{thm:2.1}`), which must
     // NOT be stripped: label ids are stable, meaningful content.
-    const IDGEN_PREFIXES: [&str; 15] = [
+    const IDGEN_PREFIXES: [&str; 16] = [
         r#" id="quote-"#,
         r#" id="callout-"#,
         r#" id="letter-"#,
@@ -564,6 +577,7 @@ fn starts_generated_id_attr(rest: &str) -> bool {
         r#" id="cite-"#,
         r#" id="srcs-"#,
         r#" id="srcw-"#,
+        r#" id="md-"#,
     ];
     // Counter-based ids that stay bare-numeric: footnotes keep their visible
     // document-order number (`fn-3` / `fnpop-3`), and `eq-` anchors predate
@@ -602,7 +616,20 @@ fn is_top_level_inline_node(node: &Node) -> bool {
         | NodeKind::Ref { .. }
         | NodeKind::Cite { .. }
         | NodeKind::OpaqueCmd { .. }
-        | NodeKind::Comment(_) => true,
+        | NodeKind::Comment(_)
+        | NodeKind::MarkdownText(_)
+        | NodeKind::MarkdownEmphasis
+        | NodeKind::MarkdownStrong
+        | NodeKind::MarkdownStrikethrough
+        | NodeKind::MarkdownLink { .. }
+        | NodeKind::MarkdownImage { .. }
+        | NodeKind::MarkdownInlineCode(_)
+        | NodeKind::MarkdownSoftBreak
+        | NodeKind::MarkdownHardBreak
+        | NodeKind::MarkdownFootnoteReference { .. }
+        | NodeKind::MarkdownRawHtml(_)
+        | NodeKind::MarkdownSuperscript
+        | NodeKind::MarkdownSubscript => true,
         _ => false,
     }
 }
@@ -1119,6 +1146,7 @@ struct RenderCtx<'a> {
     render_tikz: bool,
     fancy_theorems: bool,
     tikz_asset_base: Option<&'a str>,
+    local_asset_base: Option<&'a str>,
     latex_preamble: &'a str,
 }
 
@@ -1230,6 +1258,319 @@ fn tikz_html(env: &str, body: &str, span: &Span, ctx: &mut RenderCtx<'_>) -> Str
         src = escape_attr(&data_src(span)),
         hash = escape_attr(&hash),
     )
+}
+
+fn markdown_title_attr(title: Option<&str>) -> String {
+    title
+        .filter(|title| !title.is_empty())
+        .map(|title| format!(r#" title="{}""#, escape_attr(title)))
+        .unwrap_or_default()
+}
+
+/// Conservative URL policy for document-controlled links and images. Browser
+/// navigation schemes are explicit; local absolute/relative paths, queries,
+/// and fragments have no scheme and remain available.
+pub(crate) fn safe_markdown_url(url: &str) -> bool {
+    if url.is_empty()
+        || url.chars().any(char::is_control)
+        || url.starts_with("//")
+        || url.starts_with("\\\\")
+    {
+        return false;
+    }
+    let boundary = url.find(['/', '?', '#']).unwrap_or(url.len());
+    let Some(colon) = url[..boundary].find(':') else {
+        return true;
+    };
+    let scheme = &url[..colon];
+    !scheme.is_empty()
+        && scheme.bytes().enumerate().all(|(i, byte)| match byte {
+            b'a'..=b'z' | b'A'..=b'Z' => true,
+            b'0'..=b'9' | b'+' | b'-' | b'.' => i > 0,
+            _ => false,
+        })
+        && matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto" | "tel"
+        )
+}
+
+fn markdown_image_url(destination: &str, asset_base: Option<&str>) -> String {
+    let Some(base) = asset_base else {
+        return destination.to_string();
+    };
+    if !is_local_relative_asset(destination) {
+        return destination.to_string();
+    }
+    let relative = destination.trim_start_matches("./");
+    let relative = if base.starts_with("file:") {
+        let suffix_at = relative.find(['?', '#']).unwrap_or(relative.len());
+        format!(
+            "{}{}",
+            percent_encode_url_path(&relative[..suffix_at], true),
+            &relative[suffix_at..]
+        )
+    } else {
+        relative.to_string()
+    };
+    format!("{}{relative}", base.trim_end_matches('/').to_string() + "/")
+}
+
+/// Build an absolute `file:` URL suitable as [`HtmlOptions::local_asset_base`].
+/// The caller supplies a canonical absolute directory. URL path bytes are
+/// encoded here (rather than relying on browser repair) so spaces, Unicode,
+/// literal `%`, and Windows drive/UNC paths remain unambiguous.
+pub fn file_url_base_for_directory(directory: &Path) -> Option<String> {
+    if !directory.is_absolute() {
+        return None;
+    }
+    let raw = directory.to_str()?;
+
+    #[cfg(windows)]
+    let normalized = {
+        let slashed = raw.replace('\\', "/");
+        if let Some(rest) = slashed.strip_prefix("//?/UNC/") {
+            format!("//{rest}")
+        } else if let Some(rest) = slashed.strip_prefix("//?/") {
+            rest.to_string()
+        } else {
+            slashed
+        }
+    };
+    #[cfg(not(windows))]
+    let normalized = raw.to_string();
+
+    // This is a filesystem path, not an already encoded URL: a literal `%20`
+    // directory name must become `%2520`, and `?` / `#` must not turn into URL
+    // delimiters.
+    let encoded = percent_encode_url_path(&normalized, false);
+    let mut url = if encoded.starts_with("//") {
+        // UNC: //server/share -> file://server/share
+        format!("file:{encoded}")
+    } else if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        // Windows drive path: C:/dir -> file:///C:/dir
+        format!("file:///{encoded}")
+    };
+    if !url.ends_with('/') {
+        url.push('/');
+    }
+    Some(url)
+}
+
+fn percent_encode_url_path(path: &str, preserve_valid_escapes: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        let preserve_percent = preserve_valid_escapes
+            && byte == b'%'
+            && bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit);
+        if preserve_percent {
+            out.push('%');
+            out.push(bytes[i + 1] as char);
+            out.push(bytes[i + 2] as char);
+            i += 3;
+            continue;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Reject percent escapes that a browser can normalize into containment-
+/// relevant path syntax. In particular, URL parsers recognize encoded dot
+/// segments (`%2e%2e`, `.%2e`, `%2e.`) and encoded separators before resolving
+/// a `file:` or same-origin URL. Checking only `Path::components()` on the raw
+/// Markdown destination would therefore accept a path the browser later turns
+/// into `../...`.
+fn safe_percent_encoded_local_path(path: &str) -> bool {
+    for segment in path.split('/') {
+        let bytes = segment.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut had_escape = false;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'%'
+                && i + 2 < bytes.len()
+                && bytes[i + 1].is_ascii_hexdigit()
+                && bytes[i + 2].is_ascii_hexdigit()
+            {
+                let high = (bytes[i + 1] as char).to_digit(16).unwrap() as u8;
+                let low = (bytes[i + 2] as char).to_digit(16).unwrap() as u8;
+                let byte = (high << 4) | low;
+                // An encoded slash creates a new segment after the raw
+                // component check; an encoded backslash can do the same on
+                // Windows. Encoded controls are never useful in asset paths.
+                if matches!(byte, b'/' | b'\\') || byte.is_ascii_control() {
+                    return false;
+                }
+                decoded.push(byte);
+                had_escape = true;
+                i += 3;
+            } else {
+                decoded.push(bytes[i]);
+                i += 1;
+            }
+        }
+        if had_escape && matches!(decoded.as_slice(), b"." | b"..") {
+            return false;
+        }
+    }
+    true
+}
+
+fn safe_markdown_image_url(url: &str) -> bool {
+    if !safe_markdown_url(url) {
+        return false;
+    }
+    let boundary = url.find(['/', '?', '#']).unwrap_or(url.len());
+    let has_scheme = url[..boundary].contains(':');
+    if has_scheme || url.starts_with(['/', '#']) {
+        return true;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    !path.is_empty()
+        && !url.contains('\\')
+        && safe_percent_encoded_local_path(path)
+        && PathBuf::from(path).components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
+fn is_local_relative_asset(url: &str) -> bool {
+    if url.starts_with(['/', '#', '?']) || url.contains('\\') {
+        return false;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    if path.is_empty() || !safe_markdown_image_url(url) {
+        return false;
+    }
+    PathBuf::from(path).components().all(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
+}
+
+fn markdown_plain_text(nodes: &[Node]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        match &node.kind {
+            NodeKind::MarkdownText(text)
+            | NodeKind::MarkdownInlineCode(text)
+            | NodeKind::MarkdownRawHtml(text) => out.push_str(text),
+            NodeKind::InlineMath(math) => {
+                out.push('$');
+                out.push_str(math);
+                out.push('$');
+            }
+            NodeKind::MarkdownSoftBreak | NodeKind::MarkdownHardBreak => out.push(' '),
+            _ => out.push_str(&markdown_plain_text(&node.children)),
+        }
+    }
+    out
+}
+
+fn write_markdown_table(
+    out: &mut String,
+    table: &Node,
+    alignments: &[MarkdownAlignment],
+    ctx: &mut RenderCtx<'_>,
+) {
+    let id = ctx.idgen.next("md");
+    record_container(ctx, &id, &table.span, None);
+    write!(
+        out,
+        r#"<div class="latex-tabular-scroll md-table-scroll" id="{id}" data-src="{src}"><table class="latex-tabular md-table">"#,
+        id = escape_attr(&id),
+        src = escape_attr(&data_src(&table.span)),
+    )
+    .unwrap();
+
+    let mut body_open = false;
+    for child in &table.children {
+        match &child.kind {
+            NodeKind::MarkdownTableHead => {
+                out.push_str("<thead><tr>");
+                write_markdown_table_cells(out, &child.children, alignments, true, ctx);
+                out.push_str("</tr></thead>");
+            }
+            NodeKind::MarkdownTableRow => {
+                if !body_open {
+                    out.push_str("<tbody>");
+                    body_open = true;
+                }
+                let row_id = ctx.idgen.next("md");
+                record_container(ctx, &row_id, &child.span, None);
+                write!(
+                    out,
+                    r#"<tr id="{id}" data-src="{src}">"#,
+                    id = escape_attr(&row_id),
+                    src = escape_attr(&data_src(&child.span)),
+                )
+                .unwrap();
+                write_markdown_table_cells(out, &child.children, alignments, false, ctx);
+                out.push_str("</tr>");
+            }
+            _ => write_node(out, child, ctx),
+        }
+    }
+    if body_open {
+        out.push_str("</tbody>");
+    }
+    out.push_str("</table></div>");
+}
+
+fn write_markdown_table_cells(
+    out: &mut String,
+    cells: &[Node],
+    alignments: &[MarkdownAlignment],
+    header: bool,
+    ctx: &mut RenderCtx<'_>,
+) {
+    let tag = if header { "th" } else { "td" };
+    for (index, cell) in cells.iter().enumerate() {
+        if !matches!(cell.kind, NodeKind::MarkdownTableCell) {
+            write_node(out, cell, ctx);
+            continue;
+        }
+        let alignment = match alignments
+            .get(index)
+            .copied()
+            .unwrap_or(MarkdownAlignment::None)
+        {
+            MarkdownAlignment::None | MarkdownAlignment::Left => "align-left",
+            MarkdownAlignment::Center => "align-center",
+            MarkdownAlignment::Right => "align-right",
+        };
+        let id = ctx.idgen.next("md");
+        record_container(ctx, &id, &cell.span, None);
+        write!(
+            out,
+            r#"<{tag} class="latex-tabular-cell {alignment}" id="{id}" data-src="{src}">"#,
+            id = escape_attr(&id),
+            src = escape_attr(&data_src(&cell.span)),
+        )
+        .unwrap();
+        write_children(out, &cell.children, ctx);
+        write!(out, "</{tag}>").unwrap();
+    }
 }
 
 fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
@@ -1638,6 +1979,334 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 write_children(out, &n.children, ctx);
                 writeln!(out, "</li>").unwrap();
             }
+        }
+        NodeKind::MarkdownParagraph => {
+            let id = ctx.idgen.next("md");
+            record_container(ctx, &id, &n.span, None);
+            let has_block_child = n.children.iter().any(|child| {
+                matches!(
+                    child.kind,
+                    NodeKind::DisplayMath { .. }
+                        | NodeKind::MarkdownCodeBlock { .. }
+                        | NodeKind::MarkdownList { .. }
+                        | NodeKind::MarkdownBlockQuote
+                        | NodeKind::MarkdownTable { .. }
+                )
+            });
+            let tag = if has_block_child { "div" } else { "p" };
+            write!(
+                out,
+                r#"<{tag} class="para md-para" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            writeln!(out, "</{tag}>").unwrap();
+        }
+        NodeKind::MarkdownHeading { level } => {
+            let id = ctx.idgen.next("sec");
+            record_block(ctx, &id, &n.span, None);
+            let h = (*level).clamp(1, 6);
+            write!(
+                out,
+                r#"<h{h} id="{id}" class="sec-h{h} md-heading" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            writeln!(out, "</h{h}>").unwrap();
+        }
+        NodeKind::MarkdownText(text) => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<span class="src-word md-text" id="{id}" data-src="{src}">{text}</span>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                text = escape_html(text),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownEmphasis
+        | NodeKind::MarkdownStrong
+        | NodeKind::MarkdownStrikethrough
+        | NodeKind::MarkdownSuperscript
+        | NodeKind::MarkdownSubscript => {
+            let (tag, class) = match n.kind {
+                NodeKind::MarkdownEmphasis => ("em", "md-emphasis"),
+                NodeKind::MarkdownStrong => ("strong", "md-strong"),
+                NodeKind::MarkdownStrikethrough => ("del", "md-strikethrough"),
+                NodeKind::MarkdownSuperscript => ("sup", "md-superscript"),
+                NodeKind::MarkdownSubscript => ("sub", "md-subscript"),
+                _ => unreachable!(),
+            };
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<{tag} class="{class}" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            write!(out, "</{tag}>").unwrap();
+        }
+        NodeKind::MarkdownLink { destination, title } => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            if safe_markdown_url(destination) {
+                let title_attr = markdown_title_attr(title.as_deref());
+                write!(
+                    out,
+                    r#"<a class="md-link" id="{id}" data-src="{src}" href="{href}"{title}>"#,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                    href = escape_attr(destination),
+                    title = title_attr,
+                )
+                .unwrap();
+                write_children(out, &n.children, ctx);
+                out.push_str("</a>");
+            } else {
+                write!(
+                    out,
+                    r#"<span class="md-link md-url-rejected" id="{id}" data-src="{src}" title="unsafe URL removed">"#,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                )
+                .unwrap();
+                write_children(out, &n.children, ctx);
+                out.push_str("</span>");
+            }
+        }
+        NodeKind::MarkdownImage { destination, title } => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            let alt = markdown_plain_text(&n.children);
+            if safe_markdown_image_url(destination) {
+                let src = markdown_image_url(destination, ctx.local_asset_base);
+                write!(
+                    out,
+                    r#"<img class="md-image" id="{id}" data-src="{data_src}" src="{src}" alt="{alt}"{title} loading="lazy" decoding="async">"#,
+                    id = escape_attr(&id),
+                    data_src = escape_attr(&data_src(&n.span)),
+                    src = escape_attr(&src),
+                    alt = escape_attr(&alt),
+                    title = markdown_title_attr(title.as_deref()),
+                )
+                .unwrap();
+            } else {
+                write!(
+                    out,
+                    r#"<span class="md-image-alt md-url-rejected" id="{id}" data-src="{src}">[{alt}]</span>"#,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                    alt = escape_html(&alt),
+                )
+                .unwrap();
+            }
+        }
+        NodeKind::MarkdownBlockQuote => {
+            let id = ctx.idgen.next("quote");
+            record_container(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<blockquote class="quote md-blockquote" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            out.push_str("</blockquote>");
+        }
+        NodeKind::MarkdownInlineCode(code) => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<code class="md-inline-code" id="{id}" data-src="{src}">{code}</code>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                code = escape_html(code),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownCodeBlock { language, code } => {
+            let id = ctx.idgen.next("md");
+            record_container(ctx, &id, &n.span, None);
+            let language_class = language
+                .as_deref()
+                .map(sanitize_id)
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(" language-{s}"))
+                .unwrap_or_default();
+            writeln!(
+                out,
+                r#"<pre class="md-code-block" id="{id}" data-src="{src}"><code class="md-code{language_class}">{code}</code></pre>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                code = escape_html(code),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownList { ordered, start } => {
+            let id = ctx.idgen.next("md");
+            record_container(ctx, &id, &n.span, None);
+            let tag = if *ordered { "ol" } else { "ul" };
+            let start_attr = if *ordered {
+                start
+                    .filter(|start| *start != 1)
+                    .map(|start| format!(r#" start="{start}""#))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            write!(
+                out,
+                r#"<{tag} class="latex-list md-list" id="{id}" data-src="{src}"{start_attr}>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            writeln!(out, "</{tag}>").unwrap();
+        }
+        NodeKind::MarkdownListItem => {
+            let id = ctx.idgen.next("md");
+            record_container(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<li class="item-body md-list-item" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            out.push_str("</li>");
+        }
+        NodeKind::MarkdownTaskMarker { checked } => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            let checked_attr = if *checked { " checked" } else { "" };
+            write!(
+                out,
+                r#"<input class="md-task-marker" id="{id}" data-src="{src}" type="checkbox" disabled{checked_attr}>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownTable { alignments } => {
+            write_markdown_table(out, n, alignments, ctx);
+        }
+        NodeKind::MarkdownTableHead => {
+            out.push_str("<thead><tr>");
+            write_children(out, &n.children, ctx);
+            out.push_str("</tr></thead>");
+        }
+        NodeKind::MarkdownTableRow => {
+            out.push_str("<tr>");
+            write_children(out, &n.children, ctx);
+            out.push_str("</tr>");
+        }
+        NodeKind::MarkdownTableCell => {
+            out.push_str("<td class=\"latex-tabular-cell\">");
+            write_children(out, &n.children, ctx);
+            out.push_str("</td>");
+        }
+        NodeKind::MarkdownDefinitionList => {
+            out.push_str("<dl class=\"md-definition-list\">");
+            write_children(out, &n.children, ctx);
+            out.push_str("</dl>");
+        }
+        NodeKind::MarkdownDefinitionTerm => {
+            out.push_str("<dt>");
+            write_children(out, &n.children, ctx);
+            out.push_str("</dt>");
+        }
+        NodeKind::MarkdownDefinitionDescription => {
+            out.push_str("<dd>");
+            write_children(out, &n.children, ctx);
+            out.push_str("</dd>");
+        }
+        NodeKind::MarkdownSoftBreak => out.push('\n'),
+        NodeKind::MarkdownHardBreak => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<br class="md-hard-break" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownRule => {
+            let id = ctx.idgen.next("md");
+            record_block(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<hr class="md-rule" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownFootnoteDefinition { label } => {
+            let id = format!("md-fn-{}", sanitize_id(label));
+            record_container(ctx, &id, &n.span, Some(label));
+            write!(
+                out,
+                r#"<section class="md-footnote" id="{id}" data-src="{src}"><sup>{label}</sup> "#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                label = escape_html(label),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            out.push_str("</section>");
+        }
+        NodeKind::MarkdownFootnoteReference { label } => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r##"<sup class="md-footnote-ref" id="{id}" data-src="{src}"><a href="#md-fn-{target}">{label}</a></sup>"##,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                target = escape_attr(&sanitize_id(label)),
+                label = escape_html(label),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownRawHtml(raw) => {
+            let id = ctx.idgen.next("md");
+            record(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<code class="md-raw-html" id="{id}" data-src="{src}">{raw}</code>"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                raw = escape_html(raw),
+            )
+            .unwrap();
+        }
+        NodeKind::MarkdownRawHtmlBlock => {
+            let id = ctx.idgen.next("md");
+            record_container(ctx, &id, &n.span, None);
+            write!(
+                out,
+                r#"<pre class="md-raw-html-block" id="{id}" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            out.push_str("</pre>");
         }
         NodeKind::MakeTitle => {
             let title = ctx.preamble.title.as_deref();
@@ -3614,6 +4283,58 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::HtmlOptions;
+
+    #[cfg(unix)]
+    #[test]
+    fn file_url_base_encodes_literal_filesystem_delimiters_and_percent() {
+        let base = super::file_url_base_for_directory(Path::new("/tmp/notes 100%20real/#draft?/λ"))
+            .unwrap();
+        assert_eq!(base, "file:///tmp/notes%20100%2520real/%23draft%3F/%CE%BB/");
+    }
+
+    #[test]
+    fn file_asset_destinations_preserve_escapes_but_encode_raw_path_bytes() {
+        let url = super::markdown_image_url(
+            "./fig%20one λ.png?download=1#preview",
+            Some("file:///tmp/source%20dir/"),
+        );
+        assert_eq!(
+            url,
+            "file:///tmp/source%20dir/fig%20one%20%CE%BB.png?download=1#preview"
+        );
+    }
+
+    #[test]
+    fn local_image_paths_reject_encoded_traversal_and_separators() {
+        for destination in [
+            "%2e%2e/secret.png",
+            ".%2E/secret.png",
+            "%2e./secret.png",
+            "safe%2f..%2fsecret.png",
+            "safe%5C..%5csecret.png",
+            "%00secret.png",
+        ] {
+            assert!(
+                !super::safe_markdown_image_url(destination),
+                "accepted {destination}"
+            );
+        }
+        assert!(super::safe_markdown_image_url("fig%20two.png"));
+        assert!(super::safe_markdown_image_url("./figures/a.png"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_url_base_handles_windows_drive_and_unc_paths() {
+        assert_eq!(
+            super::file_url_base_for_directory(Path::new(r"C:\Notes 100%20real\λ")),
+            Some("file:///C:/Notes%20100%2520real/%CE%BB/".to_string())
+        );
+        assert_eq!(
+            super::file_url_base_for_directory(Path::new(r"\\server\share\Notes #1")),
+            Some("file://server/share/Notes%20%231/".to_string())
+        );
+    }
 
     fn display_math_hash(html: &str) -> &str {
         let display = html.find(r#"class="math display""#).unwrap();

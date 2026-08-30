@@ -277,6 +277,18 @@ pub fn extract_preamble_with_overrides(
     Ok(extractor.finish())
 }
 
+/// Build the MathJax preamble for a non-LaTeX document. Markdown has no TeX
+/// preamble of its own, but it still gets the bundled compatibility macros and
+/// the same user/project override cascade as a LaTeX preview.
+pub fn extract_preamble_from_overrides(overrides: &[MacroOverride]) -> ExtractedPreamble {
+    let mut extractor = Extractor::new();
+    extractor.scan(BUILTIN_MACROS_TEX, Path::new("<builtin-macros.tex>"));
+    for ov in overrides {
+        extractor.scan(&ov.source, &ov.label);
+    }
+    extractor.finish()
+}
+
 struct Extractor {
     macros: Vec<ExtractedMacro>,
     packages: PackageMap,

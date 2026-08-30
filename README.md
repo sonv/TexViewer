@@ -1,7 +1,8 @@
 # mathpreview
 
-A live, browser-based preview server for LaTeX papers — keystroke-level
-updates, no PDF roundtrip, no LaTeX engine on the user's machine.
+A live, browser-based preview server for LaTeX papers and Markdown documents —
+keystroke-level updates, no PDF roundtrip, no LaTeX engine on the user's
+machine.
 
 
 https://github.com/user-attachments/assets/3b17927b-9769-4b5d-85a4-be38bb80dca8
@@ -13,13 +14,13 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
 
 ## What works today
 
-- **One-shot render** of a `.tex` project (any file in a multi-file project)
-  to a self-contained HTML file.
+- **One-shot render** of a `.tex` project (any file in a multi-file project) or
+  a standalone `.md` / `.markdown` document to HTML.
 - **Live-reload server** (`mathpreview-cli serve`) — HTTP page + WebSocket
   push. Browser tab reflects edits within ~5–10 ms of a keystroke pause.
 - **nvim integration** via the bundled `mathpreview.nvim` plugin
   (`lua/mathpreview/`, `plugin/mathpreview.lua`): `:MathPreview` in a
-  `.tex` buffer spawns the daemon on a free port (default 23636,
+  TeX or Markdown buffer spawns the daemon on a free port (default 23636,
   scanning up to 23651), opens the viewer in a browser tab, and pushes the
   buffer on every `TextChanged`. No disk writes, no git pollution. `VimLeavePre`
   reaps the daemon so quitting nvim doesn't leave it bound.
@@ -121,12 +122,48 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   (a naive full re-render is ~250 ms). See [How it stays
   fast](#how-it-stays-fast).
 
+## Markdown support
+
+The input format is selected automatically from the filename: `.md` and
+`.markdown` use the Markdown frontend, while TeX extensions keep the existing
+LaTeX project renderer. Neovim reports both Markdown extensions as the
+`markdown` filetype, which is enabled in the plugin defaults. A Markdown
+document supports CommonMark prose and headings plus useful GFM-style
+additions: emphasis, strong text, strikethrough, inline and fenced code,
+ordered and unordered lists, task lists, block quotes, links, tables, thematic
+breaks, and document-local images.
+
+Math uses the same embedded MathJax viewer as LaTeX. Inline math accepts
+`$...$` and `\(...\)`; display math accepts `$$...$$` and `\[...\]`. Code
+spans and fenced code blocks stay literal. Live reload, editor-to-browser and
+browser-to-editor source sync, themes, sizing controls, search, and the rest of
+the browser navigation work for Markdown too. The Markdown `print` control
+opens the browser print dialog instead of invoking a TeX compiler.
+
+Raw HTML in Markdown is escaped and shown as source text; it is never injected
+into the preview DOM. Local images are served only from beneath the Markdown
+file's directory; parent-directory traversal and symlink escapes are rejected.
+One-shot renders use absolute `file:` image URLs rooted at that directory, so
+images also resolve when `-o` points elsewhere or HTML is redirected from
+stdout. Keep the source images in place when opening the rendered HTML.
+
+Markdown support is intentionally single-file for now: each `.md` or
+`.markdown` file is its own preview root. Markdown citations, cross-references,
+theorem/proof roles, TikZ semantics, and multi-file includes are not interpreted
+yet. These remain available to `.tex` projects through the LaTeX frontend.
+
+Markdown does not add another runtime dependency. It is parsed by the same
+compiled `mathpreview-cli`, whether that binary was built with Cargo or
+downloaded from GitHub Releases, and the live viewer serves MathJax from that
+binary. Users do not install a Markdown renderer, MathJax, Node/npm, or TeX for
+Markdown preview.
+
 ## Install
 
 mathpreview ships as two pieces that live in this same repo: a Rust
 binary (`mathpreview-cli`) and an nvim plugin (`mathpreview.nvim`). The
 plugin auto-spawns the binary, so for the standard nvim workflow you
-install both, run `:MathPreview` in a `.tex` buffer, and ignore the
+install both, run `:MathPreview` in a TeX or Markdown buffer, and ignore the
 daemon thereafter.
 
 ### 1. The binary
@@ -140,10 +177,10 @@ The plugin can install its missing or stale binary in either of two ways:
   SHA-256 checksum, test its reported version, and store it under Neovim's data
   directory. This does **not** require Rust.
 
-Both binaries contain the same embedded MathJax bundle, New Computer Modern
-fonts, viewer JavaScript, and CSS. Neither mode requires a separate MathJax,
-Node/npm, or TeX installation; only the optional native TikZ renderer needs a
-local TeX toolchain.
+Both binaries contain the same Markdown parser, embedded MathJax bundle, New
+Computer Modern fonts, viewer JavaScript, and CSS. Neither mode requires a
+separate Markdown renderer, MathJax, Node/npm, or TeX installation; only the
+optional native TikZ renderer for LaTeX projects needs a local TeX toolchain.
 
 Installation happens automatically on the first `:MathPreview` when Cargo mode
 cannot resolve a usable binary, or when GitHub mode lacks its exact managed
@@ -228,7 +265,7 @@ The minimal version — drop into your `lazy` spec:
 ```lua
 {
   "sonv/TexViewer",
-  ft = { "tex", "plaintex", "latex" },
+  ft = { "tex", "plaintex", "latex", "markdown" },
   -- Install/update the binary on every plugin update (Rust toolchain
   -- required). Optional: without it the plugin still auto-installs on first
   -- :MathPreview and refreshes stale managed binaries on the first start after
@@ -248,7 +285,7 @@ For a **Rust-free install using the verified GitHub binary**, use this instead:
 ```lua
 {
   "sonv/TexViewer",
-  ft = { "tex", "plaintex", "latex" },
+  ft = { "tex", "plaintex", "latex", "markdown" },
   -- Optional, Peek-style install/update hook. Omit it to download on the first
   -- :MathPreview instead.
   build = "sh scripts/install-prebuilt.sh",
@@ -271,7 +308,7 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
 ```lua
 {
   "sonv/TexViewer",
-  ft  = { "tex", "plaintex", "latex" },
+  ft  = { "tex", "plaintex", "latex", "markdown" },
   cmd = { "MathPreview", "MathPreviewStop", "MathPreviewRestart", "MathPreviewClean", "MathPreviewStatus", "MathPreviewDebug" },
   -- Install/update the binary on install/update (Rust toolchain required).
   -- With this, you can skip the manual binary install in §1 entirely. Omit it
@@ -312,7 +349,7 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
     -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
 
     -- Filetypes that trigger automatic buffer pushes on TextChanged.
-    -- filetypes = { "tex", "plaintex", "latex" },
+    -- filetypes = { "tex", "plaintex", "latex", "markdown" },
 
     -- Debounces (ms). The push debounce is the keystroke→render latency
     -- floor; the cursor debounce throttles forward-sync POSTs.
@@ -333,7 +370,7 @@ The fuller version with lazy-load triggers and an explicit `opts` table:
 ```lua
 use {
   "sonv/TexViewer",
-  ft = { "tex", "plaintex", "latex" },
+  ft = { "tex", "plaintex", "latex", "markdown" },
   -- Install/update the binary on install/update (Rust toolchain required).
   -- Omit if you install mathpreview-cli yourself (see §1).
   run = "cargo install --path crates/cli --force",
@@ -456,19 +493,19 @@ users may add their stable Cargo bin directory to the shell `$PATH`.
 
 ### 3. Use it
 
-Open any `.tex` file and run:
+Open a `.tex`, `.md`, or `.markdown` file and run:
 
 ```vim
 :MathPreview
 ```
 
 The plugin spawns `mathpreview-cli serve <buffer> --port <free>` in the
-background, opens a browser tab at `http://mathpreview.localhost:<port>/`, and starts
-pushing the buffer on every `TextChanged`. This works even on a buffer
+background, opens a browser tab at `http://mathpreview.localhost:<port>/`, and
+starts pushing the buffer on every `TextChanged`. This works even on a buffer
 that has never been `:write`n: the daemon serves a placeholder for the
-missing file and the plugin pushes your buffer right away, so a brand-new
-`.tex` previews before its first save. The viewer shows the rendered
-document with the toolbar described in
+missing file and the plugin pushes your buffer right away, so a brand-new TeX
+or Markdown document previews before its first save. The viewer shows the
+rendered document with the toolbar described in
 [Viewer controls](#viewer-controls); `:` opens a vim-style command line
 for `:pin`/`:unpin`/`:clear`/`:q`.
 
@@ -476,8 +513,8 @@ Other commands:
 
 - `:MathPreviewStop` — kill the daemon. (Also fires automatically on
   `VimLeavePre`.)
-- `:MathPreviewRestart` — stop, then start. Useful after preamble
-  changes the daemon's macro cache misses.
+- `:MathPreviewRestart` — stop, then start. Useful after changes to a TeX
+  preamble or viewer configuration.
 - `:MathPreviewClean` — scan the preview port range for abandoned daemons
   (no editor attached, no viewer tab connected — leftovers from crashed
   sessions or old versions that never died with nvim) and offer to stop
@@ -496,7 +533,7 @@ Other commands:
 
 ### CLI directly (no plugin)
 
-If you'd rather skip the plugin (e.g. previewing a paper without nvim
+If you'd rather skip the plugin (e.g. previewing a document without nvim
 open), invoke the binary directly:
 
 ```sh
@@ -504,10 +541,16 @@ open), invoke the binary directly:
 mathpreview-cli render path/to/paper.tex -o out.html
 open out.html
 
+# Markdown is detected from .md or .markdown automatically.
+mathpreview-cli render path/to/notes.md -o notes.html
+
 # Live-reload server (default mathpreview.localhost:23636). Edits to the file on
 # disk trigger re-renders; without the plugin pushing buffers,
 # you'll re-render on save rather than per-keystroke.
 mathpreview-cli serve path/to/paper.tex
+
+# The same live server and reload path work for Markdown.
+mathpreview-cli serve path/to/notes.markdown
 ```
 
 ### MathJax and offline setup
@@ -613,10 +656,11 @@ a Rust roundtrip unless they are controlling the daemon itself.
   panel, paper surface, theorem boxes, refkey chips, margin cards,
   command line, sidenotes, and warnings; MathJax SVG glyphs use
   `currentColor` and follow the body text colour automatically.
-- `print` runs `latexmk -pdf` (or `pdflatex`) in the project directory and
-  opens the produced PDF in a new tab. It reads the output path from the
-  build log, so a custom `$out_dir` in `.latexmkrc` is found
-  automatically. Nothing runs until you click it.
+- `print` uses the document's native path. For TeX it runs `latexmk -pdf` (or
+  `pdflatex`) in the project directory and opens the produced PDF in a new tab;
+  it reads the output path from the build log, so a custom `$out_dir` in
+  `.latexmkrc` is found automatically. For Markdown it opens the browser print
+  dialog, with no TeX toolchain involved. Nothing runs until you click it.
 - `restart` calls `POST /restart`, relaunches the daemon with the same
   command-line arguments, polls until the replacement server is ready,
   then reloads the page.
@@ -1259,17 +1303,18 @@ The four commands `plugin/mathpreview.lua` registers on startup:
 | --- | --- |
 | `:MathPreview` | Spawn the daemon for the current buffer on the first free port in `23636..23651`. Open the browser viewer, attach `TextChanged` / `CursorMoved` / `ModeChanged` autocmds, and start the `/jump` poll. If the daemon is already running, just refocus/reopen its tab. |
 | `:MathPreviewStop` | Kill the daemon, detach autocmds, stop the poll. Also fires from `VimLeavePre`. |
-| `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after preamble changes the daemon's macro cache misses. |
+| `:MathPreviewRestart` | Stop, then start after a 200 ms grace period (so the OS can release the port). Handy after TeX preamble or viewer-configuration changes. |
 | `:MathPreviewStatus` | `print(vim.inspect(...))` of the runtime state: PID/port, root file, push and cursor counts, last error, resolved binary path, nvim version. |
 | `:MathPreviewDebug` | Fetch the daemon's `/debug` and print the resolved viewer settings, the reveal-source `editor_cmd`, and the config / macro paths consulted (`*` marks files that exist). Shows what's loaded and from where. |
 
-The daemon takes the root file's path on its command line and walks the
-project from there. The plugin then POSTs the *current buffer's* path on
-every `TextChanged` via `X-Mathpreview-Path`, and the daemon splices it
-in as an in-memory override against the real root project — so editing
-a `\input{chapter1}` child file updates the rendered root document
-without writing to disk. nvim 0.10+ uses `vim.system` + `vim.uv`; older
-versions fall back to `jobstart` + `vim.loop`.
+The daemon takes the document's path on its command line and chooses the input
+frontend from its extension. A `.md` or `.markdown` buffer is its own root. For
+TeX, the daemon walks to the project root; the plugin can then POST a current
+child buffer's path on every `TextChanged` via `X-Mathpreview-Path`, and the
+daemon splices it in as an in-memory override against that project. Editing a
+`\input{chapter1}` child therefore updates the rendered TeX root without writing
+to disk. nvim 0.10+ uses `vim.system` + `vim.uv`; older versions fall back to
+`jobstart` + `vim.loop`.
 
 `CursorMoved` / `CursorMovedI` POST the current source position to
 `/cursor`. The browser scrolls to and flashes the nearest rendered
@@ -1317,7 +1362,7 @@ require("mathpreview").setup({
   -- Set to any MathJax 4 build URL to load over the network instead —
   -- the plugin forwards it to the daemon as --mathjax-url.
   -- mathjax_url = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
-  filetypes = { "tex", "plaintex", "latex" },
+  filetypes = { "tex", "plaintex", "latex", "markdown" },
   debounce_ms = 40,
   cursor_debounce_ms = 80,
   sync = true,                            -- false to disable cursor/jump roundtrip

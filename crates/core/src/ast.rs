@@ -194,6 +194,75 @@ pub enum NodeKind {
     /// argument used by `description` lists; numbering for enumerate is
     /// handled by the renderer via `<ol>`.
     ListItem { marker: Option<String> },
+    /// A Markdown paragraph. Unlike LaTeX's implicit paragraph runs, the
+    /// CommonMark frontend retains paragraph boundaries explicitly.
+    MarkdownParagraph,
+    /// A Markdown ATX or Setext heading. Inline formatting lives in
+    /// `children`, so headings such as `## *Fast* math` keep their markup.
+    MarkdownHeading {
+        level: u8,
+    },
+    /// Plain Markdown prose. It must never pass through the LaTeX text-mode
+    /// command parser; the renderer only HTML-escapes it.
+    MarkdownText(String),
+    MarkdownEmphasis,
+    MarkdownStrong,
+    MarkdownStrikethrough,
+    MarkdownLink {
+        destination: String,
+        title: Option<String>,
+    },
+    MarkdownImage {
+        destination: String,
+        title: Option<String>,
+    },
+    MarkdownBlockQuote,
+    MarkdownInlineCode(String),
+    MarkdownCodeBlock {
+        language: Option<String>,
+        code: String,
+    },
+    MarkdownList {
+        ordered: bool,
+        start: Option<u64>,
+    },
+    MarkdownListItem,
+    MarkdownTaskMarker {
+        checked: bool,
+    },
+    MarkdownTable {
+        alignments: Vec<MarkdownAlignment>,
+    },
+    MarkdownTableHead,
+    MarkdownTableRow,
+    MarkdownTableCell,
+    MarkdownDefinitionList,
+    MarkdownDefinitionTerm,
+    MarkdownDefinitionDescription,
+    MarkdownSuperscript,
+    MarkdownSubscript,
+    MarkdownSoftBreak,
+    MarkdownHardBreak,
+    MarkdownRule,
+    MarkdownFootnoteDefinition {
+        label: String,
+    },
+    MarkdownFootnoteReference {
+        label: String,
+    },
+    /// Raw HTML is deliberately retained as inert source text. The renderer
+    /// escapes it instead of inserting it into the document DOM.
+    MarkdownRawHtml(String),
+    MarkdownRawHtmlBlock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownAlignment {
+    None,
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
