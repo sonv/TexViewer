@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 pub use ast::{Node, NodeKind, Pos, Role, Span};
 pub use config::{
     discover_config_files, effective_page_margin_mm, load_and_merge as load_and_merge_config,
-    Config, PageMode, ResolvedConfig, ResolvedViewerConfig, SourceJumpTrigger, Theme,
+    Config, MarkdownBlockAppearance, MarkdownBlockReveal, PageMode, ResolvedConfig,
+    ResolvedMarkdownBlock, ResolvedMarkdownConfig, ResolvedViewerConfig, SourceJumpTrigger, Theme,
 };
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{
@@ -203,7 +204,7 @@ fn finish_render(
 fn finish_markdown(root: PathBuf, source: String, opts: &HtmlOptions) -> Result<RenderOutput> {
     let overrides = load_macro_overrides(opts);
     let preamble = macros::extract_preamble_from_overrides(&overrides);
-    let body = markdown::parse(&source, &root)?;
+    let body = markdown::parse_with_config(&source, &root, &opts.markdown_config)?;
     let labels = numbering::LabelTable::default();
     let bib = std::collections::HashMap::new();
     let mut sync = SyncIndex::new();

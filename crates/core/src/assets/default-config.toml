@@ -16,6 +16,25 @@ typeset-mode = "local"
 [viewer.source-jump]
 trigger = "cmd-click"
 
+# Markdown custom blocks use `:::name Optional title` ... `:::` in the source.
+# The built-in proof block starts blurred and reveals from its heading button.
+[markdown.blocks.proof]
+label = "Proof"
+appearance = "plain" # plain | bordered | card
+reveal = "blur"      # always | blur
+italic = false
+# accent = "#2f9e44"    # Optional; only #RGB or #RRGGBB.
+# background = "#eefbf1" # Optional; only #RGB or #RRGGBB.
+
+# Define any 1–32 character name matching [a-z][a-z0-9_-]*.
+# [markdown.blocks.exercise]
+# label = "Exercise"
+# appearance = "card"
+# reveal = "always"
+# accent = "#8a5cd0"
+# background = "#f6f1ff"
+# italic = false
+
 # One shortcut string or an array is accepted. Use [] to disable an action.
 # Removing a key from its action leaves it untouched for the browser or an
 # extension. For example, omit `j`/`k` below while keeping the arrow aliases.

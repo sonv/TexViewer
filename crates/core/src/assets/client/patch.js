@@ -1312,6 +1312,119 @@
     (window.__mpConfig || {}).keybindingAliases,
     (window.__mpConfig || {}).keySequenceTimeoutMs
   );
+
+  // Markdown custom blocks use generated, semantic markup rather than raw
+  // author HTML.  Keep their reveal state in one helper so mouse activation,
+  // live-patch state transfer, and full-body replacement all update the same
+  // accessibility attributes.  `inert` prevents links and controls inside a
+  // blurred body from receiving focus before the reader reveals it.
+  function setMarkdownCustomBlockRevealed(block, revealed) {
+    if (!block || !block.classList.contains('md-custom-reveal-blur')) return;
+    var toggle = block.querySelector('.md-custom-toggle');
+    var body = block.querySelector('.md-custom-body');
+    if (!toggle || !body) return;
+    block.classList.toggle('is-concealed', !revealed);
+    toggle.setAttribute('aria-expanded', revealed ? 'true' : 'false');
+    if (revealed) {
+      body.removeAttribute('inert');
+      body.removeAttribute('aria-hidden');
+    } else {
+      body.setAttribute('inert', '');
+      body.setAttribute('aria-hidden', 'true');
+    }
+    var state = toggle.querySelector('.md-custom-toggle-state');
+    if (state) state.textContent = revealed ? 'Hide' : 'Reveal';
+  }
+
+  function markdownCustomBlocksInRoots(roots) {
+    var blocks = [];
+    Array.from(roots || []).forEach(function(root) {
+      if (!root || !root.querySelectorAll) return;
+      if (root.matches && root.matches('.md-custom-reveal-blur[data-md-custom-name]')) {
+        blocks.push(root);
+      }
+      root.querySelectorAll('.md-custom-reveal-blur[data-md-custom-name]').forEach(function(block) {
+        blocks.push(block);
+      });
+    });
+    return blocks;
+  }
+
+  function markdownCustomBlockIdentity(block) {
+    return (block.dataset.mdCustomName || '') + '\u0000' +
+      (block.dataset.mdCustomTitle || '');
+  }
+
+  function markdownCustomBlockContentIdentity(block) {
+    return markdownCustomBlockIdentity(block) + '\u0000' +
+      (block.dataset.mdCustomContent || '');
+  }
+
+  // Snapshot interactive state independently of top-level replacement
+  // positions. Authored content is the safety boundary: config-only updates
+  // and structural moves retain the body key, while editing or replacing a
+  // spoiler changes it and intentionally restores the concealed default.
+  function snapshotMarkdownCustomBlockState(oldRoots) {
+    return markdownCustomBlocksInRoots(oldRoots).map(function(block) {
+      return {
+        contentIdentity: markdownCustomBlockContentIdentity(block),
+        revealed: !block.classList.contains('is-concealed'),
+      };
+    });
+  }
+
+  // Pair only exact authored-content groups with unchanged cardinality. When
+  // equal bodies repeat, document order is a safe tie-breaker because every
+  // candidate reveals the same content. A count change remains concealed:
+  // there is no sound way to identify which duplicate survived.
+  function assignExactMarkdownContentState(snapshot, incoming) {
+    var oldGroups = new Map();
+    var newGroups = new Map();
+    snapshot.forEach(function(prior) {
+      var value = prior.contentIdentity;
+      if (!oldGroups.has(value)) oldGroups.set(value, []);
+      oldGroups.get(value).push(prior);
+    });
+    incoming.forEach(function(item) {
+      var value = item.contentIdentity;
+      if (!newGroups.has(value)) newGroups.set(value, []);
+      newGroups.get(value).push(item);
+    });
+    newGroups.forEach(function(newMatches, value) {
+      var oldMatches = oldGroups.get(value) || [];
+      if (!oldMatches.length || oldMatches.length !== newMatches.length) return;
+      for (var i = 0; i < oldMatches.length; i++) {
+        newMatches[i].prior = oldMatches[i];
+      }
+    });
+  }
+
+  function restoreMarkdownCustomBlockState(snapshot, newRoots) {
+    if (!snapshot || !snapshot.length) return;
+    var incoming = markdownCustomBlocksInRoots(newRoots).map(function(block) {
+      return {
+        block: block,
+        contentIdentity: markdownCustomBlockContentIdentity(block),
+        prior: null,
+      };
+    });
+
+    assignExactMarkdownContentState(snapshot, incoming);
+
+    incoming.forEach(function(item) {
+      if (item.prior && item.prior.revealed) {
+        setMarkdownCustomBlockRevealed(item.block, true);
+      }
+    });
+  }
+
+  function copyMarkdownCustomBlockState(oldRoots, newRoots) {
+    restoreMarkdownCustomBlockState(
+      snapshotMarkdownCustomBlockState(oldRoots),
+      newRoots
+    );
+  }
+
   document.addEventListener('focusin', function(e) {
     if (isEditableTarget(e.target) || isViewerInteractiveTarget(e.target)) {
       clearViewerKeyPending();
@@ -1506,6 +1619,17 @@
     var pageHashLink = e.target.closest('#page a[href^=\'#\']');
     if (pageHashLink) {
       recordViewerPlace();
+      return;
+    }
+    var customToggle = e.target.closest('.md-custom-toggle');
+    if (customToggle) {
+      e.preventDefault();
+      var customBlock = customToggle.closest('.md-custom-block');
+      var reveal = customToggle.getAttribute('aria-expanded') !== 'true';
+      setMarkdownCustomBlockRevealed(customBlock, reveal);
+      var customTopBlock = customBlock && customBlock.closest('.blk');
+      if (customTopBlock) invalidateOverlayMetrics([customTopBlock]);
+      scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
       return;
     }
     var head = e.target.closest('.proof-head');
@@ -2727,6 +2851,10 @@
           // BEFORE the math transplant so reused paragraphs come along
           // with their already-typeset math intact.
           var newFragBlocks = frag.querySelectorAll('article.blk');
+          copyMarkdownCustomBlockState(
+            blocks.slice(start, start + removeCount),
+            newFragBlocks
+          );
           var pairCount = Math.min(removeCount, newFragBlocks.length);
           for (var pp = 0; pp < pairCount; pp++) {
             var pairedOldBlock = blocks[start + pp];
@@ -2834,12 +2962,14 @@
             if (typeof slot.src === 'number') rbReusedSources.add(slot.src);
           });
           var rbReplacementSizes = [];
+          var rbReplacementBlocks = [];
           for (var s2 = 0; s2 < rbCount; s2++) {
             var rbOld = rbBlocks[rbStart + s2];
             if (rbOld) {
               var rbAbsoluteIndex = rbStart + s2;
               rbOldByIdx.set(rbAbsoluteIndex, rbOld);
               if (!rbReusedSources.has(rbAbsoluteIndex)) {
+                rbReplacementBlocks.push(rbOld);
                 rbReplacementSizes.push(
                   detachedBlockSizes
                     ? detachedBlockSizes.get(rbOld)
@@ -2850,8 +2980,19 @@
               removedBlocks++;
             }
           }
+          var rbMarkdownState = snapshotMarkdownCustomBlockState(rbReplacementBlocks);
+          var rbPreparedInserts = new Map();
+          var rbAllInsertRoots = [];
+          (op.plan || []).forEach(function(slot, planIndex) {
+            if (typeof slot.html !== 'string') return;
+            tpl.innerHTML = slot.html;
+            var prepared = Array.from(tpl.content.children);
+            rbPreparedInserts.set(planIndex, prepared);
+            prepared.forEach(function(child) { rbAllInsertRoots.push(child); });
+          });
+          restoreMarkdownCustomBlockState(rbMarkdownState, rbAllInsertRoots);
 
-          (op.plan || []).forEach(function(slot) {
+          (op.plan || []).forEach(function(slot, planIndex) {
             if (typeof slot.src === 'number') {
               var b = rbOldByIdx.get(slot.src);
               if (b) {
@@ -2862,8 +3003,7 @@
                 removedBlocks--;
               }
             } else if (typeof slot.html === 'string') {
-              tpl.innerHTML = slot.html;
-              var children = Array.from(tpl.content.children);
+              var children = rbPreparedInserts.get(planIndex) || [];
               children.forEach(function(c) {
                 seedBlockIntrinsicSize(c, rbReplacementSizes.shift());
                 transplantMath(c);

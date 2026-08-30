@@ -109,6 +109,12 @@ impl Serialize for TextMacro {
 pub struct Config {
     #[serde(default)]
     pub viewer: ViewerConfig,
+    /// Declarative Markdown container formats keyed by the name used in a
+    /// `:::name` block. The table is intentionally data-only: labels are
+    /// plain text, colors are restricted to hex values, and no HTML, CSS, URL,
+    /// or script template is accepted here.
+    #[serde(default)]
+    pub markdown: MarkdownConfig,
     /// Inline text-mode macro → HTML template map, for the preview only.
     /// Keys are command names (with or without a leading `\`); values are an
     /// HTML template with `#1`..`#9` placeholders filled by the rendered
@@ -131,6 +137,67 @@ pub struct Config {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     legacy_keybinding_aliases: BTreeMap<String, KeyBindingList>,
+}
+
+/// Sparse `[markdown]` configuration. Each named block is merged field by
+/// field across config layers before its defaults are filled in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct MarkdownConfig {
+    #[serde(default)]
+    pub blocks: BTreeMap<String, MarkdownBlockConfig>,
+}
+
+/// One sparse `[markdown.blocks.NAME]` declaration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct MarkdownBlockConfig {
+    /// Plain-text heading shown above the block body.
+    pub label: Option<String>,
+    pub appearance: Option<MarkdownBlockAppearance>,
+    pub reveal: Option<MarkdownBlockReveal>,
+    /// Optional validated CSS color (`#RGB` or `#RRGGBB`).
+    pub accent: Option<String>,
+    /// Optional validated CSS color (`#RGB` or `#RRGGBB`).
+    pub background: Option<String>,
+    pub italic: Option<bool>,
+    /// `false` removes this name from the effective block map. This can
+    /// disable the built-in `proof` block or a declaration from a lower layer.
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkdownBlockAppearance {
+    Plain,
+    Bordered,
+    Card,
+}
+
+impl MarkdownBlockAppearance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Bordered => "bordered",
+            Self::Card => "card",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkdownBlockReveal {
+    Always,
+    Blur,
+}
+
+impl MarkdownBlockReveal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Blur => "blur",
+        }
+    }
 }
 
 /// The `[keybindings]` table stays flat for action names while reserving the
@@ -645,8 +712,27 @@ impl SourceJumpTrigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConfig {
     pub viewer: ResolvedViewerConfig,
+    pub markdown: ResolvedMarkdownConfig,
     /// Inline text-mode macro → HTML template map (see [`Config::text_macros`]).
     pub text_macros: HashMap<String, TextMacro>,
+}
+
+/// Effective Markdown custom-block formats, including the built-in `proof`
+/// format unless a config layer disabled it. Disabled entries are omitted, so
+/// parsers can use map membership as the recognition check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMarkdownConfig {
+    pub blocks: BTreeMap<String, ResolvedMarkdownBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMarkdownBlock {
+    pub label: String,
+    pub appearance: MarkdownBlockAppearance,
+    pub reveal: MarkdownBlockReveal,
+    pub accent: Option<String>,
+    pub background: Option<String>,
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -699,6 +785,49 @@ pub fn effective_page_margin_mm(
         .map(|mm| (mm * 10.0).round() / 10.0)
 }
 
+impl Default for ResolvedMarkdownConfig {
+    fn default() -> Self {
+        Self {
+            blocks: BTreeMap::from([(
+                "proof".to_string(),
+                ResolvedMarkdownBlock {
+                    label: "Proof".to_string(),
+                    appearance: MarkdownBlockAppearance::Plain,
+                    reveal: MarkdownBlockReveal::Blur,
+                    accent: None,
+                    background: None,
+                    italic: false,
+                },
+            )]),
+        }
+    }
+}
+
+impl ResolvedMarkdownBlock {
+    fn custom_default(name: &str) -> Self {
+        Self {
+            label: default_markdown_block_label(name),
+            appearance: MarkdownBlockAppearance::Bordered,
+            reveal: MarkdownBlockReveal::Always,
+            accent: None,
+            background: None,
+            italic: false,
+        }
+    }
+}
+
+fn default_markdown_block_label(name: &str) -> String {
+    name.split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut characters = word.chars();
+            let first = characters.next().unwrap_or_default().to_ascii_uppercase();
+            format!("{first}{}", characters.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl Default for ResolvedConfig {
     fn default() -> Self {
         Self {
@@ -719,6 +848,7 @@ impl Default for ResolvedConfig {
                 key_sequence_timeout_ms: 750,
                 keybinding_aliases: default_keybinding_aliases(),
             },
+            markdown: ResolvedMarkdownConfig::default(),
             text_macros: HashMap::new(),
         }
     }
@@ -732,6 +862,7 @@ impl Config {
     /// order is `lower.merge(higher)`, so later layers win per field.
     pub fn merge(&mut self, other: Config) {
         self.viewer.merge(other.viewer);
+        self.markdown.merge(other.markdown);
         // Later layers win per macro name.
         for (name, body) in other.text_macros {
             self.text_macros.insert(name, body);
@@ -830,6 +961,7 @@ impl Config {
                     .unwrap_or(defaults.viewer.key_sequence_timeout_ms),
                 keybinding_aliases,
             },
+            markdown: self.markdown.resolve(),
             text_macros: self.text_macros,
         }
     }
@@ -850,6 +982,7 @@ impl Config {
                 .or_insert(expansion);
         }
         config.validate_viewer(label)?;
+        config.validate_markdown(label)?;
         config.validate_keybindings(label)?;
         let mut canonical_aliases = BTreeMap::new();
         for (source, expansion) in std::mem::take(&mut config.keybindings.aliases) {
@@ -970,6 +1103,122 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    fn validate_markdown(&self, label: &Path) -> Result<()> {
+        for (name, block) in &self.markdown.blocks {
+            if !valid_markdown_block_name(name) {
+                bail!(
+                    "invalid Markdown block name {name:?} in {}; expected 1–32 lowercase ASCII characters matching [a-z][a-z0-9_-]*",
+                    label.display()
+                );
+            }
+            if let Some(block_label) = &block.label {
+                let trimmed = block_label.trim();
+                if trimmed.is_empty()
+                    || trimmed != block_label
+                    || block_label.chars().count() > 80
+                    || block_label.chars().any(char::is_control)
+                {
+                    bail!(
+                        "invalid label for Markdown block {name:?} in {}; labels must be 1–80 characters, have no leading or trailing whitespace, and contain no control characters",
+                        label.display()
+                    );
+                }
+            }
+            for (field, color) in [
+                ("accent", block.accent.as_deref()),
+                ("background", block.background.as_deref()),
+            ] {
+                if let Some(color) = color {
+                    if !valid_markdown_block_color(color) {
+                        bail!(
+                            "invalid {field} color {color:?} for Markdown block {name:?} in {}; expected #RGB or #RRGGBB",
+                            label.display()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn valid_markdown_block_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=32).contains(&bytes.len())
+        && bytes[0].is_ascii_lowercase()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(byte))
+}
+
+fn valid_markdown_block_color(color: &str) -> bool {
+    matches!(color.len(), 4 | 7)
+        && color.starts_with('#')
+        && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+impl MarkdownConfig {
+    fn merge(&mut self, other: MarkdownConfig) {
+        for (name, block) in other.blocks {
+            if let Some(existing) = self.blocks.get_mut(&name) {
+                existing.merge(block);
+            } else {
+                self.blocks.insert(name, block);
+            }
+        }
+    }
+
+    fn resolve(self) -> ResolvedMarkdownConfig {
+        let mut resolved = ResolvedMarkdownConfig::default();
+        for (name, block) in self.blocks {
+            let defaults = resolved
+                .blocks
+                .remove(&name)
+                .unwrap_or_else(|| ResolvedMarkdownBlock::custom_default(&name));
+            if block.enabled.unwrap_or(true) {
+                resolved.blocks.insert(name, block.resolve(defaults));
+            }
+        }
+        resolved
+    }
+}
+
+impl MarkdownBlockConfig {
+    fn merge(&mut self, other: MarkdownBlockConfig) {
+        if other.label.is_some() {
+            self.label = other.label;
+        }
+        if other.appearance.is_some() {
+            self.appearance = other.appearance;
+        }
+        if other.reveal.is_some() {
+            self.reveal = other.reveal;
+        }
+        if other.accent.is_some() {
+            self.accent = other.accent;
+        }
+        if other.background.is_some() {
+            self.background = other.background;
+        }
+        if other.italic.is_some() {
+            self.italic = other.italic;
+        }
+        if other.enabled.is_some() {
+            self.enabled = other.enabled;
+        }
+    }
+
+    fn resolve(self, defaults: ResolvedMarkdownBlock) -> ResolvedMarkdownBlock {
+        ResolvedMarkdownBlock {
+            label: self.label.unwrap_or(defaults.label),
+            appearance: self.appearance.unwrap_or(defaults.appearance),
+            reveal: self.reveal.unwrap_or(defaults.reveal),
+            accent: self.accent.or(defaults.accent),
+            background: self.background.or(defaults.background),
+            italic: self.italic.unwrap_or(defaults.italic),
+        }
     }
 }
 
@@ -1104,6 +1353,219 @@ mod tests {
         let cfg = Config::parse(DEFAULT_CONFIG_TEMPLATE, Path::new("<default-config>"))
             .expect("the config-dialog template must remain valid");
         assert_eq!(cfg.resolve(), ResolvedConfig::default());
+    }
+
+    #[test]
+    fn markdown_blocks_have_safe_built_in_and_custom_defaults() {
+        let defaults = Config::default().resolve();
+        let proof = defaults.markdown.blocks.get("proof").unwrap();
+        assert_eq!(proof.label, "Proof");
+        assert_eq!(proof.appearance, MarkdownBlockAppearance::Plain);
+        assert_eq!(proof.reveal, MarkdownBlockReveal::Blur);
+        assert_eq!(proof.accent, None);
+        assert_eq!(proof.background, None);
+        assert!(!proof.italic);
+
+        let configured = Config::parse(
+            "[markdown.blocks.guided_exercise]\n",
+            Path::new("markdown.toml"),
+        )
+        .unwrap()
+        .resolve();
+        let custom = configured.markdown.blocks.get("guided_exercise").unwrap();
+        assert_eq!(custom.label, "Guided Exercise");
+        assert_eq!(custom.appearance, MarkdownBlockAppearance::Bordered);
+        assert_eq!(custom.reveal, MarkdownBlockReveal::Always);
+        assert_eq!(custom.accent, None);
+        assert_eq!(custom.background, None);
+        assert!(!custom.italic);
+    }
+
+    #[test]
+    fn markdown_block_fields_parse_and_resolve() {
+        let configured = Config::parse(
+            r##"[markdown.blocks.exercise]
+label = "Try this"
+appearance = "card"
+reveal = "blur"
+accent = "#AbC"
+background = "#102030"
+italic = true
+enabled = true
+"##,
+            Path::new("markdown.toml"),
+        )
+        .unwrap()
+        .resolve();
+        let block = configured.markdown.blocks.get("exercise").unwrap();
+        assert_eq!(block.label, "Try this");
+        assert_eq!(block.appearance, MarkdownBlockAppearance::Card);
+        assert_eq!(block.reveal, MarkdownBlockReveal::Blur);
+        assert_eq!(block.accent.as_deref(), Some("#AbC"));
+        assert_eq!(block.background.as_deref(), Some("#102030"));
+        assert!(block.italic);
+        assert_eq!(block.appearance.as_str(), "card");
+        assert_eq!(block.reveal.as_str(), "blur");
+    }
+
+    #[test]
+    fn markdown_blocks_merge_field_by_field_and_can_be_disabled() {
+        let mut global = Config::parse(
+            r##"[markdown.blocks.exercise]
+label = "Exercise"
+appearance = "card"
+accent = "#369"
+italic = true
+
+[markdown.blocks.proof]
+label = "Solution"
+"##,
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        let project = Config::parse(
+            r#"[markdown.blocks.exercise]
+reveal = "blur"
+
+[markdown.blocks.proof]
+enabled = false
+"#,
+            Path::new("project.toml"),
+        )
+        .unwrap();
+        global.merge(project);
+        let resolved = global.resolve();
+        let exercise = resolved.markdown.blocks.get("exercise").unwrap();
+        assert_eq!(exercise.label, "Exercise");
+        assert_eq!(exercise.appearance, MarkdownBlockAppearance::Card);
+        assert_eq!(exercise.reveal, MarkdownBlockReveal::Blur);
+        assert_eq!(exercise.accent.as_deref(), Some("#369"));
+        assert!(exercise.italic);
+        assert!(!resolved.markdown.blocks.contains_key("proof"));
+    }
+
+    #[test]
+    fn markdown_block_can_be_reenabled_without_losing_lower_fields() {
+        let mut lower = Config::parse(
+            r#"[markdown.blocks.exercise]
+label = "Problem"
+appearance = "card"
+enabled = false
+"#,
+            Path::new("lower.toml"),
+        )
+        .unwrap();
+        let higher = Config::parse(
+            "[markdown.blocks.exercise]\nenabled = true\n",
+            Path::new("higher.toml"),
+        )
+        .unwrap();
+        lower.merge(higher);
+        let resolved = lower.resolve();
+        let block = resolved.markdown.blocks.get("exercise").unwrap();
+        assert_eq!(block.label, "Problem");
+        assert_eq!(block.appearance, MarkdownBlockAppearance::Card);
+    }
+
+    #[test]
+    fn markdown_block_names_are_strictly_validated() {
+        let long_name = "a".repeat(33);
+        for name in [
+            "".to_string(),
+            "Proof".to_string(),
+            "1proof".to_string(),
+            "proof.dot".to_string(),
+            "proof!".to_string(),
+            "pröof".to_string(),
+            long_name,
+        ] {
+            let source = format!("[markdown.blocks.{name:?}]\n");
+            let error = Config::parse(&source, Path::new("invalid-name.toml")).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid Markdown block name"),
+                "unexpected error for {name:?}: {error:#}"
+            );
+        }
+
+        let name = format!("a{}", "9".repeat(31));
+        let source = format!("[markdown.blocks.{name}]\n");
+        assert!(Config::parse(&source, Path::new("valid-name.toml")).is_ok());
+    }
+
+    #[test]
+    fn markdown_block_labels_are_bounded_plain_text() {
+        for label in ["", "   ", " leading", "trailing ", "line\nbreak"] {
+            let source = format!("[markdown.blocks.note]\nlabel = {label:?}\n");
+            let error = Config::parse(&source, Path::new("invalid-label.toml")).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid label"),
+                "unexpected error for {label:?}: {error:#}"
+            );
+        }
+
+        let too_long = "x".repeat(81);
+        let source = format!("[markdown.blocks.note]\nlabel = {too_long:?}\n");
+        assert!(Config::parse(&source, Path::new("long-label.toml"))
+            .unwrap_err()
+            .to_string()
+            .contains("invalid label"));
+
+        let source = "[markdown.blocks.note]\nlabel = \"Hint <not HTML> & details\"\n";
+        let label = &Config::parse(source, Path::new("plain-label.toml"))
+            .unwrap()
+            .resolve()
+            .markdown
+            .blocks["note"]
+            .label;
+        assert_eq!(label, "Hint <not HTML> & details");
+    }
+
+    #[test]
+    fn markdown_block_colors_accept_only_hex_literals() {
+        for color in ["#000", "#aBc", "#012345", "#aBCdEf"] {
+            let source = format!("[markdown.blocks.note]\naccent = {color:?}\n");
+            assert!(
+                Config::parse(&source, Path::new("valid-color.toml")).is_ok(),
+                "valid color rejected: {color}"
+            );
+        }
+
+        for color in [
+            "000",
+            "#12",
+            "#1234",
+            "#12345",
+            "#1234567",
+            "#ggg",
+            "red",
+            "rgb(0,0,0)",
+            "url(https://example.invalid/x)",
+            "#fff;display:none",
+        ] {
+            for field in ["accent", "background"] {
+                let source = format!("[markdown.blocks.note]\n{field} = {color:?}\n");
+                let error = Config::parse(&source, Path::new("invalid-color.toml")).unwrap_err();
+                assert!(
+                    error.to_string().contains("expected #RGB or #RRGGBB"),
+                    "unexpected error for {field}={color:?}: {error:#}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_blocks_reject_unknown_fields_and_enum_values() {
+        let unknown = Config::parse(
+            "[markdown.blocks.note]\nclass = \"trusted\"\n",
+            Path::new("unknown.toml"),
+        )
+        .unwrap_err();
+        assert!(format!("{unknown:#}").contains("unknown field"));
+
+        for (field, value) in [("appearance", "floating"), ("reveal", "hover")] {
+            let source = format!("[markdown.blocks.note]\n{field} = {value:?}\n");
+            assert!(Config::parse(&source, Path::new("enum.toml")).is_err());
+        }
     }
 
     #[test]

@@ -139,15 +139,16 @@ fn main() -> Result<()> {
             let input_dir = input.parent().unwrap_or_else(|| std::path::Path::new("."));
             let macro_overrides =
                 mathpreview_core::discover_macro_overrides(input_dir, &extra_macros);
-            let viewer_config = mathpreview_core::load_and_merge_config(
+            let resolved_config = mathpreview_core::load_and_merge_config(
                 &mathpreview_core::discover_config_files(input_dir, &extra_configs),
             )
-            .map(|(r, _)| r.viewer)
-            .unwrap_or_else(|_| mathpreview_core::ResolvedConfig::default().viewer);
+            .map(|(resolved, _)| resolved)
+            .unwrap_or_default();
             let mut opts = HtmlOptions {
                 title,
                 macro_overrides,
-                viewer_config,
+                viewer_config: resolved_config.viewer,
+                markdown_config: resolved_config.markdown,
                 local_asset_base: static_markdown_asset_base(&input)?,
                 ..HtmlOptions::default()
             };

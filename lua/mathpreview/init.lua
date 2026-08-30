@@ -31,7 +31,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- warned about — the signal that a fix you "released" isn't actually the
 -- binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.34"
+local PLUGIN_VERSION = "2.1.35"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default

@@ -11,7 +11,7 @@
   // MUST match WS_PROTOCOL_VERSION in crates/cli/src/serve.rs — a mismatch makes
   // the server full-reload every connect (an infinite reload loop). The
   // `client_ws_protocol_matches_server` test guards this.
-  var WS_PROTOCOL_VERSION = '78';
+  var WS_PROTOCOL_VERSION = '79';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
@@ -154,6 +154,7 @@
           var newReplacementBlocks = pageBlocks(buf).filter(function(block) {
             return block.getAttribute('data-mp-reused-block') !== '1';
           });
+          copyMarkdownCustomBlockState(oldReplacementBlocks, newReplacementBlocks);
           for (var bi = 0;
                bi < oldReplacementBlocks.length && bi < newReplacementBlocks.length;
                bi++) {

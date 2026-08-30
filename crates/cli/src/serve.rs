@@ -51,7 +51,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "78";
+const WS_PROTOCOL_VERSION: &str = "79";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -3251,6 +3251,7 @@ async fn live_render_options(state: &AppState) -> HtmlOptions {
     match load_and_merge_config_cached(state).await {
         Ok(resolved) => {
             render_opts.text_macros = resolved.text_macros.clone();
+            render_opts.markdown_config = resolved.markdown.clone();
             let mut guard = state.viewer_config.write().await;
             if *guard != resolved.viewer {
                 *guard = resolved.viewer.clone();
@@ -3316,7 +3317,11 @@ async fn render_cached(
         t.preamble_ms = t1.elapsed().as_millis();
 
         let t2 = std::time::Instant::now();
-        let body = mathpreview_core::markdown::parse(&source, root)?;
+        let body = mathpreview_core::markdown::parse_with_config(
+            &source,
+            root,
+            &render_opts.markdown_config,
+        )?;
         t.body_parse_ms = t2.elapsed().as_millis();
 
         let labels = numbering::LabelTable::default();
@@ -6242,6 +6247,53 @@ Second paragraph here.
         assert!(!rendered.body_html.contains("Disk version"));
         assert!(rendered.body_html.contains(r#"class="math inline""#));
         assert_eq!(rendered.included_files, Vec::<PathBuf>::new());
+    }
+
+    #[tokio::test]
+    async fn render_cached_applies_live_markdown_block_config() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mathpreview-live-blocks-{unique}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("notes.md");
+        let config = dir.join("blocks.toml");
+        let source = ":::exercise Live title\nBody with $x$.\n:::\n";
+        std::fs::write(
+            &config,
+            concat!(
+                "[markdown.blocks.exercise]\n",
+                "label = \"Exercise\"\n",
+                "appearance = \"card\"\n",
+                "reveal = \"blur\"\n",
+            ),
+        )
+        .unwrap();
+
+        let initial = mathpreview_core::render_document_from_source(
+            &root,
+            source.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        assert!(!initial.body_html.contains("md-custom-kind-exercise"));
+        let mut state = app_state_for_output(initial);
+        state.config_paths = Arc::new(vec![config.clone()]);
+        state
+            .buffer_overrides
+            .write()
+            .await
+            .insert(root.clone(), source.to_string());
+
+        let (rendered, _) = render_cached(&state, &root).await.unwrap();
+        assert!(rendered.body_html.contains("md-custom-kind-exercise"));
+        assert!(rendered.body_html.contains("md-custom-card"));
+        assert!(rendered.body_html.contains("md-custom-reveal-blur"));
+        assert!(rendered.body_html.contains("Live title"));
+        assert!(rendered.body_html.contains(r#"class="math inline""#));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

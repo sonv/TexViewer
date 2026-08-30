@@ -41,14 +41,14 @@ pub(super) const DEFAULT_CSS: &str = include_str!("../assets/default.css");
 
 pub(super) fn viewer_keybinding_reference() -> String {
     let mut out = format!(
-        "# --- Complete Neovim-style keybinding reference for v{} (commented) ---\n\
-         # Copy entries into an existing table, or uncomment the table and only\n\
-         # the actions you want to override. Commented defaults change nothing.\n",
+        "# --- Markdown block examples and complete keybinding reference for v{} (commented) ---\n\
+         # Copy entries into an existing table, or uncomment only the formats and\n\
+         # actions you want to override. Commented defaults change nothing.\n",
         env!("CARGO_PKG_VERSION")
     );
     let start = crate::config::DEFAULT_CONFIG_TEMPLATE
-        .find("# One shortcut string or an array is accepted.")
-        .expect("the documented config must contain the keybinding guide");
+        .find("# Markdown custom blocks use")
+        .expect("the documented config must contain the Markdown block guide");
     for line in crate::config::DEFAULT_CONFIG_TEMPLATE[start..].lines() {
         if line.is_empty() {
             out.push_str("#\n");
@@ -61,7 +61,7 @@ pub(super) fn viewer_keybinding_reference() -> String {
             out.push('\n');
         }
     }
-    out.push_str("# --- End keybinding reference ---\n");
+    out.push_str("# --- End Markdown block and keybinding reference ---\n");
     out
 }
 
@@ -83,7 +83,7 @@ pub(super) fn wrap_in_shell(
     let keybinding_reference = viewer_keybinding_reference();
     let default_config_html = escape_html(&format!(
         "# Add only settings to override at this scope.\n\
-         # Omitted settings and keybindings remain inherited.\n\n\
+         # Omitted settings, Markdown formats, and keybindings remain inherited.\n\n\
          {keybinding_reference}"
     ));
     let keybinding_reference_html = escape_html(&keybinding_reference);
@@ -392,9 +392,10 @@ pub(super) fn wrap_in_shell(
     </div>
     <section class="config-panel" id="config-mode-viewer" role="tabpanel">
       <p class="macros-dialog-hint">
-        Use the common controls, then edit any advanced settings and
-        keybindings in the TOML below. On save, the controls are merged into
-        the editor and the complete file is validated before it is written.
+        Use the common controls, then edit advanced settings, Markdown block
+        formats, and keybindings in the TOML below. On save, the controls are
+        merged into the editor and the complete file is validated before it is
+        written.
       </p>
       <fieldset class="macros-dialog-scope config-fields config-viewer-fields">
         <legend>Common options</legend>
@@ -457,12 +458,12 @@ pub(super) fn wrap_in_shell(
         </label>
       </fieldset>
       <label class="config-editor-label" for="config-viewer-toml">
-        TOML editor (advanced settings and keybindings)
+        TOML editor (advanced settings, Markdown blocks, and keybindings)
       </label>
       <p class="macros-dialog-hint config-editor-hint">
-        The selected file loads here unchanged, followed by a complete commented
-        keybinding reference. Uncomment only the overrides you want; comments do
-        not shadow lower config scopes.
+        The selected file loads here unchanged, followed by commented Markdown
+        block examples and a complete keybinding reference. Uncomment only the
+        overrides you want; comments do not shadow lower config scopes.
       </p>
       <textarea id="config-viewer-toml" class="macros-dialog-input config-viewer-editor"
                 rows="18" spellcheck="false" autocomplete="off">{default_config_html}</textarea>

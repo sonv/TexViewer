@@ -157,10 +157,53 @@ One-shot renders use absolute `file:` image URLs rooted at that directory, so
 images also resolve when `-o` points elsewhere or HTML is redirected from
 stdout. Keep the source images in place when opening the rendered HTML.
 
+### Custom Markdown blocks
+
+MathPreview includes a blurred `proof` block and lets projects define their
+own semantic formats. A block starts and ends on its own line:
+
+```markdown
+:::proof Proof of the main estimate
+The proof may contain **Markdown**, links, lists, and $math$.
+:::
+```
+
+The proof body starts blurred. Its heading is a real button, so it can be
+revealed with a mouse or keyboard. Reveal state survives live moves and
+config-only restyling while the authored body is unchanged; editing or
+replacing that body conceals it again so a new spoiler is never revealed by
+stale UI state. Proofs print unblurred. Blur is only a visual reading aid—not a
+way to hide secrets from the generated page or its source.
+
+Define additional block names in the config panel's TOML editor, in the global
+config, or in a project's `.mathpreview.toml`. Names are 1–32 lowercase ASCII
+characters matching `[a-z][a-z0-9_-]*`:
+
+```toml
+[markdown.blocks.exercise]
+label = "Exercise"
+appearance = "card"       # plain | bordered | card
+reveal = "always"         # always | blur
+accent = "#8a5cd0"        # optional; #RGB or #RRGGBB only
+background = "#f6f1ff"   # optional; #RGB or #RRGGBB only
+italic = false
+```
+
+The text after the block name is an optional plain-text title. Known blocks may
+be nested up to 32 levels, and up to three leading spaces are accepted. Deeper,
+unknown, malformed, or unclosed blocks remain literal Markdown so a typo or
+pathological document does not silently consume the rest of the file. Set
+`enabled = false` to disable the built-in `proof` block or a format inherited
+from a global config. Configured labels must be trimmed, control-free plain text
+of 1–80 characters. Labels and titles are escaped, colors are strictly
+validated, and custom formats never accept HTML, CSS, URLs, or JavaScript. Raw
+HTML inside a block remains inert just like raw HTML elsewhere.
+
 Markdown support is intentionally single-file for now: each `.md` or
 `.markdown` file is its own preview root. Markdown citations, cross-references,
-theorem/proof roles, TikZ semantics, and multi-file includes are not interpreted
-yet. These remain available to `.tex` projects through the LaTeX frontend.
+LaTeX theorem/proof roles, TikZ semantics, and multi-file includes are not
+interpreted yet. These remain available to `.tex` projects through the LaTeX
+frontend.
 
 Markdown does not add another runtime dependency. It is parsed by the same
 compiled `mathpreview-cli`, whether that binary was built with Cargo or

@@ -2986,7 +2986,7 @@
 
   function viewerConfigSparseDraft() {
     return '# Add only settings to override at this scope.\n'
-      + '# Omitted settings and keybindings remain inherited.\n';
+      + '# Omitted settings, Markdown formats, and keybindings remain inherited.\n';
   }
 
   function viewerConfigKeybindingReference() {

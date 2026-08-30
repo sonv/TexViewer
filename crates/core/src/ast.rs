@@ -205,6 +205,17 @@ pub enum NodeKind {
         /// visible heading text (for example `Fast math` → `fast-math`).
         anchor: String,
     },
+    /// A configured fenced Markdown block (`:::name Optional title` … `:::`).
+    /// The frontend recognizes only block names enabled in the resolved
+    /// Markdown configuration; the body remains ordinary parsed Markdown.
+    MarkdownCustomBlock {
+        name: String,
+        title: Option<String>,
+        /// Position- and config-independent hash of the exact authored body.
+        /// Live reveal state is restored only when this identity is unchanged.
+        #[serde(default)]
+        content_key: String,
+    },
     /// Plain Markdown prose. It must never pass through the LaTeX text-mode
     /// command parser; the renderer only HTML-escapes it.
     MarkdownText(String),

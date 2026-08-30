@@ -13,11 +13,25 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 use unicase::UniCase;
 
 use crate::ast::{MarkdownAlignment, Node, NodeKind, Pos, Span};
+use crate::config::ResolvedMarkdownConfig;
+
+const MAX_MARKDOWN_CUSTOM_BLOCK_NESTING: usize = 32;
 
 /// Parse one Markdown source file into the shared source-spanned AST.
 pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
+    parse_with_config(source, file, &ResolvedMarkdownConfig::default())
+}
+
+/// Parse one Markdown source file using its resolved custom-block registry.
+pub fn parse_with_config(
+    source: &str,
+    file: &Path,
+    config: &ResolvedMarkdownConfig,
+) -> Result<Vec<Node>> {
     let options = markdown_options();
-    let (parser_source, delimiter_overrides) = protect_tex_math_delimiters(source, options);
+    let custom_blocks = find_markdown_custom_blocks(source, options, config);
+    let masked_source = mask_markdown_custom_block_markers(source, &custom_blocks);
+    let (parser_source, delimiter_overrides) = protect_tex_math_delimiters(&masked_source, options);
     let positions = LineIndex::new(source);
     let mut roots = Vec::new();
     let mut stack: Vec<Node> = Vec::new();
@@ -147,10 +161,311 @@ pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
     if !stack.is_empty() {
         return Err(anyhow!("unbalanced Markdown parser containers"));
     }
+    wrap_markdown_custom_blocks(&mut roots, &custom_blocks, &positions, file);
     assign_markdown_heading_anchors(&mut roots);
     resolve_markdown_heading_links(&mut roots);
     assign_markdown_footnote_targets(&mut roots);
     Ok(roots)
+}
+
+#[derive(Debug)]
+struct MarkdownCustomBlockMatch {
+    name: String,
+    title: Option<String>,
+    content_key: String,
+    opening: Range<usize>,
+    closing: Range<usize>,
+}
+
+#[derive(Debug)]
+struct MarkdownCustomBlockOpen {
+    name: String,
+    title: Option<String>,
+    range: Range<usize>,
+}
+
+enum MarkdownCustomBlockMarker<'a> {
+    Open {
+        indent: usize,
+        name: &'a str,
+        title: Option<&'a str>,
+    },
+    Close {
+        indent: usize,
+    },
+}
+
+/// Find configured `:::name` blocks before masking their boundary lines. The
+/// first CommonMark pass supplies the immunity ranges: marker-looking lines in
+/// code, math, metadata, and raw HTML must remain literal source for the real
+/// parse. Only pairs that actually close are returned, so unknown, stray, and
+/// unclosed markers are never modified.
+fn find_markdown_custom_blocks(
+    source: &str,
+    options: Options,
+    config: &ResolvedMarkdownConfig,
+) -> Vec<MarkdownCustomBlockMatch> {
+    let mut protected = vec![false; source.len()];
+    // Pulldown-cmark sees dollar math natively, while MathPreview also accepts
+    // `\(...\)` and `\[...\]`. Run the byte-preserving delimiter prepass for
+    // immunity discovery only, then continue scanning marker text from the
+    // original source so titles retain their exact spelling.
+    let (math_aware_source, _) = protect_tex_math_delimiters(source, options);
+    for (event, range) in Parser::new_ext(&math_aware_source, options).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::MetadataBlock(_))
+            | Event::Code(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_) => protect_range(&mut protected, range),
+            _ => {}
+        }
+    }
+
+    let mut open = Vec::new();
+    let mut overflow_depth = 0usize;
+    let mut matched = Vec::new();
+    let mut line_start = 0;
+    for line in source.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        let range = line_start..line_end;
+        if let Some(marker) = markdown_custom_block_marker(line) {
+            let indent = match marker {
+                MarkdownCustomBlockMarker::Open { indent, .. }
+                | MarkdownCustomBlockMarker::Close { indent } => indent,
+            };
+            let marker_byte = line_start + indent;
+            if !protected.get(marker_byte).copied().unwrap_or(false) {
+                match marker {
+                    MarkdownCustomBlockMarker::Open { name, title, .. }
+                        if config.blocks.contains_key(name) =>
+                    {
+                        if overflow_depth > 0
+                            || open.len() >= MAX_MARKDOWN_CUSTOM_BLOCK_NESTING
+                        {
+                            overflow_depth = overflow_depth.saturating_add(1);
+                        } else {
+                            open.push(MarkdownCustomBlockOpen {
+                                name: name.to_string(),
+                                title: title.map(str::to_string),
+                                range,
+                            });
+                        }
+                    }
+                    MarkdownCustomBlockMarker::Close { .. } => {
+                        if overflow_depth > 0 {
+                            overflow_depth -= 1;
+                        } else if let Some(opening) = open.pop() {
+                            let content = source
+                                .get(opening.range.end..range.start)
+                                .unwrap_or_default();
+                            matched.push(MarkdownCustomBlockMatch {
+                                name: opening.name,
+                                title: opening.title,
+                                content_key: markdown_custom_block_content_key(content),
+                                opening: opening.range,
+                                closing: range,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        line_start = line_end;
+    }
+    matched
+}
+
+fn markdown_custom_block_content_key(content: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in content.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn markdown_custom_block_marker(line: &str) -> Option<MarkdownCustomBlockMarker<'_>> {
+    let indent = line
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b' ')
+        .count();
+    if indent > 3 {
+        return None;
+    }
+    let body = line
+        .get(indent..)?
+        .trim_end_matches(['\r', '\n'])
+        .strip_prefix(":::")?;
+    if body.trim_matches([' ', '\t']).is_empty() {
+        return Some(MarkdownCustomBlockMarker::Close { indent });
+    }
+    if body.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let name_end = body.find(char::is_whitespace).unwrap_or(body.len());
+    let name = &body[..name_end];
+    let title = body[name_end..].trim_matches([' ', '\t']);
+    Some(MarkdownCustomBlockMarker::Open {
+        indent,
+        name,
+        title: (!title.is_empty()).then_some(title),
+    })
+}
+
+fn mask_markdown_custom_block_markers(source: &str, blocks: &[MarkdownCustomBlockMatch]) -> String {
+    let mut masked = source.as_bytes().to_vec();
+    for block in blocks {
+        for range in [&block.opening, &block.closing] {
+            for byte in &mut masked[range.clone()] {
+                if !matches!(*byte, b'\r' | b'\n') {
+                    *byte = b' ';
+                }
+            }
+        }
+    }
+    String::from_utf8(masked).expect("ASCII masking preserves UTF-8")
+}
+
+fn wrap_markdown_custom_blocks(
+    nodes: &mut Vec<Node>,
+    blocks: &[MarkdownCustomBlockMatch],
+    positions: &LineIndex<'_>,
+    file: &Path,
+) {
+    let trees = markdown_custom_block_trees(blocks);
+    *nodes =
+        integrate_markdown_custom_blocks(std::mem::take(nodes), &trees, blocks, positions, file);
+}
+
+#[derive(Debug)]
+struct MarkdownCustomBlockTree {
+    block: usize,
+    children: Vec<MarkdownCustomBlockTree>,
+}
+
+fn markdown_custom_block_trees(
+    blocks: &[MarkdownCustomBlockMatch],
+) -> Vec<MarkdownCustomBlockTree> {
+    fn level(
+        order: &[usize],
+        cursor: &mut usize,
+        before: usize,
+        blocks: &[MarkdownCustomBlockMatch],
+    ) -> Vec<MarkdownCustomBlockTree> {
+        let mut trees = Vec::new();
+        while let Some(&index) = order.get(*cursor) {
+            let block = &blocks[index];
+            if block.opening.start >= before {
+                break;
+            }
+            *cursor += 1;
+            trees.push(MarkdownCustomBlockTree {
+                block: index,
+                children: level(order, cursor, block.closing.start, blocks),
+            });
+        }
+        trees
+    }
+
+    let mut order: Vec<_> = (0..blocks.len()).collect();
+    order.sort_unstable_by_key(|index| {
+        (
+            blocks[*index].opening.start,
+            std::cmp::Reverse(blocks[*index].closing.end),
+        )
+    });
+    level(&order, &mut 0, usize::MAX, blocks)
+}
+
+fn integrate_markdown_custom_blocks(
+    nodes: Vec<Node>,
+    trees: &[MarkdownCustomBlockTree],
+    blocks: &[MarkdownCustomBlockMatch],
+    positions: &LineIndex<'_>,
+    file: &Path,
+) -> Vec<Node> {
+    let mut nodes: std::collections::VecDeque<_> = nodes.into();
+    let mut output = Vec::with_capacity(nodes.len() + trees.len());
+    let mut tree_index = 0;
+    while let Some(tree) = trees.get(tree_index) {
+        let block = &blocks[tree.block];
+        let whole_start = block.opening.start;
+        let whole_end = block.closing.end;
+
+        if let Some(node) = nodes.front() {
+            let node_start = node.span.start.byte as usize;
+            let node_end = node.span.end.byte as usize;
+            if node_end <= whole_start {
+                output.push(nodes.pop_front().expect("front node exists"));
+                continue;
+            }
+            if node_start <= whole_start
+                && whole_end <= node_end
+                && (node_start < whole_start || whole_end < node_end)
+            {
+                let mut end = tree_index + 1;
+                while let Some(next) = trees.get(end) {
+                    let next = &blocks[next.block];
+                    if node_start <= next.opening.start && next.closing.end <= node_end {
+                        end += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let mut node = nodes.pop_front().expect("front node exists");
+                node.children = integrate_markdown_custom_blocks(
+                    std::mem::take(&mut node.children),
+                    &trees[tree_index..end],
+                    blocks,
+                    positions,
+                    file,
+                );
+                output.push(node);
+                tree_index = end;
+                continue;
+            }
+            if node_start < whole_start {
+                // A normal Markdown container can partially overlap a custom
+                // fence only when the source crosses container boundaries in
+                // an unusual way. Preserve that node rather than dropping or
+                // moving any of its content; the custom wrapper remains at the
+                // closest source-ordered level possible.
+                output.push(nodes.pop_front().expect("front node exists"));
+                continue;
+            }
+        }
+
+        let content_start = block.opening.end;
+        let content_end = block.closing.start;
+        let mut children = Vec::new();
+        while let Some(node) = nodes.front() {
+            let start = node.span.start.byte as usize;
+            let end = node.span.end.byte as usize;
+            if content_start <= start && end <= content_end {
+                children.push(nodes.pop_front().expect("front node exists"));
+            } else {
+                break;
+            }
+        }
+        let children =
+            integrate_markdown_custom_blocks(children, &tree.children, blocks, positions, file);
+        output.push(Node {
+            kind: NodeKind::MarkdownCustomBlock {
+                name: block.name.clone(),
+                title: block.title.clone(),
+                content_key: block.content_key.clone(),
+            },
+            span: positions.span(file, whole_start, whole_end),
+            children,
+        });
+        tree_index += 1;
+    }
+    output.extend(nodes);
+    output
 }
 
 fn markdown_options() -> Options {
@@ -766,6 +1081,436 @@ mod tests {
 
     fn pos(line: u32, col: u32, byte: u32) -> Pos {
         Pos { line, col, byte }
+    }
+
+    fn custom_block<'a>(nodes: &'a [Node], name: &str) -> &'a Node {
+        all_nodes(nodes)
+            .into_iter()
+            .find(|node| {
+                matches!(
+                    &node.kind,
+                    NodeKind::MarkdownCustomBlock { name: found, .. } if found == name
+                )
+            })
+            .unwrap_or_else(|| panic!("missing custom Markdown block {name:?}"))
+    }
+
+    fn config_with_block(name: &str) -> ResolvedMarkdownConfig {
+        let mut config = ResolvedMarkdownConfig::default();
+        let format = config
+            .blocks
+            .get("proof")
+            .expect("default proof format")
+            .clone();
+        config.blocks.insert(name.to_string(), format);
+        config
+    }
+
+    #[test]
+    fn default_parser_recognizes_proof_blocks_with_plain_titles_and_exact_spans() {
+        let path = Path::new("proof.md");
+        let source = concat!(
+            "before\n\n",
+            "  :::proof A **plain** title\n",
+            "Body with **bold** and $x$.\n",
+            "  :::\n\n",
+            "after\n",
+        );
+        let nodes = parse(source, path).unwrap();
+        let proof = custom_block(&nodes, "proof");
+        assert!(matches!(
+            &proof.kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("A **plain** title")
+        ));
+
+        let start = source.find("  :::proof").unwrap();
+        let closing = source.find("  :::\n\n").unwrap();
+        let end = closing + "  :::\n".len();
+        assert_eq!(
+            proof.span,
+            LineIndex::new(source).span(path, start, end),
+            "the wrapper must cover both complete marker lines"
+        );
+        assert!(all_nodes(&proof.children)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownStrong)));
+        assert!(all_nodes(&proof.children)
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+    }
+
+    #[test]
+    fn parse_with_config_recognizes_only_effective_block_names() {
+        let mut config = config_with_block("warning");
+        config.blocks.remove("proof");
+        let source = concat!(
+            ":::proof Disabled\nproof body\n:::\n\n",
+            ":::warning Take care\nwarning body\n:::\n",
+        );
+        let nodes = parse_with_config(source, Path::new("configured.md"), &config).unwrap();
+        let blocks: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { name, title, .. } => {
+                    Some((name.as_str(), title.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, [("warning", Some("Take care"))]);
+        let text: String = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains(":::proof Disabled"));
+    }
+
+    #[test]
+    fn custom_blocks_nest_without_losing_markdown_structure() {
+        let config = config_with_block("note");
+        let source = concat!(
+            ":::proof Outer\n",
+            "Outer paragraph.\n\n",
+            ":::note Inner\n",
+            "# Nested heading\n",
+            ":::\n\n",
+            "Tail paragraph.\n",
+            ":::\n",
+        );
+        let nodes = parse_with_config(source, Path::new("nested.md"), &config).unwrap();
+        assert_eq!(nodes.len(), 1);
+        let outer = &nodes[0];
+        assert!(matches!(
+            &outer.kind,
+            NodeKind::MarkdownCustomBlock { name, title, .. }
+                if name == "proof" && title.as_deref() == Some("Outer")
+        ));
+        let inner = custom_block(&outer.children, "note");
+        assert!(matches!(
+            &inner.kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("Inner")
+        ));
+        assert!(all_nodes(&inner.children).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownHeading { level: 1, anchor } if anchor == "nested-heading"
+        )));
+        assert_eq!(outer.span.start, pos(1, 1, 0));
+        assert_eq!(outer.span.end, LineIndex::new(source).pos(source.len()));
+        assert_eq!(inner.span.start.line, 4);
+        assert_eq!(inner.span.end.line, 7);
+    }
+
+    #[test]
+    fn empty_custom_blocks_keep_their_source_order_and_can_nest() {
+        let config = config_with_block("note");
+        let source = concat!(
+            "before\n\n",
+            ":::proof Empty\n:::\n\n",
+            ":::proof Outer\n",
+            ":::note Empty inner\n:::\n",
+            ":::\n\n",
+            "after\n",
+        );
+        let nodes = parse_with_config(source, Path::new("empty.md"), &config).unwrap();
+        let top_level: Vec<_> = nodes
+            .iter()
+            .map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { title, .. } => title.as_deref().unwrap_or("custom"),
+                NodeKind::MarkdownParagraph => "paragraph",
+                other => panic!("unexpected top-level node {other:?}"),
+            })
+            .collect();
+        assert_eq!(top_level, ["paragraph", "Empty", "Outer", "paragraph"]);
+
+        let empty = nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind,
+                    NodeKind::MarkdownCustomBlock { title, .. }
+                        if title.as_deref() == Some("Empty")
+                )
+            })
+            .expect("empty top-level block");
+        assert!(empty.children.is_empty());
+
+        let outer = nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind,
+                    NodeKind::MarkdownCustomBlock { title, .. }
+                        if title.as_deref() == Some("Outer")
+                )
+            })
+            .expect("outer block");
+        assert_eq!(outer.children.len(), 1);
+        assert!(matches!(
+            &outer.children[0].kind,
+            NodeKind::MarkdownCustomBlock { name, title, .. }
+                if name == "note" && title.as_deref() == Some("Empty inner")
+        ));
+        assert!(outer.children[0].children.is_empty());
+    }
+
+    #[test]
+    fn only_matched_custom_markers_are_masked() {
+        let source = concat!(
+            ":::unknown Literal\nunknown body\n:::\n\n",
+            ":::proof Unclosed\nouter body\n\n",
+            ":::proof Matched\ninner body\n:::\n",
+        );
+        let config = ResolvedMarkdownConfig::default();
+        let matched = find_markdown_custom_blocks(source, markdown_options(), &config);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].title.as_deref(), Some("Matched"));
+
+        let masked = mask_markdown_custom_block_markers(source, &matched);
+        assert!(masked.contains(":::unknown Literal"));
+        assert!(masked.contains(":::proof Unclosed"));
+        assert!(!masked.contains(":::proof Matched"));
+
+        let nodes = parse_with_config(source, Path::new("literal.md"), &config).unwrap();
+        assert_eq!(
+            all_nodes(&nodes)
+                .iter()
+                .filter(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. }))
+                .count(),
+            1
+        );
+        let text: String = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains(":::unknown Literal"));
+        assert!(text.contains(":::proof Unclosed"));
+    }
+
+    #[test]
+    fn custom_markers_are_inert_in_code_math_and_raw_html() {
+        let source = concat!(
+            "```markdown\n:::proof Fenced\nbody\n:::\n```\n\n",
+            "    :::proof Indented\n    body\n    :::\n\n",
+            "`code across\n:::proof Inline\nbody\n:::\nlines`\n\n",
+            "$$\n:::proof Math\nbody\n:::\n$$\n\n",
+            "\\[\n:::proof Slash display\nbody\n:::\n\\]\n\n",
+            "\\(\n:::proof Slash inline\nbody\n:::\n\\)\n\n",
+            "<div>\n:::proof HTML\nbody\n:::\n</div>\n",
+        );
+        let nodes = parse(source, Path::new("inert.md")).unwrap();
+        assert!(!all_nodes(&nodes)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. })));
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownCodeBlock { code, .. } if code.contains(":::proof Fenced")
+        )));
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownRawHtml(html) if html.contains(":::proof HTML")
+        )));
+    }
+
+    #[test]
+    fn protected_closing_markers_do_not_end_an_enclosing_custom_block() {
+        let source = concat!(
+            ":::proof Outer\n",
+            "```markdown\n:::\n```\n\n",
+            "<div>\n:::\n</div>\n\n",
+            "tail\n",
+            ":::\n",
+        );
+        let nodes = parse(source, Path::new("protected-close.md")).unwrap();
+        assert_eq!(nodes.len(), 1);
+        let proof = custom_block(&nodes, "proof");
+        assert_eq!(proof.span.end, LineIndex::new(source).pos(source.len()));
+        assert!(all_nodes(&proof.children).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownCodeBlock { code, .. } if code.contains(":::")
+        )));
+        assert!(all_nodes(&proof.children)
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::MarkdownText(text) if text == "tail")));
+    }
+
+    #[test]
+    fn custom_markers_allow_at_most_three_leading_spaces() {
+        for indent in 0..=3 {
+            let spaces = " ".repeat(indent);
+            let source = format!("{spaces}:::proof\nbody\n{spaces}:::\n");
+            let nodes = parse(&source, Path::new("indent.md")).unwrap();
+            assert!(
+                all_nodes(&nodes)
+                    .iter()
+                    .any(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. })),
+                "{indent} leading spaces should be recognized"
+            );
+        }
+
+        let source = "    :::proof\n    body\n    :::\n";
+        let nodes = parse(source, Path::new("indent.md")).unwrap();
+        assert!(!all_nodes(&nodes)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. })));
+    }
+
+    #[test]
+    fn line_level_custom_blocks_can_live_inside_a_continuing_list_item() {
+        let source = concat!(
+            "- before\n\n",
+            "  :::proof Listed\n",
+            "  body with **bold**\n",
+            "  :::\n\n",
+            "  after\n",
+        );
+        let nodes = parse(source, Path::new("list-block.md")).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(nodes[0].kind, NodeKind::MarkdownList { .. }));
+        let item = all_nodes(&nodes)
+            .into_iter()
+            .find(|node| matches!(node.kind, NodeKind::MarkdownListItem))
+            .expect("list item");
+        let proof = custom_block(&item.children, "proof");
+        assert!(matches!(
+            &proof.kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("Listed")
+        ));
+        assert!(all_nodes(&proof.children)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownStrong)));
+        let item_text: String = all_nodes(&item.children)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(item_text.contains("before"));
+        assert!(item_text.contains("after"));
+    }
+
+    #[test]
+    fn custom_blocks_keep_crlf_unicode_offsets_exact() {
+        let path = Path::new("unicode-block.md");
+        let source = " :::proof Café 😀\r\nBody é.\r\n :::\r\n";
+        let nodes = parse(source, path).unwrap();
+        let proof = custom_block(&nodes, "proof");
+        assert!(matches!(
+            &proof.kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref() == Some("Café 😀")
+        ));
+        assert_eq!(
+            proof.span,
+            LineIndex::new(source).span(path, 0, source.len())
+        );
+
+        let body_start = source.find("Body").unwrap();
+        let body = all_nodes(&proof.children)
+            .into_iter()
+            .find(|node| matches!(&node.kind, NodeKind::MarkdownText(text) if text == "Body"))
+            .expect("body sync leaf");
+        assert_eq!(body.span.start, LineIndex::new(source).pos(body_start));
+        assert_eq!(body.span.end, LineIndex::new(source).pos(body_start + 4));
+    }
+
+    #[test]
+    fn document_wide_heading_and_footnote_passes_cross_custom_blocks() {
+        let source = concat!(
+            "[jump](#inside) and outside[^note].\n\n",
+            ":::proof\n",
+            "# Inside\n\n",
+            "Inside reference[^note].\n",
+            ":::\n\n",
+            "[^note]: Shared definition.\n",
+        );
+        let nodes = parse(source, Path::new("global.md")).unwrap();
+        let flat = all_nodes(&nodes);
+        assert!(flat.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownLink { destination, .. } if destination == "#mdh:inside"
+        )));
+        assert!(flat.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownHeading { anchor, .. } if anchor == "inside"
+        )));
+        let targets: Vec<_> = flat
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownFootnoteReference { target, .. } => Some(target.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(targets, ["note", "note"]);
+        assert!(flat.iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownFootnoteDefinition { target, .. } if target == "note"
+        )));
+    }
+
+    #[test]
+    fn many_sequential_custom_blocks_do_not_regress_to_quadratic_wrapping() {
+        let source = ":::proof\nbody\n:::\n\n".repeat(8_000);
+        let started = std::time::Instant::now();
+        let nodes = parse(&source, Path::new("many-blocks.md")).unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(nodes.len(), 8_000);
+        assert!(nodes.iter().all(|node| matches!(
+            node.kind,
+            NodeKind::MarkdownCustomBlock { ref name, .. } if name == "proof"
+        )));
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "custom-block integration regressed from near-linear behavior: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn excessive_custom_block_nesting_stays_bounded_and_literal() {
+        let depth = 4_096;
+        let mut source = String::with_capacity(depth * 20);
+        for _ in 0..depth {
+            source.push_str(":::proof\n");
+        }
+        source.push_str("Deep body.\n");
+        for _ in 0..depth {
+            source.push_str(":::\n");
+        }
+
+        let nodes = parse(&source, Path::new("deep-blocks.md")).unwrap();
+        let flat = all_nodes(&nodes);
+        assert_eq!(
+            flat.iter()
+                .filter(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. }))
+                .count(),
+            MAX_MARKDOWN_CUSTOM_BLOCK_NESTING,
+        );
+        assert!(flat.iter().any(
+            |node| matches!(&node.kind, NodeKind::MarkdownText(text) if text.contains(":::proof"))
+        ));
+
+        let rendered = crate::render_document_from_source(
+            Path::new("deep-blocks.md"),
+            source,
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            rendered
+                .body_html
+                .matches(r#"data-md-custom-name="proof""#)
+                .count(),
+            MAX_MARKDOWN_CUSTOM_BLOCK_NESTING,
+        );
     }
 
     #[test]

@@ -13,6 +13,40 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.35] — 2026-08-30
+
+### Added
+
+- **Markdown proofs can reveal on demand.** `:::proof` containers render their
+  full Markdown and math content with a blurred body until the accessible
+  heading button is activated. Reveal state survives live moves and config-only
+  restyling for unchanged authored bodies; edited or replaced bodies safely
+  return to concealed. Keyboard operation works without special shortcuts, and
+  printed proofs are visible.
+- **Projects can define safe custom Markdown formats.** Declarative
+  `[markdown.blocks.NAME]` tables choose a plain, bordered, or card appearance;
+  always-visible or blurred reveal behavior; a plain-text label; optional
+  validated hex colors; and body italics. Config layers merge per field and
+  `enabled = false` can remove an inherited format.
+
+### Security
+
+- **Custom formats remain data-only.** Labels and titles are escaped, custom
+  colors accept only `#RGB` or `#RRGGBB`, and no block setting enables raw HTML,
+  CSS, URLs, or JavaScript. Raw Markdown HTML remains inert inside blocks too.
+  Semantic nesting is capped at 32 levels; deeper fences remain literal rather
+  than creating unbounded parser/renderer recursion.
+
+### Fixed
+
+- **Markdown block updates preserve safe interaction state and source sync.**
+  Live replacements carry revealed state only to blocks with the same exact
+  authored body, while token-level click-back and cursor-follow anchors remain
+  current. The paired WebSocket protocol bump reloads stale tabs onto the
+  matching client behavior.
+- **The new syntax is isolated from LaTeX.** TeX parsing, rendering, block
+  hashes, source-sync spans, and viewer behavior remain unchanged.
+
 ## [2.1.34] — 2026-08-30
 
 ### Fixed

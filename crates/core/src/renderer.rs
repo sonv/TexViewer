@@ -92,6 +92,10 @@ pub struct HtmlOptions {
     /// `[text-macros]` table. Applied to body text by `render_inline_latex`.
     /// Empty for static `render` callers.
     pub text_macros: std::collections::HashMap<String, crate::config::TextMacro>,
+    /// Safe declarative block formats used only by the Markdown frontend.
+    /// Raw HTML remains inert; these definitions select generated markup and
+    /// validated presentation tokens for `:::name` fenced blocks.
+    pub markdown_config: crate::config::ResolvedMarkdownConfig,
 }
 
 impl Default for HtmlOptions {
@@ -108,6 +112,7 @@ impl Default for HtmlOptions {
             local_asset_base: None,
             latex_preamble: None,
             text_macros: std::collections::HashMap::new(),
+            markdown_config: crate::config::ResolvedMarkdownConfig::default(),
         }
     }
 }
@@ -243,6 +248,7 @@ pub fn render(
         tikz_asset_base: opts.tikz_asset_base.as_deref(),
         local_asset_base: opts.local_asset_base.as_deref(),
         latex_preamble: opts.latex_preamble.as_deref().unwrap_or(""),
+        markdown_config: &opts.markdown_config,
     };
 
     // Top-level inline runs become paragraph blocks. Structural nodes
@@ -1148,6 +1154,7 @@ struct RenderCtx<'a> {
     tikz_asset_base: Option<&'a str>,
     local_asset_base: Option<&'a str>,
     latex_preamble: &'a str,
+    markdown_config: &'a crate::config::ResolvedMarkdownConfig,
 }
 
 /// Sub-block capture in progress, with body-interior byte offsets into the
@@ -1485,6 +1492,42 @@ fn markdown_plain_text(nodes: &[Node]) -> String {
         }
     }
     out
+}
+
+fn safe_markdown_block_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 3 | 6) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn markdown_block_style(format: &crate::config::ResolvedMarkdownBlock) -> String {
+    let mut declarations = Vec::new();
+    if format
+        .accent
+        .as_deref()
+        .is_some_and(safe_markdown_block_color)
+    {
+        declarations.push(format!(
+            "--md-custom-accent:{}",
+            format.accent.as_deref().unwrap_or_default()
+        ));
+    }
+    if format
+        .background
+        .as_deref()
+        .is_some_and(safe_markdown_block_color)
+    {
+        declarations.push(format!(
+            "--md-custom-background:{}",
+            format.background.as_deref().unwrap_or_default()
+        ));
+    }
+    if declarations.is_empty() {
+        String::new()
+    } else {
+        format!(r#" style="{}""#, escape_attr(&declarations.join(";")))
+    }
 }
 
 fn write_markdown_table(
@@ -2133,6 +2176,70 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             .unwrap();
             write_children(out, &n.children, ctx);
             out.push_str("</blockquote>");
+        }
+        NodeKind::MarkdownCustomBlock {
+            name,
+            title,
+            content_key,
+        } => {
+            let Some(format) = ctx.markdown_config.blocks.get(name) else {
+                // Programmatically-constructed ASTs can contain a format that
+                // is absent from the resolved config. Keep their Markdown body
+                // visible instead of silently dropping user content.
+                write_children(out, &n.children, ctx);
+                return;
+            };
+            let id = ctx.idgen.next("md");
+            let title_key = title.as_deref().unwrap_or("");
+            let label = title.as_deref().unwrap_or(&format.label);
+            record_container(ctx, &id, &n.span, Some(label));
+            let kind = sanitize_id(name);
+            let appearance = format.appearance.as_str();
+            let reveal = format.reveal.as_str();
+            let italic = if format.italic {
+                " md-custom-italic"
+            } else {
+                ""
+            };
+            let concealed = if reveal == "blur" {
+                " is-concealed"
+            } else {
+                ""
+            };
+            let style = markdown_block_style(format);
+            write!(
+                out,
+                r#"<section class="md-custom-block md-custom-{appearance} md-custom-reveal-{reveal} md-custom-kind-{kind}{italic}{concealed}" id="{id}" data-src="{src}" data-md-custom-name="{name}" data-md-custom-title="{title_key}" data-md-custom-content="{content_key}"{style}>"#,
+                appearance = escape_attr(appearance),
+                reveal = escape_attr(reveal),
+                kind = escape_attr(&kind),
+                italic = italic,
+                concealed = concealed,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                name = escape_attr(name),
+                title_key = escape_attr(title_key),
+                content_key = escape_attr(content_key),
+                style = style,
+            )
+            .unwrap();
+            if reveal == "blur" {
+                write!(
+                    out,
+                    r#"<button type="button" class="md-custom-head md-custom-toggle" aria-expanded="false"><span class="md-custom-title">{label}</span><span class="md-custom-toggle-state">Reveal</span></button><div class="md-custom-body" inert aria-hidden="true">"#,
+                    label = escape_html(label),
+                )
+                .unwrap();
+            } else {
+                write!(
+                    out,
+                    r#"<div class="md-custom-head"><span class="md-custom-title">{label}</span></div><div class="md-custom-body">"#,
+                    label = escape_html(label),
+                )
+                .unwrap();
+            }
+            write_children(out, &n.children, ctx);
+            out.push_str("</div></section>");
         }
         NodeKind::MarkdownInlineCode(code) => {
             let id = ctx.idgen.next("md");
@@ -4484,7 +4591,7 @@ mod tests {
         assert!(out.html.contains(r#"id="config-keybindings-reference""#));
         assert!(out
             .html
-            .contains("Omitted settings and keybindings remain inherited."));
+            .contains("Omitted settings, Markdown formats, and keybindings remain inherited."));
         assert!(!out.html.contains("function withDefaultKeybindings"));
         assert!(out.html.contains("built-in keybindings remain inherited"));
         assert!(out.html.contains("editor.dataset.loadedScope = ''"));
@@ -4552,10 +4659,10 @@ mod tests {
     }
 
     #[test]
-    fn config_dialog_keybinding_reference_tracks_every_documented_default() {
+    fn config_dialog_advanced_reference_tracks_markdown_blocks_and_keybindings() {
         let reference = super::shell::viewer_keybinding_reference();
         let start = crate::config::DEFAULT_CONFIG_TEMPLATE
-            .find("# One shortcut string or an array is accepted.")
+            .find("# Markdown custom blocks use")
             .unwrap();
 
         for line in crate::config::DEFAULT_CONFIG_TEMPLATE[start..].lines() {
@@ -4572,9 +4679,12 @@ mod tests {
             );
         }
         assert!(reference.contains(&format!(
-            "# --- Complete Neovim-style keybinding reference for v{} (commented) ---",
+            "# --- Markdown block examples and complete keybinding reference for v{} (commented) ---",
             env!("CARGO_PKG_VERSION")
         )));
+        assert!(reference.contains("# [markdown.blocks.proof]"));
+        assert!(reference.contains("# [markdown.blocks.exercise]"));
+        assert!(reference.contains("# appearance = \"card\""));
         assert!(reference.contains("# [keybindings.aliases]"));
         assert!(reference.contains("# One shortcut string or an array is accepted."));
         assert!(reference.contains("# extension. For example, omit `j`/`k`"));
@@ -4642,6 +4752,244 @@ mod tests {
         crate::render_project_from_source(Path::new("t.tex"), source.to_string(), &HtmlOptions::default())
             .unwrap()
             .body_html
+    }
+
+    fn render_markdown(source: &str, opts: &HtmlOptions) -> crate::RenderOutput {
+        crate::render_document_from_source(Path::new("notes.md"), source.to_string(), opts).unwrap()
+    }
+
+    #[test]
+    fn markdown_proof_block_is_accessible_concealed_and_source_synced() {
+        let out = render_markdown(
+            ":::proof Main result\nA **short** proof with $x^2$.\n:::\n",
+            &HtmlOptions::default(),
+        );
+
+        assert!(out.body_html.contains(
+            r#"class="md-custom-block md-custom-plain md-custom-reveal-blur md-custom-kind-proof is-concealed""#
+        ));
+        assert!(out
+            .body_html
+            .contains(r#"data-md-custom-name="proof" data-md-custom-title="Main result""#));
+        assert!(out.body_html.contains(
+            r#"<button type="button" class="md-custom-head md-custom-toggle" aria-expanded="false">"#
+        ));
+        assert!(out
+            .body_html
+            .contains(r#"<div class="md-custom-body" inert aria-hidden="true">"#));
+        assert!(out.body_html.contains("Main result"));
+        assert!(out.body_html.contains(r#"class="md-strong""#));
+        assert!(out.body_html.contains(r#"class="math inline""#));
+        assert!(out
+            .sync
+            .entries
+            .iter()
+            .any(|entry| entry.label.as_deref() == Some("Main result")));
+        assert!(out.html.contains("setMarkdownCustomBlockRevealed"));
+        assert!(out.html.contains("copyMarkdownCustomBlockState"));
+    }
+
+    #[test]
+    fn markdown_custom_block_escapes_content_and_rejects_programmatic_css() {
+        use crate::config::{MarkdownBlockAppearance, MarkdownBlockReveal, ResolvedMarkdownBlock};
+
+        let mut opts = HtmlOptions::default();
+        opts.markdown_config.blocks.insert(
+            "warning".to_string(),
+            ResolvedMarkdownBlock {
+                label: r#"<img src=x onerror=alert(1)>"#.to_string(),
+                appearance: MarkdownBlockAppearance::Card,
+                reveal: MarkdownBlockReveal::Always,
+                accent: Some("red;display:none".to_string()),
+                background: Some("url(javascript:alert(1))".to_string()),
+                italic: true,
+            },
+        );
+        let out = render_markdown(":::warning\n<script>alert('body')</script>\n:::\n", &opts);
+
+        assert!(out.body_html.contains("&lt;img src=x onerror=alert(1)&gt;"));
+        assert!(out
+            .body_html
+            .contains("&lt;script&gt;alert('body')&lt;/script&gt;"));
+        assert!(!out.body_html.contains("<script>alert('body')</script>"));
+        assert!(!out.body_html.contains("red;display:none"));
+        assert!(!out.body_html.contains("url(javascript:"));
+        assert!(out.body_html.contains("md-custom-card"));
+        assert!(out.body_html.contains("md-custom-italic"));
+    }
+
+    #[test]
+    fn markdown_custom_block_config_changes_its_diff_hash() {
+        let source = ":::proof\nBody.\n:::\n";
+        let before = render_markdown(source, &HtmlOptions::default());
+        let mut changed_opts = HtmlOptions::default();
+        changed_opts
+            .markdown_config
+            .blocks
+            .get_mut("proof")
+            .unwrap()
+            .label = "Solution".to_string();
+        let after = render_markdown(source, &changed_opts);
+
+        assert_eq!(before.blocks.len(), 1);
+        assert_eq!(after.blocks.len(), 1);
+        assert_ne!(before.blocks[0].diff_hash, after.blocks[0].diff_hash);
+        assert!(after.body_html.contains("Solution"));
+    }
+
+    #[test]
+    fn markdown_custom_block_diff_hash_ignores_preceding_source_shift() {
+        let proof = ":::proof\nBody with **stable** content.\n:::\n";
+        let before = render_markdown(proof, &HtmlOptions::default());
+        let after = render_markdown(
+            &format!("An unrelated paragraph.\n\n{proof}"),
+            &HtmlOptions::default(),
+        );
+
+        assert_eq!(before.blocks.len(), 1);
+        assert_eq!(after.blocks.len(), 2);
+        assert_eq!(before.blocks[0].diff_hash, after.blocks[1].diff_hash);
+    }
+
+    #[test]
+    fn markdown_custom_block_content_identity_tracks_authored_body_only() {
+        use crate::config::{
+            MarkdownBlockAppearance, MarkdownBlockReveal, ResolvedMarkdownBlock,
+        };
+
+        fn content_identity(html: &str) -> &str {
+            let marker = r#"data-md-custom-content=""#;
+            let value = html.split_once(marker).unwrap().1;
+            value.split_once('"').unwrap().0
+        }
+
+        let source = ":::proof\nBody with **stable** content.\n:::\n";
+        let before = render_markdown(source, &HtmlOptions::default());
+        let shifted = render_markdown(
+            &format!("Unrelated paragraph.\n\n{source}"),
+            &HtmlOptions::default(),
+        );
+        let mut configured = HtmlOptions::default();
+        configured
+            .markdown_config
+            .blocks
+            .get_mut("proof")
+            .unwrap()
+            .label = "Solution".to_string();
+        let relabeled = render_markdown(source, &configured);
+        let edited = render_markdown(
+            ":::proof\nBody with **edited** content.\n:::\n",
+            &HtmlOptions::default(),
+        );
+
+        let original = content_identity(&before.body_html);
+        assert_eq!(original, content_identity(&shifted.body_html));
+        assert_eq!(original, content_identity(&relabeled.body_html));
+        assert_ne!(original, content_identity(&edited.body_html));
+
+        let mut nested_before_opts = HtmlOptions::default();
+        nested_before_opts.markdown_config.blocks.insert(
+            "exercise".to_string(),
+            ResolvedMarkdownBlock {
+                label: "Exercise".to_string(),
+                appearance: MarkdownBlockAppearance::Bordered,
+                reveal: MarkdownBlockReveal::Always,
+                accent: None,
+                background: None,
+                italic: false,
+            },
+        );
+        let nested_source = ":::proof\n:::exercise\nNested body.\n:::\n:::\n";
+        let nested_before = render_markdown(nested_source, &nested_before_opts);
+        let mut nested_after_opts = nested_before_opts.clone();
+        let exercise = nested_after_opts
+            .markdown_config
+            .blocks
+            .get_mut("exercise")
+            .unwrap();
+        exercise.label = "Practice".to_string();
+        exercise.appearance = MarkdownBlockAppearance::Card;
+        exercise.background = Some("#abcdef".to_string());
+        let nested_after = render_markdown(nested_source, &nested_after_opts);
+        assert_eq!(
+            content_identity(&nested_before.body_html),
+            content_identity(&nested_after.body_html),
+        );
+    }
+
+    #[test]
+    fn markdown_block_config_is_exactly_inert_for_tex_rendering() {
+        use crate::config::{MarkdownBlockAppearance, MarkdownBlockReveal, ResolvedMarkdownBlock};
+
+        let source = concat!(
+            "\\documentclass{article}\n",
+            "\\newtheorem{theorem}{Theorem}\n",
+            "\\begin{document}\n",
+            "\\section{Tex}\n",
+            "\\begin{theorem}Statement $x$.\\end{theorem}\n",
+            "\\begin{proof}Proof.\\end{proof}\n",
+            "\\end{document}\n",
+        );
+        let base = crate::render_project_from_source(
+            Path::new("paper.tex"),
+            source.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let mut custom_opts = HtmlOptions::default();
+        custom_opts.markdown_config.blocks.insert(
+            "anything".to_string(),
+            ResolvedMarkdownBlock {
+                label: "Anything".to_string(),
+                appearance: MarkdownBlockAppearance::Card,
+                reveal: MarkdownBlockReveal::Blur,
+                accent: Some("#abc".to_string()),
+                background: Some("#123456".to_string()),
+                italic: true,
+            },
+        );
+        let custom = crate::render_project_from_source(
+            Path::new("paper.tex"),
+            source.to_string(),
+            &custom_opts,
+        )
+        .unwrap();
+
+        assert_eq!(base.html, custom.html);
+        assert_eq!(base.body_html, custom.body_html);
+        assert_eq!(
+            serde_json::to_value(&base.sync).unwrap(),
+            serde_json::to_value(&custom.sync).unwrap()
+        );
+        let base_blocks = base
+            .blocks
+            .iter()
+            .map(|block| {
+                (
+                    &block.id,
+                    &block.hash,
+                    &block.src,
+                    &block.source_anchors,
+                    &block.diff_hash,
+                    &block.html,
+                )
+            })
+            .collect::<Vec<_>>();
+        let custom_blocks = custom
+            .blocks
+            .iter()
+            .map(|block| {
+                (
+                    &block.id,
+                    &block.hash,
+                    &block.src,
+                    &block.source_anchors,
+                    &block.diff_hash,
+                    &block.html,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(base_blocks, custom_blocks);
     }
 
     #[test]
