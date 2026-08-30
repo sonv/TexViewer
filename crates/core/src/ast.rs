@@ -201,6 +201,9 @@ pub enum NodeKind {
     /// `children`, so headings such as `## *Fast* math` keep their markup.
     MarkdownHeading {
         level: u8,
+        /// Document-unique, human-readable fragment name derived from the
+        /// visible heading text (for example `Fast math` → `fast-math`).
+        anchor: String,
     },
     /// Plain Markdown prose. It must never pass through the LaTeX text-mode
     /// command parser; the renderer only HTML-escapes it.
@@ -246,9 +249,13 @@ pub enum NodeKind {
     MarkdownRule,
     MarkdownFootnoteDefinition {
         label: String,
+        /// Collision-free DOM-id suffix assigned by the Markdown frontend.
+        target: String,
     },
     MarkdownFootnoteReference {
         label: String,
+        /// DOM-id suffix of the parser-matched footnote definition.
+        target: String,
     },
     /// Raw HTML is deliberately retained as inert source text. The renderer
     /// escapes it instead of inserting it into the document DOM.

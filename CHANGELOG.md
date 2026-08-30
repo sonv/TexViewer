@@ -13,6 +13,21 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.34] — 2026-08-30
+
+### Fixed
+
+- **Markdown heading links now reach their targets.** Headings expose
+  GitHub-compatible, document-wide fragment aliases with deterministic
+  duplicate suffixes, and pure fragment links—including percent-encoded
+  Unicode—resolve through a reserved collision-free namespace. Footnotes now
+  honor case-insensitive label matching, colliding normalized labels, and
+  repeated definitions without dead links or duplicate DOM IDs. Generated
+  source-sync IDs remain separate and unchanged.
+- **The fragment fix is format-isolated.** LaTeX section, equation, label,
+  reference, block-diff, and source-sync paths retain their existing IDs and
+  rendering behavior.
+
 ## [2.1.33] — 2026-08-30
 
 ### Fixed

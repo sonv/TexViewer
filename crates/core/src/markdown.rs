@@ -3,12 +3,14 @@
 //! The parser never emits raw HTML into the viewer. HTML events are retained
 //! as explicit inert AST nodes and escaped by the renderer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
+use github_slugger::slug as github_heading_slug;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use unicase::UniCase;
 
 use crate::ast::{MarkdownAlignment, Node, NodeKind, Pos, Span};
 
@@ -111,6 +113,7 @@ pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
                 &mut stack,
                 NodeKind::MarkdownFootnoteReference {
                     label: label.into_string(),
+                    target: String::new(),
                 },
                 positions.span(file, range.start, range.end),
             ),
@@ -144,6 +147,9 @@ pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
     if !stack.is_empty() {
         return Err(anyhow!("unbalanced Markdown parser containers"));
     }
+    assign_markdown_heading_anchors(&mut roots);
+    resolve_markdown_heading_links(&mut roots);
+    assign_markdown_footnote_targets(&mut roots);
     Ok(roots)
 }
 
@@ -161,6 +167,7 @@ fn node_kind_for_tag(tag: Tag<'_>) -> NodeKind {
         Tag::Paragraph => NodeKind::MarkdownParagraph,
         Tag::Heading { level, .. } => NodeKind::MarkdownHeading {
             level: heading_level(level),
+            anchor: String::new(),
         },
         Tag::BlockQuote(_) => NodeKind::MarkdownBlockQuote,
         Tag::CodeBlock(kind) => NodeKind::MarkdownCodeBlock {
@@ -182,6 +189,7 @@ fn node_kind_for_tag(tag: Tag<'_>) -> NodeKind {
         Tag::Item => NodeKind::MarkdownListItem,
         Tag::FootnoteDefinition(label) => NodeKind::MarkdownFootnoteDefinition {
             label: label.into_string(),
+            target: String::new(),
         },
         Tag::DefinitionList => NodeKind::MarkdownDefinitionList,
         Tag::DefinitionListTitle => NodeKind::MarkdownDefinitionTerm,
@@ -337,6 +345,193 @@ fn heading_level(level: HeadingLevel) -> u8 {
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
     }
+}
+
+/// Assign GitHub-compatible fragment names in document order. The slugger's
+/// occupied set is global across the Markdown AST, including headings nested
+/// in blockquotes and other containers.
+fn assign_markdown_heading_anchors(nodes: &mut [Node]) {
+    fn visit(
+        nodes: &mut [Node],
+        used: &mut HashSet<String>,
+        next_suffix: &mut HashMap<String, u32>,
+    ) {
+        for node in nodes {
+            if matches!(node.kind, NodeKind::MarkdownHeading { .. }) {
+                let mut text = String::new();
+                markdown_heading_text(&node.children, &mut text);
+                let anchor = unique_markdown_target(github_heading_slug(&text), used, next_suffix);
+                if let NodeKind::MarkdownHeading {
+                    anchor: current, ..
+                } = &mut node.kind
+                {
+                    *current = anchor;
+                }
+            }
+            visit(&mut node.children, used, next_suffix);
+        }
+    }
+
+    visit(nodes, &mut HashSet::new(), &mut HashMap::new());
+}
+
+fn markdown_heading_text(nodes: &[Node], out: &mut String) {
+    for node in nodes {
+        match &node.kind {
+            NodeKind::MarkdownText(text)
+            | NodeKind::MarkdownInlineCode(text)
+            | NodeKind::MarkdownRawHtml(text)
+            | NodeKind::InlineMath(text) => out.push_str(text),
+            NodeKind::MarkdownFootnoteReference { label, .. } => out.push_str(label),
+            NodeKind::MarkdownSoftBreak | NodeKind::MarkdownHardBreak => out.push(' '),
+            _ => markdown_heading_text(&node.children, out),
+        }
+    }
+}
+
+fn collect_markdown_heading_anchors(nodes: &[Node], anchors: &mut HashSet<String>) {
+    for node in nodes {
+        if let NodeKind::MarkdownHeading { anchor, .. } = &node.kind {
+            anchors.insert(anchor.clone());
+        }
+        collect_markdown_heading_anchors(&node.children, anchors);
+    }
+}
+
+fn percent_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_markdown_fragment(fragment: &str) -> Option<String> {
+    let bytes = fragment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let high = percent_hex(*bytes.get(i + 1)?)?;
+            let low = percent_hex(*bytes.get(i + 2)?)?;
+            decoded.push((high << 4) | low);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(decoded)
+        .ok()
+        .filter(|value| !value.chars().any(char::is_control))
+}
+
+fn resolve_markdown_heading_links(nodes: &mut [Node]) {
+    fn visit(nodes: &mut [Node], anchors: &HashSet<String>) {
+        for node in nodes {
+            if let NodeKind::MarkdownLink { destination, .. } = &mut node.kind {
+                if let Some(fragment) = destination
+                    .strip_prefix('#')
+                    .filter(|value| !value.is_empty())
+                {
+                    let already_canonical = fragment
+                        .strip_prefix("mdh:")
+                        .and_then(decode_markdown_fragment)
+                        .is_some_and(|decoded| anchors.contains(&decoded));
+                    if !already_canonical
+                        && decode_markdown_fragment(fragment)
+                            .is_some_and(|decoded| anchors.contains(&decoded))
+                    {
+                        *destination = format!("#mdh:{fragment}");
+                    }
+                }
+            }
+            visit(&mut node.children, anchors);
+        }
+    }
+
+    let mut anchors = HashSet::new();
+    collect_markdown_heading_anchors(nodes, &mut anchors);
+    visit(nodes, &anchors);
+}
+
+fn markdown_footnote_base(label: &str) -> String {
+    let target: String = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if target.is_empty() {
+        "note".to_string()
+    } else {
+        target
+    }
+}
+
+fn unique_markdown_target(
+    base: String,
+    used: &mut HashSet<String>,
+    next_suffix: &mut HashMap<String, u32>,
+) -> String {
+    if used.insert(base.clone()) {
+        next_suffix.entry(base.clone()).or_insert(1);
+        return base;
+    }
+    let suffix = next_suffix.entry(base.clone()).or_insert(1);
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        *suffix += 1;
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+}
+
+/// Pulldown-cmark resolves footnote labels with full Unicode case folding.
+/// Preserve those semantics while assigning a distinct id to every rendered
+/// definition. Repeated definitions resolve references to the last occurrence,
+/// matching pulldown-cmark's definition table overwrite behavior.
+fn assign_markdown_footnote_targets(nodes: &mut [Node]) {
+    fn assign_definitions(
+        nodes: &mut [Node],
+        references: &mut HashMap<UniCase<String>, String>,
+        used: &mut HashSet<String>,
+        next_suffix: &mut HashMap<String, u32>,
+    ) {
+        for node in nodes {
+            if let NodeKind::MarkdownFootnoteDefinition { label, target } = &mut node.kind {
+                let assigned =
+                    unique_markdown_target(markdown_footnote_base(label), used, next_suffix);
+                *target = assigned.clone();
+                references.insert(UniCase::new(label.clone()), assigned);
+            }
+            assign_definitions(&mut node.children, references, used, next_suffix);
+        }
+    }
+
+    fn assign_references(nodes: &mut [Node], references: &HashMap<UniCase<String>, String>) {
+        for node in nodes {
+            if let NodeKind::MarkdownFootnoteReference { label, target } = &mut node.kind {
+                *target = references
+                    .get(&UniCase::new(label.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| markdown_footnote_base(label));
+            }
+            assign_references(&mut node.children, references);
+        }
+    }
+
+    let mut references = HashMap::new();
+    let mut used = HashSet::new();
+    let mut next_suffix = HashMap::new();
+    assign_definitions(nodes, &mut references, &mut used, &mut next_suffix);
+    assign_references(nodes, &references);
 }
 
 fn markdown_alignment(alignment: Alignment) -> MarkdownAlignment {
@@ -873,6 +1068,323 @@ mod tests {
         assert_eq!(bold.len(), 1, "strong ancestors leaked: {bold:?}");
         let link = out.sync.leaves_in_range(path, 3, 21, 3, 24);
         assert_eq!(link.len(), 1, "link ancestors leaked: {link:?}");
+    }
+
+    #[test]
+    fn markdown_heading_fragments_are_unique_resolvable_and_sync_safe() {
+        let path = Path::new("fragments.md");
+        let source = concat!(
+            "[first](#hello-world) [second](#hello-world-1) ",
+            "[collision](#hello-world-1-1) ",
+            "[unicode](#caf%C3%A9-d%C3%A9j%C3%A0) ",
+            "[missing](#missing) [malformed](#bad%)\n\n",
+            "# Hello, *World!*\n\n",
+            "# Hello World\n\n",
+            "# Hello-World-1\n\n",
+            "# Café déjà\n\n",
+            "# !!!\n",
+        );
+        let out = crate::render_document_from_source(
+            path,
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        for anchor in [
+            "hello-world",
+            "hello-world-1",
+            "hello-world-1-1",
+            "café-déjà",
+            "",
+        ] {
+            assert!(
+                out.body_html.contains(&format!(r#"id="mdh:{anchor}""#)),
+                "missing fragment id {anchor}: {}",
+                out.body_html
+            );
+        }
+        assert!(!out.body_html.contains("md-heading-anchor\" name="));
+        for href in [
+            "#mdh:hello-world",
+            "#mdh:hello-world-1",
+            "#mdh:hello-world-1-1",
+            "#mdh:caf%C3%A9-d%C3%A9j%C3%A0",
+        ] {
+            assert!(
+                out.body_html.contains(&format!(r#"href="{href}""#)),
+                "missing resolved fragment link {href}: {}",
+                out.body_html
+            );
+        }
+        assert!(out.body_html.contains(r##"href="#missing""##));
+        assert!(out.body_html.contains(r##"href="#bad%""##));
+
+        let heading = out
+            .sync
+            .lookup_containing_container_by_source_position(path, 3, 1)
+            .expect("heading sync container");
+        assert_eq!(heading.element_id, "sec-g1-1");
+        let first_word = out
+            .sync
+            .lookup_leaf_by_source_position(path, 3, 3)
+            .expect("heading word sync leaf");
+        assert_eq!(first_word.element_id, "md-g1-2");
+        assert!(out
+            .blocks
+            .iter()
+            .flat_map(|block| block.source_anchors.iter())
+            .all(|anchor| !anchor.id.starts_with("mdh:")));
+        assert!(out
+            .sync
+            .entries
+            .iter()
+            .all(|entry| !entry.element_id.starts_with("mdh:")));
+    }
+
+    #[test]
+    fn markdown_heading_slugs_match_github_edge_cases() {
+        let out = crate::render_document_from_source(
+            Path::new("slugs.md"),
+            concat!(
+                "# 😄 emoji\n\n# two  spaces\n\n# -literal-\n\n# !!!\n\n",
+                "# Echo\n\n# Echo\n\n# Echo 1\n\n# Echo-1\n\n# Echo\n",
+            )
+            .to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        for anchor in [
+            "-emoji",
+            "two--spaces",
+            "-literal-",
+            "",
+            "echo",
+            "echo-1",
+            "echo-1-1",
+            "echo-1-2",
+            "echo-2",
+        ] {
+            assert!(
+                out.body_html.contains(&format!(r#"id="mdh:{anchor}""#)),
+                "missing GitHub-compatible fragment {anchor:?}: {}",
+                out.body_html
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_duplicate_heading_slugging_scales_for_generated_documents() {
+        let source = "# Same\n\n".repeat(16_000);
+        let started = std::time::Instant::now();
+        let nodes = parse(&source, Path::new("generated.md")).unwrap();
+        let elapsed = started.elapsed();
+        let last_anchor = all_nodes(&nodes)
+            .into_iter()
+            .rev()
+            .find_map(|node| match &node.kind {
+                NodeKind::MarkdownHeading { anchor, .. } => Some(anchor.as_str()),
+                _ => None,
+            })
+            .expect("last heading");
+
+        assert_eq!(last_anchor, "same-15999");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "duplicate heading allocation regressed from linear behavior: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn markdown_heading_links_use_a_reserved_collision_free_namespace() {
+        let source = concat!(
+            "[chrome](#page) [canonical](#mdh:page) ",
+            "[generated](#sec-g1-1) [footnote](#md-fn-a) ",
+            "[reserved](#mdh-page)\n\n",
+            "# Page\n\n",
+            "# Sec G1 1\n\n",
+            "# Md Fn A\n\n",
+            "# Mdh Page\n\n",
+            "Use a note[^a].\n\n",
+            "[^a]: Note body.\n",
+        );
+        let parsed = parse(source, Path::new("namespaces.md")).unwrap();
+        let destinations: Vec<_> = all_nodes(&parsed)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownLink { destination, .. } => Some(destination.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            destinations,
+            [
+                "#mdh:page",
+                "#mdh:page",
+                "#mdh:sec-g1-1",
+                "#mdh:md-fn-a",
+                "#mdh:mdh-page",
+            ]
+        );
+        let out = crate::render_document_from_source(
+            Path::new("namespaces.md"),
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        for href in [
+            "#mdh:page",
+            "#mdh:sec-g1-1",
+            "#mdh:md-fn-a",
+            "#mdh:mdh-page",
+        ] {
+            assert!(out.body_html.contains(&format!(r#"href="{href}""#)));
+        }
+        for id in [
+            "mdh:page",
+            "mdh:sec-g1-1",
+            "mdh:md-fn-a",
+            "mdh:mdh-page",
+            "md-fn-a",
+        ] {
+            assert!(out.body_html.contains(&format!(r#"id="{id}""#)));
+        }
+        assert!(out.body_html.contains(r#"id="sec-g1-1""#));
+
+        let mut seen = HashSet::new();
+        for rest in out.html.split(r#" id=""#).skip(1) {
+            let id = rest.split('"').next().expect("id value");
+            assert!(seen.insert(id), "duplicate DOM id {id:?}");
+        }
+    }
+
+    #[test]
+    fn markdown_fragment_aliases_are_stable_but_collision_changes_invalidate_blocks() {
+        let render = |source: &str| {
+            crate::render_document_from_source(
+                Path::new("fragments.md"),
+                source.to_string(),
+                &crate::HtmlOptions::default(),
+            )
+            .unwrap()
+        };
+        let baseline = render("# Repeat\n\n# Repeat-1\n");
+        let shifted = render("Unrelated paragraph.\n\n# Repeat\n\n# Repeat-1\n");
+        let collision = render("# Repeat\n\n# Repeat\n\n# Repeat-1\n");
+
+        let baseline_tail = baseline.blocks.last().unwrap();
+        let shifted_tail = shifted.blocks.last().unwrap();
+        let collision_tail = collision.blocks.last().unwrap();
+        assert!(baseline_tail.html.contains(r#"id="mdh:repeat-1""#));
+        assert!(shifted_tail.html.contains(r#"id="mdh:repeat-1""#));
+        assert!(collision_tail.html.contains(r#"id="mdh:repeat-1-1""#));
+        assert_eq!(
+            baseline_tail.diff_hash, shifted_tail.diff_hash,
+            "an unrelated preceding block changed the semantic heading hash"
+        );
+        assert_ne!(
+            baseline_tail.diff_hash, collision_tail.diff_hash,
+            "a changed fragment target was stripped from the semantic hash"
+        );
+    }
+
+    #[test]
+    fn markdown_footnote_targets_distinguish_sanitized_label_collisions() {
+        let path = Path::new("footnotes.md");
+        let source = concat!(
+            "First[^a:b] and second[^a?b].\n\n",
+            "[^a:b]: Colon label.\n",
+            "[^a?b]: Question label.\n",
+        );
+        let out = crate::render_document_from_source(
+            path,
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(out.body_html.matches(r#"id="md-fn-a-b""#).count(), 1);
+        assert_eq!(out.body_html.matches(r#"id="md-fn-a-b-1""#).count(), 1);
+        assert_eq!(out.body_html.matches(r##"href="#md-fn-a-b""##).count(), 1);
+        assert_eq!(out.body_html.matches(r##"href="#md-fn-a-b-1""##).count(), 1);
+        assert!(out
+            .sync
+            .entries
+            .iter()
+            .any(|entry| entry.element_id == "md-fn-a-b"));
+        assert!(out
+            .sync
+            .entries
+            .iter()
+            .any(|entry| entry.element_id == "md-fn-a-b-1"));
+    }
+
+    #[test]
+    fn markdown_footnotes_follow_casefolding_and_duplicate_definition_semantics() {
+        let source = concat!(
+            "ASCII[^a], Unicode[^MASSE], and duplicate[^dup].\n\n",
+            "[^A]: Uppercase target.\n\n",
+            "[^Maße]: Unicode target.\n\n",
+            "[^dup]: First duplicate.\n\n",
+            "[^dup]: Last duplicate.\n",
+        );
+        let out = crate::render_document_from_source(
+            Path::new("footnotes.md"),
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert!(out.body_html.contains(r##"href="#md-fn-A""##));
+        assert!(out.body_html.contains(r##"href="#md-fn-Ma-e""##));
+        assert!(out.body_html.contains(r##"href="#md-fn-dup-1""##));
+        for id in ["md-fn-A", "md-fn-Ma-e", "md-fn-dup", "md-fn-dup-1"] {
+            assert_eq!(
+                out.body_html.matches(&format!(r#"id="{id}""#)).count(),
+                1,
+                "expected one {id:?}: {}",
+                out.body_html
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_fragment_support_never_changes_latex_section_ids_or_refs() {
+        let path = Path::new("stable.tex");
+        let source = concat!(
+            "\\begin{document}\n",
+            "\\section{Stable Section}\\label{sec:stable}\n",
+            "See Section~\\ref{sec:stable}.\n",
+            "\\begin{equation}\\label{eq:stable}a=b\\end{equation}\n",
+            "See Equation~\\eqref{eq:stable}.\n",
+            "\\end{document}\n",
+        );
+        let out = crate::render_document_from_source(
+            path,
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(out.format, crate::DocumentFormat::Latex);
+        assert!(!out.body_html.contains("md-heading-anchor"));
+        assert!(!out.body_html.contains("mdh:"));
+        assert!(out.body_html.contains(
+            r#"<h2 id="sec-stable" class="sec-h2" data-src="stable.tex:2:1" data-refkey="sec:stable">"#
+        ));
+        assert!(out
+            .body_html
+            .contains(r##"href="#sec-stable" data-target="sec:stable" data-kind="ref""##));
+        assert!(out
+            .body_html
+            .contains(r##"href="#eq-stable" data-target="eq:stable" data-kind="eqref""##));
+        assert!(out
+            .sync
+            .entries
+            .iter()
+            .any(|entry| entry.element_id == "sec-stable"));
     }
 
     #[test]

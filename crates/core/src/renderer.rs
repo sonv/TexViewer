@@ -2004,7 +2004,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             write_children(out, &n.children, ctx);
             writeln!(out, "</{tag}>").unwrap();
         }
-        NodeKind::MarkdownHeading { level } => {
+        NodeKind::MarkdownHeading { level, anchor } => {
             let id = ctx.idgen.next("sec");
             // The heading's visible text has finer MarkdownText leaves. Keep
             // the structural wrapper out of point/range results so selecting
@@ -2013,9 +2013,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             let h = (*level).clamp(1, 6);
             write!(
                 out,
-                r#"<h{h} id="{id}" class="sec-h{h} md-heading" data-src="{src}">"#,
+                r#"<h{h} id="{id}" class="sec-h{h} md-heading" data-src="{src}"><a class="md-heading-anchor" id="mdh:{anchor}" aria-hidden="true"></a>"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
+                anchor = escape_attr(anchor),
             )
             .unwrap();
             write_children(out, &n.children, ctx);
@@ -2271,8 +2272,8 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             )
             .unwrap();
         }
-        NodeKind::MarkdownFootnoteDefinition { label } => {
-            let id = format!("md-fn-{}", sanitize_id(label));
+        NodeKind::MarkdownFootnoteDefinition { label, target } => {
+            let id = format!("md-fn-{target}");
             record_container(ctx, &id, &n.span, Some(label));
             write!(
                 out,
@@ -2285,7 +2286,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             write_children(out, &n.children, ctx);
             out.push_str("</section>");
         }
-        NodeKind::MarkdownFootnoteReference { label } => {
+        NodeKind::MarkdownFootnoteReference { label, target } => {
             let id = ctx.idgen.next("md");
             record(ctx, &id, &n.span, None);
             write!(
@@ -2293,7 +2294,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 r##"<sup class="md-footnote-ref" id="{id}" data-src="{src}"><a href="#md-fn-{target}">{label}</a></sup>"##,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
-                target = escape_attr(&sanitize_id(label)),
+                target = escape_attr(target),
                 label = escape_html(label),
             )
             .unwrap();

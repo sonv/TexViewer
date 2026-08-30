@@ -21,3 +21,5 @@ toml.workspace = true
 regex.workspace = true
 walkdir.workspace = true
 pulldown-cmark.workspace = true
+github-slugger.workspace = true
+unicase.workspace = true

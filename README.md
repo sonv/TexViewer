@@ -142,6 +142,13 @@ opens the browser print dialog instead of invoking a TeX compiler.
 Markdown prose, formatted text, tables, and fenced or indented code carry
 token-level source anchors, so cursor follow, visual selections, and browser
 click-back land on the visible word or code token instead of the whole block.
+Same-document links resolve against GitHub-compatible heading fragments: for
+example, `[jump](#my-heading)` targets `# My Heading`, while duplicate headings
+receive deterministic `-1`, `-2`, … suffixes. The rendered/copyable URL uses
+the reserved collision-free form `#mdh:my-heading`, keeping it separate from
+viewer, source-sync, and footnote IDs. Footnotes follow Markdown's
+case-insensitive label matching, and distinct or repeated definitions always
+receive distinct HTML targets.
 
 Raw HTML in Markdown is escaped and shown as source text; it is never injected
 into the preview DOM. Local images are served only from beneath the Markdown
