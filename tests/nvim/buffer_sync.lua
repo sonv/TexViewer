@@ -23,9 +23,19 @@ local startup_path = scratch .. "/startup.md"
 local unsaved_tex_path = scratch .. "/never-saved.tex"
 local a_path = scratch .. "/a.md"
 local b_path = scratch .. "/b.md"
+local canonical_md_path = scratch .. "/canonical.md"
+local alias_md_path = scratch .. "/alias.md"
 write(startup_path, { "# disk startup" })
 write(a_path, { "# A disk" })
 write(b_path, { "# B disk" })
+write(canonical_md_path, {
+  "# Canonical disk file",
+  "",
+  "canonical disk target",
+})
+local symlink_ok, symlink_err = (vim.uv or vim.loop).fs_symlink(
+  canonical_md_path, alias_md_path)
+assert(symlink_ok, "could not create Markdown symlink: " .. tostring(symlink_err))
 
 local mp = require("mathpreview")
 mp.setup({
@@ -45,8 +55,20 @@ local function curl(port, route)
   return result.code, result.stdout or ""
 end
 
+local function post_json(port, route, payload)
+  local result = vim.system({
+    "curl", "--silent", "--show-error", "--max-time", "2",
+    "--header", "content-type: application/json",
+    "--data-binary", "@-",
+    "-X", "POST",
+    "http://127.0.0.1:" .. tostring(port) .. route,
+  }, { text = true, stdin = vim.json.encode(payload) }):wait()
+  return result.code, result.stdout or "", result.stderr or ""
+end
+
 local function wait_for(predicate, message)
-  assert(vim.wait(5000, predicate, 50), message)
+  assert(vim.wait(5000, predicate, 50),
+    message .. "\nstatus: " .. vim.inspect(mp.status()))
 end
 
 local function start(path)
@@ -143,6 +165,169 @@ end, "buffer B update was cancelled or routed to another daemon")
 vim.api.nvim_set_current_buf(a_buf)
 mp.stop()
 vim.api.nvim_set_current_buf(b_buf)
+mp.stop()
+
+-- The Markdown daemon canonicalizes source paths, but users may have opened a
+-- symlink alias and made unsaved edits there. A backward-sync jump must treat
+-- the daemon's canonical target as the current alias buffer: opening a second
+-- buffer for the real path loses the authoritative in-memory view.
+mp.setup({
+  sync = true,
+  raise_on_jump = false,
+  cursor_debounce_ms = 30,
+  jump_wait_ms = 1000,
+  jump_retry_ms = 10,
+})
+local alias_buf, alias_port = start(alias_md_path)
+local alias_buf_name = vim.api.nvim_buf_get_name(alias_buf)
+local alias_lines = {
+  "# Unsaved alias buffer",
+  "",
+  "alias-buffer-target",
+}
+vim.api.nvim_buf_set_lines(alias_buf, 0, -1, false, alias_lines)
+vim.api.nvim_exec_autocmds("TextChanged", { buffer = alias_buf })
+wait_for(function()
+  local code, page = curl(alias_port, "/")
+  return code == 0 and page:find("alias%-buffer%-target") ~= nil
+end, "symlinked Markdown buffer was not pushed before the jump")
+assert(vim.bo[alias_buf].modified, "symlink alias should still be unsaved before the jump")
+
+local jumps_before = mp.status().jumps
+local jump_code, _, jump_err = post_json(alias_port, "/jump", {
+  file = vim.fn.resolve(canonical_md_path),
+  line = 3,
+  col = 7,
+})
+assert(jump_code == 0, "could not queue canonical Markdown jump: " .. jump_err)
+wait_for(function() return mp.status().jumps > jumps_before end,
+  "plugin did not consume the canonical Markdown jump")
+assert(vim.api.nvim_get_current_buf() == alias_buf,
+  "canonical Markdown jump replaced the symlink alias buffer")
+assert(vim.api.nvim_buf_get_name(alias_buf) == alias_buf_name,
+  "canonical Markdown jump renamed the symlink alias buffer")
+assert(vim.deep_equal(vim.api.nvim_buf_get_lines(alias_buf, 0, -1, false), alias_lines),
+  "canonical Markdown jump discarded unsaved alias contents")
+assert(vim.bo[alias_buf].modified,
+  "canonical Markdown jump cleared the alias buffer's modified state")
+assert(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { 3, 6 }),
+  "canonical Markdown jump did not land at the requested source position")
+
+-- The alias may be loaded but not focused when the browser requests a jump.
+-- Reuse it in that case too instead of opening a second canonical-path buffer.
+local unrelated_buf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_lines(unrelated_buf, 0, -1, false, { "unrelated buffer" })
+vim.api.nvim_set_current_buf(unrelated_buf)
+assert(vim.api.nvim_get_current_buf() == unrelated_buf,
+  "could not leave the alias buffer before the loaded-alias jump")
+jumps_before = mp.status().jumps
+jump_code, _, jump_err = post_json(alias_port, "/jump", {
+  file = vim.fn.resolve(canonical_md_path),
+  line = 3,
+  col = 8,
+})
+assert(jump_code == 0, "could not queue loaded-alias Markdown jump: " .. jump_err)
+wait_for(function() return mp.status().jumps > jumps_before end,
+  "plugin did not consume the loaded-alias Markdown jump")
+assert(vim.api.nvim_get_current_buf() == alias_buf,
+  "canonical Markdown jump ignored the loaded symlink alias buffer")
+assert(vim.deep_equal(vim.api.nvim_buf_get_lines(alias_buf, 0, -1, false), alias_lines),
+  "loaded-alias Markdown jump discarded unsaved contents")
+assert(vim.bo[alias_buf].modified,
+  "loaded-alias Markdown jump cleared the alias buffer's modified state")
+assert(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { 3, 7 }),
+  "loaded-alias Markdown jump did not land at the requested source position")
+
+-- If both names are loaded, an unmodified canonical buffer must not outrank
+-- the modified alias that contains the preview's authoritative contents.
+-- Neovim normally deduplicates symlink identities while adding a buffer, so
+-- briefly remove and restore this disposable test symlink to reproduce the
+-- state that can arise when a symlink is created or retargeted after loading.
+local unlink_ok, unlink_err = (vim.uv or vim.loop).fs_unlink(alias_md_path)
+assert(unlink_ok, "could not remove the Markdown test symlink: " .. tostring(unlink_err))
+local canonical_buf = vim.fn.bufadd(canonical_md_path)
+vim.fn.bufload(canonical_buf)
+assert(not vim.bo[canonical_buf].modified,
+  "canonical duplicate should start unmodified")
+local relink_ok, relink_err = (vim.uv or vim.loop).fs_symlink(
+  canonical_md_path, alias_md_path)
+assert(relink_ok, "could not restore the Markdown test symlink: " .. tostring(relink_err))
+vim.api.nvim_set_current_buf(canonical_buf)
+assert(vim.api.nvim_get_current_buf() == canonical_buf,
+  "could not focus the canonical duplicate before the alias-preference jump")
+jumps_before = mp.status().jumps
+jump_code, _, jump_err = post_json(alias_port, "/jump", {
+  file = vim.fn.resolve(canonical_md_path),
+  line = 3,
+  col = 9,
+})
+assert(jump_code == 0, "could not queue alias-preference Markdown jump: " .. jump_err)
+wait_for(function() return mp.status().jumps > jumps_before end,
+  "plugin did not consume the alias-preference Markdown jump")
+assert(vim.api.nvim_get_current_buf() == alias_buf,
+  "canonical Markdown jump preferred a stale duplicate over the modified alias")
+assert(vim.deep_equal(vim.api.nvim_buf_get_lines(alias_buf, 0, -1, false), alias_lines),
+  "alias-preference Markdown jump discarded unsaved contents")
+assert(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { 3, 8 }),
+  "alias-preference Markdown jump did not land at the requested source position")
+
+-- A uv timer can fire (queueing its schedule_wrap callback) immediately before
+-- a newer CursorMoved replaces it. Replaying that precise ordering verifies
+-- that the stale callback neither posts nor closes the replacement timer. The
+-- cursor and visual-selection debouncers are separate, so exercise both.
+local function assert_stale_debounce_is_ignored(label, route, trigger)
+  local original_schedule_wrap = vim.schedule_wrap
+  local original_system = vim.system
+  local queued = {}
+  local posts = 0
+
+  vim.schedule_wrap = function(callback)
+    return function(...)
+      queued[#queued + 1] = { callback = callback, args = { ... } }
+    end
+  end
+  vim.system = function(args, opts, on_exit)
+    local url = args[#args]
+    if type(url) == "string" and url:sub(-#route) == route then
+      posts = posts + 1
+      return nil
+    end
+    return original_system(args, opts, on_exit)
+  end
+
+  local ok, err = xpcall(function()
+    trigger()
+    assert(vim.wait(1000, function() return #queued >= 1 end, 5),
+      label .. " timer did not fire")
+    trigger() -- replace the fired timer before its scheduled callback runs
+    queued[1].callback(unpack(queued[1].args))
+    assert(posts == 0, label .. " stale callback posted an obsolete update")
+    assert(vim.wait(1000, function() return #queued >= 2 end, 5),
+      label .. " stale callback closed the replacement timer")
+    queued[2].callback(unpack(queued[2].args))
+    assert(posts == 1, label .. " replacement callback did not post exactly once")
+  end, debug.traceback)
+
+  vim.schedule_wrap = original_schedule_wrap
+  vim.system = original_system
+  if not ok then error(err, 0) end
+end
+
+local function fire_cursor_moved()
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = alias_buf })
+end
+
+assert_stale_debounce_is_ignored("cursor debounce", "/cursor", fire_cursor_moved)
+
+vim.cmd("normal! v")
+assert(vim.fn.mode():sub(1, 1) == "v", "could not enter visual mode for debounce test")
+vim.wait(100, function() return false end, 10) -- settle the ModeChanged seed post
+assert_stale_debounce_is_ignored("selection debounce", "/selection", fire_cursor_moved)
+local escape = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+vim.api.nvim_feedkeys(escape, "nx", false)
+wait_for(function() return vim.fn.mode() == "n" end,
+  "could not leave visual mode after debounce test")
+
 mp.stop()
 vim.fn.delete(scratch, "rf")
 print("mathpreview buffer-sync regression: ok")

@@ -51,7 +51,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RenderOutput, RenderedBlock,
 };
 
-const WS_PROTOCOL_VERSION: &str = "77";
+const WS_PROTOCOL_VERSION: &str = "78";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -1581,7 +1581,11 @@ async fn serve_cursor(
     // (and per-row math) so you can see which align/gather line you're on.
     // Everywhere else (prose, sections, single equations), keep the original
     // flashing point highlight on the element under the cursor.
-    let payload = if current.sync.math_rows_in_range(&file, line, line).is_empty() {
+    let payload = if current
+        .sync
+        .math_rows_in_range(&file, line, line)
+        .is_empty()
+    {
         let element_id = current
             .sync
             .lookup_leaf_by_source_position(&file, line, col)
@@ -1590,9 +1594,13 @@ async fn serve_cursor(
         // headings — SyncKind::Block) so they don't flash on a bare cursor
         // move. But the viewer must still FOLLOW the cursor onto them (e.g. a
         // search wrapping to a heading match), so fall back to the first
-        // element on the line — and, on a jump, to the NEAREST element in the
-        // file (a preamble line has nothing rendered on it at all; snap forward
-        // to the document's first element) — scrolling without the flash.
+        // element on the line. Markdown additionally follows an exact
+        // structural container (a fence or table delimiter); this stays
+        // Markdown-only so an unrendered line deep inside a LaTeX proof cannot
+        // yank the view to the proof wrapper. On a jump, finally use the
+        // NEAREST element in the file (a preamble line has nothing rendered on
+        // it at all; snap forward to the document's first element), always
+        // scrolling without the flash.
         let (element_id, scroll_only) = match element_id {
             Some(id) => (Some(id), false),
             None => {
@@ -1601,6 +1609,18 @@ async fn serve_cursor(
                     .leaves_in_range(&file, line, 1, line, u32::MAX)
                     .into_iter()
                     .next()
+                    .or_else(|| {
+                        (current.format == DocumentFormat::Markdown)
+                            .then(|| {
+                                current
+                                    .sync
+                                    .lookup_containing_container_by_source_position(
+                                        &file, line, col,
+                                    )
+                                    .map(|entry| entry.element_id.clone())
+                            })
+                            .flatten()
+                    })
                     .or_else(|| {
                         if is_jump {
                             current
@@ -4728,10 +4748,11 @@ mod tests {
         is_buffer_renderable, is_buffer_renderable_with_preamble, is_latest_render_attempt,
         merge_config_editor_values, origin_is_loopback, preamble_fingerprint,
         project_asset_response, render_cached, search_sync_payload, select_tikz_engine,
-        semantic_macro_definitions, serve_buffer_push, serve_debug, serve_print, tikz_document,
-        tikz_error_svg, tikz_hash_from_path, validate_override_content, watched_event_paths,
-        websocket_needs_reload, AppState, DocumentFormat, EditorSearch, PatchOp, PlanSlot,
-        SearchRequest, PROJECT_SVG_CSP, WS_PROTOCOL_VERSION,
+        semantic_macro_definitions, serve_buffer_push, serve_cursor, serve_debug, serve_print,
+        serve_selection, tikz_document, tikz_error_svg, tikz_hash_from_path,
+        validate_override_content, watched_event_paths, websocket_needs_reload, AppState,
+        DocumentFormat, EditorSearch, PatchOp, PlanSlot, RangeRequest, SearchRequest,
+        SourceRequest, PROJECT_SVG_CSP, WS_PROTOCOL_VERSION,
     };
 
     #[test]
@@ -6221,6 +6242,84 @@ Second paragraph here.
         assert!(!rendered.body_html.contains("Disk version"));
         assert!(rendered.body_html.contains(r#"class="math inline""#));
         assert_eq!(rendered.included_files, Vec::<PathBuf>::new());
+    }
+
+    #[tokio::test]
+    async fn markdown_cursor_and_selection_broadcast_precise_leaf_targets() {
+        let root = PathBuf::from("/tmp/mathpreview-markdown-sync.md");
+        let source = concat!(
+            "# Alpha Beta\n\n",
+            "plain alpha beta\n\n",
+            "**bold words**\n\n",
+            "```rust\n",
+            "let first = 1;\n",
+            "let second = 2;\n",
+            "```\n",
+        );
+        let initial = mathpreview_core::render_document_from_source(
+            &root,
+            source.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let state = app_state_for_output(initial);
+        let mut rx = state.tx.subscribe();
+
+        let post_cursor = |line, col| {
+            serve_cursor(
+                axum::extract::State(state.clone()),
+                axum::Json(SourceRequest {
+                    file: root.clone(),
+                    line,
+                    col: Some(col),
+                    element_id: None,
+                    math_row: None,
+                    row_count: None,
+                    typing: None,
+                }),
+            )
+        };
+
+        post_cursor(3, 2).await;
+        let alpha: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        post_cursor(3, 14).await;
+        let beta: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(alpha["event"], "source-cursor");
+        assert_ne!(alpha["element_id"], beta["element_id"]);
+        assert_eq!(alpha["scroll_only"], false);
+        assert_eq!(beta["scroll_only"], false);
+
+        post_cursor(8, 6).await;
+        let first: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        post_cursor(9, 6).await;
+        let second: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_ne!(first["element_id"], second["element_id"]);
+        assert!(!first["element_id"].is_null());
+        assert!(!second["element_id"].is_null());
+
+        // The closing fence has no visible leaf, but its exact containing
+        // block is still a safe scroll-only target rather than a stale/null
+        // cursor event.
+        post_cursor(10, 1).await;
+        let fence: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert!(!fence["element_id"].is_null());
+        assert_eq!(fence["scroll_only"], true);
+
+        serve_selection(
+            axum::extract::State(state),
+            axum::Json(RangeRequest {
+                file: root,
+                clear: false,
+                start_line: Some(5),
+                start_col: Some(3),
+                end_line: Some(5),
+                end_col: Some(6),
+            }),
+        )
+        .await;
+        let selection: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(selection["event"], "source-range");
+        assert_eq!(selection["element_ids"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

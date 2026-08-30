@@ -31,7 +31,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- warned about — the signal that a fix you "released" isn't actually the
 -- binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.32"
+local PLUGIN_VERSION = "2.1.33"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -1367,6 +1367,36 @@ done
   end
 end
 
+-- Absolute, symlink-resolved path. Besides daemon routing, inverse search uses
+-- this to recognize that a canonical server path and the editor's symlink path
+-- name the same open buffer, so a jump never reopens it under a second name.
+local function canon(p)
+  if not p or p == "" then return p end
+  return vim.fn.resolve(vim.fn.fnamemodify(p, ":p"))
+end
+
+local function loaded_buffer_for_path(path)
+  local target = canon(path)
+  if not target or target == "" then return nil end
+  local current = vim.api.nvim_get_current_buf()
+  local current_matches = vim.api.nvim_buf_is_loaded(current)
+    and canon(vim.api.nvim_buf_get_name(current)) == target
+  if current_matches and vim.bo[current].modified then return current end
+  local fallback = current_matches and current or nil
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if bufnr ~= current
+        and vim.api.nvim_buf_is_loaded(bufnr)
+        and canon(vim.api.nvim_buf_get_name(bufnr)) == target then
+      -- If aliases have already been loaded under more than one name, keep
+      -- the authoritative unsaved buffer rather than whichever was listed
+      -- first. Otherwise reuse the first loaded match.
+      if vim.bo[bufnr].modified then return bufnr end
+      fallback = fallback or bufnr
+    end
+  end
+  return fallback
+end
+
 local function jump_to_source(jump)
   if type(jump) ~= "table" or not jump.file or not jump.line then return end
   local seq = tonumber(jump.seq) or 0
@@ -1380,14 +1410,26 @@ local function jump_to_source(jump)
     -- position explicitly before either switching buffers or moving in place,
     -- so one Ctrl-O returns to where the user was before the preview click.
     vim.cmd([[normal! m']])
-    if vim.api.nvim_buf_get_name(0) ~= file then
+    local current = vim.api.nvim_get_current_buf()
+    local loaded = loaded_buffer_for_path(file)
+    local must_switch = (loaded and loaded ~= current)
+      or (not loaded and canon(vim.api.nvim_buf_get_name(current)) ~= canon(file))
+    if must_switch then
       -- Opening the target fires BufEnter synchronously; keep the jumping
       -- daemon active across it (the target is usually an \input of its project).
       -- `m'` above is the one deliberate jump; suppress :edit's implicit entry
       -- so Ctrl-O does not stop at an intermediate position in the target.
       in_jump = true
-      pcall(vim.cmd, "keepjumps edit " .. vim.fn.fnameescape(file))
+      local switched
+      if loaded then
+        -- Prefer an already loaded symlink alias. It may contain unsaved edits
+        -- that would diverge from a second buffer opened by canonical name.
+        switched = pcall(vim.api.nvim_set_current_buf, loaded)
+      else
+        switched = pcall(vim.cmd, "keepjumps edit " .. vim.fn.fnameescape(file))
+      end
       in_jump = false
+      if not switched then return end
     end
     local line_count = vim.api.nvim_buf_line_count(0)
     line = math.min(line, math.max(1, line_count))
@@ -1485,10 +1527,16 @@ end
 local function debounced_cursor()
   if not daemon_job or not config.sync then return end
   if cursor_timer then cursor_timer:stop(); cursor_timer:close() end
-  cursor_timer = uv.new_timer()
-  cursor_timer:start(config.cursor_debounce_ms, 0, vim.schedule_wrap(function()
+  local pending = uv.new_timer()
+  cursor_timer = pending
+  pending:start(config.cursor_debounce_ms, 0, vim.schedule_wrap(function()
+    -- The uv expiry and scheduled Lua callback are separate turns. A newer
+    -- cursor event may replace this timer between them; a stale callback must
+    -- never close that replacement or post the superseded position.
+    if cursor_timer ~= pending then return end
+    cursor_timer = nil
+    if not pending:is_closing() then pending:close() end
     post_cursor()
-    if cursor_timer then cursor_timer:close(); cursor_timer = nil end
   end))
 end
 
@@ -1497,10 +1545,13 @@ end
 local function debounced_selection()
   if not daemon_job or not config.sync then return end
   if selection_timer then selection_timer:stop(); selection_timer:close() end
-  selection_timer = uv.new_timer()
-  selection_timer:start(config.cursor_debounce_ms, 0, vim.schedule_wrap(function()
+  local pending = uv.new_timer()
+  selection_timer = pending
+  pending:start(config.cursor_debounce_ms, 0, vim.schedule_wrap(function()
+    if selection_timer ~= pending then return end
+    selection_timer = nil
+    if not pending:is_closing() then pending:close() end
     post_selection()
-    if selection_timer then selection_timer:close(); selection_timer = nil end
   end))
 end
 
@@ -1508,14 +1559,6 @@ local function daemon_count()
   local n = 0
   for _ in pairs(daemons) do n = n + 1 end
   return n
-end
-
--- Absolute, symlink-resolved path — matches the canonical paths the daemon
--- reports in /debug `watched` (e.g. macOS /tmp → /private/tmp), so the plugin
--- can match a buffer against a daemon's watched-file set.
-local function canon(p)
-  if not p or p == "" then return p end
-  return vim.fn.resolve(vim.fn.fnamemodify(p, ":p"))
 end
 
 -- Refresh a daemon entry's watched-file set (root + \input/\include + bib) from

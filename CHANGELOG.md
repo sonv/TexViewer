@@ -13,6 +13,27 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.33] — 2026-08-30
+
+### Fixed
+
+- **Markdown source sync is token-precise.** Prose, formatted text, table
+  cells, and fenced or indented code now expose individual source anchors in
+  both directions. Code fences and table delimiter rows follow their exact
+  rendered container instead of leaving the previous highlight behind.
+- **Visual selections no longer double-highlight Markdown wrappers.** Heading,
+  emphasis, strong, strikethrough, and link containers stay structural while
+  their precise child tokens receive the selection tint. Half-open parser
+  spans also stop adjacent Markdown syntax from leaking into a selection.
+- **Rapid cursor and selection updates are no longer dropped.** Superseded
+  Neovim debounce callbacks cannot close a newer timer, and null or scroll-only
+  cursor events clear stale browser flash boxes immediately. The WebSocket
+  protocol bump reloads stale tabs onto the corrected cursor client.
+- **Backward sync preserves symlinked Markdown buffers.** A canonical daemon
+  path is compared by resolved identity, so click-back finds a loaded alias
+  buffer and preserves its unsaved contents instead of reopening the target
+  path, even when that alias is not currently focused.
+
 ## [2.1.32] — 2026-08-30
 
 ### Added

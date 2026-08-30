@@ -2006,7 +2006,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         }
         NodeKind::MarkdownHeading { level } => {
             let id = ctx.idgen.next("sec");
-            record_block(ctx, &id, &n.span, None);
+            // The heading's visible text has finer MarkdownText leaves. Keep
+            // the structural wrapper out of point/range results so selecting
+            // one word does not also tint the entire heading.
+            record_container(ctx, &id, &n.span, None);
             let h = (*level).clamp(1, 6);
             write!(
                 out,
@@ -2019,16 +2022,20 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             writeln!(out, "</h{h}>").unwrap();
         }
         NodeKind::MarkdownText(text) => {
-            let id = ctx.idgen.next("md");
-            record(ctx, &id, &n.span, None);
-            write!(
-                out,
-                r#"<span class="src-word md-text" id="{id}" data-src="{src}">{text}</span>"#,
-                id = escape_attr(&id),
-                src = escape_attr(&data_src(&n.span)),
-                text = escape_html(text),
-            )
-            .unwrap();
+            if text.chars().all(char::is_whitespace) {
+                out.push_str(&escape_html(text));
+            } else {
+                let id = ctx.idgen.next("md");
+                record(ctx, &id, &n.span, None);
+                write!(
+                    out,
+                    r#"<span class="src-word md-text" id="{id}" data-src="{src}">{text}</span>"#,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                    text = escape_html(text),
+                )
+                .unwrap();
+            }
         }
         NodeKind::MarkdownEmphasis
         | NodeKind::MarkdownStrong
@@ -2044,7 +2051,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 _ => unreachable!(),
             };
             let id = ctx.idgen.next("md");
-            record(ctx, &id, &n.span, None);
+            // These elements contain finer text/math leaves. They remain DOM
+            // anchors for inverse search, but are structural in the SyncIndex
+            // so selections never double-highlight wrapper + child.
+            record_container(ctx, &id, &n.span, None);
             write!(
                 out,
                 r#"<{tag} class="{class}" id="{id}" data-src="{src}">"#,
@@ -2057,7 +2067,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         }
         NodeKind::MarkdownLink { destination, title } => {
             let id = ctx.idgen.next("md");
-            record(ctx, &id, &n.span, None);
+            record_container(ctx, &id, &n.span, None);
             if safe_markdown_url(destination) {
                 let title_attr = markdown_title_attr(title.as_deref());
                 write!(
@@ -2144,14 +2154,19 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .filter(|s| !s.is_empty())
                 .map(|s| format!(" language-{s}"))
                 .unwrap_or_default();
-            writeln!(
+            write!(
                 out,
-                r#"<pre class="md-code-block" id="{id}" data-src="{src}"><code class="md-code{language_class}">{code}</code></pre>"#,
+                r#"<pre class="md-code-block" id="{id}" data-src="{src}"><code class="md-code{language_class}">"#,
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
-                code = escape_html(code),
             )
             .unwrap();
+            if n.children.is_empty() {
+                out.push_str(&escape_html(code));
+            } else {
+                write_children(out, &n.children, ctx);
+            }
+            writeln!(out, "</code></pre>").unwrap();
         }
         NodeKind::MarkdownList { ordered, start } => {
             let id = ctx.idgen.next("md");

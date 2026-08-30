@@ -35,19 +35,31 @@ pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
                 append_node(&mut roots, &mut stack, node);
             }
             Event::Text(text) => {
-                if let Some(Node {
-                    kind: NodeKind::MarkdownCodeBlock { code, .. },
-                    ..
-                }) = stack.last_mut()
-                {
-                    code.push_str(&text);
+                let text = text.into_string();
+                let in_code_block = matches!(
+                    stack.last().map(|node| &node.kind),
+                    Some(NodeKind::MarkdownCodeBlock { .. })
+                );
+                let text_nodes = markdown_text_nodes(
+                    source,
+                    &text,
+                    range.clone(),
+                    &positions,
+                    file,
+                    in_code_block,
+                );
+                if in_code_block {
+                    let node = stack
+                        .last_mut()
+                        .expect("code-block text must have a parent node");
+                    if let NodeKind::MarkdownCodeBlock { code, .. } = &mut node.kind {
+                        code.push_str(&text);
+                    }
+                    node.children.extend(text_nodes);
                 } else {
-                    append_leaf(
-                        &mut roots,
-                        &mut stack,
-                        NodeKind::MarkdownText(text.into_string()),
-                        positions.span(file, range.start, range.end),
-                    );
+                    for node in text_nodes {
+                        append_node(&mut roots, &mut stack, node);
+                    }
                 }
             }
             Event::Code(code) => append_leaf(
@@ -218,6 +230,102 @@ fn append_node(roots: &mut Vec<Node>, stack: &mut [Node], node: Node) {
     } else {
         roots.push(node);
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MarkdownTextClass {
+    Whitespace,
+    Visible,
+}
+
+fn markdown_text_class(ch: char) -> MarkdownTextClass {
+    if ch.is_whitespace() {
+        MarkdownTextClass::Whitespace
+    } else {
+        MarkdownTextClass::Visible
+    }
+}
+
+fn markdown_text_runs(text: &str) -> Vec<Range<usize>> {
+    let mut runs = Vec::new();
+    let mut chars = text.char_indices();
+    let Some((mut start, first)) = chars.next() else {
+        return runs;
+    };
+    let mut class = markdown_text_class(first);
+    for (byte, ch) in chars {
+        let next_class = markdown_text_class(ch);
+        if next_class != class {
+            runs.push(start..byte);
+            start = byte;
+            class = next_class;
+        }
+    }
+    runs.push(start..text.len());
+    runs
+}
+
+/// Split source-identical Markdown text into small sync units while preserving
+/// pulldown-cmark's exact byte offsets. Entity and backslash-escape events are
+/// kept atomic because their rendered text is not byte-identical to the source.
+/// Code events get a second, ordered-search mapping path so indented blocks
+/// (whose source ranges retain indentation stripped from rendered text) still
+/// receive precise token anchors.
+fn markdown_text_nodes(
+    source: &str,
+    text: &str,
+    range: Range<usize>,
+    positions: &LineIndex<'_>,
+    file: &Path,
+    code_block: bool,
+) -> Vec<Node> {
+    let runs = markdown_text_runs(text);
+    if runs.is_empty() {
+        return Vec::new();
+    }
+
+    let exact = source.get(range.clone()) == Some(text);
+    let mut search_from = range.start;
+    let mut mapped = Vec::with_capacity(runs.len());
+    for run in runs {
+        let value = &text[run.clone()];
+        let source_range = if exact {
+            range.start + run.start..range.start + run.end
+        } else if code_block && !value.chars().all(char::is_whitespace) {
+            let Some(offset) = source
+                .get(search_from..range.end)
+                .and_then(|remaining| remaining.find(value))
+            else {
+                return vec![Node {
+                    kind: NodeKind::MarkdownText(text.to_string()),
+                    span: positions.span(file, range.start, range.end),
+                    children: Vec::new(),
+                }];
+            };
+            let start = search_from + offset;
+            let end = start + value.len();
+            search_from = end;
+            start..end
+        } else if code_block {
+            // Whitespace is emitted verbatim but intentionally has no sync
+            // leaf. Its approximate span is therefore used only to retain the
+            // source ordering of the AST; the next visible token is searched
+            // from the last exact match above.
+            search_from..search_from
+        } else {
+            return vec![Node {
+                kind: NodeKind::MarkdownText(text.to_string()),
+                span: positions.span(file, range.start, range.end),
+                children: Vec::new(),
+            }];
+        };
+        mapped.push(Node {
+            kind: NodeKind::MarkdownText(value.to_string()),
+            span: positions.span(file, source_range.start, source_range.end),
+            children: Vec::new(),
+        });
+    }
+    mapped
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -636,6 +744,135 @@ mod tests {
                 .map(|entry| entry.element_id.as_str()),
             Some(text.element_id.as_str())
         );
+    }
+
+    #[test]
+    fn markdown_words_are_distinct_sync_leaves() {
+        let path = Path::new("words.md");
+        let out = crate::render_document_from_source(
+            path,
+            "alpha beta gamma\n\n😀 alpha beta\n".to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let alpha = out
+            .sync
+            .lookup_leaf_by_source_position(path, 1, 2)
+            .expect("alpha leaf");
+        let beta = out
+            .sync
+            .lookup_leaf_by_source_position(path, 1, 8)
+            .expect("beta leaf");
+        let gamma = out
+            .sync
+            .lookup_leaf_by_source_position(path, 1, 13)
+            .expect("gamma leaf");
+        assert_ne!(alpha.element_id, beta.element_id);
+        assert_ne!(beta.element_id, gamma.element_id);
+        assert_eq!(
+            (alpha.start.col, beta.start.col, gamma.start.col),
+            (1, 7, 12)
+        );
+
+        let unicode_alpha = out
+            .sync
+            .lookup_leaf_by_source_position(path, 3, 7)
+            .expect("alpha after emoji");
+        let unicode_beta = out
+            .sync
+            .lookup_leaf_by_source_position(path, 3, 13)
+            .expect("beta after emoji");
+        assert_eq!((unicode_alpha.start.col, unicode_beta.start.col), (6, 12));
+    }
+
+    #[test]
+    fn markdown_entity_and_escape_mapping_keeps_original_byte_columns() {
+        let path = Path::new("entities.md");
+        let source = "a &amp; beta and \\* gamma\n";
+        let out = crate::render_document_from_source(
+            path,
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        for word in ["beta", "gamma"] {
+            let byte = source.find(word).unwrap();
+            let col = byte as u32 + 1;
+            let entry = out
+                .sync
+                .lookup_leaf_by_source_position(path, 1, col)
+                .unwrap_or_else(|| panic!("missing {word} sync leaf"));
+            assert_eq!(entry.start.col, col, "wrong source start for {word}");
+        }
+    }
+
+    #[test]
+    fn markdown_code_content_has_line_and_token_sync_leaves() {
+        let path = Path::new("code.md");
+        let source = concat!(
+            "```rust\n",
+            "let alpha = 1;\n",
+            "let beta = 2;\n",
+            "```\n\n",
+            "    indented alpha\n",
+            "    indented beta\n",
+        );
+        let out = crate::render_document_from_source(
+            path,
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let fenced_alpha = out
+            .sync
+            .lookup_leaf_by_source_position(path, 2, 6)
+            .expect("fenced alpha leaf");
+        let fenced_beta = out
+            .sync
+            .lookup_leaf_by_source_position(path, 3, 6)
+            .expect("fenced beta leaf");
+        assert_ne!(fenced_alpha.element_id, fenced_beta.element_id);
+        assert_eq!((fenced_alpha.start.line, fenced_alpha.start.col), (2, 5));
+        assert_eq!((fenced_beta.start.line, fenced_beta.start.col), (3, 5));
+
+        let indented_alpha = out
+            .sync
+            .lookup_leaf_by_source_position(path, 6, 14)
+            .expect("indented alpha leaf");
+        let indented_beta = out
+            .sync
+            .lookup_leaf_by_source_position(path, 7, 14)
+            .expect("indented beta leaf");
+        assert_eq!(
+            (indented_alpha.start.line, indented_alpha.start.col),
+            (6, 14)
+        );
+        assert_eq!((indented_beta.start.line, indented_beta.start.col), (7, 14));
+        assert_ne!(indented_alpha.element_id, indented_beta.element_id);
+        assert!(out.body_html.contains("md-code-block"));
+        assert!(out.body_html.contains("src-word md-text"));
+    }
+
+    #[test]
+    fn markdown_structural_wrappers_do_not_duplicate_selection_leaves() {
+        let path = Path::new("selection.md");
+        let source = "# Alpha Beta\n\n**bold words** and [link words](#target)\n";
+        let out = crate::render_document_from_source(
+            path,
+            source.to_string(),
+            &crate::HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let heading = out.sync.leaves_in_range(path, 1, 9, 1, 12);
+        assert_eq!(heading.len(), 1, "heading ancestors leaked: {heading:?}");
+        let bold = out.sync.leaves_in_range(path, 3, 3, 3, 6);
+        assert_eq!(bold.len(), 1, "strong ancestors leaked: {bold:?}");
+        let link = out.sync.leaves_in_range(path, 3, 21, 3, 24);
+        assert_eq!(link.len(), 1, "link ancestors leaked: {link:?}");
     }
 
     #[test]

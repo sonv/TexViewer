@@ -197,6 +197,27 @@ impl SyncIndex {
         self.lookup_by_source_position_filtered(file, line, col, Some(SyncKind::Leaf), false)
     }
 
+    /// The smallest structural container that actually contains this source
+    /// position, without nearest-element fallback. Used to follow otherwise
+    /// invisible Markdown syntax such as a code fence or table delimiter row
+    /// without snapping unrelated blank/preamble lines into the document.
+    pub fn lookup_containing_container_by_source_position(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Option<&SyncEntry> {
+        let pos = Pos { line, col, byte: 0 };
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == SyncKind::Container
+                    && same_path(&entry.file, file)
+                    && contains_pos(entry.start, entry.end, pos)
+            })
+            .min_by_key(|entry| span_score(entry.start, entry.end))
+    }
+
     /// All leaf element ids in `file` whose source span overlaps the inclusive
     /// range `start..=end`. The range generalization of
     /// [`Self::lookup_leaf_by_source_position`] used for highlighting an editor
@@ -227,8 +248,11 @@ impl SyncIndex {
             // Leaf and Block both participate in a selection range; only
             // Container (theorem/proof wrappers) is excluded.
             .filter(|e| e.kind != SyncKind::Container && same_path(&e.file, file))
-            // Overlap: entry.start <= sel_end && entry.end >= sel_start.
-            .filter(|e| pos_before_or_equal(e.start, end) && pos_after_or_equal(e.end, start))
+            // AST spans are half-open while the editor selection is inclusive:
+            // entry.start <= sel_end && entry.end > sel_start. Preserve the
+            // occasional zero-width anchor by treating its one position as a
+            // point range.
+            .filter(|e| span_overlaps_inclusive_selection(e.start, e.end, start, end))
             .map(|e| e.element_id.clone())
             .collect()
     }
@@ -301,7 +325,11 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 fn contains_pos(start: Pos, end: Pos, pos: Pos) -> bool {
-    pos_after_or_equal(pos, start) && pos_before_or_equal(pos, end)
+    if same_position(start, end) {
+        same_position(start, pos)
+    } else {
+        pos_after_or_equal(pos, start) && pos_before(pos, end)
+    }
 }
 
 fn pos_after_or_equal(pos: Pos, start: Pos) -> bool {
@@ -310,6 +338,30 @@ fn pos_after_or_equal(pos: Pos, start: Pos) -> bool {
 
 fn pos_before_or_equal(pos: Pos, end: Pos) -> bool {
     pos.line < end.line || (pos.line == end.line && pos.col <= end.col)
+}
+
+fn pos_before(pos: Pos, end: Pos) -> bool {
+    pos.line < end.line || (pos.line == end.line && pos.col < end.col)
+}
+
+fn same_position(a: Pos, b: Pos) -> bool {
+    a.line == b.line && a.col == b.col
+}
+
+fn span_overlaps_inclusive_selection(
+    span_start: Pos,
+    span_end: Pos,
+    selection_start: Pos,
+    selection_end: Pos,
+) -> bool {
+    if same_position(span_start, span_end) {
+        pos_after_or_equal(span_start, selection_start)
+            && pos_before_or_equal(span_start, selection_end)
+    } else {
+        pos_before_or_equal(span_start, selection_end)
+            && pos_after_or_equal(span_end, selection_start)
+            && !same_position(span_end, selection_start)
+    }
 }
 
 fn span_score(start: Pos, end: Pos) -> u32 {
@@ -398,11 +450,65 @@ mod tests {
         let ids = sync.leaves_in_range(&file, 11, 1, 12, 3);
         assert_eq!(ids, vec!["w-a".to_string(), "w-b".to_string()]);
 
-        // A boundary-touching selection still overlaps (inclusive).
-        assert_eq!(sync.leaves_in_range(&file, 11, 5, 11, 5), vec!["w-a"]);
+        // Entry spans are half-open: a selection at the exclusive end does
+        // not leak into the preceding leaf.
+        assert!(sync.leaves_in_range(&file, 11, 5, 11, 5).is_empty());
 
         // A selection over un-indexed source snaps to nothing (no fallback).
         assert!(sync.leaves_in_range(&file, 30, 1, 31, 1).is_empty());
+    }
+
+    #[test]
+    fn adjacent_half_open_spans_choose_only_the_new_leaf_at_a_boundary() {
+        let file = PathBuf::from("/tmp/main.md");
+        let mut sync = SyncIndex::new();
+        sync.record("before", file.clone(), pos(1, 1), pos(1, 8), None);
+        sync.record("strong", file.clone(), pos(1, 8), pos(1, 16), None);
+
+        assert_eq!(
+            sync.lookup_leaf_by_source_position(&file, 1, 8)
+                .map(|entry| entry.element_id.as_str()),
+            Some("strong")
+        );
+        assert_eq!(sync.leaves_in_range(&file, 1, 8, 1, 8), vec!["strong"]);
+    }
+
+    #[test]
+    fn zero_width_spans_still_match_their_anchor_position() {
+        let file = PathBuf::from("/tmp/main.md");
+        let mut sync = SyncIndex::new();
+        sync.record("anchor", file.clone(), pos(2, 4), pos(2, 4), None);
+
+        assert_eq!(
+            sync.lookup_leaf_by_source_position(&file, 2, 4)
+                .map(|entry| entry.element_id.as_str()),
+            Some("anchor")
+        );
+        assert_eq!(sync.leaves_in_range(&file, 2, 4, 2, 4), vec!["anchor"]);
+        assert!(sync.leaves_in_range(&file, 2, 5, 2, 5).is_empty());
+    }
+
+    #[test]
+    fn containing_container_lookup_never_snaps_to_a_nearby_container() {
+        let file = PathBuf::from("/tmp/main.md");
+        let mut sync = SyncIndex::new();
+        sync.record_with_kind(
+            "code",
+            file.clone(),
+            pos(5, 1),
+            pos(9, 1),
+            None,
+            SyncKind::Container,
+        );
+
+        assert_eq!(
+            sync.lookup_containing_container_by_source_position(&file, 7, 3)
+                .map(|entry| entry.element_id.as_str()),
+            Some("code")
+        );
+        assert!(sync
+            .lookup_containing_container_by_source_position(&file, 10, 1)
+            .is_none());
     }
 
     fn row(start_line: u32, end_line: u32, start_col: u32) -> MathRow {

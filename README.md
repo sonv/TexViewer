@@ -139,6 +139,9 @@ spans and fenced code blocks stay literal. Live reload, editor-to-browser and
 browser-to-editor source sync, themes, sizing controls, search, and the rest of
 the browser navigation work for Markdown too. The Markdown `print` control
 opens the browser print dialog instead of invoking a TeX compiler.
+Markdown prose, formatted text, tables, and fenced or indented code carry
+token-level source anchors, so cursor follow, visual selections, and browser
+click-back land on the visible word or code token instead of the whole block.
 
 Raw HTML in Markdown is escaped and shown as source text; it is never injected
 into the preview DOM. Local images are served only from beneath the Markdown
