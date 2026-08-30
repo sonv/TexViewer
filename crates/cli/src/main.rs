@@ -10,7 +10,11 @@ use clap::{Parser, Subcommand};
 
 use mathpreview_core::{render_document, DocumentFormat, Engine, HtmlOptions, MathJaxEngine};
 
-use mathpreview_cli::{build_serve_opts, serve, static_markdown_asset_base};
+use mathpreview_cli::{
+    build_serve_opts,
+    convert::{run_stdio as run_conversion_stdio, ConvertCommandOptions},
+    serve, static_markdown_asset_base,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,6 +29,24 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Convert documents through the versioned NDJSON API on stdin/stdout.
+    ///
+    /// Send one `mathpreview.converter/v1` JSON request per line. The process
+    /// stays alive until EOF and writes exactly one response per nonblank line.
+    Convert {
+        /// URL or relative path the consumer should load MathJax from.
+        /// Request-level `options.mathjax_url` values take precedence.
+        #[arg(long)]
+        mathjax_url: Option<String>,
+        /// Extra macro override file(s), appended after global and project
+        /// macro files. Request-level files are applied after these.
+        #[arg(long = "macros", value_name = "FILE")]
+        macros: Vec<PathBuf>,
+        /// Extra TOML config file(s), appended after global and project config.
+        /// Request-level files are applied after these.
+        #[arg(long = "config", value_name = "FILE")]
+        config: Vec<PathBuf>,
+    },
     /// Render a LaTeX or Markdown document as a single HTML preview.
     Render {
         /// Input document. LaTeX project roots are auto-detected.
@@ -102,6 +124,17 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Cmd::Convert {
+            mathjax_url,
+            macros,
+            config,
+        } => {
+            return run_conversion_stdio(&ConvertCommandOptions {
+                config_files: config,
+                macro_files: macros,
+                mathjax_url,
+            });
+        }
         Cmd::Serve {
             input,
             host,

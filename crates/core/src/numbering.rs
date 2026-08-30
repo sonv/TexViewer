@@ -1481,6 +1481,7 @@ mod tests {
                 start: crate::ast::Pos::ZERO,
                 is_root_body: true,
             }],
+            dependency_files: vec![],
             warnings: vec![],
         }
     }

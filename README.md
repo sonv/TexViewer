@@ -18,6 +18,9 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   a standalone `.md` / `.markdown` document to HTML.
 - **Live-reload server** (`mathpreview-cli serve`) — HTTP page + WebSocket
   push. Browser tab reflects edits within ~5–10 ms of a keystroke pause.
+- **Versioned converter API:** bundled LaTeX and Markdown adapters expose the
+  same viewer-ready HTML blocks, source maps, dependencies, and runtime
+  metadata through a Rust trait or persistent NDJSON stream.
 - **nvim integration** via the bundled `mathpreview.nvim` plugin
   (`lua/mathpreview/`, `plugin/mathpreview.lua`): `:MathPreview` in a
   TeX or Markdown buffer spawns the daemon on a free port (default 23636,
@@ -770,6 +773,28 @@ mathpreview-cli serve path/to/paper.tex
 # The same live server and reload path work for Markdown.
 mathpreview-cli serve path/to/notes.markdown
 ```
+
+### Converter API
+
+Integrations can keep one conversion process alive and send the current editor
+buffer as newline-delimited JSON. The browser shell remains separate. The
+result contains ordered HTML blocks, source-sync data, dependencies, assets,
+diagnostics, and resolved MathJax/viewer runtime settings:
+
+```sh
+printf '%s\n' \
+  '{"protocol":"mathpreview.converter/v1","id":"edit-1","path":"notes.md","source":"# Notes\n\n$X$"}' \
+  | mathpreview-cli convert
+```
+
+Rust callers can use the object-safe `DocumentConverter` contract directly.
+The bundled registry selects `latex` or `markdown`, while hosts can implement
+their own converter and degrade source sync or block patching according to its
+declared capabilities. The conversion version is independent of the browser
+WebSocket version.
+
+See [Converter API v1](docs/converter-api.md) for the complete request and
+response schema, config/macro precedence, extension guidance, and trust model.
 
 ### MathJax and offline setup
 

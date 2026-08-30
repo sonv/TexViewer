@@ -224,7 +224,67 @@ pub fn load_bib(path: &Path) -> Result<Vec<BibEntry>> {
 /// from biblatex or `\bibliography{...}` from bibtex), load each, and return
 /// a key → entry map.
 pub fn load_project_bib(project: &Project) -> Result<HashMap<String, BibEntry>> {
+    load_project_bib_with_overrides(project, &HashMap::new())
+}
+
+/// Load project bibliography entries while preferring in-memory file contents
+/// for matching paths. Keys should be canonical when possible, mirroring the
+/// project loader's multi-buffer override contract.
+pub fn load_project_bib_with_overrides(
+    project: &Project,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<HashMap<String, BibEntry>> {
+    discover_project_bib_with_overrides(project, overrides).map(|(_, entries)| entries)
+}
+
+/// Discover bibliography dependencies and load their entries in one scan.
+/// Callers that need both results should use this instead of discovering the
+/// paths separately and making the project loader scan the sources again.
+pub fn discover_project_bib_with_overrides(
+    project: &Project,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<(Vec<PathBuf>, HashMap<String, BibEntry>)> {
+    let paths = project_bib_paths(project);
+    let entries = load_bib_paths_with_overrides(&paths, overrides);
+    Ok((paths, entries))
+}
+
+/// Load bibliography entries from an already-discovered ordered path list.
+/// This keeps cache-aware callers from rescanning the project on a cache miss.
+pub fn load_bib_paths_with_overrides(
+    paths: &[PathBuf],
+    overrides: &HashMap<PathBuf, String>,
+) -> HashMap<String, BibEntry> {
     let mut out = HashMap::new();
+    for path in paths {
+        let normalized = crate::project::override_key(path);
+        let source = overrides
+            .get(&normalized)
+            .or_else(|| overrides.get(path))
+            .or_else(|| {
+                overrides
+                    .iter()
+                    .find(|(candidate, _)| crate::project::override_key(candidate) == normalized)
+                    .map(|(_, source)| source)
+            })
+            .cloned()
+            .or_else(|| fs::read_to_string(path).ok());
+        let Some(src) = source else {
+            continue;
+        };
+        for entry in parse_bib(&src) {
+            out.entry(entry.key.clone()).or_insert(entry);
+        }
+    }
+    out
+}
+
+/// Referenced bibliography paths in discovery order, deduplicated.
+///
+/// Missing paths are retained so live-preview hosts can watch for their
+/// creation. The same project-containment checks as [`load_project_bib`] are
+/// applied before a path reaches this list.
+pub fn project_bib_paths(project: &Project) -> Vec<PathBuf> {
     let base = project.root.parent().unwrap_or_else(|| Path::new("."));
     let mut paths = find_bib_paths(&project.preamble.source, base);
     for file in &project.files {
@@ -232,18 +292,8 @@ pub fn load_project_bib(project: &Project) -> Result<HashMap<String, BibEntry>> 
     }
 
     let mut seen = HashSet::new();
-    for path in paths {
-        if !seen.insert(path.clone()) {
-            continue;
-        }
-        let Ok(src) = fs::read_to_string(&path) else {
-            continue;
-        };
-        for entry in parse_bib(&src) {
-            out.entry(entry.key.clone()).or_insert(entry);
-        }
-    }
-    Ok(out)
+    paths.retain(|path| seen.insert(path.clone()));
+    paths
 }
 
 fn find_bib_paths(preamble: &str, base: &Path) -> Vec<PathBuf> {
@@ -463,6 +513,30 @@ mod tests {
             bib["Smith2024"].fields.get("title").unwrap(),
             "Body bibliography"
         );
+    }
+
+    #[test]
+    fn project_bib_paths_retains_missing_paths_and_deduplicates_in_source_order() {
+        let dir =
+            std::env::temp_dir().join(format!("mathpreview-bib-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        let project = crate::project::load_project_from_source(
+            &root,
+            concat!(
+                "\\begin{document}\n",
+                "\\bibliography{missing,missing}\n",
+                "\\bibliography{missing}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+        )
+        .unwrap();
+
+        let paths = project_bib_paths(&project);
+        assert_eq!(paths, vec![dir.join("missing.bib")]);
+        assert!(!paths[0].exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

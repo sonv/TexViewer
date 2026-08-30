@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use mathpreview_core::{Engine, HtmlOptions, MathJaxEngine};
 
+pub mod convert;
 pub mod serve;
 
 /// Default `--editor` template for Cmd/Ctrl-click "reveal source": jump to the

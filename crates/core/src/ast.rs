@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// 1-indexed line and column, plus byte offset within the source file.
+/// 1-based line and UTF-8 byte column, plus a 0-based absolute UTF-8 byte
+/// offset within the source file. Byte columns match Neovim's cursor model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pos {
     pub line: u32,

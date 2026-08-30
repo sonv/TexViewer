@@ -1139,9 +1139,18 @@ fn command_brace_arg(
     read_brace_arg(src, pos)
 }
 
-/// Find `\usepackage` and `\input` targets in `src` that look like they could
-/// resolve to a local file (i.e. a sibling `.sty` or `.tex`).
-pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
+/// One local file candidate referenced from a preamble.
+pub(crate) struct ReferencedFile {
+    pub path: PathBuf,
+    /// Missing explicit inputs are useful diagnostics. A missing local
+    /// package candidate is not: it usually names a TeX-distribution package.
+    pub warn_if_missing: bool,
+}
+
+/// Find `\usepackage` and `\input` targets in `src` that can resolve to local
+/// files. Missing candidates are retained so a live host can watch for their
+/// creation and in-memory overrides can provide files that do not exist yet.
+pub(crate) fn collect_referenced_file_candidates(src: &str, base: &Path) -> Vec<ReferencedFile> {
     // Strip comments first so a commented-out `% \usepackage{…}` / `% \input{…}`
     // doesn't still pull in its file (matches `scan`'s behavior).
     let src = strip_line_comments(src);
@@ -1154,20 +1163,37 @@ pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
     for cap in usepkg.captures_iter(src) {
         for n in cap.get(1).unwrap().as_str().split(',') {
             let n = n.trim();
-            if n.is_empty() {
+            if n.is_empty() || !crate::root::path_within_bounds(n) {
                 continue;
             }
             // Walk up to MAX_PARENT_DEPTH dirs looking for a local .sty match.
             let mut dir = Some(base.to_path_buf());
+            let mut local_match = None;
             for _ in 0..=crate::root::MAX_PARENT_DEPTH {
                 let Some(d) = dir.clone() else { break };
-                let cand = d.join(format!("{n}.sty"));
+                let package = Path::new(n);
+                let cand = if package.extension().is_some() {
+                    d.join(package)
+                } else {
+                    d.join(package).with_extension("sty")
+                };
                 if cand.is_file() {
-                    out.push(cand);
+                    local_match = Some(cand);
                     break;
                 }
                 dir = d.parent().map(Path::to_path_buf);
             }
+            out.push(ReferencedFile {
+                path: local_match.unwrap_or_else(|| {
+                    let package = Path::new(n);
+                    if package.extension().is_some() {
+                        base.join(package)
+                    } else {
+                        base.join(package).with_extension("sty")
+                    }
+                }),
+                warn_if_missing: false,
+            });
         }
     }
     for cap in inp.captures_iter(src) {
@@ -1188,11 +1214,23 @@ pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
         } else {
             joined.with_extension("tex")
         };
-        if withext.is_file() {
-            out.push(withext);
-        }
+        out.push(ReferencedFile {
+            path: withext,
+            warn_if_missing: true,
+        });
     }
     out
+}
+
+/// Existing local references, retained for callers that only want readable
+/// files rather than prospective dependency paths.
+#[cfg(test)]
+pub(crate) fn collect_referenced_files(src: &str, base: &Path) -> Vec<PathBuf> {
+    collect_referenced_file_candidates(src, base)
+        .into_iter()
+        .map(|reference| reference.path)
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 pub(crate) fn strip_line_comments(src: &str) -> String {

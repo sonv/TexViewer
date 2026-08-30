@@ -61,6 +61,9 @@ pub struct Project {
     /// included files, recursively. Order matches the order content would
     /// appear when LaTeX flattens the project.
     pub files: Vec<ProjectFile>,
+    /// Existing and prospective local inputs that should trigger a reload.
+    /// Missing paths are retained so creating a referenced file is observable.
+    pub dependency_files: Vec<PathBuf>,
     pub warnings: Vec<String>,
 }
 
@@ -71,6 +74,7 @@ impl Project {
             .iter()
             .map(|f| f.path.as_path())
             .chain(self.files.iter().map(|f| f.path.as_path()))
+            .chain(self.dependency_files.iter().map(PathBuf::as_path))
             .filter(move |path| seen.insert((*path).to_path_buf()))
     }
 }
@@ -116,6 +120,7 @@ fn load_project_with_source_and_overrides(
     };
 
     let mut files = Vec::new();
+    let mut dependency_files = Vec::new();
     let mut warnings = Vec::new();
 
     // Resolve local preamble dependencies separately from body includes. They
@@ -129,6 +134,7 @@ fn load_project_with_source_and_overrides(
         preamble_src,
         base,
         &mut preamble_files,
+        &mut dependency_files,
         &mut preamble_visited,
         &mut warnings,
         overrides,
@@ -148,6 +154,7 @@ fn load_project_with_source_and_overrides(
         body_start,
         true,
         &mut files,
+        &mut dependency_files,
         &mut visited,
         &mut warnings,
         overrides,
@@ -159,12 +166,51 @@ fn load_project_with_source_and_overrides(
         preamble,
         preamble_files,
         files,
+        dependency_files,
         warnings,
     })
 }
 
-fn override_key(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+pub(crate) fn override_key(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        None
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    };
+    let path = absolute.as_deref().unwrap_or(path);
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    // Live buffers can describe files that do not exist yet. Canonicalize
+    // their nearest existing ancestor so filesystem aliases (notably macOS's
+    // `/var` -> `/private/var`) still match include paths resolved from a
+    // canonical project root, then append the missing suffix unchanged.
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    while let Some(name) = ancestor.file_name() {
+        suffix.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            break;
+        };
+        ancestor = parent;
+        if let Ok(mut canonical) = ancestor.canonicalize() {
+            for component in suffix.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Normalize a source path for live-buffer and dependency identity.
+///
+/// Existing paths are canonicalized. For a missing file, the nearest existing
+/// ancestor is canonicalized before the missing suffix is restored, so paths
+/// through a symlink alias still match prospective dependency records.
+pub fn normalize_source_path(path: &Path) -> PathBuf {
+    override_key(path)
 }
 
 fn read_source_with_overrides(
@@ -185,6 +231,7 @@ fn append_preamble_files(
     src: &str,
     base: &Path,
     out: &mut Vec<PreambleFile>,
+    dependencies: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
     warnings: &mut Vec<String>,
     overrides: &HashMap<PathBuf, String>,
@@ -197,8 +244,9 @@ fn append_preamble_files(
         ));
         return;
     }
-    for path in crate::macros::collect_referenced_files(src, base) {
-        let canonical = path.canonicalize().unwrap_or(path);
+    for reference in crate::macros::collect_referenced_file_candidates(src, base) {
+        let canonical = override_key(&reference.path);
+        dependencies.push(canonical.clone());
         if !visited.insert(canonical.clone()) {
             continue;
         }
@@ -213,16 +261,18 @@ fn append_preamble_files(
                     &source,
                     child_base,
                     out,
+                    dependencies,
                     visited,
                     warnings,
                     overrides,
                     depth + 1,
                 );
             }
-            Err(e) => warnings.push(format!(
+            Err(e) if reference.warn_if_missing => warnings.push(format!(
                 "could not read preamble dependency {}: {e}",
                 canonical.display()
             )),
+            Err(_) => {}
         }
     }
 }
@@ -256,6 +306,7 @@ fn append_with_includes(
     start_pos: Pos,
     is_root_body: bool,
     out: &mut Vec<ProjectFile>,
+    dependencies: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
     warnings: &mut Vec<String>,
     overrides: &HashMap<PathBuf, String>,
@@ -297,7 +348,8 @@ fn append_with_includes(
             continue;
         }
         let p = resolve_include(base, name);
-        let canonical = p.canonicalize().unwrap_or(p.clone());
+        let canonical = override_key(&p);
+        dependencies.push(canonical.clone());
         if !visited.insert(canonical.clone()) {
             last = m.end();
             continue;
@@ -312,6 +364,7 @@ fn append_with_includes(
                     Pos::ZERO,
                     false,
                     out,
+                    dependencies,
                     visited,
                     warnings,
                     overrides,
@@ -365,8 +418,8 @@ fn pos_at(src: &str, byte: usize) -> Pos {
 fn offset_pos(src: &str, start: Pos, byte: usize) -> Pos {
     let mut line = start.line;
     let mut col = start.col;
-    for ch in src[..byte.min(src.len())].chars() {
-        if ch == '\n' {
+    for source_byte in src.as_bytes()[..byte.min(src.len())].iter().copied() {
+        if source_byte == b'\n' {
             line += 1;
             col = 1;
         } else {
@@ -420,6 +473,23 @@ mod tests {
     }
 
     #[test]
+    fn unicode_preamble_keeps_body_start_at_a_utf8_byte_column() {
+        let dir = temp_dir("unicode-body-start");
+        let root = dir.join("main.tex");
+        let source = "é \\begin{document}$x$\\end{document}\n";
+        fs::write(&root, source).unwrap();
+
+        let project = load_project(&root).unwrap();
+        let body = project.files.first().expect("root body chunk");
+        let expected_byte = source.find("$x$").unwrap() as u32;
+
+        assert_eq!(body.start.line, 1);
+        assert_eq!(body.start.byte, expected_byte);
+        assert_eq!(body.start.col, expected_byte + 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn included_file_overrides_are_spliced_without_disk_write() {
         let dir = temp_dir("include-override");
         let root = dir.join("main.tex");
@@ -443,6 +513,73 @@ mod tests {
         assert!(flattened.contains("Before.\nLive child.\n\nAfter."));
         assert!(!flattened.contains("Disk child."));
         assert_eq!(fs::read_to_string(&child).unwrap(), "Disk child.\n");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_body_include_is_retained_as_a_dependency() {
+        let dir = temp_dir("missing-include-dependency");
+        let root = dir.join("main.tex");
+        let child = dir.join("forthcoming.tex");
+        fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\n\\input{forthcoming}\n\\end{document}\n",
+        )
+        .unwrap();
+
+        let project = load_project(&root).unwrap();
+        let included: Vec<PathBuf> = project.included_files().map(PathBuf::from).collect();
+
+        assert!(included.contains(&override_key(&child)));
+        assert!(!child.exists());
+        assert!(project
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("could not include")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_preamble_inputs_and_packages_accept_buffer_overrides() {
+        let dir = temp_dir("missing-preamble-overrides");
+        let root = dir.join("main.tex");
+        let definitions = dir.join("definitions.tex");
+        let package = dir.join("local-format.sty");
+        fs::write(
+            &root,
+            concat!(
+                "\\documentclass{article}\n",
+                "\\input{definitions}\n",
+                "\\usepackage{local-format}\n",
+                "\\begin{document}Body.\\end{document}\n",
+            ),
+        )
+        .unwrap();
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            override_key(&definitions),
+            "\\newcommand{\\RR}{\\mathbb{R}}\n".to_string(),
+        );
+        overrides.insert(
+            override_key(&package),
+            "\\newcommand{\\NN}{\\mathbb{N}}\n".to_string(),
+        );
+
+        let project = load_project_with_overrides(&root, &overrides).unwrap();
+        let included: Vec<PathBuf> = project.included_files().map(PathBuf::from).collect();
+
+        assert!(included.contains(&override_key(&definitions)));
+        assert!(included.contains(&override_key(&package)));
+        assert!(project
+            .preamble_files
+            .iter()
+            .any(|file| file.source.contains("\\mathbb{R}")));
+        assert!(project
+            .preamble_files
+            .iter()
+            .any(|file| file.source.contains("\\mathbb{N}")));
+        assert!(!definitions.exists());
+        assert!(!package.exists());
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -22,7 +22,7 @@ pub enum SyncKind {
     Block,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncEntry {
     pub element_id: String,
     pub file: PathBuf,
@@ -50,7 +50,7 @@ pub struct MathRow {
 /// rather than the whole block. Backward: lets a click on the i-th rendered
 /// `mtr` row jump to that row's own source line instead of the `\begin` line.
 /// `rows[i]` corresponds to the i-th rendered table row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MathRowsEntry {
     pub element_id: String,
     pub file: PathBuf,
@@ -68,6 +68,47 @@ pub struct SyncIndex {
 impl SyncIndex {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build an indexed sync map from its public wire-level vectors.
+    /// Label lookup state is reconstructed in document order with the same
+    /// last-definition-wins behavior as [`Self::record_with_kind`].
+    pub fn from_parts(entries: Vec<SyncEntry>, math_rows: Vec<MathRowsEntry>) -> Self {
+        let mut by_label = HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some(label) = &entry.label {
+                by_label.insert(label.clone(), index);
+            }
+        }
+        Self {
+            entries,
+            math_rows,
+            by_label,
+        }
+    }
+
+    pub(crate) fn from_parts_with_label_index(
+        entries: Vec<SyncEntry>,
+        math_rows: Vec<MathRowsEntry>,
+        by_label: HashMap<String, usize>,
+    ) -> Self {
+        Self {
+            entries,
+            math_rows,
+            by_label,
+        }
+    }
+
+    /// Remove the private label cache and return the neutral serializable
+    /// vectors without cloning their entries.
+    pub fn into_parts(self) -> (Vec<SyncEntry>, Vec<MathRowsEntry>) {
+        (self.entries, self.math_rows)
+    }
+
+    pub(crate) fn into_parts_with_label_index(
+        self,
+    ) -> (Vec<SyncEntry>, Vec<MathRowsEntry>, HashMap<String, usize>) {
+        (self.entries, self.math_rows, self.by_label)
     }
 
     pub fn record(

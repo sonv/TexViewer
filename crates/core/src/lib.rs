@@ -1,12 +1,13 @@
 //! mathpreview core: parser, macro extractor, renderer.
 //!
-//! Public surface for Step 1 is intentionally small — use [`render_document`]
-//! for automatic LaTeX/Markdown dispatch or [`render_project`] to force the
-//! historical LaTeX project pipeline.
+//! Use [`converter`] for the versioned source-language contract,
+//! [`render_document`] for automatic LaTeX/Markdown dispatch, or
+//! [`render_project`] to force the historical LaTeX project pipeline.
 
 pub mod ast;
 pub mod bibtex;
 pub mod config;
+pub mod converter;
 pub mod engines;
 pub mod macros;
 pub mod markdown;
@@ -30,6 +31,18 @@ pub use config::{
     Config, MarkdownBlockAppearance, MarkdownBlockReveal, PageMode, ResolvedConfig,
     ResolvedMarkdownBlock, ResolvedMarkdownBlockSyntax, ResolvedMarkdownConfig,
     ResolvedViewerConfig, SourceJumpTrigger, Theme,
+};
+pub use converter::{
+    collect_builtin_dependencies, convert as convert_document, converter_for_path,
+    finalize_builtin_document, split_render_output, AssetEncoding, AssetKind, BuiltinConversion,
+    BuiltinConverter, ConversionDiagnostic, ConversionRequest, ConvertedAsset, ConvertedBlock,
+    ConvertedDependency, ConvertedDocument, ConvertedMathRow, ConvertedMathRowsEntry,
+    ConvertedSourceAnchor, ConvertedSourcePosition, ConvertedSubBlocks, ConvertedSubChunk,
+    ConvertedSyncEntry, ConvertedSyncKind, ConvertedSyncMap, ConverterCapabilities,
+    ConverterMetadata, DependencyKind, DiagnosticSeverity, DocumentConverter, LatexConverter,
+    LegacyViewerSidecar, MarkdownConverter, MathMacroRequirement, MathRuntimeRequirements,
+    RuntimeRequirements, ViewerRuntimeRequirements, CONVERTER_API_VERSION,
+    MAX_ADDITIONAL_DEPENDENCIES, MAX_CONVERSION_OVERRIDE_BYTES, MAX_CONVERSION_OVERRIDE_FILES,
 };
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{
@@ -147,7 +160,8 @@ fn finish_render(
     // that doesn't exist yet) without failing the render.
     let overrides = load_macro_overrides(opts);
     let preamble = macros::extract_preamble_with_overrides(&project, &overrides)?;
-    let bib = bibtex::load_project_bib(&project)?;
+    let (bib_paths, bib) =
+        bibtex::discover_project_bib_with_overrides(&project, &std::collections::HashMap::new())?;
     let bib_style = bibtex::detect_project_bib_style(&project);
     // Theorem environments + their counters/titles are driven by the
     // preamble's `\newtheorem` declarations (including local `.sty` packages)
@@ -189,6 +203,13 @@ fn finish_render(
         owned
     };
     let rendered = renderer::render(&body, &preamble, &labels, &bib, bib_style, &mut sync, &opts);
+    let mut seen_files = std::collections::HashSet::new();
+    let included_files = project
+        .included_files()
+        .map(PathBuf::from)
+        .chain(bib_paths)
+        .filter(|path| seen_files.insert(path.clone()))
+        .collect();
     Ok(RenderOutput {
         html: rendered.full,
         body_html: rendered.body,
@@ -196,7 +217,7 @@ fn finish_render(
         sync,
         root_file: root,
         preamble,
-        included_files: project.included_files().map(PathBuf::from).collect(),
+        included_files,
         tikz_assets: rendered.tikz_assets,
         format: DocumentFormat::Latex,
     })

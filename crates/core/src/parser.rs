@@ -2104,7 +2104,7 @@ impl<'a> Parser<'a> {
             if b == b'\n' {
                 self.line += 1;
                 self.col = 1;
-            } else if b.is_ascii() || is_utf8_leading_byte(b) {
+            } else {
                 self.col += 1;
             }
         }
@@ -3680,8 +3680,11 @@ impl<'a> Parser<'a> {
     fn pos_at_byte(&self, byte: usize) -> Pos {
         let mut line = self.start_line;
         let mut col = self.start_col;
-        for ch in self.src[..byte.min(self.bytes.len())].chars() {
-            if ch == '\n' {
+        for source_byte in self.src.as_bytes()[..byte.min(self.bytes.len())]
+            .iter()
+            .copied()
+        {
+            if source_byte == b'\n' {
                 line += 1;
                 col = 1;
             } else {
@@ -4454,10 +4457,6 @@ fn list_kind_for(env: &str) -> Option<ListKind> {
     })
 }
 
-fn is_utf8_leading_byte(b: u8) -> bool {
-    (b & 0b1100_0000) != 0b1000_0000
-}
-
 fn contains_blank_line(s: &str) -> bool {
     let mut newlines = 0u8;
     for ch in s.chars() {
@@ -4706,6 +4705,7 @@ mod tests {
                 start: Pos::ZERO,
                 is_root_body: true,
             }],
+            dependency_files: vec![],
             warnings: vec![],
         };
         let thms = TheoremRegistry::from_preamble(&project.preamble.source);
@@ -4726,6 +4726,7 @@ mod tests {
                 start: Pos::ZERO,
                 is_root_body: true,
             }],
+            dependency_files: vec![],
             warnings: vec![],
         };
         let thms = TheoremRegistry::from_preamble(&project.preamble.source);
@@ -4746,6 +4747,7 @@ mod tests {
                 start: Pos::ZERO,
                 is_root_body: true,
             }],
+            dependency_files: vec![],
             warnings: vec![],
         };
         let layers: Vec<MacroOverride> = overrides
@@ -4994,6 +4996,7 @@ mod tests {
                 start: Pos::ZERO,
                 is_root_body: true,
             }],
+            dependency_files: vec![],
             warnings: vec![],
         };
         let m = env_macros_for_project(&project, &[]);
@@ -5262,6 +5265,21 @@ mod tests {
     fn unicode_text_is_preserved() {
         let n = parse("Café naïve §");
         assert!(matches!(&n[0].kind, NodeKind::Text(s) if s == "Café naïve §"));
+    }
+
+    #[test]
+    fn tex_positions_use_neovim_utf8_byte_columns() {
+        let nodes = parse("é before $x$");
+        let math = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::InlineMath(_)))
+            .expect("inline math node");
+
+        assert_eq!(math.span.start.line, 1);
+        assert_eq!(math.span.start.col, 11);
+        assert_eq!(math.span.start.byte, 10);
+        assert_eq!(math.span.end.col, 14);
+        assert_eq!(math.span.end.byte, 13);
     }
 
     #[test]

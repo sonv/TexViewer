@@ -13,6 +13,47 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.39] — 2026-08-30
+
+### Added
+
+- **LaTeX and Markdown now share a versioned converter API.** Rust hosts can
+  implement the object-safe `DocumentConverter` contract, while other tools
+  can keep `mathpreview-cli convert` alive and exchange one
+  `mathpreview.converter/v1` request per NDJSON line. Results contain
+  body-level HTML, patchable blocks, source maps, dependencies, assets,
+  diagnostics, and resolved viewer runtime requirements without coupling a
+  converter to MathPreview's browser shell.
+- **Live editor buffers can cross the conversion boundary.** The bundled
+  LaTeX converter accepts unsaved roots, includes, preamble files, and
+  bibliographies. Per-request and process-level MathJax URLs, config files, and
+  macro files follow an explicit precedence order. Conversion reports MathJax
+  requirements without downloading or serving the script.
+
+### Changed
+
+- **The live viewer consumes the same neutral document artifact.** Initial and
+  cached LaTeX and Markdown renders pass through one adapter while retaining
+  the existing preamble cache, block patches, source navigation, TikZ assets,
+  and full-page shell. Converters that omit optional capabilities fall back to
+  full-body updates or root-only watching. WebSocket protocol 81 reloads stale
+  tabs onto the unified UTF-8 byte-coordinate contract.
+
+### Fixed
+
+- **Source sync uses Neovim-compatible UTF-8 byte coordinates.** Non-ASCII
+  text before TeX math, included bodies, and rendered sub-blocks no longer
+  shifts click or cursor locations.
+- **Live dependency tracking covers files before and after they exist.**
+  Missing TeX includes, local packages, config files, macro files, and
+  bibliographies can trigger a later render when created. Unsaved bibliography
+  overrides and editor pushes to missing files also resolve through symlinked
+  project paths, and body-level bibliography-style edits take effect on
+  preamble-cache hits.
+- **Persistent conversion errors stay record-safe.** Malformed, oversized, or
+  non-UTF-8-path results return one structured error without terminating or
+  partially desynchronizing the remaining NDJSON stream.
+
 ## [2.1.38] — 2026-08-30
 
 ### Added

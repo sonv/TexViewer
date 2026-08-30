@@ -24,7 +24,7 @@ use std::time::{Duration, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use axum::{
     body::Body,
     extract::{
@@ -44,14 +44,16 @@ use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
 use mathpreview_core::{
     bibtex::{self, BibEntry, BibStyle},
-    macros::{self, ExtractedMacro, ExtractedPreamble},
-    numbering, parser, project, render_document, render_document_from_source, renderer,
+    macros::{self, ExtractedPreamble},
+    numbering, parser, project, renderer,
     sync::SyncIndex,
     theorems::TheoremRegistry,
-    DocumentFormat, HtmlOptions, RenderOutput, RenderedBlock,
+    BuiltinConversion, BuiltinConverter, ConversionDiagnostic, ConversionRequest, ConvertedAsset,
+    ConvertedBlock, ConvertedDependency, ConvertedDocument, ConverterMetadata, DependencyKind,
+    DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "80";
+const WS_PROTOCOL_VERSION: &str = "81";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -89,10 +91,214 @@ fn search_sync_payload(search: &EditorSearch) -> String {
     .to_string()
 }
 
+/// Neutral conversion result plus the indexed/source-language-private state
+/// required by the current live server. The converter artifact is consumed
+/// once into this shape: blocks, runtime requirements, dependencies, and body
+/// HTML stay neutral, while source lookup retains `SyncIndex`'s indexed API.
+#[derive(Debug, Clone)]
+struct LiveDocument {
+    converter: ConverterMetadata,
+    format: String,
+    root_file: PathBuf,
+    body_html: String,
+    blocks: Vec<ConvertedBlock>,
+    sync: SyncIndex,
+    dependencies: Vec<ConvertedDependency>,
+    tikz_assets: HashMap<String, renderer::TikzAsset>,
+    _diagnostics: Vec<ConversionDiagnostic>,
+    runtime: RuntimeRequirements,
+}
+
+impl TryFrom<ConvertedDocument> for LiveDocument {
+    type Error = anyhow::Error;
+
+    fn try_from(document: ConvertedDocument) -> Result<Self> {
+        document.validate_contract()?;
+        let ConvertedDocument {
+            converter,
+            root_file,
+            body_html,
+            blocks,
+            sync,
+            dependencies,
+            assets,
+            diagnostics,
+            runtime,
+            ..
+        } = document;
+        let format = converter.format.clone();
+        Ok(Self {
+            converter,
+            format,
+            root_file,
+            body_html,
+            blocks,
+            sync: sync.into_sync_index(),
+            dependencies,
+            tikz_assets: converted_tikz_assets(assets),
+            _diagnostics: diagnostics,
+            runtime,
+        })
+    }
+}
+
+fn converted_tikz_assets(assets: Vec<ConvertedAsset>) -> HashMap<String, renderer::TikzAsset> {
+    assets
+        .into_iter()
+        .filter_map(|asset| {
+            if asset.kind.0 != "tikz-source"
+                || asset.payload_media_type != "application/vnd.mathpreview.tikz-source+json"
+                || asset.encoding.0 != "json"
+            {
+                return None;
+            }
+            let serde_json::Value::Object(mut payload) = asset.payload else {
+                return None;
+            };
+            let serde_json::Value::String(environment) = payload.remove("environment")? else {
+                return None;
+            };
+            let serde_json::Value::String(body) = payload.remove("body")? else {
+                return None;
+            };
+            let serde_json::Value::String(preamble) = payload.remove("preamble")? else {
+                return None;
+            };
+            Some((
+                asset.id,
+                renderer::TikzAsset {
+                    environment,
+                    body,
+                    preamble,
+                },
+            ))
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct ViewerSidecar {
+    html: String,
+    format: DocumentFormat,
+    preamble: ExtractedPreamble,
+}
+
+#[derive(Debug, Clone)]
+struct LiveSnapshot {
+    document: LiveDocument,
+    viewer: ViewerSidecar,
+}
+
+impl LiveSnapshot {
+    fn from_builtin_conversion(conversion: BuiltinConversion) -> Result<Self> {
+        let BuiltinConversion {
+            document,
+            preamble,
+            options,
+        } = conversion;
+        let expected = match options.document_format {
+            DocumentFormat::Latex => BuiltinConverter::Latex.metadata(),
+            DocumentFormat::Markdown => BuiltinConverter::Markdown.metadata(),
+        };
+        Self::from_parts(document, preamble, &options, &expected)
+    }
+
+    fn from_parts(
+        document: ConvertedDocument,
+        preamble: ExtractedPreamble,
+        opts: &HtmlOptions,
+        expected: &ConverterMetadata,
+    ) -> Result<Self> {
+        document.validate_against(expected)?;
+        if document.converter.format != opts.document_format.as_str() {
+            bail!(
+                "converter returned format {:?}, but the built-in viewer sidecar is {:?}",
+                document.converter.format,
+                opts.document_format.as_str(),
+            );
+        }
+        let viewer = ViewerSidecar {
+            html: renderer::render_shell(&document.body_html, &preamble, opts),
+            format: opts.document_format,
+            preamble,
+        };
+        Ok(Self {
+            document: document.try_into()?,
+            viewer,
+        })
+    }
+
+    #[cfg(test)]
+    fn from_render_output(output: mathpreview_core::RenderOutput, opts: &HtmlOptions) -> Self {
+        let converter = match output.format {
+            DocumentFormat::Latex => BuiltinConverter::Latex,
+            DocumentFormat::Markdown => BuiltinConverter::Markdown,
+        };
+        let (document, legacy) =
+            mathpreview_core::split_render_output(output, opts, converter.metadata(), Vec::new());
+        Self {
+            document: document.try_into().unwrap(),
+            viewer: ViewerSidecar {
+                html: legacy.html,
+                format: legacy.format,
+                preamble: legacy.preamble,
+            },
+        }
+    }
+
+    fn format(&self) -> DocumentFormat {
+        self.viewer.format
+    }
+}
+
+/// One source-language adapter selected when the daemon starts. The viewer
+/// only receives [`LiveSnapshot`]'s neutral document; built-in parsing and
+/// cache policy stay behind this boundary and can later be replaced without
+/// changing broadcast, sync, watcher, or asset code.
+#[derive(Debug, Clone, Copy)]
+struct LiveConverterAdapter {
+    builtin: BuiltinConverter,
+}
+
+impl LiveConverterAdapter {
+    fn for_path(path: &Path) -> Self {
+        Self {
+            builtin: BuiltinConverter::for_path(path),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_format(format: DocumentFormat) -> Self {
+        Self {
+            builtin: match format {
+                DocumentFormat::Latex => BuiltinConverter::Latex,
+                DocumentFormat::Markdown => BuiltinConverter::Markdown,
+            },
+        }
+    }
+
+    fn convert_initial(
+        self,
+        request: ConversionRequest,
+        opts: &HtmlOptions,
+    ) -> Result<BuiltinConversion> {
+        self.builtin.convert_for_viewer(request, opts)
+    }
+
+    async fn convert_cached(
+        self,
+        state: &AppState,
+        root: &Path,
+    ) -> anyhow::Result<(LiveSnapshot, RenderTiming)> {
+        convert_cached_builtin(state, root, self.builtin).await
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
+    converter: LiveConverterAdapter,
     opts: HtmlOptions,
-    current: Arc<RwLock<RenderOutput>>,
+    current: Arc<RwLock<LiveSnapshot>>,
     tx: broadcast::Sender<String>,
     watched: Arc<RwLock<HashSet<PathBuf>>>,
     watch_tx: std_mpsc::Sender<HashSet<PathBuf>>,
@@ -122,7 +328,7 @@ struct AppState {
     /// Last broadcast block sequence — diff target for the next render.
     /// Updated atomically with each broadcast so reconnects and patches
     /// stay in sync.
-    last_blocks: Arc<RwLock<Vec<RenderedBlock>>>,
+    last_blocks: Arc<RwLock<Vec<ConvertedBlock>>>,
     /// Monotonic render attempt id. Buffer pushes can complete out of order;
     /// only the newest attempt is allowed to update the preview.
     render_seq: Arc<AtomicU64>,
@@ -279,7 +485,6 @@ struct PreambleCache {
     overrides_hash: u64,
     preamble: ExtractedPreamble,
     bib: HashMap<String, BibEntry>,
-    bib_style: BibStyle,
 }
 
 /// Build the effective override-cascade for the current render. Returns
@@ -422,8 +627,8 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
     let (root_file, document_format) = {
         let current = state.current.read().await;
         (
-            current.root_file.display().to_string(),
-            current.format.as_str(),
+            current.document.root_file.display().to_string(),
+            current.document.format.clone(),
         )
     };
     let watched: Vec<String> = {
@@ -653,7 +858,7 @@ fn resident_mib() -> Option<f64> {
 
 /// Snapshot of bytes held by the caches the server keeps between renders.
 /// Used to verify we don't quietly grow unbounded.
-fn cache_size_bytes(state: &AppState, last_blocks: &[RenderedBlock]) -> usize {
+fn cache_size_bytes(state: &AppState, last_blocks: &[ConvertedBlock]) -> usize {
     let blocks: usize = last_blocks
         .iter()
         .map(|b| b.id.len() + b.hash.len() + b.html.len())
@@ -681,7 +886,7 @@ fn cache_size_bytes(state: &AppState, last_blocks: &[RenderedBlock]) -> usize {
     blocks + preamble
 }
 
-fn fmt_mem_log(state: &AppState, last_blocks: &[RenderedBlock]) -> String {
+fn fmt_mem_log(state: &AppState, last_blocks: &[ConvertedBlock]) -> String {
     let rss = resident_mib()
         .map(|m| format!("{m:.1} MiB rss"))
         .unwrap_or_else(|| "rss ?".into());
@@ -731,9 +936,9 @@ pub async fn run(
     editor_cmd: String,
     config_paths: Vec<PathBuf>,
 ) -> Result<()> {
-    let initial = if input.exists() {
-        render_document(&input, &opts)
-            .with_context(|| format!("initial render of {}", input.display()))?
+    let converter = LiveConverterAdapter::for_path(&input);
+    let mut request = if input.exists() {
+        ConversionRequest::from_path(&input)
     } else {
         // A root that isn't on disk yet — an editor buffer that's never been
         // saved. Serve a placeholder render of the empty document instead of
@@ -745,13 +950,27 @@ pub async fn run(
             "mathpreview: {} is not on disk yet — serving a placeholder until the editor pushes the buffer",
             input.display()
         );
-        render_document_from_source(&input, String::new(), &opts)
-            .with_context(|| format!("initial render of empty {}", input.display()))?
+        ConversionRequest::from_source(&input, String::new())
     };
-    let mut watched: HashSet<PathBuf> = HashSet::new();
-    watched.insert(initial.root_file.clone());
-    for f in &initial.included_files {
-        watched.insert(f.clone());
+    request.additional_dependencies.extend(
+        config_paths
+            .iter()
+            .cloned()
+            .map(|path| ConvertedDependency::new(path, DependencyKind::config())),
+    );
+    let initial = converter
+        .convert_initial(request, &opts)
+        .with_context(|| format!("initial conversion of {}", input.display()))?;
+    let initial = LiveSnapshot::from_builtin_conversion(initial)?;
+    let mut watched = HashSet::from([initial.document.root_file.clone()]);
+    if initial.document.converter.capabilities.dependency_tracking {
+        watched.extend(
+            initial
+                .document
+                .dependencies
+                .iter()
+                .map(|dependency| dependency.path.clone()),
+        );
     }
     // Macro override + config files participate in live-reload from the
     // very first render, not just after the first buffer push. Editing
@@ -768,18 +987,18 @@ pub async fn run(
     let mem_at_start = resident_mib()
         .map(|m| format!("{m:.1} MiB rss"))
         .unwrap_or_else(|| "rss ?".into());
-    let initial_summary = match initial.format {
+    let initial_summary = match initial.format() {
         DocumentFormat::Latex => format!(
             "initial render of {} (LaTeX; {} macros, {} packages, {} files watched; {})",
-            initial.root_file.display(),
-            initial.preamble.macros.len(),
-            initial.preamble.packages_long.len(),
+            initial.document.root_file.display(),
+            initial.viewer.preamble.macros.len(),
+            initial.viewer.preamble.packages_long.len(),
             watched.len(),
             mem_at_start,
         ),
         DocumentFormat::Markdown => format!(
             "initial render of {} (Markdown; {} files watched; {})",
-            initial.root_file.display(),
+            initial.document.root_file.display(),
             watched.len(),
             mem_at_start,
         ),
@@ -792,10 +1011,11 @@ pub async fn run(
     // `tx.send` already ignores the "no receivers" error.
     let (tx, _) = broadcast::channel::<String>(16);
     let (watch_tx, watch_rx) = std_mpsc::channel::<HashSet<PathBuf>>();
-    let last_blocks = initial.blocks.clone();
+    let last_blocks = initial.document.blocks.clone();
     let initial_viewer_config = opts.viewer_config.clone();
     let initial_markdown_config = opts.markdown_config.clone();
     let state = AppState {
+        converter,
         opts,
         current: Arc::new(RwLock::new(initial)),
         tx,
@@ -1054,7 +1274,7 @@ async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
             ),
             (header::PRAGMA, HeaderValue::from_static("no-cache")),
         ],
-        Html(current.html.clone()),
+        Html(current.viewer.html.clone()),
     )
 }
 
@@ -1066,6 +1286,7 @@ async fn serve_asset(
     let root_dir = {
         let current = state.current.read().await;
         current
+            .document
             .root_file
             .parent()
             .map(Path::to_path_buf)
@@ -1137,10 +1358,11 @@ async fn serve_tikz(State(state): State<AppState>, AxumPath(path): AxumPath<Stri
     };
     let (asset, root_dir) = {
         let current = state.current.read().await;
-        let Some(asset) = current.tikz_assets.get(&hash).cloned() else {
+        let Some(asset) = current.document.tikz_assets.get(&hash).cloned() else {
             return StatusCode::NOT_FOUND.into_response();
         };
         let root_dir = current
+            .document
             .root_file
             .parent()
             .map(Path::to_path_buf)
@@ -1593,11 +1815,13 @@ async fn serve_cursor(
     // Everywhere else (prose, sections, single equations), keep the original
     // flashing point highlight on the element under the cursor.
     let payload = if current
+        .document
         .sync
         .math_rows_in_range(&file, line, line)
         .is_empty()
     {
         let element_id = current
+            .document
             .sync
             .lookup_leaf_by_source_position(&file, line, col)
             .map(|entry| entry.element_id.clone());
@@ -1616,14 +1840,16 @@ async fn serve_cursor(
             Some(id) => (Some(id), false),
             None => {
                 let hit = current
+                    .document
                     .sync
                     .leaves_in_range(&file, line, 1, line, u32::MAX)
                     .into_iter()
                     .next()
                     .or_else(|| {
-                        (current.format == DocumentFormat::Markdown)
+                        (current.format() == DocumentFormat::Markdown)
                             .then(|| {
                                 current
+                                    .document
                                     .sync
                                     .lookup_containing_container_by_source_position(
                                         &file, line, col,
@@ -1635,6 +1861,7 @@ async fn serve_cursor(
                     .or_else(|| {
                         if is_jump {
                             current
+                                .document
                                 .sync
                                 .lookup_by_source_position(&file, line, col)
                                 .map(|entry| entry.element_id.clone())
@@ -1660,7 +1887,7 @@ async fn serve_cursor(
         })
     } else {
         let (element_ids, math_rows) =
-            source_range_highlight(&current.sync, &file, line, 1, line, u32::MAX);
+            source_range_highlight(&current.document.sync, &file, line, 1, line, u32::MAX);
         serde_json::json!({
             "event": "source-range",
             "file": file,
@@ -1740,7 +1967,7 @@ async fn serve_selection(
         (Some(sl), sc, Some(el), ec) if !req.clear => {
             let current = state.current.read().await;
             source_range_highlight(
-                &current.sync,
+                &current.document.sync,
                 &file,
                 sl.max(1),
                 sc.unwrap_or(1).max(1),
@@ -1775,7 +2002,7 @@ async fn resolve_jump_pos(state: &AppState, req: &SourceRequest, file: &Path) ->
         return anchor;
     };
     let current = state.current.read().await;
-    match current.sync.math_row_pos(id, file, row, count) {
+    match current.document.sync.math_row_pos(id, file, row, count) {
         // A row can never sit ABOVE its own block's anchor (the `\begin` line
         // the clicked element's data-src points at). If it does, the id
         // matched a different block — duplicate `\label`s yield duplicate
@@ -2008,7 +2235,7 @@ async fn serve_macros_read(
     State(state): State<AppState>,
     Json(req): Json<MacrosReadRequest>,
 ) -> Response {
-    let root_file = state.current.read().await.root_file.clone();
+    let root_file = state.current.read().await.document.root_file.clone();
     let root_dir = root_file
         .parent()
         .map(Path::to_path_buf)
@@ -2118,7 +2345,7 @@ async fn serve_macros_append(
         }
     };
 
-    let root_file = state.current.read().await.root_file.clone();
+    let root_file = state.current.read().await.document.root_file.clone();
     let root_dir = root_file
         .parent()
         .map(Path::to_path_buf)
@@ -2240,7 +2467,7 @@ async fn serve_config_set(
         )
             .into_response();
     }
-    let root_file = state.current.read().await.root_file.clone();
+    let root_file = state.current.read().await.document.root_file.clone();
     let root_dir = root_file
         .parent()
         .map(Path::to_path_buf)
@@ -2387,7 +2614,7 @@ async fn serve_config_read(
     State(state): State<AppState>,
     Json(req): Json<ConfigFileRequest>,
 ) -> Response {
-    let root_file = state.current.read().await.root_file.clone();
+    let root_file = state.current.read().await.document.root_file.clone();
     let root_dir = root_file
         .parent()
         .map(Path::to_path_buf)
@@ -2421,7 +2648,7 @@ async fn serve_config_write(
     State(state): State<AppState>,
     Json(req): Json<ConfigFileRequest>,
 ) -> Response {
-    let root_file = state.current.read().await.root_file.clone();
+    let root_file = state.current.read().await.document.root_file.clone();
     let root_dir = root_file
         .parent()
         .map(Path::to_path_buf)
@@ -2740,7 +2967,7 @@ async fn serve_macros_register(
         )
             .into_response();
     }
-    let root_file = state.current.read().await.root_file.clone();
+    let root_file = state.current.read().await.document.root_file.clone();
     let root_dir = root_file
         .parent()
         .map(Path::to_path_buf)
@@ -2879,7 +3106,7 @@ async fn trigger_rerender(state: &AppState, root_file: &Path) -> anyhow::Result<
 async fn serve_print(State(state): State<AppState>) -> Response {
     let (root_file, format) = {
         let current = state.current.read().await;
-        (current.root_file.clone(), current.format)
+        (current.document.root_file.clone(), current.format())
     };
     if format == DocumentFormat::Markdown {
         let message =
@@ -3178,10 +3405,18 @@ async fn serve_buffer_push(
 
     let (current_root, current_format) = {
         let current = state.current.read().await;
-        (current.root_file.clone(), current.format)
+        (current.document.root_file.clone(), current.format())
     };
+    let normalized_root = project::normalize_source_path(&current_root);
     let pushed_path = match path_header.clone() {
-        Some(p) => p.canonicalize().unwrap_or(p),
+        Some(p) => {
+            let normalized = project::normalize_source_path(&p);
+            if normalized == normalized_root {
+                current_root.clone()
+            } else {
+                normalized
+            }
+        }
         None => current_root.clone(),
     };
     let is_known_project_file = match current_format {
@@ -3209,7 +3444,7 @@ async fn serve_buffer_push(
     } else {
         let preamble_context = {
             let current = state.current.read().await;
-            current.preamble.raw_preamble.clone()
+            current.viewer.preamble.raw_preamble.clone()
         };
         is_buffer_renderable_with_preamble(&body, cursor, &preamble_context)
     };
@@ -3323,11 +3558,15 @@ async fn serve_buffer_push(
     }
 }
 
-fn watched_set(out: &RenderOutput, extras: &[PathBuf]) -> HashSet<PathBuf> {
-    let mut watched = HashSet::new();
-    watched.insert(out.root_file.clone());
-    for f in &out.included_files {
-        watched.insert(f.clone());
+fn watched_set(out: &LiveSnapshot, extras: &[PathBuf]) -> HashSet<PathBuf> {
+    let mut watched = HashSet::from([out.document.root_file.clone()]);
+    if out.document.converter.capabilities.dependency_tracking {
+        watched.extend(
+            out.document
+                .dependencies
+                .iter()
+                .map(|dependency| dependency.path.clone()),
+        );
     }
     // Macro override files (global + project + --macros) participate in
     // live-reload too: editing them in your editor — or appending via
@@ -3340,7 +3579,7 @@ fn watched_set(out: &RenderOutput, extras: &[PathBuf]) -> HashSet<PathBuf> {
     watched
 }
 
-async fn update_watched(state: &AppState, out: &RenderOutput) {
+async fn update_watched(state: &AppState, out: &LiveSnapshot) {
     let effective = effective_override_paths(state).await;
     let mut extras = effective;
     extras.extend(state.config_paths.iter().cloned());
@@ -3419,15 +3658,21 @@ async fn live_render_options(state: &AppState) -> HtmlOptions {
 async fn render_cached(
     state: &AppState,
     root: &Path,
-) -> anyhow::Result<(RenderOutput, RenderTiming)> {
-    let mut t = RenderTiming::default();
-    // Trust the format selected by the successful initial render. Markdown
-    // roots are canonicalized, so `alias.md -> target.txt` intentionally has
-    // a non-Markdown root extension after startup; re-detecting here would
-    // reject every subsequent buffer push and watcher render.
-    let format = state.current.read().await.format;
+) -> anyhow::Result<(LiveSnapshot, RenderTiming)> {
+    state.converter.convert_cached(state, root).await
+}
 
-    if format == DocumentFormat::Markdown {
+async fn convert_cached_builtin(
+    state: &AppState,
+    root: &Path,
+    converter: BuiltinConverter,
+) -> anyhow::Result<(LiveSnapshot, RenderTiming)> {
+    let mut t = RenderTiming::default();
+    // Trust the adapter selected by the successful initial conversion.
+    // Markdown roots are canonicalized, so `alias.md -> target.txt`
+    // intentionally has a non-Markdown root extension after startup;
+    // re-detecting here would reject every later buffer/watcher conversion.
+    if converter == BuiltinConverter::Markdown {
         let t0 = std::time::Instant::now();
         let source_override = state.buffer_overrides.read().await.get(root).cloned();
         let source = match source_override {
@@ -3466,7 +3711,7 @@ async fn render_cached(
         }
         render_opts.latex_preamble = Some(String::new());
         let t3 = std::time::Instant::now();
-        let rendered = renderer::render(
+        let rendered = renderer::render_body_only(
             &body,
             &preamble,
             &labels,
@@ -3476,62 +3721,96 @@ async fn render_cached(
             &render_opts,
         );
         t.render_ms = t3.elapsed().as_millis();
-        let out = RenderOutput {
-            format: DocumentFormat::Markdown,
-            html: rendered.full,
-            body_html: rendered.body,
-            blocks: rendered.blocks,
+        let additional_dependencies = state
+            .config_paths
+            .iter()
+            .cloned()
+            .map(|path| ConvertedDependency::new(path, DependencyKind::config()))
+            .collect();
+        let dependencies = mathpreview_core::collect_builtin_dependencies(
+            root,
+            &[],
+            &[],
+            &render_opts.macro_overrides,
+            additional_dependencies,
+        );
+        let document = mathpreview_core::finalize_builtin_document(
+            BuiltinConverter::Markdown.metadata(),
+            root.to_path_buf(),
+            rendered,
             sync,
-            root_file: root.to_path_buf(),
-            preamble,
-            included_files: Vec::new(),
-            tikz_assets: rendered.tikz_assets,
-        };
-        return Ok((out, t));
+            &preamble,
+            dependencies,
+            Vec::new(),
+            &render_opts,
+        );
+        let expected = converter.metadata();
+        let snapshot = LiveSnapshot::from_parts(document, preamble, &render_opts, &expected)?;
+        return Ok((snapshot, t));
     }
 
     let t0 = std::time::Instant::now();
-    let overrides = state.buffer_overrides.read().await.clone();
-    let project = if overrides.is_empty() {
+    let source_overrides = state.buffer_overrides.read().await.clone();
+    let project = if source_overrides.is_empty() {
         project::load_project(root)?
     } else {
-        project::load_project_with_overrides(root, &overrides)?
+        project::load_project_with_overrides(root, &source_overrides)?
     };
     t.parse_ms = t0.elapsed().as_millis();
 
-    // Preamble + bib + style — cached on every root/included preamble source
+    // Preamble + bib, cached on every root/included preamble source
     // *and* the override-file fingerprint, so an edit to an `\input` preamble
     // or a fresh `POST /macros/append` invalidates the cache cleanly. Editing
     // only the body keeps both hashes identical, which is the common-case hit.
-    let pre_hash = preamble_fingerprint(&project);
+    let bib_paths = bibtex::project_bib_paths(&project);
+    let mut pre_hash = preamble_fingerprint(&project);
+    for path in &bib_paths {
+        pre_hash = fnv_update(pre_hash, &[0xfe]);
+        pre_hash = fnv_update(pre_hash, path.as_os_str().as_encoded_bytes());
+        pre_hash = fnv_update(pre_hash, &[0]);
+        let source = path
+            .canonicalize()
+            .ok()
+            .and_then(|canonical| source_overrides.get(&canonical))
+            .or_else(|| source_overrides.get(path));
+        if let Some(source) = source {
+            pre_hash = fnv_update(pre_hash, &[1]);
+            pre_hash = fnv_update(pre_hash, source.as_bytes());
+        } else {
+            pre_hash = fnv_update(pre_hash, &[0]);
+        }
+    }
     let effective_paths = effective_override_paths(state).await;
     let overrides = load_override_layers(state, &effective_paths).await;
     let overrides_hash = fingerprint_overrides(&effective_paths, &overrides);
     let t1 = std::time::Instant::now();
-    let (preamble, bib, bib_style) = {
+    let (preamble, bib) = {
         let guard = state.preamble_cache.read().await;
         if let Some(c) = guard
             .as_ref()
             .filter(|c| c.hash == pre_hash && c.overrides_hash == overrides_hash)
         {
             t.cache_hit = true;
-            (c.preamble.clone(), c.bib.clone(), c.bib_style)
+            (c.preamble.clone(), c.bib.clone())
         } else {
             drop(guard);
             let preamble =
                 macros::extract_preamble_with_overrides(&project, &overrides)?;
-            let bib = bibtex::load_project_bib(&project)?;
-            let bib_style = bibtex::detect_bib_style(&preamble.raw_preamble);
+            let bib = bibtex::load_bib_paths_with_overrides(&bib_paths, &source_overrides);
             *state.preamble_cache.write().await = Some(PreambleCache {
                 hash: pre_hash,
                 overrides_hash,
                 preamble: preamble.clone(),
                 bib: bib.clone(),
-                bib_style,
             });
-            (preamble, bib, bib_style)
+            (preamble, bib)
         }
     };
+    // Bibliography style is commonly declared in the document body or an
+    // included chapter. Body edits intentionally do not invalidate the
+    // preamble/bibliography cache, so detect this cheap source-level setting
+    // on every render instead of caching it with preamble state.
+    let bib_style = bibtex::detect_project_bib_style(&project);
     t.preamble_ms = t1.elapsed().as_millis();
 
     // Reload before theorem parsing/numbering as well as rendering. Otherwise
@@ -3539,6 +3818,10 @@ async fn render_cached(
     // has already assigned every theorem number with stale defaults.
     let mut render_opts = live_render_options(state).await;
     let live_viewer_config = render_opts.viewer_config.clone();
+    render_opts.document_format = DocumentFormat::Latex;
+    if render_opts.source_path.is_none() {
+        render_opts.source_path = Some(root.to_path_buf());
+    }
 
     let mut thms = TheoremRegistry::from_project(&project);
     thms.apply_numbering_scheme(live_viewer_config.theorem_numbering);
@@ -3571,7 +3854,7 @@ async fn render_cached(
     let t4 = std::time::Instant::now();
     let mut sync = SyncIndex::new();
     render_opts.latex_preamble = Some(project.preamble.source.clone());
-    let rendered = renderer::render(
+    let rendered = renderer::render_body_only(
         &body,
         &preamble,
         &labels,
@@ -3582,19 +3865,39 @@ async fn render_cached(
     );
     t.render_ms = t4.elapsed().as_millis();
 
-    let included_files = project.included_files().map(PathBuf::from).collect();
-    let out = RenderOutput {
-        format: DocumentFormat::Latex,
-        html: rendered.full,
-        body_html: rendered.body,
-        blocks: rendered.blocks,
+    let project_files: Vec<_> = project.included_files().map(PathBuf::from).collect();
+    let additional_dependencies = state
+        .config_paths
+        .iter()
+        .cloned()
+        .map(|path| ConvertedDependency::new(path, DependencyKind::config()))
+        .collect();
+    let dependencies = mathpreview_core::collect_builtin_dependencies(
+        root,
+        &project_files,
+        &bib_paths,
+        &render_opts.macro_overrides,
+        additional_dependencies,
+    );
+    let diagnostics = project
+        .warnings
+        .iter()
+        .cloned()
+        .map(|message| ConversionDiagnostic::warning("project-warning", message))
+        .collect();
+    let document = mathpreview_core::finalize_builtin_document(
+        BuiltinConverter::Latex.metadata(),
+        root.to_path_buf(),
+        rendered,
         sync,
-        root_file: root.to_path_buf(),
-        preamble,
-        included_files,
-        tikz_assets: rendered.tikz_assets,
-    };
-    Ok((out, t))
+        &preamble,
+        dependencies,
+        diagnostics,
+        &render_opts,
+    );
+    let expected = converter.metadata();
+    let snapshot = LiveSnapshot::from_parts(document, preamble, &render_opts, &expected)?;
+    Ok((snapshot, t))
 }
 
 async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
@@ -3644,14 +3947,16 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
 
 /// Canonical MathJax macro definitions, excluding extractor provenance and
 /// source spelling that do not change the page-level MathJax configuration.
-fn semantic_macro_definitions(macros: &[ExtractedMacro]) -> Vec<(&str, &str, u8, Option<&str>)> {
+fn semantic_macro_definitions(
+    macros: &[mathpreview_core::MathMacroRequirement],
+) -> Vec<(&str, &str, u8, Option<&str>)> {
     let mut definitions: Vec<_> = macros
         .iter()
         .map(|m| {
             (
                 m.name.as_str(),
                 m.body.as_str(),
-                m.n_args,
+                m.arguments,
                 m.default.as_deref(),
             )
         })
@@ -3668,7 +3973,7 @@ fn semantic_macro_definitions(macros: &[ExtractedMacro]) -> Vec<(&str, &str, u8,
 /// `body-updated` event (when too much changed to be worth a patch), and
 /// update `last_blocks` and `current`. Returns the operation count and a short
 /// update-kind label for logging.
-async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usize, &'static str) {
+async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usize, &'static str) {
     // The current viewer and Markdown config ride along with every render so
     // the client can re-apply font/hover sizing and `__mpConfig` values
     // live — `.mathpreview.toml` edits or `POST /config/set` no
@@ -3693,8 +3998,20 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
     // changes must not cause a reload.
     let macros_changed = {
         let current = state.current.read().await;
-        semantic_macro_definitions(&current.preamble.macros)
-            != semantic_macro_definitions(&out.preamble.macros)
+        semantic_macro_definitions(
+            current
+                .document
+                .runtime
+                .math
+                .as_ref()
+                .map_or(&[], |math| math.macros.as_slice()),
+        ) != semantic_macro_definitions(
+            out.document
+                .runtime
+                .math
+                .as_ref()
+                .map_or(&[], |math| math.macros.as_slice()),
+        )
     };
 
     if macros_changed {
@@ -3703,15 +4020,16 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         // page's GET / must observe the new head, and no later render may diff
         // against blocks the server has not committed yet.
         let mut current = state.current.write().await;
-        *last_blocks = out.blocks.clone();
+        *last_blocks = out.document.blocks.clone();
         *current = out;
         let _ = state.tx.send(payload);
         return (0, "reload");
     }
-    let ops = diff_blocks(&last_blocks, &out.blocks);
+    let ops = diff_converted_blocks(&last_blocks, &out.document.blocks);
     let patch_cost = ops.iter().map(PatchOp::cost).sum::<usize>();
-    let block_count = out.blocks.len();
-    let fallback_full = patch_cost * 2 > block_count.max(1);
+    let block_count = out.document.blocks.len();
+    let fallback_full =
+        !out.document.converter.capabilities.block_patching || patch_cost * 2 > block_count.max(1);
 
     // Sample memory after the render so the client sees the cost at the
     // point the page actually displays the update.
@@ -3726,7 +4044,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         "mathjax_config": viewer_config.mathjax_config,
         // MathJax extensions are fixed when the page's <head> initializes.
         // The client reloads only when this deterministic list changes.
-        "mathjax_packages": &out.preamble.packages_long,
+        "mathjax_packages": &out.viewer.preamble.packages_long,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
         "theorem_numbering": viewer_config.theorem_numbering.as_str(),
         "fancy_theorems": viewer_config.fancy_theorems,
@@ -3739,13 +4057,13 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         // default). The margin lives in the <head>, so a live change can only
         // take effect via reload — the client watches this value for that.
         "page_margin_mm": mathpreview_core::effective_page_margin_mm(
-            &viewer_config, out.preamble.geometry_margin_mm),
+            &viewer_config, out.viewer.preamble.geometry_margin_mm),
     });
 
     let (payload, op_count, kind) = if fallback_full {
         let payload = serde_json::json!({
             "event": "body-updated",
-            "html": out.body_html,
+            "html": out.document.body_html,
             "rss_mib": rss,
             "viewer_config": viewer_config_json,
         })
@@ -3763,6 +4081,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
         // then ships ONE real entry; only a line-count change (which shifts
         // every later anchor) pays the full cost.
         let blocks_json: Vec<_> = out
+            .document
             .blocks
             .iter()
             .enumerate()
@@ -3806,7 +4125,7 @@ async fn broadcast_render(state: &AppState, out: RenderOutput, seq: u64) -> (usi
     // remaining await), then mutate both and send with no await in between.
     // Lock order last_blocks → current is what every other path uses.
     let mut current = state.current.write().await;
-    *last_blocks = out.blocks.clone();
+    *last_blocks = out.document.blocks.clone();
     *current = out;
     let _ = state.tx.send(payload);
     (op_count, kind)
@@ -3937,7 +4256,15 @@ impl PatchOp {
 /// Common prefix and suffix are trimmed up front as a fast path. The shared
 /// LCS work is bounded by `O(n * m)` on the trimmed middle; for the
 /// 300-block test paper that is sub-millisecond in practice.
-fn diff_blocks(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<PatchOp> {
+#[cfg(test)]
+fn diff_blocks(
+    old: &[mathpreview_core::RenderedBlock],
+    new: &[mathpreview_core::RenderedBlock],
+) -> Vec<PatchOp> {
+    diff_converted_blocks(old, new)
+}
+
+fn diff_converted_blocks(old: &[ConvertedBlock], new: &[ConvertedBlock]) -> Vec<PatchOp> {
     let mut prefix = 0;
     while prefix < old.len() && prefix < new.len() && old[prefix].diff_hash == new[prefix].diff_hash
     {
@@ -4052,8 +4379,8 @@ fn diff_blocks(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<PatchOp> {
 }
 
 fn single_range(
-    old_mid: &[RenderedBlock],
-    new_mid: &[RenderedBlock],
+    old_mid: &[ConvertedBlock],
+    new_mid: &[ConvertedBlock],
     prefix: usize,
 ) -> Vec<PatchOp> {
     if old_mid.len() == 1 && new_mid.len() == 1 {
@@ -4078,7 +4405,7 @@ fn single_range(
 /// either side lacks captured sub-structure, the scaffolding (head / number)
 /// changed, or the entire body changed (no prefix/suffix to reuse, so a
 /// `BlockSub` would save nothing).
-fn try_sub_diff(old: &RenderedBlock, new: &RenderedBlock, index: usize) -> Option<PatchOp> {
+fn try_sub_diff(old: &ConvertedBlock, new: &ConvertedBlock, index: usize) -> Option<PatchOp> {
     let (o, n) = (old.sub_blocks.as_ref()?, new.sub_blocks.as_ref()?);
     if o.prefix_diff != n.prefix_diff || o.suffix_diff != n.suffix_diff {
         return None;
@@ -4121,8 +4448,8 @@ fn try_sub_diff(old: &RenderedBlock, new: &RenderedBlock, index: usize) -> Optio
 #[allow(clippy::too_many_arguments)]
 fn emit_range_op(
     ops: &mut Vec<PatchOp>,
-    old_mid: &[RenderedBlock],
-    new_mid: &[RenderedBlock],
+    old_mid: &[ConvertedBlock],
+    new_mid: &[ConvertedBlock],
     old_start: usize,
     old_end: usize,
     new_start: usize,
@@ -4156,7 +4483,7 @@ fn emit_range_op(
 /// lengths are equal) so that runs of duplicate-hash blocks align in the
 /// natural order rather than scrambling — the regression that sank the
 /// previous attempt described in DESIGN.md §13.
-fn lcs_align(old: &[RenderedBlock], new: &[RenderedBlock]) -> Vec<(usize, usize)> {
+fn lcs_align(old: &[ConvertedBlock], new: &[ConvertedBlock]) -> Vec<(usize, usize)> {
     let n = old.len();
     let m = new.len();
     if n == 0 || m == 0 {
@@ -4815,7 +5142,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             *state.preamble_cache.write().await = None;
             let root = {
                 let current = state.current.read().await;
-                current.root_file.clone()
+                current.document.root_file.clone()
             };
             // Same single-render discipline as buffer pushes (see
             // render_permit): a save that lands mid-typing-burst must not add
@@ -4891,10 +5218,15 @@ mod tests {
         semantic_macro_definitions, serve_buffer_push, serve_config_set, serve_config_write,
         serve_cursor, serve_debug, serve_print, serve_selection, tikz_document, tikz_error_svg,
         tikz_hash_from_path, validate_config_cascade_with_override, validate_override_content,
-        watched_event_paths, websocket_needs_reload, AppState, ConfigFileRequest, ConfigSetRequest,
-        DocumentFormat, EditorSearch, PatchOp, PlanSlot, RangeRequest, SearchRequest,
-        SourceRequest, PROJECT_SVG_CSP, WS_PROTOCOL_VERSION,
+        watched_event_paths, watched_set, websocket_needs_reload, AppState, ConfigFileRequest,
+        ConfigSetRequest, DocumentFormat, EditorSearch, LiveConverterAdapter, LiveSnapshot,
+        PatchOp, PlanSlot, RangeRequest, SearchRequest, SourceRequest, PROJECT_SVG_CSP,
+        WS_PROTOCOL_VERSION,
     };
+
+    fn live_snapshot(output: RenderOutput) -> LiveSnapshot {
+        LiveSnapshot::from_render_output(output, &HtmlOptions::default())
+    }
 
     #[test]
     fn macro_editor_accepts_environment_replacements() {
@@ -5016,6 +5348,7 @@ mod tests {
                 source: source.to_string(),
             }],
             files: vec![],
+            dependency_files: vec![],
             warnings: vec![],
         };
 
@@ -5073,6 +5406,7 @@ mod tests {
     use mathpreview_core::{
         renderer::{HtmlOptions, RenderedBlock},
         sync::SyncIndex,
+        BuiltinConverter, ConversionRequest, ConvertedDependency, DependencyKind,
         ExtractedPreamble, RenderOutput,
     };
     use std::collections::{HashMap, HashSet};
@@ -5081,6 +5415,7 @@ mod tests {
         atomic::{AtomicBool, AtomicU64},
         mpsc as std_mpsc, Arc,
     };
+    use std::time::Duration;
     use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
     #[test]
@@ -6151,8 +6486,9 @@ Second paragraph here.
         let (tx, _) = broadcast::channel(1);
         let (watch_tx, _) = std_mpsc::channel();
         let state = AppState {
+            converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
-            current: Arc::new(RwLock::new(RenderOutput {
+            current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
                 body_html: String::new(),
@@ -6183,7 +6519,7 @@ Second paragraph here.
                 },
                 included_files: Vec::new(),
                 tikz_assets: HashMap::new(),
-            })),
+            }))),
             tx,
             watched: Arc::new(RwLock::new(HashSet::new())),
             watch_tx,
@@ -6596,9 +6932,12 @@ Second paragraph here.
     fn app_state_for_output(current: RenderOutput) -> AppState {
         let (tx, _) = broadcast::channel(8);
         let (watch_tx, _) = std_mpsc::channel();
+        let converter = LiveConverterAdapter::for_format(current.format);
         let watched = HashSet::from([current.root_file.clone()]);
-        let last_blocks = current.blocks.clone();
+        let current = live_snapshot(current);
+        let last_blocks = current.document.blocks.clone();
         AppState {
+            converter,
             opts: HtmlOptions::default(),
             current: Arc::new(RwLock::new(current)),
             tx,
@@ -6635,6 +6974,125 @@ Second paragraph here.
         }
     }
 
+    #[test]
+    fn dependency_tracking_capability_never_hides_root_or_explicit_extras() {
+        let mut snapshot = live_snapshot(render_macro_document(r"\newcommand{\foo}[1]{#1}"));
+        let root = snapshot.document.root_file.clone();
+        let discovered = PathBuf::from("chapter.tex");
+        let config = PathBuf::from(".mathpreview.toml");
+        let macros = PathBuf::from(".mathpreview-macros.tex");
+        snapshot.document.dependencies = vec![ConvertedDependency::new(
+            &discovered,
+            DependencyKind::include(),
+        )];
+        snapshot.document.converter.capabilities.dependency_tracking = false;
+
+        let watched = watched_set(&snapshot, &[config.clone(), macros.clone()]);
+        assert!(watched.contains(&root));
+        assert!(watched.contains(&config));
+        assert!(watched.contains(&macros));
+        assert!(!watched.contains(&discovered));
+    }
+
+    #[test]
+    fn prospective_converter_dependency_is_watched_before_file_creation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-prospective-live-dependency-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        std::fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\\input{future}\\end{document}\n",
+        )
+        .unwrap();
+
+        let conversion = BuiltinConverter::Latex
+            .convert_for_viewer(ConversionRequest::from_path(&root), &HtmlOptions::default())
+            .unwrap();
+        let snapshot = LiveSnapshot::from_builtin_conversion(conversion).unwrap();
+        let dependency = snapshot
+            .document
+            .dependencies
+            .iter()
+            .find(|dependency| {
+                dependency
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name == "future.tex")
+            })
+            .unwrap();
+        assert!(!dependency.exists);
+        assert!(watched_set(&snapshot, &[]).contains(&dependency.path));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn converter_without_block_patching_broadcasts_full_body_and_completes() {
+        let definition = r"\newcommand{\foo}[1]{#1}";
+        let state = app_state_for_output(render_macro_document(definition));
+        let mut update = live_snapshot(render_macro_document(definition));
+        update.document.body_html = "<p>custom converter update</p>".to_string();
+        update.document.blocks.clear();
+        update.document.converter.id = "custom-unstructured".to_string();
+        update.document.converter.capabilities.block_patching = false;
+
+        let mut rx = state.tx.subscribe();
+        let seq = begin_render_attempt(&state);
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            broadcast_render(&state, update, seq),
+        )
+        .await
+        .expect("ordinary broadcast path must not deadlock");
+        assert_eq!(result, (0, "blocks (full)"));
+
+        let payload: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(payload["event"], "body-updated");
+        assert_eq!(payload["html"], "<p>custom converter update</p>");
+    }
+
+    #[test]
+    fn live_consumer_rejects_incompatible_or_mismatched_builtin_metadata() {
+        let request = ConversionRequest::from_source(
+            "contract.tex",
+            "\\documentclass{article}\\begin{document}ok\\end{document}",
+        );
+        let mut incompatible = BuiltinConverter::Latex
+            .convert_for_viewer(request.clone(), &HtmlOptions::default())
+            .unwrap();
+        incompatible.document.converter.api_version += 1;
+        assert!(LiveSnapshot::from_builtin_conversion(incompatible).is_err());
+
+        let mut mismatched = BuiltinConverter::Latex
+            .convert_for_viewer(request.clone(), &HtmlOptions::default())
+            .unwrap();
+        mismatched.document.converter.format = "markdown".to_string();
+        assert!(LiveSnapshot::from_builtin_conversion(mismatched).is_err());
+
+        let mut changed_id = BuiltinConverter::Latex
+            .convert_for_viewer(request.clone(), &HtmlOptions::default())
+            .unwrap();
+        changed_id.document.converter.id = "changed-after-selection".to_string();
+        assert!(LiveSnapshot::from_builtin_conversion(changed_id).is_err());
+
+        let mut changed_capabilities = BuiltinConverter::Latex
+            .convert_for_viewer(request, &HtmlOptions::default())
+            .unwrap();
+        changed_capabilities
+            .document
+            .converter
+            .capabilities
+            .block_patching = false;
+        assert!(LiveSnapshot::from_builtin_conversion(changed_capabilities).is_err());
+    }
+
     fn render_macro_document(definition: &str) -> RenderOutput {
         mathpreview_core::render_project_from_source(
             &PathBuf::from("main.tex"),
@@ -6651,12 +7109,30 @@ Second paragraph here.
         let old = render_macro_document(r"\newcommand{\foo}[1]{OLD-#1}");
         let new = render_macro_document(r"\newcommand{\foo}[1]{NEW-#1}");
         assert_eq!(old.body_html, new.body_html, "body must be macro-neutral");
+        let old = live_snapshot(old);
+        let new = live_snapshot(new);
         assert_ne!(
-            semantic_macro_definitions(&old.preamble.macros),
-            semantic_macro_definitions(&new.preamble.macros),
+            semantic_macro_definitions(
+                old.document
+                    .runtime
+                    .math
+                    .as_ref()
+                    .unwrap()
+                    .macros
+                    .as_slice()
+            ),
+            semantic_macro_definitions(
+                new.document
+                    .runtime
+                    .math
+                    .as_ref()
+                    .unwrap()
+                    .macros
+                    .as_slice()
+            ),
         );
 
-        let state = app_state_for_output(old);
+        let state = app_state_for_output(render_macro_document(r"\newcommand{\foo}[1]{OLD-#1}"));
         let mut rx = state.tx.subscribe();
         let seq = begin_render_attempt(&state);
         assert_eq!(broadcast_render(&state, new, seq).await, (0, "reload"));
@@ -6670,6 +7146,7 @@ Second paragraph here.
         let (foo_body, current_hashes) = {
             let current = state.current.read().await;
             let foo = current
+                .viewer
                 .preamble
                 .macros
                 .iter()
@@ -6678,6 +7155,7 @@ Second paragraph here.
             (
                 foo.body.clone(),
                 current
+                    .document
                     .blocks
                     .iter()
                     .map(|block| block.hash.clone())
@@ -6712,12 +7190,30 @@ Second paragraph here.
             .find(|m| m.name == "foo")
             .unwrap();
         assert_ne!(old_foo.source, new_foo.source);
+        let old = live_snapshot(old);
+        let new = live_snapshot(new);
         assert_eq!(
-            semantic_macro_definitions(&old.preamble.macros),
-            semantic_macro_definitions(&new.preamble.macros),
+            semantic_macro_definitions(
+                old.document
+                    .runtime
+                    .math
+                    .as_ref()
+                    .unwrap()
+                    .macros
+                    .as_slice()
+            ),
+            semantic_macro_definitions(
+                new.document
+                    .runtime
+                    .math
+                    .as_ref()
+                    .unwrap()
+                    .macros
+                    .as_slice()
+            ),
         );
 
-        let state = app_state_for_output(old);
+        let state = app_state_for_output(render_macro_document(r"\newcommand{\foo}[1]{#1+1}"));
         let mut rx = state.tx.subscribe();
         let seq = begin_render_attempt(&state);
         let (_, kind) = broadcast_render(&state, new, seq).await;
@@ -6732,10 +7228,95 @@ Second paragraph here.
             .current
             .read()
             .await
+            .viewer
             .preamble
             .macros
             .iter()
             .any(|m| m.name == "foo" && m.source.starts_with(r"\def")));
+    }
+
+    #[tokio::test]
+    async fn first_update_preserves_initial_shell_mathjax_package_list() {
+        let opts = HtmlOptions::default();
+        let root = PathBuf::from("packages.tex");
+        let source = |body: &str| {
+            format!(
+                "\\documentclass{{article}}\n\\usepackage{{mathtools}}\n\\begin{{document}}\n{body}\n\\end{{document}}\n"
+            )
+        };
+        let initial =
+            mathpreview_core::render_project_from_source(&root, source("Before."), &opts).unwrap();
+        let initial_snapshot = live_snapshot(initial);
+        let initial_packages = initial_snapshot.viewer.preamble.packages_long.clone();
+        let serialized_packages = serde_json::to_string(&initial_packages).unwrap();
+        assert!(initial_snapshot
+            .viewer
+            .html
+            .contains(&format!("mathjaxPackages: {serialized_packages}")));
+
+        let state = app_state_for_output(
+            mathpreview_core::render_project_from_source(&root, source("Before."), &opts).unwrap(),
+        );
+        let update = live_snapshot(
+            mathpreview_core::render_project_from_source(&root, source("After."), &opts).unwrap(),
+        );
+        let mut rx = state.tx.subscribe();
+        let seq = begin_render_attempt(&state);
+        let (_, kind) = broadcast_render(&state, update, seq).await;
+        assert_ne!(kind, "reload");
+
+        let payload: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(
+            payload["viewer_config"]["mathjax_packages"],
+            serde_json::json!(initial_packages)
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_live_conversion_rechecks_body_bibliography_style() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-live-bib-style-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        std::fs::write(
+            dir.join("refs.bib"),
+            "@book{Lovelace1843, author={Lovelace, Ada}, title={Notes}, year={1843}}\n",
+        )
+        .unwrap();
+        let source = |style: &str| {
+            format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\\cite{{Lovelace1843}}\\bibliographystyle{{{style}}}\\bibliography{{refs}}\\end{{document}}\n"
+            )
+        };
+        std::fs::write(&root, source("alpha")).unwrap();
+        let initial = mathpreview_core::render_document(&root, &HtmlOptions::default()).unwrap();
+        let state = app_state_for_output(initial);
+        let canonical_root = state.current.read().await.document.root_file.clone();
+
+        let (alphabetic, first_timing) = render_cached(&state, &canonical_root).await.unwrap();
+        assert!(!first_timing.cache_hit);
+        assert!(alphabetic
+            .document
+            .body_html
+            .contains("bib-style-alphabetic"));
+
+        state
+            .buffer_overrides
+            .write()
+            .await
+            .insert(canonical_root.clone(), source("plain"));
+        let (numeric, second_timing) = render_cached(&state, &canonical_root).await.unwrap();
+        assert!(second_timing.cache_hit);
+        assert!(numeric.document.body_html.contains("bib-style-numeric"));
+        assert!(!numeric.document.body_html.contains("bib-style-alphabetic"));
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -6754,11 +7335,18 @@ Second paragraph here.
         );
 
         let (rendered, _) = render_cached(&state, &root).await.unwrap();
-        assert_eq!(rendered.format, DocumentFormat::Markdown);
-        assert!(rendered.body_html.contains("UnsavedRootOverride"));
-        assert!(!rendered.body_html.contains("Disk version"));
-        assert!(rendered.body_html.contains(r#"class="math inline""#));
-        assert_eq!(rendered.included_files, Vec::<PathBuf>::new());
+        assert_eq!(rendered.format(), DocumentFormat::Markdown);
+        assert!(rendered.document.body_html.contains("UnsavedRootOverride"));
+        assert!(!rendered.document.body_html.contains("Disk version"));
+        assert!(rendered
+            .document
+            .body_html
+            .contains(r#"class="math inline""#));
+        assert!(!rendered
+            .document
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.kind.as_str() == "include"));
     }
 
     #[tokio::test]
@@ -6799,11 +7387,20 @@ Second paragraph here.
             .insert(root.clone(), source.to_string());
 
         let (rendered, _) = render_cached(&state, &root).await.unwrap();
-        assert!(rendered.body_html.contains("md-custom-kind-warning"));
-        assert!(rendered.body_html.contains("md-custom-card"));
-        assert!(rendered.body_html.contains("md-custom-reveal-blur"));
-        assert!(rendered.body_html.contains("Live title"));
-        assert!(rendered.body_html.contains(r#"class="math inline""#));
+        assert!(rendered
+            .document
+            .body_html
+            .contains("md-custom-kind-warning"));
+        assert!(rendered.document.body_html.contains("md-custom-card"));
+        assert!(rendered
+            .document
+            .body_html
+            .contains("md-custom-reveal-blur"));
+        assert!(rendered.document.body_html.contains("Live title"));
+        assert!(rendered
+            .document
+            .body_html
+            .contains(r#"class="math inline""#));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -6923,9 +7520,9 @@ Second paragraph here.
 
         let state = app_state_for_output(initial);
         let (rendered, _) = render_cached(&state, &root).await.unwrap();
-        assert_eq!(rendered.format, DocumentFormat::Latex);
-        assert_eq!(rendered.root_file, root);
-        assert!(rendered.body_html.contains("Explicit"));
+        assert_eq!(rendered.format(), DocumentFormat::Latex);
+        assert_eq!(rendered.document.root_file, root);
+        assert!(rendered.document.body_html.contains("Explicit"));
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -6968,6 +7565,7 @@ Second paragraph here.
             .current
             .read()
             .await
+            .document
             .body_html
             .contains("LiveMarkdown"));
     }
@@ -7036,9 +7634,9 @@ Second paragraph here.
         .await;
         assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
         let current = state.current.read().await;
-        assert_eq!(current.format, DocumentFormat::Markdown);
-        assert_eq!(current.root_file, target);
-        assert!(current.body_html.contains("LiveSymlinkMarkdown"));
+        assert_eq!(current.format(), DocumentFormat::Markdown);
+        assert_eq!(current.document.root_file, target);
+        assert!(current.document.body_html.contains("LiveSymlinkMarkdown"));
         drop(current);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -7095,8 +7693,9 @@ Second paragraph here.
         watched_set.insert(child_canon.clone());
 
         let state = AppState {
+            converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
-            current: Arc::new(RwLock::new(RenderOutput {
+            current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
                 body_html: String::new(),
@@ -7106,7 +7705,7 @@ Second paragraph here.
                 preamble: empty_preamble(),
                 included_files: vec![child_canon.clone()],
                 tikz_assets: HashMap::new(),
-            })),
+            }))),
             tx,
             watched: Arc::new(RwLock::new(watched_set)),
             watch_tx,
@@ -7167,19 +7766,20 @@ Second paragraph here.
         // override token and the absence of the on-disk token instead of a
         // contiguous substring.
         assert!(
-            current.body_html.contains(">Livechild<"),
+            current.document.body_html.contains(">Livechild<"),
             "rendered body should splice the override; got: {}",
-            current.body_html,
+            current.document.body_html,
         );
         assert!(
-            !current.body_html.contains("Diskchild"),
+            !current.document.body_html.contains("Diskchild"),
             "rendered body should not contain disk content; got: {}",
-            current.body_html,
+            current.document.body_html,
         );
         assert!(
-            current.body_html.contains(">Before<") && current.body_html.contains(">After<"),
+            current.document.body_html.contains(">Before<")
+                && current.document.body_html.contains(">After<"),
             "rendered body should still contain surrounding root content; got: {}",
-            current.body_html,
+            current.document.body_html,
         );
         drop(current);
 
@@ -7188,6 +7788,71 @@ Second paragraph here.
             "Diskchild\n",
             "buffer-push must not write the override to disk",
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_child_push_through_symlink_uses_prospective_dependency_key() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mp-buffer-missing-alias-{nonce}"));
+        let project_dir = dir.join("project");
+        let alias_dir = dir.join("alias");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        symlink(&project_dir, &alias_dir).unwrap();
+        let root = project_dir.join("main.tex");
+        let alias_root = alias_dir.join("main.tex");
+        let alias_child = alias_dir.join("future.tex");
+        std::fs::write(
+            &root,
+            "\\documentclass{article}\n\\begin{document}\n\\input{future}\n\\end{document}\n",
+        )
+        .unwrap();
+
+        let initial =
+            mathpreview_core::render_document(&alias_root, &HtmlOptions::default()).unwrap();
+        let state = app_state_for_output(initial);
+        let dependency_key = mathpreview_core::project::normalize_source_path(&alias_child);
+        assert_eq!(dependency_key, project_dir.canonicalize().unwrap().join("future.tex"));
+        assert!(!alias_child.exists());
+        state.watched.write().await.insert(dependency_key.clone());
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-mathpreview-path",
+            axum::http::HeaderValue::from_str(alias_child.to_str().unwrap()).unwrap(),
+        );
+        let status = serve_buffer_push(
+            axum::extract::State(state.clone()),
+            headers,
+            "LiveAliasChild\n".to_string(),
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            state
+                .buffer_overrides
+                .read()
+                .await
+                .get(&dependency_key)
+                .map(String::as_str),
+            Some("LiveAliasChild\n"),
+        );
+        assert!(state
+            .current
+            .read()
+            .await
+            .document
+            .body_html
+            .contains("LiveAliasChild"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7224,8 +7889,9 @@ Second paragraph here.
         watched_set.insert(root_canon.clone());
 
         let state = AppState {
+            converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
-            current: Arc::new(RwLock::new(RenderOutput {
+            current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
                 body_html: String::new(),
@@ -7235,7 +7901,7 @@ Second paragraph here.
                 preamble: empty_preamble(),
                 included_files: Vec::new(),
                 tikz_assets: HashMap::new(),
-            })),
+            }))),
             tx,
             watched: Arc::new(RwLock::new(watched_set)),
             watch_tx,
@@ -7285,7 +7951,7 @@ Second paragraph here.
         .await;
         assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
         let seq_after_newest = state.render_seq.load(std::sync::atomic::Ordering::Acquire);
-        let rendered_after_newest = state.current.read().await.body_html.clone();
+        let rendered_after_newest = state.current.read().await.document.body_html.clone();
         assert!(
             rendered_after_newest.contains(">Newest<"),
             "{rendered_after_newest}"
@@ -7344,16 +8010,19 @@ Second paragraph here.
             .expect("stored buffer is one of the burst bodies");
         let current = state.current.read().await;
         assert!(
-            current.body_html.contains(&format!(">Burst{stored_idx}<")),
+            current
+                .document
+                .body_html
+                .contains(&format!(">Burst{stored_idx}<")),
             "rendered body must match the stored (newest) buffer {stored_idx}, got: {}",
-            current.body_html,
+            current.document.body_html,
         );
         // And the winner is a genuinely-latest push: re-running the same body
         // through the gate as the newest attempt renders identically.
         assert!(
-            !current.body_html.contains(">Newest<"),
+            !current.document.body_html.contains(">Newest<"),
             "{}",
-            current.body_html
+            current.document.body_html
         );
         drop(current);
         let _ = newest;
@@ -7395,8 +8064,9 @@ Second paragraph here.
         watched_set.insert(child_canon.clone());
 
         let state = AppState {
+            converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
-            current: Arc::new(RwLock::new(RenderOutput {
+            current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
                 body_html: String::new(),
@@ -7406,7 +8076,7 @@ Second paragraph here.
                 preamble: empty_preamble(),
                 included_files: vec![child_canon.clone()],
                 tikz_assets: HashMap::new(),
-            })),
+            }))),
             tx,
             watched: Arc::new(RwLock::new(watched_set)),
             watch_tx,
@@ -7490,7 +8160,7 @@ Second paragraph here.
         drop(overrides);
         // And the body did not render on the child's own turn (rendered body
         // is still empty: the newer attempt is responsible for rendering).
-        assert!(state.current.read().await.body_html.is_empty());
+        assert!(state.current.read().await.document.body_html.is_empty());
 
         // The next (root) push — the newest attempt — renders both live buffers.
         let mut root_headers = axum::http::HeaderMap::new();
@@ -7508,11 +8178,16 @@ Second paragraph here.
         assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
         let current = state.current.read().await;
         assert!(
-            current.body_html.contains(">Rootlive<") && current.body_html.contains(">Childlive<"),
+            current.document.body_html.contains(">Rootlive<")
+                && current.document.body_html.contains(">Childlive<"),
             "the newest attempt must render every stored buffer; got: {}",
-            current.body_html,
+            current.document.body_html,
         );
-        assert!(!current.body_html.contains("Childdisk"), "{}", current.body_html);
+        assert!(
+            !current.document.body_html.contains("Childdisk"),
+            "{}",
+            current.document.body_html
+        );
         drop(current);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -7529,8 +8204,9 @@ Second paragraph here.
         watched_set.insert(root.clone());
 
         let state = AppState {
+            converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
-            current: Arc::new(RwLock::new(RenderOutput {
+            current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
                 body_html: String::new(),
@@ -7540,7 +8216,7 @@ Second paragraph here.
                 preamble: empty_preamble(),
                 included_files: Vec::new(),
                 tikz_assets: HashMap::new(),
-            })),
+            }))),
             tx,
             watched: Arc::new(RwLock::new(watched_set)),
             watch_tx,

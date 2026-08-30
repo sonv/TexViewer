@@ -9,7 +9,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
 
@@ -160,15 +160,24 @@ pub struct RenderedHtml {
     pub tikz_assets: HashMap<String, TikzAsset>,
 }
 
+/// Body-level rendering artifacts for hosts that provide their own viewer
+/// shell. This preserves the exact block, sync, and generated-asset pass used
+/// by [`render`] without allocating the embedded CSS/JavaScript page wrapper.
+#[derive(Debug, Clone)]
+pub struct RenderedBody {
+    pub body: String,
+    pub blocks: Vec<RenderedBlock>,
+    pub tikz_assets: HashMap<String, TikzAsset>,
+}
+
 /// One top-level block wrapped in `<article class="blk">`, ready for the
 /// diffing pass to compare against the previous render.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderedBlock {
     pub id: String,
     pub hash: String,
     pub src: Option<String>,
     pub source_anchors: Vec<SourceAnchor>,
-    #[serde(skip)]
     pub diff_hash: String,
     pub html: String,
     /// For theorem/proof blocks whose body is rendered as a sequence of
@@ -179,20 +188,63 @@ pub struct RenderedBlock {
     /// ordinary blocks and for any chunked block that contains a child
     /// expanding to multiple sibling elements (e.g. `subequations`), which
     /// would break the client's element-index addressing.
-    #[serde(skip)]
     pub sub_blocks: Option<SubBody>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl RenderedBlock {
+    /// Construct a viewer block without source or sub-block metadata.
+    pub fn new(
+        id: impl Into<String>,
+        hash: impl Into<String>,
+        diff_hash: impl Into<String>,
+        html: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            hash: hash.into(),
+            src: None,
+            source_anchors: Vec::new(),
+            diff_hash: diff_hash.into(),
+            html: html.into(),
+            sub_blocks: None,
+        }
+    }
+
+    pub fn with_source(mut self, src: impl Into<String>) -> Self {
+        self.src = Some(src.into());
+        self
+    }
+
+    pub fn with_source_anchors(mut self, anchors: impl IntoIterator<Item = SourceAnchor>) -> Self {
+        self.source_anchors = anchors.into_iter().collect();
+        self
+    }
+
+    pub fn with_sub_blocks(mut self, sub_blocks: SubBody) -> Self {
+        self.sub_blocks = Some(sub_blocks);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceAnchor {
     pub id: String,
     pub src: String,
 }
 
+impl SourceAnchor {
+    pub fn new(id: impl Into<String>, src: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            src: src.into(),
+        }
+    }
+}
+
 /// One body child of a sub-diffable block. Each chunk renders to exactly
 /// one top-level DOM element, so `children` indices line up 1:1 with the
 /// body container's element children on the client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubChunk {
     /// Position-stable content hash (generated ids / `data-src` stripped),
     /// used to find the unchanged common prefix/suffix between renders.
@@ -201,8 +253,17 @@ pub struct SubChunk {
     pub html: String,
 }
 
+impl SubChunk {
+    pub fn new(diff_hash: impl Into<String>, html: impl Into<String>) -> Self {
+        Self {
+            diff_hash: diff_hash.into(),
+            html: html.into(),
+        }
+    }
+}
+
 /// Sub-block structure of a theorem/proof block, captured at render time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubBody {
     /// Stable hash of the block HTML before the body interior (container
     /// open + head + body-open tag). If this differs between renders the
@@ -215,6 +276,20 @@ pub struct SubBody {
     pub children: Vec<SubChunk>,
 }
 
+impl SubBody {
+    pub fn new(
+        prefix_diff: impl Into<String>,
+        suffix_diff: impl Into<String>,
+        children: impl IntoIterator<Item = SubChunk>,
+    ) -> Self {
+        Self {
+            prefix_diff: prefix_diff.into(),
+            suffix_diff: suffix_diff.into(),
+            children: children.into_iter().collect(),
+        }
+    }
+}
+
 pub fn render(
     nodes: &[Node],
     preamble: &ExtractedPreamble,
@@ -224,6 +299,34 @@ pub fn render(
     sync: &mut SyncIndex,
     opts: &HtmlOptions,
 ) -> RenderedHtml {
+    let rendered = render_body_only(nodes, preamble, labels, bib, bib_style, sync, opts);
+    let full = wrap_in_shell(&rendered.body, preamble, opts);
+    RenderedHtml {
+        full,
+        body: rendered.body,
+        blocks: rendered.blocks,
+        tikz_assets: rendered.tikz_assets,
+    }
+}
+
+/// Wrap previously rendered body HTML in MathPreview's standalone viewer
+/// shell. Cache-aware hosts can render the body once, expose it through the
+/// neutral converter contract, and still serve the bundled browser UI without
+/// rebuilding the AST or block metadata.
+pub fn render_shell(body: &str, preamble: &ExtractedPreamble, opts: &HtmlOptions) -> String {
+    wrap_in_shell(body, preamble, opts)
+}
+
+/// Render document content without constructing the standalone viewer shell.
+pub fn render_body_only(
+    nodes: &[Node],
+    preamble: &ExtractedPreamble,
+    labels: &LabelTable,
+    bib: &HashMap<String, BibEntry>,
+    bib_style: BibStyle,
+    sync: &mut SyncIndex,
+    opts: &HtmlOptions,
+) -> RenderedBody {
     // Make the document's \newcommand definitions + the TOML [text-macros]
     // templates available to the inline text renderer for this render.
     install_text_macros(preamble, opts);
@@ -388,9 +491,7 @@ pub fn render(
     flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
 
     let body: String = blocks.iter().map(|b| b.html.as_str()).collect();
-    let full = wrap_in_shell(&body, preamble, opts);
-    RenderedHtml {
-        full,
+    RenderedBody {
         body,
         blocks,
         tikz_assets: ctx.tikz_assets,
@@ -773,8 +874,8 @@ fn soft_line_break_span(node_span: &Span, text: &str, start: usize, end: usize) 
 fn offset_pos(src: &str, start: Pos, byte: usize) -> Pos {
     let mut line = start.line;
     let mut col = start.col;
-    for ch in src[..byte.min(src.len())].chars() {
-        if ch == '\n' {
+    for source_byte in src.as_bytes()[..byte.min(src.len())].iter().copied() {
+        if source_byte == b'\n' {
             line += 1;
             col = 1;
         } else {
@@ -4855,6 +4956,32 @@ mod tests {
         assert!(text.contains("First paragraph."));
         assert!(text.contains("Second paragraph."));
         assert!(!out.body_html.contains("<br><br>Second paragraph."));
+    }
+
+    #[test]
+    fn tex_sync_uses_neovim_byte_columns_after_unicode() {
+        let path = Path::new("unicode.tex");
+        let out = crate::render_project_from_source(
+            path,
+            "é before $x$".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let math = out
+            .sync
+            .entries
+            .iter()
+            .find(|entry| entry.start.byte == 10 && entry.end.byte == 13)
+            .expect("inline math sync entry");
+
+        assert_eq!((math.start.line, math.start.col), (1, 11));
+        assert_eq!((math.end.line, math.end.col), (1, 14));
+        assert_eq!(
+            out.sync
+                .lookup_leaf_by_source_position(path, 1, 12)
+                .map(|entry| entry.element_id.as_str()),
+            Some(math.element_id.as_str())
+        );
     }
 
     fn render_body(source: &str) -> String {
