@@ -16,7 +16,9 @@ use crate::ast::{
     MarkdownAlignment, MarkdownReferenceStyle, MarkdownTheoremDialect, MarkdownTheoremMeta, Node,
     NodeKind, Pos, Span,
 };
-use crate::config::ResolvedMarkdownConfig;
+use crate::config::{
+    ResolvedMarkdownConfig, MAX_MARKDOWN_BLOCK_SYNTAXES, MAX_MARKDOWN_BLOCK_SYNTAX_STARTS,
+};
 
 const MAX_MARKDOWN_CUSTOM_BLOCK_NESTING: usize = 32;
 const MAX_MARKDOWN_CUSTOM_BLOCK_NAME_BYTES: usize = 32;
@@ -184,6 +186,8 @@ pub fn parse_with_config(
 struct MarkdownCustomBlockMatch {
     name: String,
     title: Option<String>,
+    label: Option<String>,
+    card: bool,
     content_key: String,
     theorem: Option<MarkdownTheoremMeta>,
     opening: Range<usize>,
@@ -194,6 +198,8 @@ struct MarkdownCustomBlockMatch {
 struct MarkdownCustomBlockOpen {
     name: String,
     title: Option<String>,
+    label: Option<String>,
+    card: bool,
     theorem: Option<MarkdownTheoremMeta>,
     range: Range<usize>,
 }
@@ -235,7 +241,7 @@ struct MarkdownCustomBlockOverflow {
 
 enum MarkdownCustomBlockMarker {
     Open {
-        opening: Option<MarkdownCustomBlockOpening>,
+        opening: Option<Box<MarkdownCustomBlockOpening>>,
     },
     Close,
 }
@@ -244,6 +250,8 @@ enum MarkdownCustomBlockMarker {
 struct MarkdownCustomBlockOpening {
     name: String,
     title: Option<String>,
+    label: Option<String>,
+    card: bool,
     theorem: Option<MarkdownTheoremMeta>,
 }
 
@@ -513,12 +521,71 @@ struct MarkdownLiteralBlockSyntax<'a> {
     end: &'a str,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct MarkdownLiteralBlockTemplate<'a> {
-    prefix: &'a str,
-    between: Option<&'a str>,
-    suffix: &'a str,
+    source: &'a str,
+    captures: Vec<MarkdownLiteralBlockCapture>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkdownLiteralBlockCapture {
+    kind: MarkdownLiteralBlockCaptureKind,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkdownLiteralBlockCaptureKind {
+    Name,
+    Title,
+    Label,
+    Card,
+}
+
+impl MarkdownLiteralBlockCaptureKind {
+    const ALL: [(Self, &'static str); 4] = [
+        (Self::Name, "{name}"),
+        (Self::Title, "{title}"),
+        (Self::Label, "{label}"),
+        (Self::Card, "{card}"),
+    ];
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MarkdownLiteralBlockValues {
+    title: Option<String>,
+    label: Option<String>,
+    card: bool,
+}
+
+const MAX_MARKDOWN_LITERAL_BLOCK_MATCH_WORK: usize = MAX_MARKDOWN_CUSTOM_BLOCK_MARKER_BYTES
+    * MAX_MARKDOWN_BLOCK_SYNTAXES
+    * MAX_MARKDOWN_BLOCK_SYNTAX_STARTS
+    * 2;
+
+#[derive(Debug)]
+struct MarkdownLiteralBlockMatchBudget {
+    remaining: usize,
+}
+
+impl MarkdownLiteralBlockMatchBudget {
+    fn new(remaining: usize) -> Self {
+        Self { remaining }
+    }
+
+    fn charge(&mut self, work: usize) -> Result<(), MarkdownLiteralBlockMatchExhausted> {
+        if work > self.remaining {
+            self.remaining = 0;
+            Err(MarkdownLiteralBlockMatchExhausted)
+        } else {
+            self.remaining -= work;
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkdownLiteralBlockMatchExhausted;
 
 /// Find configured block pairs before masking their boundary lines. The first
 /// CommonMark pass supplies immunity ranges: marker-looking lines in code,
@@ -529,6 +596,20 @@ fn find_markdown_custom_blocks(
     source: &str,
     options: Options,
     config: &ResolvedMarkdownConfig,
+) -> MarkdownCustomBlockScan {
+    find_markdown_custom_blocks_with_match_work_limit(
+        source,
+        options,
+        config,
+        MAX_MARKDOWN_LITERAL_BLOCK_MATCH_WORK,
+    )
+}
+
+fn find_markdown_custom_blocks_with_match_work_limit(
+    source: &str,
+    options: Options,
+    config: &ResolvedMarkdownConfig,
+    match_work_limit: usize,
 ) -> MarkdownCustomBlockScan {
     let mut protected = vec![false; source.len()];
     protect_markdown_literal_ranges(source, options, &mut protected);
@@ -574,10 +655,33 @@ fn find_markdown_custom_blocks(
                 if body == syntax.end {
                     closing_families.push(syntax.family);
                 }
-                if let Some(opening) = markdown_literal_block_opening(body, syntax, config) {
-                    opening_candidates.push((syntax.family, opening));
+            }
+
+            let mut literal_opening_candidates = Vec::new();
+            let mut match_budget = MarkdownLiteralBlockMatchBudget::new(match_work_limit);
+            let mut exhausted = false;
+            for syntax in &literal_syntaxes {
+                match markdown_literal_block_opening(body, syntax, config, &mut match_budget) {
+                    Ok(Some(opening)) => {
+                        literal_opening_candidates.push((syntax.family, opening.map(Box::new)));
+                    }
+                    Ok(None) => {}
+                    Err(MarkdownLiteralBlockMatchExhausted) => {
+                        exhausted = true;
+                        break;
+                    }
                 }
             }
+            if exhausted {
+                // A line whose bounded match cannot be decided stays opaque.
+                // Treat it as a possible opener for every configured family
+                // so a following literal closer cannot steal an outer block.
+                literal_opening_candidates = literal_syntaxes
+                    .iter()
+                    .map(|syntax| (syntax.family, None))
+                    .collect();
+            }
+            opening_candidates.extend(literal_opening_candidates);
         }
         if colon_shaped || !closing_families.is_empty() || !opening_candidates.is_empty() {
             scan.marker_lines.push(range.clone());
@@ -642,6 +746,8 @@ fn find_markdown_custom_blocks(
                 scan.blocks.push(MarkdownCustomBlockMatch {
                     name: opening.name,
                     title: opening.title,
+                    label: opening.label,
+                    card: opening.card,
                     content_key: markdown_custom_block_content_key(content),
                     theorem: opening.theorem,
                     opening: opening.range,
@@ -670,11 +776,16 @@ fn find_markdown_custom_blocks(
                 let opening = (opening_candidates.len() == 1)
                     .then(|| opening_candidates[0].1.clone())
                     .flatten()
-                    .map(|opening| MarkdownCustomBlockOpen {
-                        name: opening.name,
-                        title: opening.title,
-                        theorem: opening.theorem,
-                        range,
+                    .map(|opening| {
+                        let opening = *opening;
+                        MarkdownCustomBlockOpen {
+                            name: opening.name,
+                            title: opening.title,
+                            label: opening.label,
+                            card: opening.card,
+                            theorem: opening.theorem,
+                            range,
+                        }
                     });
                 open.push(MarkdownCustomBlockFrame {
                     families: opening_candidates
@@ -736,44 +847,49 @@ fn markdown_literal_block_template(template: &str) -> Option<MarkdownLiteralBloc
     {
         return None;
     }
-    let name_start = template.find("{name}")?;
-    let name_end = name_start + "{name}".len();
-    if template[name_end..].contains("{name}") {
-        return None;
-    }
-    let title_start = template.find("{title}");
-    if title_start.is_some_and(|start| start < name_end) {
-        return None;
-    }
-    if let Some(title_start) = title_start {
-        let title_end = title_start + "{title}".len();
-        if template[title_end..].contains("{title}") {
+    let mut captures = Vec::new();
+    for (kind, placeholder) in MarkdownLiteralBlockCaptureKind::ALL {
+        let mut positions = template.match_indices(placeholder);
+        let Some((start, _)) = positions.next() else {
+            if kind == MarkdownLiteralBlockCaptureKind::Name {
+                return None;
+            }
+            continue;
+        };
+        if positions.next().is_some() {
             return None;
         }
-        Some(MarkdownLiteralBlockTemplate {
-            prefix: &template[..name_start],
-            between: Some(&template[name_end..title_start]),
-            suffix: &template[title_end..],
-        })
-    } else {
-        Some(MarkdownLiteralBlockTemplate {
-            prefix: &template[..name_start],
-            between: None,
-            suffix: &template[name_end..],
-        })
+        captures.push(MarkdownLiteralBlockCapture {
+            kind,
+            start,
+            end: start + placeholder.len(),
+        });
     }
+    captures.sort_unstable_by_key(|capture| capture.start);
+    if captures.first().map(|capture| capture.kind) != Some(MarkdownLiteralBlockCaptureKind::Name)
+        || captures.windows(2).any(|pair| pair[0].end >= pair[1].start)
+    {
+        return None;
+    }
+    Some(MarkdownLiteralBlockTemplate {
+        source: template,
+        captures,
+    })
 }
 
 fn markdown_literal_block_opening(
     line: &str,
     syntax: &MarkdownLiteralBlockSyntax<'_>,
     config: &ResolvedMarkdownConfig,
-) -> Option<Option<MarkdownCustomBlockOpening>> {
+    budget: &mut MarkdownLiteralBlockMatchBudget,
+) -> Result<Option<Option<MarkdownCustomBlockOpening>>, MarkdownLiteralBlockMatchExhausted> {
     let mut found = false;
     let mut selected = None::<MarkdownCustomBlockOpening>;
     let mut ambiguous = false;
     for template in &syntax.starts {
-        let Some(opening) = markdown_literal_block_template_opening(line, *template, config) else {
+        let Some(opening) =
+            markdown_literal_block_template_opening(line, template, config, budget)?
+        else {
             continue;
         };
         found = true;
@@ -790,77 +906,235 @@ fn markdown_literal_block_opening(
             None => selected = Some(opening),
         }
     }
-    found.then_some(if ambiguous { None } else { selected })
+    Ok(found.then_some(if ambiguous { None } else { selected }))
 }
 
 fn markdown_literal_block_template_opening(
     line: &str,
-    template: MarkdownLiteralBlockTemplate<'_>,
+    template: &MarkdownLiteralBlockTemplate<'_>,
     config: &ResolvedMarkdownConfig,
-) -> Option<Option<MarkdownCustomBlockOpening>> {
-    let rest = line
-        .strip_prefix(template.prefix)?
-        .strip_suffix(template.suffix)?;
-    let captured = if let Some(between) = template.between {
-        // Match enabled names directly instead of splitting at the first
-        // separator. Separators such as `-` are legal inside a block name;
-        // the longest matching enabled name is therefore the unambiguous,
-        // most-specific interpretation.
-        if !rest.contains(between) {
-            return None;
-        }
-        let bytes = rest.as_bytes();
-        let mut captured = None;
-        for name_end in 1..=bytes.len().min(MAX_MARKDOWN_CUSTOM_BLOCK_NAME_BYTES) {
-            let byte = bytes[name_end - 1];
-            let valid_name_byte = if name_end == 1 {
-                byte.is_ascii_lowercase()
-            } else {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
-            };
-            if !valid_name_byte {
-                break;
-            }
-            let name = &rest[..name_end];
-            let Some((name, _)) = config.blocks.get_key_value(name) else {
-                continue;
-            };
-            let Some(raw_title) = rest[name_end..].strip_prefix(between) else {
-                continue;
-            };
-            let Some(title) = markdown_literal_block_title(raw_title, template) else {
-                continue;
-            };
-            // Prefixes are visited shortest-to-longest, so replacement keeps
-            // the most-specific enabled name without scanning the registry.
-            captured = Some((name, title));
-        }
-        captured
-    } else {
-        config
-            .blocks
-            .get_key_value(rest)
-            .map(|(name, _)| (name, None))
+    budget: &mut MarkdownLiteralBlockMatchBudget,
+) -> Result<Option<Option<MarkdownCustomBlockOpening>>, MarkdownLiteralBlockMatchExhausted> {
+    let Some(first) = template.captures.first() else {
+        return Ok(None);
     };
-    Some(captured.map(|(name, title)| MarkdownCustomBlockOpening {
-        name: name.to_string(),
-        title,
-        // Literal delimiter templates only choose presentation. They do not
-        // imply Bookdown/Quarto numbering or reference semantics.
-        theorem: None,
+    let prefix = &template.source[..first.start];
+    budget.charge(prefix.len().min(line.len()).saturating_add(1))?;
+    let Some(rest) = line.strip_prefix(prefix) else {
+        return Ok(None);
+    };
+    if !markdown_literal_block_skeleton_matches(rest, template, 0, budget)? {
+        return Ok(None);
+    }
+
+    let after_name = markdown_literal_block_literal_after(template, 0);
+    let mut selected = None::<(usize, MarkdownCustomBlockOpening)>;
+    let mut ambiguous = false;
+    for name in config.blocks.keys() {
+        budget.charge(name.len().min(rest.len()).saturating_add(1))?;
+        if name.len() > MAX_MARKDOWN_CUSTOM_BLOCK_NAME_BYTES || !rest.starts_with(name) {
+            continue;
+        }
+        let name_tail = &rest[name.len()..];
+        budget.charge(after_name.len().min(name_tail.len()).saturating_add(1))?;
+        let Some(tail) = name_tail.strip_prefix(after_name) else {
+            continue;
+        };
+        let mut values = Vec::new();
+        markdown_literal_block_values(
+            tail,
+            template,
+            1,
+            MarkdownLiteralBlockValues::default(),
+            &mut values,
+            budget,
+        )?;
+        for value in values {
+            let opening = MarkdownCustomBlockOpening {
+                name: name.clone(),
+                title: value.title,
+                label: value.label,
+                card: value.card,
+                // Literal delimiter templates only choose presentation. They
+                // do not imply Bookdown/Quarto numbering semantics.
+                theorem: None,
+            };
+            match &selected {
+                Some((length, _)) if *length > name.len() => {}
+                Some((length, current)) if *length == name.len() && *current != opening => {
+                    ambiguous = true;
+                }
+                Some((length, _)) if *length < name.len() => {
+                    selected = Some((name.len(), opening));
+                    ambiguous = false;
+                }
+                Some(_) => {}
+                None => selected = Some((name.len(), opening)),
+            }
+        }
+    }
+    Ok(Some(if ambiguous {
+        None
+    } else {
+        selected.map(|(_, opening)| opening)
     }))
 }
 
-fn markdown_literal_block_title(
+fn markdown_literal_block_skeleton_matches(
+    input: &str,
+    template: &MarkdownLiteralBlockTemplate<'_>,
+    capture_index: usize,
+    budget: &mut MarkdownLiteralBlockMatchBudget,
+) -> Result<bool, MarkdownLiteralBlockMatchExhausted> {
+    let literal = markdown_literal_block_literal_after(template, capture_index);
+    if capture_index + 1 == template.captures.len() {
+        budget.charge(literal.len().min(input.len()).saturating_add(1))?;
+        return Ok(input.ends_with(literal));
+    }
+    budget.charge(input.len().saturating_add(literal.len()).saturating_add(1))?;
+    for (at, _) in input.match_indices(literal) {
+        if markdown_literal_block_skeleton_matches(
+            &input[at + literal.len()..],
+            template,
+            capture_index + 1,
+            budget,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn markdown_literal_block_literal_after<'a>(
+    template: &'a MarkdownLiteralBlockTemplate<'a>,
+    capture_index: usize,
+) -> &'a str {
+    let capture = template.captures[capture_index];
+    let end = template
+        .captures
+        .get(capture_index + 1)
+        .map_or(template.source.len(), |next| next.start);
+    &template.source[capture.end..end]
+}
+
+fn markdown_literal_block_values(
+    input: &str,
+    template: &MarkdownLiteralBlockTemplate<'_>,
+    capture_index: usize,
+    values: MarkdownLiteralBlockValues,
+    matches: &mut Vec<MarkdownLiteralBlockValues>,
+    budget: &mut MarkdownLiteralBlockMatchBudget,
+) -> Result<(), MarkdownLiteralBlockMatchExhausted> {
+    if matches.len() > 1 {
+        return Ok(());
+    }
+    if capture_index == template.captures.len() {
+        budget.charge(1)?;
+        if input.is_empty() && !matches.contains(&values) {
+            matches.push(values);
+        }
+        return Ok(());
+    }
+
+    let literal = markdown_literal_block_literal_after(template, capture_index);
+    if capture_index + 1 == template.captures.len() {
+        budget.charge(literal.len().min(input.len()).saturating_add(1))?;
+        let Some(raw) = input.strip_suffix(literal) else {
+            return Ok(());
+        };
+        budget.charge(raw.len().saturating_add(1))?;
+        let Some(values) =
+            markdown_literal_block_capture_value(raw, template, capture_index, values)
+        else {
+            return Ok(());
+        };
+        return markdown_literal_block_values(
+            "",
+            template,
+            capture_index + 1,
+            values,
+            matches,
+            budget,
+        );
+    }
+
+    budget.charge(input.len().saturating_add(literal.len()).saturating_add(1))?;
+    for (at, _) in input.match_indices(literal) {
+        budget.charge(at.saturating_add(1))?;
+        let Some(values) = markdown_literal_block_capture_value(
+            &input[..at],
+            template,
+            capture_index,
+            values.clone(),
+        ) else {
+            continue;
+        };
+        markdown_literal_block_values(
+            &input[at + literal.len()..],
+            template,
+            capture_index + 1,
+            values,
+            matches,
+            budget,
+        )?;
+    }
+    Ok(())
+}
+
+fn markdown_literal_block_capture_value(
     raw: &str,
-    template: MarkdownLiteralBlockTemplate<'_>,
-) -> Option<Option<String>> {
-    let quote = template.between.and_then(|between| {
-        let before = between.chars().next_back()?;
-        let after = template.suffix.chars().next()?;
+    template: &MarkdownLiteralBlockTemplate<'_>,
+    capture_index: usize,
+    mut values: MarkdownLiteralBlockValues,
+) -> Option<MarkdownLiteralBlockValues> {
+    let capture = template.captures[capture_index];
+    match capture.kind {
+        MarkdownLiteralBlockCaptureKind::Name => return None,
+        MarkdownLiteralBlockCaptureKind::Title => {
+            let title = markdown_literal_block_string(raw, template, capture_index)?;
+            values.title = if title.is_empty() {
+                None
+            } else {
+                clean_markdown_block_title(&title)
+            };
+            if !title.is_empty() && values.title.is_none() {
+                return None;
+            }
+        }
+        MarkdownLiteralBlockCaptureKind::Label => {
+            let label = markdown_literal_block_string(raw, template, capture_index)?;
+            if !valid_markdown_literal_label(&label) {
+                return None;
+            }
+            values.label = Some(label);
+        }
+        MarkdownLiteralBlockCaptureKind::Card => {
+            values.card = match raw {
+                "true" => true,
+                "false" => false,
+                _ => return None,
+            };
+        }
+    }
+    Some(values)
+}
+
+fn markdown_literal_block_string(
+    raw: &str,
+    template: &MarkdownLiteralBlockTemplate<'_>,
+    capture_index: usize,
+) -> Option<String> {
+    let capture = template.captures[capture_index];
+    let before_start = capture_index
+        .checked_sub(1)
+        .map_or(0, |previous| template.captures[previous].end);
+    let before = &template.source[before_start..capture.start];
+    let after = markdown_literal_block_literal_after(template, capture_index);
+    let quote = before.chars().next_back().and_then(|before| {
+        let after = after.chars().next()?;
         (before == after && matches!(before, '\'' | '"')).then_some(before)
     });
-    let title = if let Some(quote) = quote {
+    if let Some(quote) = quote {
         let mut decoded = String::with_capacity(raw.len());
         let mut chars = raw.chars();
         while let Some(ch) = chars.next() {
@@ -879,14 +1153,9 @@ fn markdown_literal_block_title(
                 decoded.push(ch);
             }
         }
-        decoded
+        Some(decoded)
     } else {
-        raw.to_string()
-    };
-    if title.is_empty() {
-        Some(None)
-    } else {
-        clean_markdown_block_title(&title).map(Some)
+        Some(raw.to_string())
     }
 }
 
@@ -950,13 +1219,17 @@ fn markdown_custom_block_marker(
             .then(|| MarkdownCustomBlockOpening {
                 name: name.to_string(),
                 title,
+                label: None,
+                card: false,
                 // The compact MathPreview syntax predates semantic theorem
                 // blocks. Keep it purely presentational for compatibility.
                 theorem: None,
             })
     };
 
-    Some(MarkdownCustomBlockMarker::Open { opening })
+    Some(MarkdownCustomBlockMarker::Open {
+        opening: opening.map(Box::new),
+    })
 }
 
 #[derive(Default)]
@@ -1112,6 +1385,8 @@ fn markdown_pandoc_block_opening(
             .then(|| MarkdownCustomBlockOpening {
                 name: spec.name.to_string(),
                 title,
+                label: None,
+                card: false,
                 theorem: Some(markdown_theorem_meta(
                     spec,
                     MarkdownTheoremDialect::Quarto,
@@ -1157,6 +1432,8 @@ fn markdown_named_block_opening(
         MarkdownCustomBlockOpening {
             name: name.to_string(),
             title,
+            label: None,
+            card: false,
             theorem,
         }
     })
@@ -1165,6 +1442,15 @@ fn markdown_named_block_opening(
 fn clean_markdown_block_title(title: &str) -> Option<String> {
     (!title.is_empty() && title.chars().count() <= 512 && !title.chars().any(char::is_control))
         .then(|| title.to_string())
+}
+
+fn valid_markdown_literal_label(label: &str) -> bool {
+    let bytes = label.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
 }
 
 fn valid_markdown_theorem_identifier(identifier: &str) -> bool {
@@ -1326,6 +1612,9 @@ fn integrate_markdown_custom_blocks(
             kind: NodeKind::MarkdownCustomBlock {
                 name: block.name.clone(),
                 title: block.title.clone(),
+                label: block.label.clone(),
+                anchor: None,
+                card: block.card,
                 content_key: block.content_key.clone(),
                 theorem: block.theorem.clone(),
             },
@@ -1638,43 +1927,53 @@ fn assign_markdown_theorems_and_references(nodes: &mut [Node], config: &Resolved
         config: &ResolvedMarkdownConfig,
         counters: &mut HashMap<String, u32>,
         targets: &mut HashMap<String, MarkdownTheoremTarget>,
+        custom_targets: &mut HashMap<String, String>,
         used_anchors: &mut HashSet<String>,
         next_suffix: &mut HashMap<String, u32>,
     ) {
         for node in nodes {
             if let NodeKind::MarkdownCustomBlock {
                 name,
-                theorem: Some(theorem),
+                label,
+                anchor,
+                theorem,
                 ..
             } = &mut node.kind
             {
-                if theorem.numbered {
-                    let counter = counters.entry(theorem.prefix.clone()).or_default();
-                    *counter += 1;
-                    theorem.number = Some(counter.to_string());
-                }
-                if let (Some(identifier), Some(number)) =
-                    (theorem.identifier.as_deref(), theorem.number.as_deref())
-                {
-                    let anchor = unique_markdown_target(
-                        markdown_theorem_anchor_base(&theorem.prefix, identifier),
-                        used_anchors,
-                        next_suffix,
-                    );
-                    theorem.anchor = Some(anchor.clone());
-                    if let Some(format) = config.blocks.get(name) {
-                        targets
-                            .entry(markdown_theorem_target_key(
-                                theorem.dialect,
-                                &theorem.prefix,
-                                identifier,
-                            ))
-                            .or_insert_with(|| MarkdownTheoremTarget {
-                                anchor,
-                                label: format.label.clone(),
-                                number: number.to_string(),
-                            });
+                if let Some(theorem) = theorem {
+                    if theorem.numbered {
+                        let counter = counters.entry(theorem.prefix.clone()).or_default();
+                        *counter += 1;
+                        theorem.number = Some(counter.to_string());
                     }
+                    if let (Some(identifier), Some(number)) =
+                        (theorem.identifier.as_deref(), theorem.number.as_deref())
+                    {
+                        let target = unique_markdown_target(
+                            markdown_theorem_anchor_base(&theorem.prefix, identifier),
+                            used_anchors,
+                            next_suffix,
+                        );
+                        theorem.anchor = Some(target.clone());
+                        if let Some(format) = config.blocks.get(name) {
+                            targets
+                                .entry(markdown_theorem_target_key(
+                                    theorem.dialect,
+                                    &theorem.prefix,
+                                    identifier,
+                                ))
+                                .or_insert_with(|| MarkdownTheoremTarget {
+                                    anchor: target,
+                                    label: format.label.clone(),
+                                    number: number.to_string(),
+                                });
+                        }
+                    }
+                }
+                if let Some(label) = label.as_ref() {
+                    let target = unique_markdown_target(label.clone(), used_anchors, next_suffix);
+                    *anchor = Some(target.clone());
+                    custom_targets.entry(label.clone()).or_insert(target);
                 }
             }
             assign_blocks(
@@ -1682,13 +1981,18 @@ fn assign_markdown_theorems_and_references(nodes: &mut [Node], config: &Resolved
                 config,
                 counters,
                 targets,
+                custom_targets,
                 used_anchors,
                 next_suffix,
             );
         }
     }
 
-    fn resolve_references(nodes: &mut [Node], targets: &HashMap<String, MarkdownTheoremTarget>) {
+    fn resolve_references(
+        nodes: &mut [Node],
+        targets: &HashMap<String, MarkdownTheoremTarget>,
+        custom_targets: &HashMap<String, String>,
+    ) {
         for node in nodes {
             if let NodeKind::MarkdownCrossReference {
                 prefix,
@@ -1715,12 +2019,24 @@ fn assign_markdown_theorems_and_references(nodes: &mut [Node], config: &Resolved
                     });
                 }
             }
-            resolve_references(&mut node.children, targets);
+            if let NodeKind::MarkdownLink { destination, .. } = &mut node.kind {
+                if let Some(fragment) = destination
+                    .strip_prefix('#')
+                    .filter(|fragment| !fragment.starts_with("mdr:"))
+                    .and_then(decode_markdown_fragment)
+                {
+                    if let Some(anchor) = custom_targets.get(&fragment) {
+                        *destination = format!("#mdr:{anchor}");
+                    }
+                }
+            }
+            resolve_references(&mut node.children, targets, custom_targets);
         }
     }
 
     let mut counters = HashMap::new();
     let mut targets = HashMap::new();
+    let mut custom_targets = HashMap::new();
     let mut used_anchors = HashSet::new();
     let mut next_suffix = HashMap::new();
     assign_blocks(
@@ -1728,10 +2044,11 @@ fn assign_markdown_theorems_and_references(nodes: &mut [Node], config: &Resolved
         config,
         &mut counters,
         &mut targets,
+        &mut custom_targets,
         &mut used_anchors,
         &mut next_suffix,
     );
-    resolve_references(nodes, &targets);
+    resolve_references(nodes, &targets, &custom_targets);
 }
 
 fn markdown_options() -> Options {
@@ -2390,6 +2707,31 @@ mod tests {
         config
     }
 
+    fn config_with_jinja_result_arguments() -> ResolvedMarkdownConfig {
+        let mut config = config_with_block("problem");
+        config.block_syntaxes.insert(
+            "jinja-result".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec![
+                    r#"{% call result("{name}", "{title}", "{label}", card={card}) %}"#.to_string(),
+                    r#"{% call result("{name}", "{title}", "{label}") %}"#.to_string(),
+                    r#"{% call result("{name}", "{title}", label="{label}", card={card}) %}"#
+                        .to_string(),
+                    r#"{% call result("{name}", "{title}", label="{label}") %}"#.to_string(),
+                    r#"{% call result("{name}", label="{label}", card={card}) %}"#.to_string(),
+                    r#"{% call result("{name}", label="{label}", card="{card}") %}"#.to_string(),
+                    r#"{% call result("{name}", label="{label}") %}"#.to_string(),
+                    r#"{% call result("{name}", "{title}", card={card}) %}"#.to_string(),
+                    r#"{% call result("{name}", card={card}) %}"#.to_string(),
+                    r#"{% call result("{name}", "{title}") %}"#.to_string(),
+                    r#"{% call result("{name}") %}"#.to_string(),
+                ],
+                end: "{% endcall %}".to_string(),
+            },
+        );
+        config
+    }
+
     #[test]
     fn default_parser_recognizes_proof_blocks_with_plain_titles_and_exact_spans() {
         let path = Path::new("proof.md");
@@ -2467,6 +2809,165 @@ mod tests {
     }
 
     #[test]
+    fn literal_templates_capture_jinja_labels_and_card_arguments() {
+        let config = config_with_jinja_result_arguments();
+        let source = concat!(
+            "[Jump forward](#t-greens).\n\n",
+            r#"{% call result("theorem", "Green's theorem", "t-greens", card=true) %}"#,
+            "\nFirst body.\n{% endcall %}\n\n",
+            r#"{% call result("problem", label="p-area") %}"#,
+            "\nSecond body.\n{% endcall %}\n\n",
+            r#"{% call result("definition", label="d-sint", card="true") %}"#,
+            "\nThird body.\n{% endcall %}\n\n",
+            r#"{% call result("remark", "Stable", label="r-stable", card=false) %}"#,
+            "\nFourth body.\n{% endcall %}\n\n",
+            r#"{% call result("example", card=true) %}"#,
+            "\nFifth body.\n{% endcall %}\n\n",
+            r#"{% call result("proof", "Standalone card", card=true) %}"#,
+            "\nSixth body.\n{% endcall %}\n",
+        );
+        let nodes = parse_with_config(source, Path::new("arguments.md"), &config).unwrap();
+        let blocks: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock {
+                    name,
+                    title,
+                    label,
+                    anchor,
+                    card,
+                    theorem,
+                    ..
+                } => Some((
+                    name.as_str(),
+                    title.as_deref(),
+                    label.as_deref(),
+                    anchor.as_deref(),
+                    *card,
+                    theorem.as_ref(),
+                )),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(blocks.len(), 6);
+        assert_eq!(
+            &blocks[..3],
+            &[
+                (
+                    "theorem",
+                    Some("Green's theorem"),
+                    Some("t-greens"),
+                    Some("t-greens"),
+                    true,
+                    None,
+                ),
+                ("problem", None, Some("p-area"), Some("p-area"), false, None,),
+                (
+                    "definition",
+                    None,
+                    Some("d-sint"),
+                    Some("d-sint"),
+                    true,
+                    None,
+                ),
+            ]
+        );
+        assert_eq!(blocks[3].0, "remark");
+        assert_eq!(blocks[3].1, Some("Stable"));
+        assert_eq!(blocks[3].2, Some("r-stable"));
+        assert!(!blocks[3].4);
+        assert_eq!(blocks[4], ("example", None, None, None, true, None));
+        assert_eq!(
+            blocks[5],
+            ("proof", Some("Standalone card"), None, None, true, None,)
+        );
+        assert!(blocks.iter().all(|block| block.5.is_none()));
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownLink { destination, .. } if destination == "#mdr:t-greens"
+        )));
+    }
+
+    #[test]
+    fn literal_template_labels_are_duplicate_safe_and_invalid_captures_fail_closed() {
+        let config = config_with_jinja_result_arguments();
+        let source = concat!(
+            "[First target](#same).\n\n",
+            r#"{% call result("definition", label="same") %}"#,
+            "\nFirst.\n{% endcall %}\n\n",
+            r#"{% call result("proposition", label="same") %}"#,
+            "\nSecond.\n{% endcall %}\n\n",
+            r#"{% call result("remark", label="bad label") %}"#,
+            "\nInvalid label.\n{% endcall %}\n\n",
+            r#"{% call result("example", label="ok", card=yes) %}"#,
+            "\nInvalid card.\n{% endcall %}\n",
+        );
+        let nodes = parse_with_config(source, Path::new("fail-closed.md"), &config).unwrap();
+        let anchors: Vec<_> = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownCustomBlock { anchor, .. } => anchor.as_deref(),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(anchors, ["same", "same-1"]);
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownLink { destination, .. } if destination == "#mdr:same"
+        )));
+        let visible = all_nodes(&nodes)
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::MarkdownText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(visible.contains("bad label"));
+        assert!(visible.contains("card=yes"));
+    }
+
+    #[test]
+    fn literal_labels_share_theorem_allocation_and_win_plain_fragment_links() {
+        let config = config_with_jinja_result_arguments();
+        let source = concat!(
+            "[Custom](#thm-key). Bookdown: \\@ref(thm:key).\n\n",
+            r#"{% call result("definition", label="thm-key") %}"#,
+            "\nCustom body.\n{% endcall %}\n\n",
+            "# thm-key\n\n",
+            "::: {.theorem #key}\nSemantic body.\n:::\n",
+        );
+        let nodes = parse_with_config(source, Path::new("target-collisions.md"), &config).unwrap();
+
+        assert!(matches!(
+            &custom_block(&nodes, "definition").kind,
+            NodeKind::MarkdownCustomBlock { anchor, .. }
+                if anchor.as_deref() == Some("thm-key")
+        ));
+        assert!(matches!(
+            &custom_block(&nodes, "theorem").kind,
+            NodeKind::MarkdownCustomBlock {
+                theorem: Some(MarkdownTheoremMeta { anchor, .. }),
+                ..
+            } if anchor.as_deref() == Some("thm-key-1")
+        ));
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownHeading { anchor, .. } if anchor == "thm-key"
+        )));
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownLink { destination, .. } if destination == "#mdr:thm-key"
+        )));
+        assert!(all_nodes(&nodes).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::MarkdownCrossReference { anchor, .. }
+                if anchor.as_deref() == Some("thm-key-1")
+        )));
+    }
+
+    #[test]
     fn titled_literal_templates_choose_the_longest_enabled_name_prefix() {
         let mut config = config_with_block("guided");
         let format = config
@@ -2494,6 +2995,94 @@ mod tests {
             &node.kind,
             NodeKind::MarkdownCustomBlock { name, .. } if name == "guided"
         )));
+    }
+
+    #[test]
+    fn literal_template_match_budget_exhaustion_stays_opaque() {
+        let mut config = config_with_block("guided");
+        config.block_syntaxes.insert(
+            "budgeted".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec!["BEGIN {name}-{title}-{label}-{card} END".to_string()],
+                end: "END".to_string(),
+            },
+        );
+        let opener = format!("BEGIN proof-{}ok-true END", "part-".repeat(80));
+        let syntax = markdown_literal_block_syntaxes(&config)
+            .into_iter()
+            .find(|syntax| syntax.family == MarkdownCustomBlockFamily::Configured(0))
+            .expect("budgeted syntax");
+        let mut budget = MarkdownLiteralBlockMatchBudget::new(64);
+        assert!(matches!(
+            markdown_literal_block_opening(&opener, &syntax, &config, &mut budget),
+            Err(MarkdownLiteralBlockMatchExhausted)
+        ));
+        assert_eq!(budget.remaining, 0);
+
+        let source = format!("{opener}\nOpaque body.\nEND\n");
+        let scan = find_markdown_custom_blocks_with_match_work_limit(
+            &source,
+            markdown_options(),
+            &config,
+            64,
+        );
+        assert!(scan.blocks.is_empty());
+        assert_eq!(
+            mask_markdown_custom_block_markers(&source, &scan.blocks),
+            source
+        );
+        assert_eq!(scan.marker_lines.len(), 2);
+    }
+
+    #[test]
+    fn repeated_literal_capture_separators_are_ambiguous_and_stay_opaque() {
+        let mut config = config_with_block("guided");
+        config.block_syntaxes.insert(
+            "ambiguous".to_string(),
+            crate::config::ResolvedMarkdownBlockSyntax {
+                start: vec!["BEGIN {name}-{title}-{label}".to_string()],
+                end: "END".to_string(),
+            },
+        );
+        let source = "BEGIN proof-A-B-C\nOpaque body.\nEND\n";
+
+        let nodes = parse_with_config(source, Path::new("ambiguous.md"), &config).unwrap();
+        assert!(!all_nodes(&nodes)
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::MarkdownCustomBlock { .. })));
+    }
+
+    #[test]
+    fn literal_match_budget_supports_the_maximum_configured_start_count() {
+        let mut config = ResolvedMarkdownConfig::default();
+        let mut global = 0;
+        for syntax_index in 0..MAX_MARKDOWN_BLOCK_SYNTAXES {
+            let mut start = Vec::new();
+            for _ in 0..MAX_MARKDOWN_BLOCK_SYNTAX_STARTS {
+                start.push(format!("BEGIN {{name}}-{{title}} Z{global:03}"));
+                global += 1;
+            }
+            config.block_syntaxes.insert(
+                format!("stress-{syntax_index:02}"),
+                crate::config::ResolvedMarkdownBlockSyntax {
+                    start,
+                    end: "END".to_string(),
+                },
+            );
+        }
+        let last = global - 1;
+        let source = format!(
+            "BEGIN proof-{}done Z{last:03}\nBody.\nEND\n",
+            "part-".repeat(80)
+        );
+
+        let nodes =
+            parse_with_config(source.as_str(), Path::new("max-starts.md"), &config).unwrap();
+        assert!(matches!(
+            &custom_block(&nodes, "proof").kind,
+            NodeKind::MarkdownCustomBlock { title, .. }
+                if title.as_deref().is_some_and(|title| title.ends_with("done"))
+        ));
     }
 
     #[test]
@@ -2713,11 +3302,11 @@ mod tests {
 
     #[test]
     fn literal_templates_keep_crlf_unicode_spans_and_decode_quoted_escapes() {
-        let config = config_with_jinja_result_syntax();
+        let config = config_with_jinja_result_arguments();
         let path = Path::new("jinja-unicode.md");
         let source = concat!(
             "Before λ.\r\n\r\n",
-            "  {% call result(\"definition\", \"Café \\\"quoted\\\" 😀\\\\path\") %}  \r\n",
+            "  {% call result(\"definition\", \"Café \\\"quoted\\\" 😀\\\\path\", \"d-cafe\", card=true) %}  \r\n",
             "Body é.\r\n",
             "  {% endcall %}\t\r\n",
         );
@@ -2725,8 +3314,16 @@ mod tests {
         let definition = custom_block(&nodes, "definition");
         assert!(matches!(
             &definition.kind,
-            NodeKind::MarkdownCustomBlock { title, .. }
-                if title.as_deref() == Some("Café \"quoted\" 😀\\path")
+            NodeKind::MarkdownCustomBlock {
+                title,
+                label,
+                anchor,
+                card,
+                ..
+            } if title.as_deref() == Some("Café \"quoted\" 😀\\path")
+                && label.as_deref() == Some("d-cafe")
+                && anchor.as_deref() == Some("d-cafe")
+                && *card
         ));
         let opening = source.find("  {% call").unwrap();
         assert_eq!(

@@ -50,17 +50,29 @@ italic = false
 # background = "#f6f1ff"
 # italic = false
 
-# Additional custom-block syntaxes match complete marker lines (up to three
-# leading spaces; trailing spaces/tabs ignored). `start` accepts one string or
-# an ordered array, must capture `{name}`, and may capture a later `{title}`.
-# `end` is literal. Names still resolve through `[markdown.blocks]`.
+# Additional custom-block syntaxes match complete marker lines with up to three
+# leading spaces. Trailing spaces and tabs are ignored. `start` accepts one
+# string or an ordered array. It must capture `{name}` and may later capture
+# `{title}`, `{label}`, and `{card}` once each. Labels become safe fragment targets.
+# Card captures accept only `true` or `false`. A true value forces card
+# presentation, while false keeps the configured appearance. `end` is literal.
+# Names still resolve through `[markdown.blocks]`.
 # Enable at most 32 syntax IDs matching [a-z][a-z0-9_-]*, with 1–16 starts each.
-# Higher config scopes replace a declaration as a unit; use `enabled = false`
+# Higher config scopes replace a declaration as a unit. Use `enabled = false`
 # under the same ID to disable an inherited syntax. List every opener form that
-# may be nested under a shared end marker—the markers are not executed as Jinja.
-# This Jinja-style example accepts both titled and untitled `result(...)` calls:
+# may be nested under a shared end marker. The markers are not executed as Jinja.
+# This Jinja-style example mirrors `result(type, name, label, card)` calls:
 # [markdown.block-syntaxes.jinja-result]
 # start = [
+#   '{% call result("{name}", "{title}", "{label}", card={card}) %}',
+#   '{% call result("{name}", "{title}", "{label}") %}',
+#   '{% call result("{name}", "{title}", label="{label}", card={card}) %}',
+#   '{% call result("{name}", "{title}", label="{label}") %}',
+#   '{% call result("{name}", label="{label}", card={card}) %}',
+#   '{% call result("{name}", label="{label}", card="{card}") %}',
+#   '{% call result("{name}", label="{label}") %}',
+#   '{% call result("{name}", "{title}", card={card}) %}',
+#   '{% call result("{name}", card={card}) %}',
 #   '{% call result("{name}", "{title}") %}',
 #   '{% call result("{name}") %}',
 # ]

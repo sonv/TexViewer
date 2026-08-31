@@ -2183,6 +2183,9 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
         NodeKind::MarkdownCustomBlock {
             name,
             title,
+            label: authored_label,
+            anchor,
+            card,
             content_key,
             theorem,
         } => {
@@ -2195,6 +2198,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             };
             let id = ctx.idgen.next("md");
             let title_key = title.as_deref().unwrap_or("");
+            let authored_label_attr = authored_label
+                .as_deref()
+                .map(|label| format!(r#" data-md-custom-label="{}""#, escape_attr(label)))
+                .unwrap_or_default();
             let label = if let Some(theorem) = theorem {
                 let mut label = format.label.clone();
                 if let Some(number) = &theorem.number {
@@ -2212,7 +2219,11 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             };
             record_container(ctx, &id, &n.span, Some(&label));
             let kind = sanitize_id(name);
-            let appearance = format.appearance.as_str();
+            let appearance = if *card {
+                "card"
+            } else {
+                format.appearance.as_str()
+            };
             let reveal = format.reveal.as_str();
             let italic = if format.italic {
                 " md-custom-italic"
@@ -2240,7 +2251,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .unwrap_or_default();
             write!(
                 out,
-                r#"<section class="md-custom-block md-custom-{appearance} md-custom-reveal-{reveal} md-custom-kind-{kind}{italic}{concealed}" id="{id}" data-src="{src}" data-md-custom-name="{name}" data-md-custom-title="{title_key}" data-md-custom-content="{content_key}"{style}>"#,
+                r#"<section class="md-custom-block md-custom-{appearance} md-custom-reveal-{reveal} md-custom-kind-{kind}{italic}{concealed}" id="{id}" data-src="{src}" data-md-custom-name="{name}" data-md-custom-title="{title_key}"{authored_label} data-md-custom-content="{content_key}"{style}>"#,
                 appearance = escape_attr(appearance),
                 reveal = escape_attr(reveal),
                 kind = escape_attr(&kind),
@@ -2250,10 +2261,19 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 src = escape_attr(&data_src(&n.span)),
                 name = escape_attr(name),
                 title_key = escape_attr(title_key),
+                authored_label = authored_label_attr,
                 content_key = escape_attr(content_key),
                 style = style,
             )
             .unwrap();
+            if let Some(anchor) = anchor.as_deref() {
+                write!(
+                    out,
+                    r#"<a class="md-custom-anchor" id="mdr:{anchor}" aria-hidden="true"></a>"#,
+                    anchor = escape_attr(anchor),
+                )
+                .unwrap();
+            }
             if let Some(anchor) = theorem
                 .as_ref()
                 .and_then(|theorem| theorem.anchor.as_deref())
@@ -4780,6 +4800,8 @@ mod tests {
         assert!(reference.contains("# colon-fences = true"));
         assert!(reference.contains("# [markdown.block-syntaxes.jinja-result]"));
         assert!(reference.contains("# appearance = \"card\""));
+        assert!(reference.contains("{label}"));
+        assert!(reference.contains("card={card}"));
         assert!(reference.contains("# [keybindings.aliases]"));
         assert!(reference.contains("# One shortcut string or an array is accepted."));
         assert!(reference.contains("# extension. For example, omit `j`/`k`"));
@@ -4913,6 +4935,134 @@ end = '{% endcall %}'
         assert!(!out.body_html.contains("md-theorem-anchor"));
         assert!(out.sync.entries.iter().any(|entry| entry.start.line == 2));
         assert!(out.sync.entries.iter().any(|entry| entry.start.line == 6));
+    }
+
+    #[test]
+    fn configured_jinja_labels_and_cards_render_as_safe_fragment_targets() {
+        let config = crate::Config::parse(
+            r#"[markdown.block-syntaxes.jinja-result]
+start = [
+  '{% call result("{name}", "{title}", "{label}", card={card}) %}',
+  '{% call result("{name}", label="{label}", card={card}) %}',
+  '{% call result("{name}", card={card}) %}',
+]
+end = '{% endcall %}'
+"#,
+            Path::new(".mathpreview.toml"),
+        )
+        .unwrap()
+        .resolve();
+        let opts = HtmlOptions {
+            markdown_config: config.markdown,
+            ..HtmlOptions::default()
+        };
+        let source = concat!(
+            "[Jump](#t-greens).\n\n",
+            "{% call result(\"theorem\", \"Green's theorem\", \"t-greens\", card=true) %}\n",
+            "Body with $x$.\n",
+            "{% endcall %}\n\n",
+            "{% call result(\"proposition\", label=\"p-plain\", card=false) %}\n",
+            "Plain body.\n",
+            "{% endcall %}\n",
+            "\n{% call result(\"example\", card=true) %}\n",
+            "Standalone card.\n",
+            "{% endcall %}\n",
+        );
+        let out = render_markdown(source, &opts);
+
+        assert!(out.body_html.contains(
+            r#"class="md-custom-block md-custom-card md-custom-reveal-always md-custom-kind-theorem""#
+        ));
+        assert!(out.body_html.contains(
+            r#"data-md-custom-name="theorem" data-md-custom-title="Green's theorem" data-md-custom-label="t-greens""#
+        ));
+        assert!(out
+            .body_html
+            .contains(r#"<a class="md-custom-anchor" id="mdr:t-greens" aria-hidden="true"></a>"#));
+        assert!(out.body_html.contains(r##"href="#mdr:t-greens""##));
+        assert!(out.body_html.contains(
+            r#"class="md-custom-block md-custom-bordered md-custom-reveal-always md-custom-kind-proposition""#
+        ));
+        assert!(out.body_html.contains(r#"data-md-custom-label="p-plain""#));
+        assert_eq!(out.body_html.matches("data-md-custom-label=").count(), 2);
+        assert!(out.body_html.contains(r#"md-custom-kind-example" id="md-"#));
+        assert!(out.body_html.contains(
+            r#"data-md-custom-name="example" data-md-custom-title="" data-md-custom-content="#
+        ));
+        assert!(!out.body_html.contains("md-theorem-anchor"));
+        assert!(out
+            .sync
+            .entries
+            .iter()
+            .all(|entry| !entry.element_id.starts_with("mdr:")));
+        assert!(out.blocks.iter().all(|block| block
+            .source_anchors
+            .iter()
+            .all(|anchor| !anchor.id.starts_with("mdr:"))));
+    }
+
+    #[test]
+    fn jinja_label_and_card_edits_change_diff_not_body_identity() {
+        fn configured() -> HtmlOptions {
+            let config = crate::Config::parse(
+                r#"[markdown.block-syntaxes.jinja-result]
+start = '{% call result("{name}", label="{label}", card={card}) %}'
+end = '{% endcall %}'
+"#,
+                Path::new(".mathpreview.toml"),
+            )
+            .unwrap()
+            .resolve();
+            HtmlOptions {
+                markdown_config: config.markdown,
+                ..HtmlOptions::default()
+            }
+        }
+
+        fn custom_block(out: &crate::RenderOutput) -> &crate::RenderedBlock {
+            out.blocks
+                .iter()
+                .find(|block| block.html.contains("data-md-custom-name="))
+                .expect("rendered custom block")
+        }
+
+        fn content_identity(html: &str) -> &str {
+            let marker = r#"data-md-custom-content=""#;
+            let value = html.split_once(marker).unwrap().1;
+            value.split_once('"').unwrap().0
+        }
+
+        let opts = configured();
+        let before = render_markdown(
+            "{% call result(\"definition\", label=\"d-before\", card=false) %}\nBody.\n{% endcall %}\n",
+            &opts,
+        );
+        let relabeled = render_markdown(
+            "{% call result(\"definition\", label=\"d-after\", card=false) %}\nBody.\n{% endcall %}\n",
+            &opts,
+        );
+        let card = render_markdown(
+            "{% call result(\"definition\", label=\"d-before\", card=true) %}\nBody.\n{% endcall %}\n",
+            &opts,
+        );
+
+        assert_ne!(
+            custom_block(&before).diff_hash,
+            custom_block(&relabeled).diff_hash
+        );
+        assert_ne!(
+            custom_block(&before).diff_hash,
+            custom_block(&card).diff_hash
+        );
+        assert_eq!(
+            content_identity(&before.body_html),
+            content_identity(&relabeled.body_html)
+        );
+        assert_eq!(
+            content_identity(&before.body_html),
+            content_identity(&card.body_html)
+        );
+        assert!(card.body_html.contains("md-custom-card"));
     }
 
     #[test]

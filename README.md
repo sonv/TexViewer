@@ -294,18 +294,26 @@ colon-fences = false
 
 [markdown.block-syntaxes.jinja-result]
 start = [
+  '{% call result("{name}", "{title}", "{label}", card={card}) %}',
+  '{% call result("{name}", "{title}", "{label}") %}',
+  '{% call result("{name}", "{title}", label="{label}", card={card}) %}',
+  '{% call result("{name}", "{title}", label="{label}") %}',
+  '{% call result("{name}", label="{label}", card={card}) %}',
+  '{% call result("{name}", label="{label}", card="{card}") %}',
+  '{% call result("{name}", label="{label}") %}',
+  '{% call result("{name}", "{title}", card={card}) %}',
+  '{% call result("{name}", card={card}) %}',
   '{% call result("{name}", "{title}") %}',
   '{% call result("{name}") %}',
 ]
 end = '{% endcall %}'
 ```
 
-With that configuration, these existing notes render as a configured
-`definition` block with the title `Poisson distribution`, followed by an
-untitled `proposition` block:
+With that configuration, these existing notes render as a card-style theorem
+with a fragment target, followed by an untitled proposition:
 
 ```markdown
-{% call result("definition", "Poisson distribution") %}
+{% call result("theorem", "Poisson distribution", "t-poisson", card=true) %}
 We say $X$ follows the Poisson distribution if
 $$
   \P(X = k) = \frac{e^{-\lambda}\lambda^k}{k!}.
@@ -318,36 +326,63 @@ For every $N$, suppose $X_N \sim \Binom(N, \lambda/N)$.
 ```
 
 `start` accepts either one template string or an array. `{name}` is required
-exactly once and selects an enabled entry from `[markdown.blocks]`; `{title}`
-may occur at most once and captures an optional plain-text title. Use separate
-start templates for titled and untitled forms that share an end marker.
-Templates match complete lines literally after up to three leading spaces;
-trailing spaces and tabs are ignored. Internal whitespace, quote style,
-function name, and any extra arguments must match.
-For example, notes using single quotes need corresponding single-quoted start
-templates, and the two templates above do not match `label=`, `card=true`, a
-`proof(...)` call, or a computed Jinja title.
+exactly once and selects an enabled entry from `[markdown.blocks]`. `{title}`
+captures an optional plain-text title. `{label}` captures an explicit fragment
+identifier, and `{card}` captures the lowercase boolean `true` or `false`.
+Each optional placeholder may occur at most once, after `{name}`, with literal
+text between captures. A true card value forces card presentation for that
+invocation. A false or omitted value retains the block's configured
+appearance.
+
+Templates match complete lines literally after up to three leading spaces.
+Trailing spaces and tabs are ignored. Internal whitespace, quote style,
+function name, and uncaptured arguments must match. Notes using single quotes
+therefore need corresponding single-quoted templates. The quoted `{card}`
+form recognizes an existing `card="true"` call. Do not write `card="false"`
+in Jinja: that nonempty string is truthy, while MathPreview's typed capture
+would read its contents as false. Prefer unquoted Jinja booleans.
+
+Captured labels use 1–128 ASCII characters. They must start with a letter or
+number, followed only by letters, numbers, `_`, or `-`. A standard Markdown
+link such as `[Green's theorem](#t-greens)` resolves to a block whose opener
+captured `t-greens`. Duplicate labels remain collision-free, and the first
+authored label is the target of the plain fragment link. The config field
+`[markdown.blocks.NAME].label` is different. It controls the visible heading
+for that block type.
+
+The friend repository also uses `problem`, which is not built in. Register it
+once so `{name}` can select it:
+
+```toml
+[markdown.blocks.problem]
+label = "Problem"
+appearance = "bordered"
+reveal = "always"
+italic = false
+```
 
 Syntax IDs follow the same `[a-z][a-z0-9_-]*` grammar and 32-character limit
 as block names. At most 32 syntaxes may be enabled, with 1–16 start templates
-per syntax. A higher-priority config replaces a syntax declaration as a unit;
-use `enabled = false` under the same syntax ID to disable an inherited one.
+per syntax. A higher-priority config replaces a syntax declaration as a unit.
+Use `enabled = false` under the same syntax ID to disable an inherited one.
 
-This is boundary recognition, not a Jinja interpreter: MathPreview neither
-executes the tags nor evaluates expressions or keyword arguments. Matched
+This is boundary recognition, not a Jinja interpreter. MathPreview captures
+only the configured fields and does not execute expressions. In particular,
+raw `{{ ref(...) }}` calls and custom wiki-link syntax remain literal. Matched
 boundary lines are omitted from the preview and the body is parsed as ordinary
-Markdown. These alternate blocks use the selected custom presentation only;
-they are generic and unnumbered, and do not create Bookdown or Quarto reference
-targets. Delimiter-looking lines inside code, math, links, images, raw HTML, or
-leading YAML front matter remain literal. An exact template match with an
+Markdown. These alternate blocks use the selected custom presentation only.
+They are generic and unnumbered, and their `{label}` targets are separate from
+Bookdown or Quarto theorem references. Delimiter-looking lines inside code,
+math, links, images, raw HTML, or leading YAML front matter remain literal. An
+exact template match with an
 unknown block name, a stray end marker, or a recognized opener without a
 matching end remains literal. A line that does not match any listed start
 template is ordinary Markdown: if such an unlisted opener is nested inside a
 configured block and uses the same literal end marker, its next end marker
 will close the configured block. List every opener shape that may be nested
-under a shared closer—for example, add a separate `card=true` template when
-your notes use that form. Custom syntaxes retain the same 32-level nesting
-bound as colon-fenced blocks.
+under a shared closer. For example, add separate templates for positional and
+keyword labels when the notes use both forms. Custom syntaxes retain the same
+32-level nesting bound as colon-fenced blocks.
 
 In the compact colon form, the text after the block name is an optional
 plain-text title. Known blocks may be nested up to 32 levels, and up to three

@@ -13,6 +13,32 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.39] — 2026-08-31
+
+### Added
+
+- **Alternate Markdown block templates can capture labels and card overrides.**
+  Add `{label}` for a safe fragment target and `{card}` for a typed `true` or
+  `false` presentation override. Positional and keyword label forms work, as
+  do card arguments with or without a label or title. Standard Markdown links
+  such as `[Jump](#t-greens)` resolve to captured labels.
+- **The documented Jinja configuration covers the real `result` call shapes.**
+  This includes positional labels, keyword labels, unquoted booleans, existing
+  quoted `card="true"` calls, and standalone card calls. Templates remain
+  literal and can be adapted to a project's exact quote style.
+
+### Fixed
+
+- **Duplicate custom labels and theorem targets remain collision-free.** The
+  first authored custom label owns its plain fragment link, later duplicates
+  receive stable suffixes, and hidden fragment anchors stay out of source-sync
+  indexing. Label or card edits update live block diffs without resetting a
+  blurred block whose body did not change.
+- **Complex literal templates now have one bounded matching budget per source
+  line.** Ambiguous captures and exhausted matches stay opaque, configured
+  closers cannot steal an enclosing block, and all 512 allowed start templates
+  remain usable. LaTeX parsing and rendering are unchanged.
+
 ## [2.1.38] — 2026-08-30
 
 ### Added

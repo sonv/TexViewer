@@ -152,8 +152,8 @@ pub struct MarkdownConfig {
     #[serde(default)]
     pub blocks: BTreeMap<String, MarkdownBlockConfig>,
     /// Additional line-oriented delimiter pairs. Start patterns capture one
-    /// configured block name with `{name}` and may capture a title with
-    /// `{title}`; end markers are matched literally.
+    /// configured block name with `{name}`. They may also capture a title,
+    /// fragment label, and typed card flag. End markers are matched literally.
     #[serde(default)]
     pub block_syntaxes: BTreeMap<String, MarkdownBlockSyntaxConfig>,
 }
@@ -1287,40 +1287,50 @@ impl Config {
     }
 }
 
-const MAX_MARKDOWN_BLOCK_SYNTAXES: usize = 32;
-const MAX_MARKDOWN_BLOCK_SYNTAX_STARTS: usize = 16;
+pub(crate) const MAX_MARKDOWN_BLOCK_SYNTAXES: usize = 32;
+pub(crate) const MAX_MARKDOWN_BLOCK_SYNTAX_STARTS: usize = 16;
 const MAX_MARKDOWN_BLOCK_SYNTAX_TEMPLATE_BYTES: usize = 512;
 
 fn validate_markdown_block_start(id: &str, start: &str, label: &Path) -> Result<()> {
     validate_markdown_block_template(id, "start pattern", start, label)?;
-    let name_positions: Vec<_> = start.match_indices("{name}").map(|(at, _)| at).collect();
-    if name_positions.len() != 1 {
-        bail!(
-            "Markdown block syntax {id:?} start pattern in {} must contain exactly one {{name}} placeholder",
-            label.display()
-        );
-    }
-    let title_positions: Vec<_> = start.match_indices("{title}").map(|(at, _)| at).collect();
-    if title_positions.len() > 1 {
-        bail!(
-            "Markdown block syntax {id:?} start pattern in {} may contain at most one {{title}} placeholder",
-            label.display()
-        );
-    }
-    if let Some(&title_at) = title_positions.first() {
-        let name_end = name_positions[0] + "{name}".len();
-        if title_at < name_end {
+    let mut captures = Vec::new();
+    for placeholder in ["name", "title", "label", "card"] {
+        let marker = format!("{{{placeholder}}}");
+        let positions: Vec<_> = start.match_indices(&marker).map(|(at, _)| at).collect();
+        let expected = if placeholder == "name" {
+            positions.len() == 1
+        } else {
+            positions.len() <= 1
+        };
+        if !expected {
+            let requirement = if placeholder == "name" {
+                "exactly one"
+            } else {
+                "at most one"
+            };
             bail!(
-                "Markdown block syntax {id:?} start pattern in {} must place {{title}} after {{name}} with literal text between them",
+                "Markdown block syntax {id:?} start pattern in {} must contain {requirement} {{{placeholder}}} placeholder",
                 label.display()
             );
         }
-        if title_at == name_end {
-            bail!(
-                "Markdown block syntax {id:?} start pattern in {} must place literal text between {{name}} and {{title}}",
-                label.display()
-            );
+        if let Some(&start) = positions.first() {
+            captures.push((start, start + marker.len(), placeholder));
         }
+    }
+    captures.sort_unstable_by_key(|(start, _, _)| *start);
+    if captures.first().map(|(_, _, placeholder)| *placeholder) != Some("name") {
+        bail!(
+            "Markdown block syntax {id:?} start pattern in {} must place {{name}} before all optional placeholders",
+            label.display()
+        );
+    }
+    if let Some(pair) = captures.windows(2).find(|pair| pair[0].1 >= pair[1].0) {
+        bail!(
+            "Markdown block syntax {id:?} start pattern in {} must place literal text between {{{}}} and {{{}}}",
+            label.display(),
+            pair[0].2,
+            pair[1].2,
+        );
     }
     validate_markdown_block_placeholders(id, start, true, label)
 }
@@ -1369,11 +1379,11 @@ fn validate_markdown_block_placeholders(
         if !identifier {
             continue;
         }
-        if allow_known && matches!(placeholder, "name" | "title") {
+        if allow_known && matches!(placeholder, "name" | "title" | "label" | "card") {
             continue;
         }
         bail!(
-            "unknown placeholder {{{placeholder}}} in Markdown block syntax {id:?} in {}; start patterns allow only {{name}} and {{title}}, and end markers are literal",
+            "unknown placeholder {{{placeholder}}} in Markdown block syntax {id:?} in {}; start patterns allow only {{name}}, {{title}}, {{label}}, and {{card}}, and end markers are literal",
             label.display()
         );
     }
@@ -1653,6 +1663,30 @@ end = 'END'
     }
 
     #[test]
+    fn markdown_block_syntaxes_accept_label_and_typed_card_captures() {
+        let configured = Config::parse(
+            r#"[markdown.block-syntaxes.jinja-result]
+start = [
+  '{% call result("{name}", "{title}", "{label}", card={card}) %}',
+  '{% call result("{name}", card={card}) %}',
+]
+end = '{% endcall %}'
+"#,
+            Path::new("result-syntax.toml"),
+        )
+        .unwrap()
+        .resolve();
+
+        assert_eq!(
+            configured.markdown.block_syntaxes["jinja-result"].start,
+            [
+                r#"{% call result("{name}", "{title}", "{label}", card={card}) %}"#,
+                r#"{% call result("{name}", card={card}) %}"#,
+            ]
+        );
+    }
+
+    #[test]
     fn markdown_block_syntaxes_replace_atomically_and_support_tombstones() {
         let mut lower = Config::parse(
             r#"[markdown]
@@ -1768,6 +1802,10 @@ end = 'END'
             "BEGIN {title} THEN {name}",
             "BEGIN {name}{title}",
             "BEGIN {name}: {title} / {title}",
+            "BEGIN {label} THEN {name}",
+            "BEGIN {name}{label}",
+            "BEGIN {name}: {label} / {label}",
+            "BEGIN {name}: {card} / {card}",
             "BEGIN {name} {script}",
             " BEGIN {name}",
             "BEGIN {name} ",
@@ -1795,7 +1833,16 @@ end = 'END'
         )
         .contains("1–512 bytes"));
 
-        for end in ["", " END", "END ", "END\t", "{name}", "{anything}"] {
+        for end in [
+            "",
+            " END",
+            "END ",
+            "END\t",
+            "{name}",
+            "{label}",
+            "{card}",
+            "{anything}",
+        ] {
             let source = format!(
                 "[markdown.block-syntaxes.result]\nstart = 'BEGIN {{name}}'\nend = {end:?}\n"
             );
