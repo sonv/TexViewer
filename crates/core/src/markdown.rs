@@ -23,6 +23,22 @@ const MAX_MARKDOWN_CUSTOM_BLOCK_NAME_BYTES: usize = 32;
 const MAX_MARKDOWN_CUSTOM_BLOCK_MARKER_BYTES: usize = 4_096;
 const MAX_MARKDOWN_INLINE_HTML_NESTING: usize = 128;
 const MAX_MARKDOWN_PANDOC_ATTRIBUTES: usize = 64;
+const MARKDOWN_DISPLAY_LINE_ORIGIN: &str = "\0mathpreview:markdown-display-line-origin";
+
+/// Recover Markdown-only display-line origins without adding fields to the
+/// shared AST wire shape. Display math has no semantic children, so zero-width
+/// comment children can carry parser-internal positions invisibly.
+pub(crate) fn display_math_source_lines(children: &[Node]) -> Vec<Pos> {
+    children
+        .iter()
+        .filter_map(|child| match &child.kind {
+            NodeKind::Comment(marker) if marker == MARKDOWN_DISPLAY_LINE_ORIGIN => {
+                Some(child.span.start)
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 /// Parse one Markdown source file into the shared source-spanned AST.
 pub fn parse(source: &str, file: &Path) -> Result<Vec<Node>> {
@@ -107,22 +123,57 @@ pub fn parse_with_config(
                 );
             }
             Event::DisplayMath(math) => {
-                let body = delimiter_overrides
-                    .get(&(range.start, range.end))
-                    .filter(|m| m.display)
-                    .map(|m| m.body.clone())
-                    .unwrap_or_else(|| math.into_string());
-                append_leaf(
+                let parsed_body = math.into_string();
+                let in_table = stack
+                    .iter()
+                    .any(|node| matches!(node.kind, NodeKind::MarkdownTable { .. }));
+                // Recover the exact authored TeX while removing only the
+                // CommonMark continuation prefixes omitted from the event.
+                // In a GFM table pulldown-cmark also changes `\|` to `|`; the
+                // parsed body proves the prefix, while the source supplies the
+                // bytes retained for rendering and copying.
+                let (body, source_lines) = authored_markdown_display(
+                    source,
+                    &parsed_body,
+                    range.clone(),
+                    &positions,
+                    in_table,
+                )
+                .unwrap_or_else(|| {
+                    let body = delimiter_overrides
+                        .get(&(range.start, range.end))
+                        .filter(|math| math.display)
+                        .map(|math| math.body.clone())
+                        .unwrap_or(parsed_body);
+                    (body, Vec::new())
+                });
+                let span = positions.span(file, range.start, range.end);
+                let children = source_lines
+                    .into_iter()
+                    .map(|position| Node {
+                        kind: NodeKind::Comment(MARKDOWN_DISPLAY_LINE_ORIGIN.to_string()),
+                        span: Span {
+                            file: span.file.clone(),
+                            start: position,
+                            end: position,
+                        },
+                        children: Vec::new(),
+                    })
+                    .collect();
+                append_node(
                     &mut roots,
                     &mut stack,
-                    NodeKind::DisplayMath {
-                        body,
-                        env: None,
-                        label: None,
-                        number: None,
-                        row_numbers: Vec::new(),
+                    Node {
+                        kind: NodeKind::DisplayMath {
+                            body,
+                            env: None,
+                            label: None,
+                            number: None,
+                            row_numbers: Vec::new(),
+                        },
+                        span,
+                        children,
                     },
-                    positions.span(file, range.start, range.end),
                 );
             }
             Event::Html(html) | Event::InlineHtml(html) => append_leaf(
@@ -2292,6 +2343,96 @@ fn is_unescaped_backslash(bytes: &[u8], at: usize) -> bool {
     count % 2 == 0
 }
 
+/// Reconstruct a display body from authored source and map each logical line
+/// to its byte-zero position. Pulldown-cmark removes Markdown container
+/// prefixes after line breaks and unescapes `\|` inside GFM tables. Matching
+/// its event line-by-line proves the removed prefix without sacrificing the
+/// original TeX spelling.
+fn authored_markdown_display(
+    source: &str,
+    parsed_body: &str,
+    range: Range<usize>,
+    positions: &LineIndex<'_>,
+    in_table: bool,
+) -> Option<(String, Vec<Pos>)> {
+    let display = source.get(range.clone())?;
+    let delimiter_len = if (display.starts_with("$$") && display.ends_with("$$"))
+        || (display.starts_with(r"\[") && display.ends_with(r"\]"))
+    {
+        2
+    } else {
+        return None;
+    };
+    if display.len() < delimiter_len * 2 {
+        return None;
+    }
+
+    let raw_start = range.start + delimiter_len;
+    let raw_end = range.end - delimiter_len;
+    let raw_body = source.get(raw_start..raw_end)?;
+    let mut raw_offset = 0usize;
+    let mut parsed_offset = 0usize;
+    let mut authored = String::with_capacity(raw_body.len());
+    let mut mapped = Vec::new();
+
+    loop {
+        let (raw_line_end, raw_next) = markdown_math_line_end(raw_body, raw_offset);
+        let (parsed_line_end, parsed_next) = markdown_math_line_end(parsed_body, parsed_offset);
+        let raw_line = &raw_body[raw_offset..raw_line_end];
+        let parsed_line = &parsed_body[parsed_offset..parsed_line_end];
+        let prefix_len = markdown_math_prefix_len(raw_line, parsed_line, in_table)?;
+        if raw_body[raw_line_end..raw_next] != parsed_body[parsed_line_end..parsed_next] {
+            return None;
+        }
+
+        authored.push_str(&raw_line[prefix_len..]);
+        authored.push_str(&raw_body[raw_line_end..raw_next]);
+        mapped.push(positions.pos(raw_start + raw_offset + prefix_len));
+
+        let raw_done = raw_line_end == raw_body.len();
+        let parsed_done = parsed_line_end == parsed_body.len();
+        if raw_done || parsed_done {
+            return (raw_done && parsed_done).then_some((authored, mapped));
+        }
+        raw_offset = raw_next;
+        parsed_offset = parsed_next;
+    }
+}
+
+fn markdown_math_line_end(source: &str, start: usize) -> (usize, usize) {
+    let bytes = source.as_bytes();
+    let end = bytes[start..]
+        .iter()
+        .position(|byte| matches!(byte, b'\r' | b'\n'))
+        .map_or(bytes.len(), |offset| start + offset);
+    let next = if bytes.get(end) == Some(&b'\r') && bytes.get(end + 1) == Some(&b'\n') {
+        end + 2
+    } else if end < bytes.len() {
+        end + 1
+    } else {
+        end
+    };
+    (end, next)
+}
+
+fn markdown_math_prefix_len(raw_line: &str, parsed_line: &str, in_table: bool) -> Option<usize> {
+    raw_line
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(raw_line.len()))
+        .find(|offset| markdown_math_line_matches(&raw_line[*offset..], parsed_line, in_table))
+}
+
+fn markdown_math_line_matches(authored: &str, parsed: &str, in_table: bool) -> bool {
+    if authored == parsed {
+        return true;
+    }
+    if !in_table || !authored.contains(r"\|") {
+        return false;
+    }
+    authored.replace(r"\|", "|") == parsed
+}
+
 struct LineIndex<'a> {
     source: &'a str,
     starts: Vec<usize>,
@@ -3759,6 +3900,25 @@ mod tests {
             NodeKind::MarkdownCodeBlock { code, .. }
                 if code.contains("$$still_code$$") && code.contains("\\[also_code\\]")
         )));
+    }
+
+    #[test]
+    fn display_math_in_gfm_table_keeps_authored_escaped_pipes() {
+        let source = "| Value |\n| --- |\n| \\[\\|x\\|\\] |\n";
+        let nodes = parse(source, Path::new("table-math.md")).unwrap();
+        let display = all_nodes(&nodes)
+            .into_iter()
+            .find(|node| matches!(node.kind, NodeKind::DisplayMath { .. }))
+            .expect("display math in table cell");
+
+        assert!(matches!(
+            &display.kind,
+            NodeKind::DisplayMath { body, .. } if body == r"\|x\|"
+        ));
+        assert_eq!(
+            display_math_source_lines(&display.children),
+            [LineIndex::new(source).pos(source.find(r"\|x").unwrap())]
+        );
     }
 
     #[test]

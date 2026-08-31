@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use crate::ast::RefKind;
+use crate::ast::{Pos, RefKind};
 use crate::numbering::LabelTable;
 use crate::sync::MathRow;
 
@@ -316,8 +316,79 @@ pub(super) fn label_alias_anchors(body: &str, primary: Option<&str>) -> String {
 /// first non-whitespace char. A row that starts on the `\begin` line has no
 /// knowable file column (`body` begins mid-line and we only know its line), so
 /// its `start_col` is the 0 = unknown sentinel.
+#[cfg(test)]
 pub(super) fn math_row_spans(body: &str, start_line: u32) -> Vec<MathRow> {
-    let mut rows = split_math_rows(body);
+    let rows = rendered_math_rows(body);
+    math_row_spans_for_slices(body, &rows, start_line, &[], false)
+}
+
+fn math_row_spans_for_slices(
+    body: &str,
+    rows: &[&str],
+    start_line: u32,
+    source_lines: &[Pos],
+    unknown_unmapped_columns: bool,
+) -> Vec<MathRow> {
+    let base = body.as_ptr() as usize;
+    let bytes = body.as_bytes();
+    let body_line_and_col = |off: usize| -> (usize, usize) {
+        let off = off.min(bytes.len());
+        let line = bytes[..off].iter().filter(|&&b| b == b'\n').count();
+        let col = bytes[..off]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(off, |newline| off - newline - 1);
+        (line, col)
+    };
+    let fallback_line = |off: usize| -> u32 {
+        let off = off.min(bytes.len());
+        start_line + bytes[..off].iter().filter(|&&b| b == b'\n').count() as u32
+    };
+    let fallback_col = |off: usize| -> u32 {
+        match bytes[..off.min(bytes.len())]
+            .iter()
+            .rposition(|&b| b == b'\n')
+        {
+            Some(newline) => (off - newline) as u32,
+            None => 0,
+        }
+    };
+
+    rows.iter()
+        .map(|row| {
+            let off = (row.as_ptr() as usize)
+                .saturating_sub(base)
+                .min(bytes.len());
+            let end = (off + row.len()).min(bytes.len());
+            let content = row_content_offset(bytes, off, end);
+            let (content_line, content_col) = body_line_and_col(content);
+            let (end_line, _) = body_line_and_col(end);
+            let mapped_start = source_lines.get(content_line);
+            MathRow {
+                start_line: mapped_start
+                    .map(|position| position.line)
+                    .unwrap_or_else(|| fallback_line(content)),
+                end_line: source_lines
+                    .get(end_line)
+                    .map(|position| position.line)
+                    .unwrap_or_else(|| fallback_line(end)),
+                start_col: mapped_start.map_or_else(
+                    || {
+                        if unknown_unmapped_columns {
+                            0
+                        } else {
+                            fallback_col(content)
+                        }
+                    },
+                    |position| position.col + content_col as u32,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn rendered_math_rows(src: &str) -> Vec<&str> {
+    let mut rows = split_math_rows(src);
     // A trailing `\\` leaves an empty final row that MathJax does NOT render as
     // a table row — drop it so our row count/indices line up with the rendered
     // `mtr` rows. (Empty rows in the middle, from `\\ \\`, are kept: MathJax
@@ -325,33 +396,7 @@ pub(super) fn math_row_spans(body: &str, start_line: u32) -> Vec<MathRow> {
     if rows.last().is_some_and(|r| r.is_empty()) {
         rows.pop();
     }
-    let base = body.as_ptr() as usize;
-    let bytes = body.as_bytes();
-    let line_at = |upto: usize| -> u32 {
-        let upto = upto.min(bytes.len());
-        start_line + bytes[..upto].iter().filter(|&&b| b == b'\n').count() as u32
-    };
-    let col_at = |off: usize| -> u32 {
-        match bytes[..off.min(bytes.len())]
-            .iter()
-            .rposition(|&b| b == b'\n')
-        {
-            Some(nl) => (off - nl) as u32,
-            None => 0,
-        }
-    };
-    rows.iter()
-        .map(|r| {
-            let off = (r.as_ptr() as usize).saturating_sub(base).min(bytes.len());
-            let end = (off + r.len()).min(bytes.len());
-            let content = row_content_offset(bytes, off, end);
-            MathRow {
-                start_line: line_at(content),
-                end_line: line_at(end),
-                start_col: col_at(content),
-            }
-        })
-        .collect()
+    rows
 }
 
 /// Where a row slice's REAL content starts. A slice can begin at a `%`
@@ -393,11 +438,13 @@ fn row_content_offset(bytes: &[u8], off: usize, end: usize) -> usize {
 /// copy exactly that row's LaTeX. Empty for single-row bodies. Offsets are
 /// bytes into the RAW string (the client slices via TextEncoder, since the
 /// attribute value unescapes back to the raw string).
+#[cfg(test)]
 pub(super) fn math_row_tex_spans(body: &str, prefix_len: usize) -> String {
-    let mut rows = split_math_rows(body);
-    if rows.last().is_some_and(|r| r.is_empty()) {
-        rows.pop();
-    }
+    let rows = rendered_math_rows(body);
+    math_row_tex_spans_for_slices(body, &rows, prefix_len)
+}
+
+fn math_row_tex_spans_for_slices(body: &str, rows: &[&str], prefix_len: usize) -> String {
     if rows.len() < 2 {
         return String::new();
     }
@@ -415,6 +462,265 @@ pub(super) fn math_row_tex_spans(body: &str, prefix_len: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+pub(super) struct DisplayMathRows {
+    pub source_spans: Vec<MathRow>,
+    pub tex_spans: String,
+}
+
+/// Normalize TeX and Markdown displays to the same logical row body, then
+/// derive both source-sync rows and copy spans from that one slice set. TeX
+/// math environments already store their interior in `body` (including any
+/// environment arguments). Markdown keeps an inner
+/// `aligned`/`gathered`-style wrapper in `body`. Project both representations
+/// to the same argument-free row body before using the shared splitter.
+pub(super) fn display_math_rows(
+    body: &str,
+    ast_environment: Option<&str>,
+    markdown: bool,
+    start_line: u32,
+    source_lines: &[Pos],
+    copy_prefix_len: usize,
+) -> DisplayMathRows {
+    let rows = if let Some(environment) = ast_environment {
+        row_environment_content_start(body, environment, 0)
+            .map(|content_start| rendered_math_rows(&body[content_start..]))
+            .unwrap_or_default()
+    } else if let Some(row_body) = outer_math_row_body(body) {
+        rendered_math_rows(row_body)
+    } else if markdown {
+        // A bare `\\` inside `$$...$$` does not create MathJax table rows.
+        // Do not publish a row map the browser cannot match to rendered mtrs.
+        Vec::new()
+    } else {
+        // Preserve the established TeX behavior for raw `$$` / `\[...\]`.
+        rendered_math_rows(body)
+    };
+    DisplayMathRows {
+        source_spans: math_row_spans_for_slices(body, &rows, start_line, source_lines, markdown),
+        tex_spans: math_row_tex_spans_for_slices(body, &rows, copy_prefix_len),
+    }
+}
+
+/// Whether a Markdown display body is already a complete top-level display
+/// environment. These environments must be handed to MathJax directly rather
+/// than nested inside `\[...\]`; the inner `aligned`/`gathered` family still
+/// needs the surrounding delimiter.
+pub(super) fn markdown_standalone_display_environment(body: &str) -> bool {
+    full_outer_environment(body).is_some_and(|outer| {
+        matches!(
+            outer.name,
+            "equation"
+                | "equation*"
+                | "displaymath"
+                | "align"
+                | "align*"
+                | "alignat"
+                | "alignat*"
+                | "flalign"
+                | "flalign*"
+                | "xalignat"
+                | "xalignat*"
+                | "xxalignat"
+                | "gather"
+                | "gather*"
+                | "multline"
+                | "multline*"
+                | "eqnarray"
+                | "eqnarray*"
+        )
+    })
+}
+
+const MAX_OUTER_MATH_WRAPPERS: usize = 8;
+const MAX_MATH_ENVIRONMENT_NESTING: usize = 128;
+
+fn outer_math_row_body(mut src: &str) -> Option<&str> {
+    for _ in 0..MAX_OUTER_MATH_WRAPPERS {
+        let outer = full_outer_environment(src)?;
+        if is_row_environment(outer.name) {
+            let content_start = row_environment_content_start(src, outer.name, outer.body_start)?;
+            return Some(&src[content_start..outer.close_start]);
+        }
+        if !matches!(outer.name, "equation" | "equation*" | "displaymath") {
+            return None;
+        }
+        src = &src[outer.body_start..outer.close_start];
+    }
+    None
+}
+
+fn is_row_environment(name: &str) -> bool {
+    matches!(
+        name,
+        "align"
+            | "align*"
+            | "aligned"
+            | "alignedat"
+            | "alignat"
+            | "alignat*"
+            | "flalign"
+            | "flalign*"
+            | "xalignat"
+            | "xalignat*"
+            | "xxalignat"
+            | "gather"
+            | "gather*"
+            | "gathered"
+            | "multline"
+            | "multline*"
+            | "split"
+            | "eqnarray"
+            | "eqnarray*"
+    )
+}
+
+struct OuterEnvironment<'a> {
+    name: &'a str,
+    body_start: usize,
+    close_start: usize,
+}
+
+fn full_outer_environment(src: &str) -> Option<OuterEnvironment<'_>> {
+    let begin_start = skip_math_whitespace_and_comments(src, 0);
+    let (name, body_start) = latex_environment_command(src, begin_start, "begin")?;
+    let mut stack = vec![name];
+    let mut i = body_start;
+    while i < src.len() {
+        if src.as_bytes()[i] == b'%' {
+            i += 1;
+            while i < src.len() && src.as_bytes()[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if let Some((nested, end)) = latex_environment_command(src, i, "begin") {
+            if stack.len() >= MAX_MATH_ENVIRONMENT_NESTING {
+                return None;
+            }
+            stack.push(nested);
+            i = end;
+            continue;
+        }
+        if let Some((closing, end)) = latex_environment_command(src, i, "end") {
+            if stack.pop() != Some(closing) {
+                return None;
+            }
+            if stack.is_empty() {
+                return (skip_math_whitespace_and_comments(src, end) == src.len()).then_some(
+                    OuterEnvironment {
+                        name,
+                        body_start,
+                        close_start: i,
+                    },
+                );
+            }
+            i = end;
+            continue;
+        }
+        if src.as_bytes()[i] == b'\\' && i + 1 < src.len() {
+            let escaped_width = src[i + 1..].chars().next()?.len_utf8();
+            i += 1 + escaped_width;
+        } else {
+            let width = src[i..].chars().next()?.len_utf8();
+            i += width;
+        }
+    }
+    None
+}
+
+fn latex_environment_command<'a>(
+    src: &'a str,
+    at: usize,
+    command: &str,
+) -> Option<(&'a str, usize)> {
+    let prefix = if command == "begin" {
+        r"\begin"
+    } else {
+        r"\end"
+    };
+    if !src.get(at..)?.starts_with(prefix) {
+        return None;
+    }
+    let i = skip_math_whitespace_and_comments(src, at + prefix.len());
+    if src.as_bytes().get(i) != Some(&b'{') {
+        return None;
+    }
+    let name_start = i + 1;
+    let name_end = src[name_start..]
+        .find('}')
+        .map(|offset| name_start + offset)?;
+    let name = src[name_start..name_end].trim();
+    (!name.is_empty()).then_some((name, name_end + 1))
+}
+
+fn row_environment_content_start(src: &str, environment: &str, mut at: usize) -> Option<usize> {
+    let base_name = environment.trim_end_matches('*');
+
+    if matches!(base_name, "aligned" | "alignedat" | "gathered") {
+        if let Some(end) = optional_math_group_end(src, at, b'[', b']') {
+            at = end;
+        }
+    }
+    if matches!(
+        base_name,
+        "alignedat" | "alignat" | "xalignat" | "xxalignat"
+    ) {
+        at = required_math_group_end(src, at, b'{', b'}')?;
+    }
+    Some(at)
+}
+
+fn optional_math_group_end(src: &str, at: usize, open: u8, close: u8) -> Option<usize> {
+    let group_start = skip_math_whitespace_and_comments(src, at);
+    (src.as_bytes().get(group_start) == Some(&open))
+        .then(|| balanced_math_group_end(src, group_start, open, close))?
+}
+
+fn required_math_group_end(src: &str, at: usize, open: u8, close: u8) -> Option<usize> {
+    let group_start = skip_math_whitespace_and_comments(src, at);
+    (src.as_bytes().get(group_start) == Some(&open))
+        .then(|| balanced_math_group_end(src, group_start, open, close))?
+}
+
+fn balanced_math_group_end(src: &str, start: usize, open: u8, close: u8) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            byte if byte == open => {
+                depth += 1;
+                i += 1;
+            }
+            byte if byte == close => {
+                depth = depth.checked_sub(1)?;
+                i += 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn skip_math_whitespace_and_comments(src: &str, mut at: usize) -> usize {
+    let bytes = src.as_bytes();
+    loop {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        if bytes.get(at) != Some(&b'%') {
+            return at;
+        }
+        while at < bytes.len() && bytes[at] != b'\n' {
+            at += 1;
+        }
+    }
 }
 
 pub(super) fn split_math_rows(src: &str) -> Vec<&str> {
@@ -505,6 +811,9 @@ fn latex_env_command_end(src: &str, mut i: usize) -> Option<usize> {
 
 fn skip_row_separator_spacing(src: &str, mut i: usize) -> usize {
     let bytes = src.as_bytes();
+    if bytes.get(i) == Some(&b'*') {
+        i += 1;
+    }
     let before_ws = i;
     while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r') {
         i += 1;
@@ -820,6 +1129,16 @@ mod tests {
         }
     }
 
+    fn copied_rows<'a>(copy_tex: &'a str, spans: &str) -> Vec<&'a str> {
+        spans
+            .split(',')
+            .map(|span| {
+                let (start, end) = span.split_once(':').unwrap();
+                &copy_tex[start.parse::<usize>().unwrap()..end.parse::<usize>().unwrap()]
+            })
+            .collect()
+    }
+
     #[test]
     fn math_row_spans_maps_rows_to_source_lines() {
         // Body as captured after `\begin{align}` on source line 3: a leading
@@ -896,5 +1215,161 @@ mod tests {
         // the row's position is its first non-comment token (line 6, col 1).
         let body = "\na &= b \\\\\n% explain\nc &= d\n";
         assert_eq!(math_row_spans(body, 3), vec![row(4, 4, 1), row(6, 6, 1)]);
+    }
+
+    #[test]
+    fn markdown_outer_aligned_uses_shared_rows_with_exact_source_columns() {
+        let body = "\n\\begin{aligned}\n  α &= β \\\\\n    γ &= δ\n\\end{aligned}\n";
+        let source_lines = (20..=25)
+            .map(|line| Pos {
+                line,
+                col: 3,
+                byte: 0,
+            })
+            .collect::<Vec<_>>();
+        let rows = display_math_rows(body, None, true, 20, &source_lines, 2);
+
+        assert_eq!(rows.source_spans, vec![row(22, 22, 5), row(23, 23, 7)]);
+        let copy_tex = format!(r"\[{body}\]");
+        let copied = rows
+            .tex_spans
+            .split(',')
+            .map(|span| {
+                let (start, end) = span.split_once(':').unwrap();
+                &copy_tex[start.parse::<usize>().unwrap()..end.parse::<usize>().unwrap()]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(copied, ["α &= β", "γ &= δ"]);
+    }
+
+    #[test]
+    fn markdown_outer_rows_ignore_nested_matrix_rows() {
+        let body = concat!(
+            "\\begin{aligned}\n",
+            "a &= \\begin{matrix} 1 \\\\ 2 \\end{matrix} \\\\\n",
+            "b &= 3\n",
+            "\\end{aligned}",
+        );
+        let rows = display_math_rows(body, None, true, 1, &[], 2);
+        assert_eq!(rows.source_spans.len(), 2);
+        assert_eq!(rows.source_spans[0].start_line, 2);
+        assert_eq!(rows.source_spans[1].start_line, 3);
+    }
+
+    #[test]
+    fn markdown_only_standalone_equation_environments_skip_outer_delimiters() {
+        for environment in ["align", "align*", "gather", "multline", "equation"] {
+            let body = format!(r"\begin{{{environment}}}x = y\end{{{environment}}}");
+            assert!(
+                markdown_standalone_display_environment(&body),
+                "{environment}"
+            );
+        }
+        for environment in ["aligned", "alignedat", "gathered", "split"] {
+            let body = format!(r"\begin{{{environment}}}x = y\end{{{environment}}}");
+            assert!(
+                !markdown_standalone_display_environment(&body),
+                "{environment}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_environment_commands_allow_tex_comment_continuations() {
+        let body = concat!(
+            "\\begin% opening comment\n",
+            "{align}\n",
+            "a &= b \\\\\n",
+            "c &= d\n",
+            "\\end% closing comment\n",
+            "{align}",
+        );
+        assert!(markdown_standalone_display_environment(body));
+
+        let source_lines = (10..=15)
+            .map(|line| Pos {
+                line,
+                col: 1,
+                byte: 0,
+            })
+            .collect::<Vec<_>>();
+        let rows = display_math_rows(body, None, true, 10, &source_lines, 0);
+        assert_eq!(rows.source_spans, vec![row(12, 12, 1), row(13, 13, 1)]);
+    }
+
+    #[test]
+    fn markdown_bare_row_separators_and_partial_wrappers_publish_no_rows() {
+        let bare = display_math_rows("a &= b \\\\ c &= d", None, true, 1, &[], 2);
+        assert!(bare.source_spans.is_empty());
+        assert!(bare.tex_spans.is_empty());
+
+        let partial = display_math_rows(
+            "\\begin{aligned}a &= b \\\\ c &= d\\end{aligned} trailing",
+            None,
+            true,
+            1,
+            &[],
+            2,
+        );
+        assert!(partial.source_spans.is_empty());
+    }
+
+    #[test]
+    fn markdown_alignedat_skips_its_column_count_before_first_row() {
+        let body =
+            "\\begin{alignedat}[t]{2}\n a&=b &\\quad c&=d \\\\\n e&=f & g&=h\n\\end{alignedat}";
+        let rows = display_math_rows(body, None, true, 7, &[], 2);
+        assert_eq!(rows.source_spans, vec![row(8, 8, 0), row(9, 9, 0)]);
+
+        let copy_tex = format!(r"\[{body}\]");
+        let first = rows.tex_spans.split(',').next().unwrap();
+        let (start, end) = first.split_once(':').unwrap();
+        assert_eq!(
+            &copy_tex[start.parse::<usize>().unwrap()..end.parse::<usize>().unwrap()],
+            "a&=b &\\quad c&=d"
+        );
+    }
+
+    #[test]
+    fn tex_and_markdown_alignment_arguments_share_row_projection() {
+        for environment in ["alignat", "alignat*", "xalignat", "xalignat*", "xxalignat"] {
+            let tex_body = "{2}\n  a&=b & c&=d \\\\\n    e&=f & g&=h\n";
+            let tex_prefix = format!(r"\begin{{{environment}}}");
+            let tex_copy = format!(r"{tex_prefix}{tex_body}\end{{{environment}}}");
+            let tex_rows =
+                display_math_rows(tex_body, Some(environment), false, 7, &[], tex_prefix.len());
+
+            let markdown_body = format!(r"\begin{{{environment}}}{tex_body}\end{{{environment}}}");
+            let source_lines = (7..=10)
+                .map(|line| Pos {
+                    line,
+                    col: 1,
+                    byte: 0,
+                })
+                .collect::<Vec<_>>();
+            let markdown_rows = display_math_rows(&markdown_body, None, true, 7, &source_lines, 0);
+
+            assert_eq!(
+                tex_rows.source_spans, markdown_rows.source_spans,
+                "{environment}"
+            );
+            assert_eq!(
+                copied_rows(&tex_copy, &tex_rows.tex_spans),
+                copied_rows(&markdown_body, &markdown_rows.tex_spans),
+                "{environment}"
+            );
+            assert_eq!(
+                copied_rows(&tex_copy, &tex_rows.tex_spans),
+                ["a&=b & c&=d", "e&=f & g&=h"],
+                "{environment}"
+            );
+        }
+    }
+
+    #[test]
+    fn starred_row_separator_does_not_leak_star_into_next_row() {
+        let body = "\na &= b \\\\* [3pt]\nc &= d\n";
+        assert_eq!(math_row_spans(body, 3), vec![row(4, 4, 1), row(5, 5, 1)]);
+        assert_eq!(math_row_tex_spans(body, 2), "3:9,20:26");
     }
 }

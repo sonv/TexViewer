@@ -32,9 +32,9 @@ mod util;
 use bib::format_bib_entry;
 use color::resolve_css as resolve_color_css;
 use math::{
-    equation_number_html, equation_row_refkey_html, label_alias_anchors, math_row_spans,
-    math_row_tex_spans, render_latex_text_with_math, resolve_math_refs, strip_labels,
-    write_float_placeholder, write_flow_marker, write_inline_math_span,
+    display_math_rows, equation_number_html, equation_row_refkey_html, label_alias_anchors,
+    markdown_standalone_display_environment, render_latex_text_with_math, resolve_math_refs,
+    strip_labels, write_float_placeholder, write_flow_marker, write_inline_math_span,
 };
 use shell::wrap_in_shell;
 use table::{
@@ -352,6 +352,7 @@ pub fn render_body_only(
         local_asset_base: opts.local_asset_base.as_deref(),
         latex_preamble: opts.latex_preamble.as_deref().unwrap_or(""),
         markdown_config: &opts.markdown_config,
+        document_format: opts.document_format,
     };
 
     // Top-level inline runs become paragraph blocks. Structural nodes
@@ -1256,6 +1257,7 @@ struct RenderCtx<'a> {
     local_asset_base: Option<&'a str>,
     latex_preamble: &'a str,
     markdown_config: &'a crate::config::ResolvedMarkdownConfig,
+    document_format: crate::DocumentFormat,
 }
 
 /// Sub-block capture in progress, with body-interior byte offsets into the
@@ -1931,15 +1933,38 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .map(sanitize_id)
                 .unwrap_or_else(|| ctx.idgen.next("dm"));
             record(ctx, &id, &n.span, label.as_deref());
+            let markdown = ctx.document_format == crate::DocumentFormat::Markdown;
+            let source_lines = if markdown {
+                crate::markdown::display_math_source_lines(&n.children)
+            } else {
+                Vec::new()
+            };
+            let standalone_markdown_environment =
+                markdown && markdown_standalone_display_environment(body);
+            let copy_prefix_len = match env {
+                Some(environment) => format!(r"\begin{{{environment}}}").len(),
+                None if standalone_markdown_environment => 0,
+                None => r"\[".len(),
+            };
+            let row_metadata = display_math_rows(
+                body,
+                env.as_deref(),
+                markdown,
+                n.span.start.line,
+                &source_lines,
+                copy_prefix_len,
+            );
             // Per-row source spans: forward, an editor selection highlights
             // the individual align/gather rows it covers (the client maps
             // these indices to the SVG table rows); backward, a click on a
             // row jumps to that row's own source position. Only for genuinely
             // multi-row blocks; single equations keep the whole-block anchor.
-            let row_spans = math_row_spans(body, n.span.start.line);
-            if row_spans.len() > 1 {
-                ctx.sync
-                    .record_math_rows(id.clone(), n.span.file.clone(), row_spans);
+            if row_metadata.source_spans.len() > 1 {
+                ctx.sync.record_math_rows(
+                    id.clone(),
+                    n.span.file.clone(),
+                    row_metadata.source_spans,
+                );
             }
             // Strip `\label{...}` — we resolve refs through our own LabelTable
             // and MathJax otherwise warns "Label: multiply defined" when the
@@ -1948,10 +1973,12 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             let body_rendered = resolve_math_refs(&body_clean, ctx.labels);
             let math = match env {
                 Some(e) => format!(r"\begin{{{e}}}{}\end{{{e}}}", body_rendered),
+                None if standalone_markdown_environment => body_rendered.clone(),
                 None => format!(r"\[{}\]", body_rendered),
             };
             let copy_tex = match env {
                 Some(e) => format!(r"\begin{{{e}}}{}\end{{{e}}}", body),
+                None if standalone_markdown_environment => body.clone(),
                 None => format!(r"\[{}\]", body),
             };
             let row_refkey_html = equation_row_refkey_html(body, label.as_deref(), row_numbers);
@@ -1973,17 +2000,10 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             // Byte spans of each row's source inside copy_tex, so a click on
             // a rendered row can copy exactly that row's LaTeX (empty attr
             // suppressed for single-row blocks).
-            let row_tex_spans = {
-                let prefix_len = match env {
-                    Some(e) => format!(r"\begin{{{e}}}").len(),
-                    None => r"\[".len(),
-                };
-                let spans = math_row_tex_spans(body, prefix_len);
-                if spans.is_empty() {
-                    String::new()
-                } else {
-                    format!(r#" data-row-tex-spans="{spans}""#)
-                }
+            let row_tex_spans = if row_metadata.tex_spans.is_empty() {
+                String::new()
+            } else {
+                format!(r#" data-row-tex-spans="{}""#, row_metadata.tex_spans)
             };
             writeln!(
                 out,
@@ -4992,6 +5012,141 @@ mod tests {
 
     fn render_markdown(source: &str, opts: &HtmlOptions) -> crate::RenderOutput {
         crate::render_document_from_source(Path::new("notes.md"), source.to_string(), opts).unwrap()
+    }
+
+    #[test]
+    fn markdown_aligned_rows_share_tex_sync_and_copy_pipeline() {
+        let quoted = render_markdown(
+            concat!(
+                "> $$\n",
+                "> \\begin{aligned}\n",
+                ">   α &= β \\\\\n",
+                ">     γ &= δ\n",
+                "> \\end{aligned}\n",
+                "> $$\n",
+            ),
+            &HtmlOptions::default(),
+        );
+        let quoted_rows = &quoted.sync.math_rows[0].rows;
+        assert_eq!(
+            quoted_rows,
+            &[
+                crate::sync::MathRow {
+                    start_line: 3,
+                    end_line: 3,
+                    start_col: 5,
+                },
+                crate::sync::MathRow {
+                    start_line: 4,
+                    end_line: 4,
+                    start_col: 7,
+                },
+            ]
+        );
+        assert!(quoted.body_html.contains("data-row-tex-spans="));
+
+        let listed = render_markdown(
+            concat!(
+                "- Item\n\n",
+                "  \\[\n",
+                "  \\begin{gathered}\n",
+                "    a = b \\\\\n",
+                "      c = d\n",
+                "  \\end{gathered}\n",
+                "  \\]\n",
+            ),
+            &HtmlOptions::default(),
+        );
+        let listed_rows = &listed.sync.math_rows[0].rows;
+        assert_eq!(
+            listed_rows,
+            &[
+                crate::sync::MathRow {
+                    start_line: 5,
+                    end_line: 5,
+                    start_col: 5,
+                },
+                crate::sync::MathRow {
+                    start_line: 6,
+                    end_line: 6,
+                    start_col: 7,
+                },
+            ]
+        );
+        assert!(listed.body_html.contains("data-row-tex-spans="));
+    }
+
+    #[test]
+    fn markdown_bare_backslashes_do_not_claim_rendered_rows() {
+        let out = render_markdown("$$a \\\\ b$$\n", &HtmlOptions::default());
+        assert!(out.sync.math_rows.is_empty());
+        assert!(!out.body_html.contains("data-row-tex-spans="));
+    }
+
+    #[test]
+    fn markdown_standalone_align_is_not_nested_in_display_delimiters() {
+        let out = render_markdown(
+            "$$\\begin{align}a &= b \\\\ c &= d\\end{align}$$\n",
+            &HtmlOptions::default(),
+        );
+        assert_eq!(out.sync.math_rows[0].rows.len(), 2);
+        assert!(out.body_html.contains(r#"data-mathjax-tex="\begin{align}"#));
+        assert!(out.body_html.contains(r#"data-tex="\begin{align}"#));
+        assert!(!out
+            .body_html
+            .contains(r#"data-mathjax-tex="\[\begin{align}"#));
+        assert!(!out.body_html.contains(r#"data-tex="\[\begin{align}"#));
+    }
+
+    #[test]
+    fn markdown_same_line_math_rows_use_utf8_byte_columns() {
+        let source = "é $$\\begin{aligned}α &= β \\\\ γ &= δ\\end{aligned}$$\n";
+        let out = render_markdown(source, &HtmlOptions::default());
+        let rows = &out.sync.math_rows[0].rows;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].start_line, 1);
+        assert_eq!(rows[0].start_col, source.find('α').unwrap() as u32 + 1);
+        assert_eq!(rows[1].start_line, 1);
+        assert_eq!(rows[1].start_col, source.find('γ').unwrap() as u32 + 1);
+    }
+
+    #[test]
+    fn markdown_math_rows_preserve_crlf_comments_and_spacing() {
+        let source = concat!(
+            "$$\r\n",
+            "\\begin{aligned}\r\n",
+            "  α &= β \\\\*[3pt] % first row\r\n",
+            "% between rows\r\n",
+            "    γ &= δ\r\n",
+            "\\end{aligned}\r\n",
+            "$$\r\n",
+        );
+        let out = render_markdown(source, &HtmlOptions::default());
+        assert_eq!(
+            out.sync.math_rows[0].rows,
+            [
+                crate::sync::MathRow {
+                    start_line: 3,
+                    end_line: 3,
+                    start_col: 3,
+                },
+                crate::sync::MathRow {
+                    start_line: 5,
+                    end_line: 5,
+                    start_col: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn markdown_table_display_preserves_escaped_pipe_tex() {
+        let out = render_markdown(
+            "| Value |\n| --- |\n| \\[\\|x\\|\\] |\n",
+            &HtmlOptions::default(),
+        );
+        assert!(out.body_html.contains(r#"data-tex="\[\|x\|\]""#));
+        assert!(out.body_html.contains(r#"data-mathjax-tex="\[\|x\|\]""#));
     }
 
     #[test]

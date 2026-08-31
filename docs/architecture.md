@@ -274,6 +274,16 @@ use root source or read root file
 Markdown v1 is root-buffer only. It rejects unused non-root overrides instead
 of silently pretending to support a multi-file project.
 
+Display-math rows deliberately converge before rendering. The Markdown
+frontend uses the parser-normalized event to prove and remove list or
+blockquote prefixes, while retaining the exact authored TeX and recording
+where each logical body line began in the source. The renderer then unwraps a
+full outer equation-row environment such as `aligned` or `gathered` and sends
+its interior through the same row splitter, copy-span builder, sync index,
+live protocol, and browser row logic used by TeX. This keeps row semantics
+format-neutral while leaving Markdown syntax recovery in the frontend that
+owns it.
+
 `finalize_builtin_document` is the shared seam. It moves the rendered blocks
 and sync data into their public shapes, converts TikZ inputs to typed assets,
 adds diagnostics, and derives the math and viewer runtime requirements.

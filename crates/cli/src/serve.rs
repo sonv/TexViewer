@@ -5214,14 +5214,14 @@ mod tests {
         begin_render_attempt, broadcast_render, diff_blocks, host_is_loopback,
         is_buffer_renderable, is_buffer_renderable_with_preamble, is_latest_render_attempt,
         merge_config_editor_values, origin_is_loopback, preamble_fingerprint,
-        project_asset_response, render_cached, search_sync_payload, select_tikz_engine,
-        semantic_macro_definitions, serve_buffer_push, serve_config_set, serve_config_write,
-        serve_cursor, serve_debug, serve_print, serve_selection, tikz_document, tikz_error_svg,
-        tikz_hash_from_path, validate_config_cascade_with_override, validate_override_content,
-        watched_event_paths, watched_set, websocket_needs_reload, AppState, ConfigFileRequest,
-        ConfigSetRequest, DocumentFormat, EditorSearch, LiveConverterAdapter, LiveSnapshot,
-        PatchOp, PlanSlot, RangeRequest, SearchRequest, SourceRequest, PROJECT_SVG_CSP,
-        WS_PROTOCOL_VERSION,
+        project_asset_response, render_cached, resolve_jump_pos, search_sync_payload,
+        select_tikz_engine, semantic_macro_definitions, serve_buffer_push, serve_config_set,
+        serve_config_write, serve_cursor, serve_debug, serve_print, serve_selection, tikz_document,
+        tikz_error_svg, tikz_hash_from_path, validate_config_cascade_with_override,
+        validate_override_content, watched_event_paths, watched_set, websocket_needs_reload,
+        AppState, ConfigFileRequest, ConfigSetRequest, DocumentFormat, EditorSearch,
+        LiveConverterAdapter, LiveSnapshot, PatchOp, PlanSlot, RangeRequest, SearchRequest,
+        SourceRequest, PROJECT_SVG_CSP, WS_PROTOCOL_VERSION,
     };
 
     fn live_snapshot(output: RenderOutput) -> LiveSnapshot {
@@ -7481,6 +7481,104 @@ Second paragraph here.
         let selection: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
         assert_eq!(selection["event"], "source-range");
         assert_eq!(selection["element_ids"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn markdown_math_rows_sync_forward_and_backward_like_tex_rows() {
+        let root = PathBuf::from("/tmp/mathpreview-markdown-math-rows.md");
+        let source = concat!(
+            "Before.\n\n",
+            "$$\n",
+            "\\begin{aligned}\n",
+            "  a &= b \\\\\n",
+            "    c &= d\n",
+            "\\end{aligned}\n",
+            "$$\n",
+        );
+        let initial = mathpreview_core::render_document_from_source(
+            &root,
+            source.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let group = initial
+            .sync
+            .math_rows
+            .first()
+            .expect("Markdown aligned display should publish row sync");
+        assert_eq!(initial.sync.math_rows.len(), 1);
+        assert_eq!(group.rows.len(), 2);
+        assert_eq!((group.rows[0].start_line, group.rows[0].start_col), (5, 3));
+        assert_eq!((group.rows[1].start_line, group.rows[1].start_col), (6, 5));
+        let element_id = group.element_id.clone();
+
+        let state = app_state_for_output(initial);
+        let mut rx = state.tx.subscribe();
+        let post_cursor = |line, col| {
+            serve_cursor(
+                axum::extract::State(state.clone()),
+                axum::Json(SourceRequest {
+                    file: root.clone(),
+                    line,
+                    col: Some(col),
+                    element_id: None,
+                    math_row: None,
+                    row_count: None,
+                    typing: None,
+                }),
+            )
+        };
+
+        post_cursor(5, 4).await;
+        let first: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(first["event"], "source-range");
+        assert_eq!(first["element_ids"], serde_json::json!([]));
+        assert_eq!(first["math_rows"][0]["id"], element_id);
+        assert_eq!(first["math_rows"][0]["count"], 2);
+        assert_eq!(first["math_rows"][0]["rows"], serde_json::json!([0]));
+
+        post_cursor(6, 6).await;
+        let second: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(second["event"], "source-range");
+        assert_eq!(second["math_rows"][0]["id"], element_id);
+        assert_eq!(second["math_rows"][0]["count"], 2);
+        assert_eq!(second["math_rows"][0]["rows"], serde_json::json!([1]));
+
+        serve_selection(
+            axum::extract::State(state.clone()),
+            axum::Json(RangeRequest {
+                file: root.clone(),
+                clear: false,
+                start_line: Some(5),
+                start_col: Some(3),
+                end_line: Some(6),
+                end_col: Some(12),
+            }),
+        )
+        .await;
+        let selection: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(selection["event"], "source-range");
+        assert_eq!(selection["element_ids"], serde_json::json!([]));
+        assert_eq!(selection["math_rows"][0]["id"], element_id);
+        assert_eq!(selection["math_rows"][0]["count"], 2);
+        assert_eq!(selection["math_rows"][0]["rows"], serde_json::json!([0, 1]));
+
+        let row_click = SourceRequest {
+            file: root.clone(),
+            line: 3,
+            col: Some(1),
+            element_id: Some(element_id.clone()),
+            math_row: Some(1),
+            row_count: Some(2),
+            typing: None,
+        };
+        assert_eq!(resolve_jump_pos(&state, &row_click, &root).await, (6, 5));
+
+        let stale_click = SourceRequest {
+            row_count: Some(3),
+            ..row_click
+        };
+        assert_eq!(resolve_jump_pos(&state, &stale_click, &root).await, (3, 1));
     }
 
     #[tokio::test]

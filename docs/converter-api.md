@@ -32,7 +32,7 @@ a loadable converter plugin system.
 | ID | Extensions | Root buffer | Additional buffers | Source sync | Assets |
 | --- | --- | --- | --- | --- | --- |
 | `latex` | `.tex`, `.ltx` | yes | includes, preamble files, and bibliographies | yes, including math rows | TikZ source payloads |
-| `markdown` | `.md`, `.markdown` | yes | no | yes | none |
+| `markdown` | `.md`, `.markdown` | yes | no | yes, including math rows | none |
 
 Automatic selection keeps the existing compatibility rule. `.md` and
 `.markdown` select Markdown, while every other extension falls back to the
@@ -242,7 +242,7 @@ A successful envelope has `status: "ok"` and a `result` object:
         "buffer_source": true,
         "multi_buffer_source": false,
         "source_sync": true,
-        "math_row_sync": false,
+        "math_row_sync": true,
         "block_patching": true,
         "dependency_tracking": true,
         "asset_payloads": false
@@ -424,7 +424,10 @@ Each `math_rows` entry identifies one rendered multi-row math element. Row
 `start_line` and `end_line` are inclusive and 1-based. `start_col` is the
 1-based UTF-8 byte column of the first non-whitespace content. A value of `0`
 means that the precise column is unknown, so a viewer should fall back to the
-enclosing math block's anchor.
+enclosing math block's anchor. Both bundled converters populate this field:
+LaTeX does so for its multi-row equation environments, while Markdown does so
+when a display contains an outer equation-row environment such as `aligned`,
+`gathered`, or `split`.
 
 Each dependency has this shape:
 

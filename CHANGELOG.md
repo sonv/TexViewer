@@ -13,6 +13,27 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.41] — 2026-08-31
+
+### Added
+
+- **Markdown multi-row math now has the same row interactions as TeX.**
+  Displays containing `aligned`, `alignedat`, `gathered`, `split`, or the
+  standard `align`/`gather`/`multline` family support row-only selection and
+  LaTeX copy, editor-to-viewer row highlighting, and row-precise click-back.
+
+### Fixed
+
+- **Markdown row sync retains exact authored byte columns inside lists and
+  blockquotes.** CommonMark's removed container prefixes are mapped back to
+  source before the shared TeX/Markdown row index is built. Nested matrices or
+  cases no longer inflate the outer equation's row count, and a bare `\\`
+  does not claim rows that MathJax did not render. Authored TeX escapes such as
+  `\|` inside GFM tables remain intact for rendering and copy.
+- **Standalone Markdown equation environments are passed directly to
+  MathJax.** `align`, `gather`, and `multline` are no longer incorrectly nested
+  inside an additional `\[...\]` display.
+
 ## [2.1.40] — 2026-08-31
 
 ### Added

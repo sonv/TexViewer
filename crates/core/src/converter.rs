@@ -755,7 +755,7 @@ fn markdown_metadata() -> ConverterMetadata {
             multi_buffer_source: false,
             source_sync: true,
             block_patching: true,
-            math_row_sync: false,
+            math_row_sync: true,
             dependency_tracking: true,
             asset_payloads: false,
         },
@@ -1534,6 +1534,39 @@ mod tests {
         document.converter.format = expected.format.clone();
         document.converter.capabilities.block_patching = false;
         assert!(document.validate_against(&expected).is_err());
+    }
+
+    #[test]
+    fn markdown_converter_advertises_and_serializes_math_rows() {
+        let source = concat!(
+            "$$\n",
+            "\\begin{aligned}\n",
+            "a &= b \\\\\n",
+            "  c &= d\n",
+            "\\end{aligned}\n",
+            "$$\n",
+        );
+        let converted = MarkdownConverter
+            .convert(
+                ConversionRequest::from_source("notes.md", source),
+                &HtmlOptions::default(),
+            )
+            .unwrap();
+
+        assert!(converted.converter.capabilities.math_row_sync);
+        assert_eq!(converted.sync.math_rows.len(), 1);
+        assert_eq!(converted.sync.math_rows[0].rows.len(), 2);
+        assert_eq!(converted.sync.math_rows[0].rows[0].start_line, 3);
+        assert_eq!(converted.sync.math_rows[0].rows[0].start_col, 1);
+        assert_eq!(converted.sync.math_rows[0].rows[1].start_line, 4);
+        assert_eq!(converted.sync.math_rows[0].rows[1].start_col, 3);
+
+        let json = serde_json::to_value(&converted).unwrap();
+        assert_eq!(
+            json["converter"]["capabilities"]["math_row_sync"],
+            serde_json::json!(true)
+        );
+        assert_eq!(json["sync"]["math_rows"][0]["rows"][1]["start_line"], 4);
     }
 
     #[test]

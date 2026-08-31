@@ -516,6 +516,30 @@ mod tests {
     }
 
     #[test]
+    fn markdown_math_rows_are_exposed_on_the_wire() {
+        let request = serde_json::json!({
+            "protocol": CONVERSION_PROTOCOL_V1,
+            "id": "markdown-rows",
+            "path": "notes.md",
+            "source": "$$\n\\begin{aligned}\n  a &= b \\\\\n    c &= d\n\\end{aligned}\n$$\n"
+        });
+        let mut output = Vec::new();
+        run_ndjson(
+            format!("{request}\n").as_bytes(),
+            &mut output,
+            &ConvertCommandOptions::default(),
+        )
+        .unwrap();
+        let result = &responses(&output)[0]["result"];
+
+        assert_eq!(result["converter"]["capabilities"]["math_row_sync"], true);
+        assert_eq!(result["sync"]["math_rows"][0]["rows"][0]["start_line"], 3);
+        assert_eq!(result["sync"]["math_rows"][0]["rows"][0]["start_col"], 3);
+        assert_eq!(result["sync"]["math_rows"][0]["rows"][1]["start_line"], 4);
+        assert_eq!(result["sync"]["math_rows"][0]["rows"][1]["start_col"], 5);
+    }
+
+    #[test]
     fn public_builders_construct_a_custom_converter_artifact() {
         let mut capabilities = mathpreview_core::ConverterCapabilities::default();
         capabilities.buffer_source = true;

@@ -142,6 +142,23 @@ spans and fenced code blocks stay literal. Live reload, editor-to-browser and
 browser-to-editor source sync, themes, sizing controls, search, and the rest of
 the browser navigation work for Markdown too. The Markdown `print` control
 opens the browser print dialog instead of invoking a TeX compiler.
+Multi-row displays use the same row selection, row-only LaTeX copy, and exact
+editor sync as TeX. Put the rows in a MathJax equation-row environment, for
+example:
+
+```markdown
+$$
+\begin{aligned}
+f(x) &= x^2 \\
+f'(x) &= 2x
+\end{aligned}
+$$
+```
+
+`aligned`, `alignedat`, `gathered`, `split`, and the standard
+`align`/`gather`/`multline` family are recognized. A bare `\\` without a row
+environment remains ordinary display math because MathJax does not create
+individually selectable table rows for it.
 Markdown prose, formatted text, tables, and fenced or indented code carry
 token-level source anchors, so cursor follow, visual selections, and browser
 click-back land on the visible word or code token instead of the whole block.
