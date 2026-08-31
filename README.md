@@ -788,13 +788,17 @@ printf '%s\n' \
 ```
 
 Rust callers can use the object-safe `DocumentConverter` contract directly.
-The bundled registry selects `latex` or `markdown`, while hosts can implement
-their own converter and degrade source sync or block patching according to its
-declared capabilities. The conversion version is independent of the browser
-WebSocket version.
+The bundled selector supports `latex` and `markdown`. A custom Rust host can
+own, select, and call its own converter implementation, then degrade source
+sync or block patching according to the declared capabilities. The stock CLI
+and live server do not yet load external converters from TOML or executable
+commands. The conversion version is independent of the browser WebSocket
+version.
 
-See [Converter API v1](docs/converter-api.md) for the complete request and
-response schema, config/macro precedence, extension guidance, and trust model.
+See [Converter and viewer architecture](docs/architecture.md) for ownership,
+data flow, invariants, current coupling, and the extension roadmap. See
+[Converter API v1](docs/converter-api.md) for the complete request and response
+schema, config and macro precedence, and trust model.
 
 ### MathJax and offline setup
 

@@ -8,16 +8,24 @@ document or editor buffer -> converter -> viewer-ready document -> browser viewe
 
 The converter owns source-language behavior. It returns HTML blocks, source
 locations, dependencies, assets, diagnostics, and the runtime settings needed
-to place those blocks in a viewer. The browser layer continues to own the page
-shell, WebSocket transport, block diffing, source navigation, controls, and
-MathJax lifecycle.
+to place those blocks in a viewer. The live host owns shell construction,
+scheduling, watches, block diff decisions, WebSocket transport, source
+navigation endpoints, and asset processing. Browser code applies updates,
+runs controls and source interactions, and owns MathJax typesetting.
 
 MathPreview bundles LaTeX and Markdown converters. Applications written in
 Rust can call the in-process contract, while other languages can use the
 persistent JSON protocol exposed by `mathpreview-cli convert`.
 
 The converter API version is independent of MathPreview's WebSocket protocol.
-Adding a converter does not force open browser tabs to reload.
+Adding a converter implementation does not by itself change browser messages.
+Changing head-level runtime requirements or switching the active converter may
+still require a full shell reload.
+
+See [Converter and viewer architecture](architecture.md) for the complete
+ownership map, live update flow, artifact invariants, current limitations, and
+extension checklist. In particular, v1 is a viewer artifact boundary, not yet
+a loadable converter plugin system.
 
 ## Bundled converters
 
@@ -53,18 +61,20 @@ assert_eq!(converter.metadata().api_version, 1);
 assert!(!output.blocks.is_empty());
 ```
 
-`DocumentConverter` is object-safe, so a Rust host can keep custom converters
+`DocumentConverter` is object-safe, so a custom Rust host can keep converters
 behind `Box<dyn DocumentConverter>`. Each converter declares a stable ID,
 extensions, format, API version, and explicit capabilities. A viewer should
 check those capabilities and degrade cleanly instead of guessing support from
-one non-empty result.
+one non-empty result. MathPreview's bundled selector and live server currently
+know only LaTeX and Markdown. They do not provide runtime registration for a
+custom implementation.
 
-The new converter-specific artifact structs are non-exhaustive. Custom Rust
-converters should use the provided constructors and `with_*` builders instead
-of struct literals. Shared renderer and sync types likewise expose construction
-or recording APIs. This leaves room for additive v1 wire fields while the Rust
-crate continues to follow semantic versioning. JSON clients should ignore
-fields they do not recognize.
+Most record-shaped converter artifact structs declared in `converter.rs` are
+non-exhaustive. Open string wrappers and some aliased renderer and sync wire
+types remain exhaustive Rust structs even though they expose construction or
+recording APIs. Custom Rust converters should prefer the provided constructors
+and `with_*` builders. An additive JSON change still needs a Rust semantic
+versioning review. JSON clients should ignore fields they do not recognize.
 
 The older `render_document` and `render_document_from_source` functions keep
 their full-page `RenderOutput` contract. They remain on the established render
@@ -83,6 +93,19 @@ mathpreview-cli convert
 Write one JSON object per line. The process writes one response for every
 nonblank input line and flushes it immediately. Newlines inside `source` must
 therefore be JSON escapes (`\n`), not literal record separators.
+
+Requests are processed synchronously and sequentially. Keeping the process
+alive saves startup cost, but it does not create a document session, parser
+cache, cancellation channel, or out-of-order response stream. Hosts should
+debounce edits and use `id` to discard stale results. A record error keeps the
+stream alive. An I/O failure, panic, signal, or process exit does not produce a
+framed response, so the host must restart the process. Stdout is reserved for
+NDJSON and logs belong on stderr.
+
+Input records and layer counts are bounded. Response size, block count, asset
+payload size, conversion time, and memory are not bounded by v1. An embedding
+host should apply its own deadline and output limits when invoking an
+untrusted or external implementation.
 
 A one-shot shell example is:
 
@@ -151,11 +174,15 @@ mathpreview-cli convert \
   --mathjax-url https://example.test/mathjax/tex-svg.js
 ```
 
-The effective cascade is built-in defaults, global config/macros, project
-config/macros, process flags, then request `options`. Later files win using the
-same merge rules as `render` and `serve`. Missing prospective config and macro
-paths are reported as dependencies with `exists: false`, allowing a host to
-watch for their creation.
+Config and macro layers have related but distinct cascades. Configuration uses
+built-in defaults, global config, project config, process `--config` files,
+then request config files. TeX macros use bundled compatibility definitions,
+the document preamble and its referenced local preamble files, the global
+override, the project override, process `--macros` files, then request macro
+files. Markdown has no document-preamble step. Later layers win using the same
+merge rules as `render` and `serve`. Missing prospective config and macro paths
+are reported as dependencies with `exists: false`, allowing a host to watch for
+their creation.
 
 The request-level `options.mathjax_url` wins over process-level
 `--mathjax-url`. With neither set, `convert` reports the jsDelivr MathJax 4
@@ -320,12 +347,12 @@ Each `blocks` entry contains:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `id` | string | Viewer element ID for this block. |
-| `hash` | string | Hash of rendered content and source-sensitive metadata. |
+| `hash` | string | Opaque exact-block fingerprint used for DOM-state reuse. Compare only for equality. |
 | `diff_hash` | string | Position-insensitive reconciliation hash. Treat it as opaque. |
-| `src` | string or `null` | Opaque `data-src` value for the block's primary anchor. |
+| `src` | string or `null` | `data-src` value for the block's primary anchor. Generic clients should treat it as protocol data. MathPreview's current browser expects its source path, line, and column convention. |
 | `source_anchors` | array | Additional `{ "id": string, "src": string }` anchors inside the block. |
 | `html` | string | Complete HTML for the block. |
-| `sub_blocks` | object or `null` | Optional fine-grained theorem or proof patch state. |
+| `sub_blocks` | object or `null` | Optional fine-grained patch state for a known structured block. |
 
 Each `source_anchors` entry has an `id` string naming the rendered element and
 a `src` string suitable for its `data-src` attribute.
@@ -389,9 +416,9 @@ and `byte` is a 0-based UTF-8 byte offset in that file. These units match
 Neovim's buffer API for both bundled converters. Entry ranges are half-open,
 so `end` is the first position outside the element. A zero-width anchor may
 have equal endpoints. `kind` is `leaf`, `container`, or `block`. `label` is an
-authored source label when one exists. The `src` strings in block metadata are
-for HTML attributes. Use these structured entries rather than parsing `src`
-when exact source positions matter.
+authored label or visible lookup text when one is available. The `src` strings
+in block metadata are for HTML attributes. Use these structured entries rather
+than parsing `src` when exact source positions matter.
 
 Each `math_rows` entry identifies one rendered multi-row math element. Row
 `start_line` and `end_line` are inclusive and 1-based. `start_col` is the
@@ -485,26 +512,46 @@ The resolved `runtime.viewer` fields are:
 
 Important result invariants:
 
-- `blocks` is ordered and full-length. `hash` tracks rendered content, while
-  `diff_hash` remains stable across source-position-only changes. Structured
-  theorem and proof blocks may include `sub_blocks` for fine-grained patches.
+- `blocks` is ordered and full-length. It is not a sparse patch. Each HTML
+  value contains exactly one top-level `.blk` element with no nested `.blk`.
+  Its outer ID, block hash, and source marker match its metadata.
+- Treat block IDs, generated IDs, `src`, `hash`, `diff_hash`, and their
+  algorithms as opaque protocol data. Equality of `hash` means the previous
+  full block subtree is reusable except for the outer and source-anchor
+  metadata the current client resynchronizes. Equality of `diff_hash` is the
+  supported comparison for semantic block reconciliation. Known structured
+  blocks may include `sub_blocks` for fine-grained patches.
 - `body_html` is the complete document body. It is equivalent to concatenating
   the ordered block HTML and is convenient for an initial or full replacement.
+- Every element named by `sync` or `source_anchors` exists in the returned
+  HTML. Top-level block IDs and generated non-label IDs are unique. Consumers
+  cannot assume authored label-derived IDs are unique because repeated TeX
+  labels can produce collisions. Source anchors correspond one-to-one with
+  their matching `[id][data-src]` descendants in DOM order.
 - `sync` contains only public source entries and math-row mappings. Internal
   lookup caches are not serialized.
-- `dependencies` identifies root, included, bibliography, config, and macro
-  paths a host may watch. `kind` is an open string for future converters.
+- `dependencies` contains the inputs a converter claiming
+  `dependency_tracking` asks a host to watch. The bundled paths cover the root,
+  includes, bibliographies, config, and macro files. `kind` is an open string
+  for future converters.
 - `assets` carries converter-owned payloads. The bundled LaTeX converter uses
   `kind: "tikz-source"`, JSON encoding, and payload media type
   `application/vnd.mathpreview.tikz-source+json`. Its intended output media
-  type is `image/svg+xml`. Conversion does not compile that trusted-project
-  source.
+  type is `image/svg+xml`. Bundled conversion does not compile that
+  trusted-project source.
 - `runtime.math` carries resolved MathJax macros and package requirements, so
   custom LaTeX macros are not lost when the viewer owns the page shell. It also
   carries the script URL and may be `null` for a converter that needs no math
   runtime.
 - `runtime.viewer` carries resolved display settings needed by that shell.
 - `diagnostics` is structured and does not replace the top-level request error.
+
+Capabilities are promises made by the converter. The host must not infer
+support from a partially populated result. `validate_contract` checks the API
+version and nonempty converter identity. `validate_against` also checks exact
+metadata equality. These functions do not validate or sanitize HTML, hashes,
+IDs, sync ranges, URLs, paths, assets, or the consistency between `body_html`
+and `blocks`.
 
 ### Error response
 
@@ -535,13 +582,23 @@ The `error` object has a `code` string from that list and a human-readable
 A viewer integrating another converter should preserve the document even when
 optional metadata is unavailable:
 
+- no `buffer_source`: require a saved root or reject the unsaved request
+- no `multi_buffer_source`: save or reject child overrides instead of silently
+  dropping them
 - no `source_sync`: render normally, but disable forward/inverse source jumps
 - no `math_row_sync`: fall back from individual rendered rows to the enclosing
   equation anchor
 - no `block_patching`: replace the whole body rather than applying positional
   patches
-- no `dependency_tracking`: watch only the root and explicit config inputs
-- no `asset_payloads`: do not register generated-asset handlers.
+- no `dependency_tracking`: watch only the root and explicit config, macro, and
+  host inputs
+- no `asset_payloads`: do not assume an asset payload exists or can be
+  processed.
+
+This list is normative guidance for a general host. The bundled live server
+currently gates dependency watching and block patching explicitly. Some other
+behavior still follows the closed LaTeX and Markdown format paths or the
+presence of returned data.
 
 ## Versioning
 
@@ -574,23 +631,30 @@ cargo test -p mathpreview-cli convert::tests
 ## Trust and extension boundary
 
 `mathpreview-cli convert` is a local API, not a sandbox. It reads paths with the
-process's permissions. Configured text macros may intentionally emit HTML, and
-`runtime.math.config` may contain trusted user JavaScript for the viewer to
-evaluate. A host must not apply untrusted project config or compile returned
-TikZ payloads without an explicit trust decision. Built-in Markdown raw HTML
-remains escaped and inert.
+process's permissions. All converter-produced HTML is trusted active content
+unless the host sanitizes it. `runtime.math.script_url` loads browser code,
+configured text macros may intentionally emit HTML, and `runtime.math.config`
+may contain trusted user JavaScript. `root_file`, dependency paths, and sync
+paths can influence asset roots, file watches, and editor actions. A host must
+not apply untrusted project config, execute an untrusted converter, or compile
+returned TikZ payloads without an explicit trust decision. Built-in Markdown
+raw HTML remains escaped and inert, but that guarantee does not apply to
+arbitrary converter output.
 
-The Rust trait is ready for host-provided converter implementations, and the
-wire result is source-language-neutral. The bundled `mathpreview-cli serve`
-currently auto-registers only the LaTeX and Markdown converters. It does not
-yet execute an arbitrary external converter command from TOML. A future
-Pandoc, R Markdown, Quarto, or Typst adapter can target this artifact contract
-without changing the browser viewer, but automatic command registration should
-add an explicit process and trust policy rather than silently executing project
-configuration.
+The Rust trait is ready for implementations owned by a custom host, and the
+wire result is AST-free and format-extensible, though viewer-oriented. The bundled
+`mathpreview-cli convert` selector and `mathpreview-cli serve` currently know
+only LaTeX and Markdown. They do not execute an arbitrary external converter
+command from TOML or ingest an external artifact into the live server. A future
+Pandoc, R Markdown, Quarto, or Typst adapter can target this contract, but it
+must emit MathPreview's block, hash, source, and math DOM conventions for the
+viewer features it claims. Automatic command registration also needs an
+explicit process and trust policy.
 
 The built-in live server consumes the same neutral document artifact in
-process. It keeps the established preamble cache, full-page shell, and parser
-sidecars around that boundary, so a keystroke does not pay for NDJSON or a
-second render. The stdio protocol is the stable cross-language boundary. The
-Rust trait is the low-overhead boundary for in-process integrations.
+process. It keeps the established preamble and bibliography cache plus a
+private preamble and viewer sidecar around that boundary, so a keystroke does
+not pay for NDJSON or a second render. Cached updates still use specialized
+LaTeX and Markdown paths before converging on the shared artifact finalizer.
+The stdio protocol is the stable cross-language boundary. The Rust trait is
+the low-overhead boundary for in-process integrations.

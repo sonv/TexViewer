@@ -13,6 +13,22 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.40] — 2026-08-31
+
+### Added
+
+- **The converter and viewer architecture now has a durable maintainer guide.**
+  It records layer ownership, all static and live data paths, artifact and DOM
+  invariants, capability fallbacks, cache and sidecar boundaries, versioning,
+  trust, current limits, and the work required to add another converter.
+
+### Changed
+
+- **The converter reference now distinguishes the v1 artifact API from a
+  future plugin system.** It documents the static LaTeX and Markdown selectors,
+  sequential full-snapshot NDJSON behavior, private live-viewer coupling,
+  validation limits, trusted HTML boundary, and honest degradation rules.
+
 ## [2.1.39] — 2026-08-30
 
 ### Added
