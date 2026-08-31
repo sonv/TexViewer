@@ -244,12 +244,24 @@ pub enum NodeKind {
         /// visible heading text (for example `Fast math` → `fast-math`).
         anchor: String,
     },
-    /// A configured fenced Markdown block (`:::name Optional title` … `:::`).
-    /// The frontend recognizes only block names enabled in the resolved
-    /// Markdown configuration; the body remains ordinary parsed Markdown.
+    /// A configured Markdown block, from either `:::` fences or a literal
+    /// boundary template. The frontend recognizes only enabled block names,
+    /// and the body remains ordinary parsed Markdown.
     MarkdownCustomBlock {
         name: String,
         title: Option<String>,
+        /// Optional authored fragment label captured by a configured literal
+        /// block syntax. It is kept separate from the visible format label.
+        #[serde(default)]
+        label: Option<String>,
+        /// Collision-free document anchor assigned from `label` after the
+        /// complete Markdown tree is available.
+        #[serde(default)]
+        anchor: Option<String>,
+        /// Whether this invocation explicitly requests card presentation.
+        /// Omitted and false captures retain the configured block appearance.
+        #[serde(default)]
+        card: bool,
         /// Position- and config-independent hash of the exact authored body.
         /// Live reveal state is restored only when this identity is unchanged.
         #[serde(default)]
