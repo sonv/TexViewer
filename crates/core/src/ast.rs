@@ -120,11 +120,15 @@ pub enum NodeKind {
     Document,
     /// Raw text run.
     Text(String),
-    /// `\section{...}`, `\subsection{...}`, etc.
+    /// `\section{...}`, `\section*{...}`, `\subsection{...}`, etc.
     Section {
         level: u8,
         title: String,
         label: Option<String>,
+        /// Starred sectioning commands render as headings but do not advance
+        /// section counters or reset section-scoped theorem/equation counters.
+        #[serde(default)]
+        starred: bool,
         number: Option<String>,
     },
     /// `\appendix` switches following section-scoped counters to appendix

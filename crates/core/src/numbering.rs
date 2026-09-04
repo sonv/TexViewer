@@ -453,8 +453,17 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 level,
                 title: _,
                 label,
+                starred,
                 number,
             } => {
+                if *starred {
+                    // LaTeX's starred sectioning commands are structural
+                    // headings only: they neither consume a section number nor
+                    // reset theorem/equation counters scoped to that level.
+                    *number = None;
+                    state.pending_labels.clear();
+                    continue;
+                }
                 let idx = (*level as usize).min(state.section_counters.len() - 1);
                 state.section_counters[idx] += 1;
                 for c in state.section_counters.iter_mut().skip(idx + 1) {
@@ -1679,6 +1688,44 @@ mod tests {
         assert_eq!(labels.number.get("thm:t2").unwrap(), "2.1");
         assert_eq!(labels.display.get("thm:t1").unwrap(), "Theorem 1.1");
         assert_eq!(labels.display.get("lem:l1").unwrap(), "Lemma 1.2");
+    }
+
+    #[test]
+    fn starred_section_does_not_advance_or_reset_counters() {
+        let mut ns = nodes(
+            "\\section{One}\\label{sec:one}\n\
+             \\begin{theorem}\\label{thm:one}A\\end{theorem}\n\
+             \\begin{equation}\\label{eq:one}w\\end{equation}\n\
+             \\section*{Interlude}\\label{sec:star}\n\
+             \\begin{theorem}\\label{thm:two}B\\end{theorem}\n\
+             \\begin{equation}\\label{eq:two}x\\end{equation}\n\
+             \\section{Two}\\label{sec:two}\n\
+             \\begin{theorem}\\label{thm:three}C\\end{theorem}\n\
+             \\begin{equation}\\label{eq:three}y\\end{equation}\n",
+        );
+        let labels = assign(&mut ns);
+
+        assert_eq!(labels.number.get("sec:one").map(String::as_str), Some("1"));
+        assert!(!labels.number.contains_key("sec:star"));
+        assert_eq!(
+            labels.number.get("thm:one").map(String::as_str),
+            Some("1.1")
+        );
+        assert_eq!(
+            labels.number.get("thm:two").map(String::as_str),
+            Some("1.2")
+        );
+        assert_eq!(labels.number.get("eq:one").map(String::as_str), Some("1.1"));
+        assert_eq!(labels.number.get("eq:two").map(String::as_str), Some("1.2"));
+        assert_eq!(labels.number.get("sec:two").map(String::as_str), Some("2"));
+        assert_eq!(
+            labels.number.get("thm:three").map(String::as_str),
+            Some("2.1")
+        );
+        assert_eq!(
+            labels.number.get("eq:three").map(String::as_str),
+            Some("2.1")
+        );
     }
 
     #[test]

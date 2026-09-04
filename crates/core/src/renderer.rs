@@ -1767,6 +1767,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             title,
             label,
             number,
+            ..
         } => {
             let id = label
                 .as_deref()
@@ -7154,6 +7155,50 @@ end = '{% endcall %}'
             out.body_html.contains(r#"data-tex="\(L^p\)""#),
             "math span should carry the $L^p$ payload; got: {}",
             out.body_html,
+        );
+    }
+
+    #[test]
+    fn starred_section_renders_as_an_unnumbered_heading() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\section{Numbered}\nBefore.\n\\section*{Unnumbered}\nInside.\n\\section{Next}\nAfter.\n"
+                .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let body = &out.body_html;
+
+        assert_eq!(body.matches(r#"class="sec-h2""#).count(), 3, "{body}");
+        assert_eq!(body.matches(r#"class="sec-num""#).count(), 2, "{body}");
+        assert!(body.contains("Unnumbered</h2>"), "{body}");
+        assert!(
+            body.contains(r#"<span class="sec-num">1</span> Numbered"#),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"<span class="sec-num">2</span> Next"#),
+            "{body}"
+        );
+
+        let heading_sync = out
+            .sync
+            .entries
+            .iter()
+            .find(|entry| entry.start.line == 3 && entry.kind == crate::sync::SyncKind::Block)
+            .expect("starred heading should retain block source sync");
+        assert_ne!(
+            out.sync
+                .lookup_leaf_by_source_position(Path::new("t.tex"), 3, 1)
+                .map(|entry| entry.element_id.as_str()),
+            Some(heading_sync.element_id.as_str()),
+            "heading must stay out of cursor-flash lookup"
+        );
+        assert!(
+            out.sync
+                .leaves_in_range(Path::new("t.tex"), 3, 1, 3, 99)
+                .contains(&heading_sync.element_id),
+            "selection sync should include the starred heading"
         );
     }
 

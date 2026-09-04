@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.43] — 2026-09-04
+
+### Fixed
+
+- **Starred LaTeX section commands render as real unnumbered headings.**
+  `\part*`, `\chapter*`, `\section*`, and every subsection variant now retain
+  heading navigation and source sync without displaying or consuming a section
+  number. They also leave section-scoped theorem and equation counters intact.
+  TeX-valid whitespace or comments between the command and `*` are supported.
+
 ## [2.1.42] — 2026-08-31
 
 ### Added

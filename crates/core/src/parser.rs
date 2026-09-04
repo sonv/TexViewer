@@ -2490,10 +2490,25 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                // Sectioning.
-                if let Some(level) = section_level(&cmd) {
+                // Sectioning. `command_word_end` includes a trailing star, so
+                // normalize the command name while retaining whether this is
+                // an unnumbered LaTeX heading (`\section*`, etc.).
+                let (section_cmd, adjacent_star) = match cmd.strip_suffix('*') {
+                    Some(base) => (base, true),
+                    None => (cmd.as_str(), false),
+                };
+                if let Some(level) = section_level(section_cmd) {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     self.advance_to(cmd_name_end);
+                    // TeX discards whitespace after a control word before the
+                    // section macro tests for `*`, so `\section *{Title}` and
+                    // a comment-continued spelling behave like `\section*`.
+                    self.skip_tex_argument_space();
+                    let section_starred = adjacent_star || self.peek_byte() == Some(b'*');
+                    if !adjacent_star && section_starred {
+                        self.advance(1);
+                        self.skip_tex_argument_space();
+                    }
                     self.skip_optional_arg();
                     let title = self.balanced_brace_arg().unwrap_or_default();
                     let mut node = Node {
@@ -2501,6 +2516,7 @@ impl<'a> Parser<'a> {
                             level,
                             title,
                             label: None,
+                            starred: section_starred,
                             number: None,
                         },
                         span: self.span_from(cmd_start),
@@ -6415,13 +6431,65 @@ After $y$.
                 level,
                 title,
                 label,
+                starred,
                 ..
             } => {
                 assert_eq!(*level, 2);
                 assert_eq!(title, "Intro");
                 assert_eq!(label.as_deref(), Some("sec:intro"));
+                assert!(!starred);
             }
             other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn starred_sectioning_commands_are_headings() {
+        for (command, expected_level) in [
+            ("part", 0),
+            ("chapter", 1),
+            ("section", 2),
+            ("subsection", 3),
+            ("subsubsection", 4),
+            ("paragraph", 5),
+            ("subparagraph", 6),
+        ] {
+            let source = format!(r"\{command}*{{Unnumbered}}\label{{sec:{command}}}");
+            let expected_label = format!("sec:{command}");
+            let nodes = parse(&source);
+            assert_eq!(nodes.len(), 1, "{command}* should be one heading node");
+            match &nodes[0].kind {
+                NodeKind::Section {
+                    level,
+                    title,
+                    label,
+                    starred,
+                    ..
+                } => {
+                    assert_eq!(*level, expected_level, "wrong level for {command}*");
+                    assert_eq!(title, "Unnumbered");
+                    assert_eq!(label.as_deref(), Some(expected_label.as_str()));
+                    assert!(starred, "{command}* lost its star");
+                }
+                other => panic!("{command}* parsed as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn starred_section_allows_tex_space_or_comments_before_star() {
+        for source in [
+            "\\section *{Spaced}",
+            "\\section % continued\n*{Comment continued}",
+        ] {
+            let nodes = parse(source);
+            assert!(matches!(
+                nodes.as_slice(),
+                [Node {
+                    kind: NodeKind::Section { starred: true, .. },
+                    ..
+                }]
+            ));
         }
     }
 
