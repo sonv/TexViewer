@@ -34,7 +34,8 @@ original Tauri sketch) lives in [`DESIGN.md`](./DESIGN.md).
   source line.
 - **Macro extraction** from real preambles — `\newcommand`,
   `\DeclareMathOperator`, `\NewDocumentCommand`, `\def`, `\let`,
-  `\DeclarePairedDelimiter`, and the `\newdelim` wrapper. Multi-file scan
+  `\DeclarePairedDelimiter`, `\DeclarePairedDelimiterX` / `XPP`, and the
+  `\newdelim` / `\newdelimX` wrappers. Multi-file scan
   follows `\usepackage{name}` to local `.sty` files. TeX-internal forms
   (`\expandafter`, `\csname`, `@`-namespaced bodies, `##` parameters) are
   filtered to keep MathJax from looping on unsupported expansions.
@@ -1356,10 +1357,10 @@ silently doing nothing.
 ### Override macros for the viewer
 
 Some macro definitions don't translate cleanly to MathJax — typically
-anything using `\DeclarePairedDelimiter`, `\xparse`, or
-`\NewDocumentCommand`, or anything whose body reaches for `@`-internal
-TeX primitives. Drop a plain `\newcommand` replacement into a macros
-file and the viewer will use it instead of the source's version.
+complex `\xparse` / `\NewDocumentCommand` signatures or anything whose body
+still reaches for unsupported `@`-internal TeX primitives. Drop a plain
+`\newcommand` replacement into a macros file and the viewer will use it
+instead of the source's version.
 
 Cascade (lowest → highest priority — later definitions override earlier
 ones by name):
@@ -1448,11 +1449,14 @@ your editor live-reload the same way — the file watcher tracks all
 override paths. If the file changes in nvim while the dialog is still open, a
 dialog Save stops with a conflict instead of overwriting the newer disk copy.
 
-The override's signature has to match how the macro is called in the
-body. `\DeclarePairedDelimiter[..size..]{..body..}` calls become plain
-`\set{..body..}` calls if you express the override as
-`\newcommand{\set}[1]{...}` — the optional `[size]` argument is
-silently dropped (an "approximate output" tradeoff).
+Paired-delimiter declarations are translated to always-scaled, fixed-arity
+MathJax macros. Plain calls such as `\set{x \given P(x)}` work for
+`\DeclarePairedDelimiter`, `\DeclarePairedDelimiterX`,
+`\DeclarePairedDelimiterXPP`, `\newdelim`, and `\newdelimX`; X/XPP argument
+counts, `\delimsize`, empty fences, and XPP pre/post code are preserved.
+This remains a preview approximation: starred calls such as `\set*{...}` and
+explicit-size calls such as `\set[\Big]{...}` do not yet retain mathtools'
+special call syntax.
 
 ### Macros in regular text
 

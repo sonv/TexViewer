@@ -745,6 +745,137 @@ mod tests {
     }
 
     #[test]
+    fn included_preamble_paired_delimiter_x_reaches_runtime() {
+        let dir = temp_dir("paired-delimiter-x-input");
+        let root = dir.join("main.tex");
+        let definitions = dir.join("defs.tex");
+        fs::write(
+            &root,
+            concat!(
+                "\\documentclass{article}\n",
+                "\\input{defs}\n",
+                "\\begin{document}\n",
+                "$\\PairedFromInput{x}{y}$\n",
+                "$\\SetFromWrapper{x \\st y}$\n",
+                "\\end{document}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &definitions,
+            concat!(
+                "\\usepackage{mathtools}\n",
+                "\\DeclarePairedDelimiterX{\\PairedFromInput}[2]",
+                "{\\langle}{\\rangle}{#1\\,\\delimsize\\vert\\,#2}\n",
+                "\\newdelimX\\SetFromWrapper[1]\\{\\}{",
+                "\\renewcommand{\\st}{\\SV@st{\\delimsize}}#1}\n",
+            ),
+        )
+        .unwrap();
+        let request = serde_json::json!({
+            "protocol": CONVERSION_PROTOCOL_V1,
+            "id": "paired-delimiter-x-input",
+            "path": root,
+        });
+        let mut output = Vec::new();
+        run_ndjson(
+            format!("{request}\n").as_bytes(),
+            &mut output,
+            &ConvertCommandOptions::default(),
+        )
+        .unwrap();
+        let messages = responses(&output);
+        let result = &messages[0]["result"];
+
+        assert_eq!(messages[0]["status"], "ok", "{}", messages[0]);
+        let definition = result["runtime"]["math"]["macros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "PairedFromInput")
+            .expect("included preamble should define PairedFromInput");
+        assert_eq!(definition["arguments"], 2);
+        assert_eq!(
+            definition["body"],
+            "\\left\\langle #1\\,\\middle\\vert\\,#2 \\right\\rangle"
+        );
+        let wrapper = result["runtime"]["math"]["macros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "SetFromWrapper")
+            .expect("included newdelimX wrapper should define SetFromWrapper");
+        assert_eq!(wrapper["arguments"], 1);
+        assert_eq!(wrapper["body"], "\\left\\{ #1 \\right\\}");
+        let canonical_definitions = definitions.canonicalize().unwrap();
+        assert!(result["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|dependency| dependency["kind"] == "include"
+                && dependency["path"].as_str() == canonical_definitions.to_str()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unsaved_preamble_paired_delimiter_x_override_reaches_runtime() {
+        let dir = temp_dir("paired-delimiter-x-live-input");
+        let root = dir.join("main.tex");
+        let definitions = dir.join("defs.tex");
+        fs::write(
+            &root,
+            concat!(
+                "\\documentclass{article}\n",
+                "\\input{defs}\n",
+                "\\begin{document}\n",
+                "$\\LivePaired{x}{y}$\n",
+                "\\end{document}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &definitions,
+            "\\DeclarePairedDelimiterX{\\LivePaired}[2]{(}{)}{\\mathrm{OLD}}\n",
+        )
+        .unwrap();
+        let request = serde_json::json!({
+            "protocol": CONVERSION_PROTOCOL_V1,
+            "id": "paired-delimiter-x-live-input",
+            "path": root,
+            "file_overrides": {
+                definitions.to_string_lossy().to_string(): concat!(
+                    "\\DeclarePairedDelimiterX{\\LivePaired}[2]",
+                    "{\\lbrack}{\\rbrack}{#1\\delimsize\\Vert#2}\n",
+                )
+            }
+        });
+        let mut output = Vec::new();
+        run_ndjson(
+            format!("{request}\n").as_bytes(),
+            &mut output,
+            &ConvertCommandOptions::default(),
+        )
+        .unwrap();
+        let messages = responses(&output);
+        let result = &messages[0]["result"];
+
+        assert_eq!(messages[0]["status"], "ok", "{}", messages[0]);
+        let definition = result["runtime"]["math"]["macros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|definition| definition["name"] == "LivePaired")
+            .expect("unsaved included preamble should define LivePaired");
+        assert_eq!(definition["arguments"], 2);
+        assert_eq!(
+            definition["body"],
+            "\\left\\lbrack #1\\middle\\Vert#2 \\right\\rbrack"
+        );
+        assert!(!definition["body"].as_str().unwrap().contains("OLD"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn oversized_request_errors_then_resynchronizes() {
         const TEST_LIMIT: usize = 256;
         let mut input = vec![b'x'; TEST_LIMIT + 1];

@@ -13,6 +13,24 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.44] — 2026-09-15
+
+### Fixed
+
+- **Extended mathtools paired delimiters now survive preamble inputs.**
+  `\DeclarePairedDelimiterX`, `\DeclarePairedDelimiterXPP`, and the common
+  `\newdelimX` wrapper are extracted from root, local package, and recursively
+  `\input`-chased preambles, including unsaved included-file buffers. Argument
+  counts, braced or token delimiters, `\delimsize`, empty fences, and XPP
+  pre/post code are retained in the MathJax approximation.
+- **Local helper redefinitions inside paired-delimiter bodies stay local.**
+  They no longer replace a global macro during preamble scanning; bodies that
+  delegate only through unsupported private TeX helpers fall back to the
+  bundled public `\given` / `\st` approximations instead of dropping the outer
+  delimiter macro. Definitions written with different declaration syntaxes
+  are replayed in source order, while declaration-shaped code stored inside a
+  macro body is neither promoted globally nor removed from that body.
+
 ## [2.1.43] — 2026-09-04
 
 ### Fixed

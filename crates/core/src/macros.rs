@@ -14,6 +14,7 @@
 //! warning and keep going.
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -297,6 +298,19 @@ struct Extractor {
     raw: String,
 }
 
+/// One successfully parsed declaration waiting to be applied. Each syntax
+/// scanner walks the full source independently, so declarations must be
+/// merged by their original byte offset before applying last-definition-wins
+/// semantics.
+struct PendingMacro {
+    offset: usize,
+    name: String,
+    body: String,
+    n_args: u8,
+    default: Option<String>,
+    source: String,
+}
+
 impl Extractor {
     fn new() -> Self {
         Self {
@@ -317,6 +331,11 @@ impl Extractor {
         // Strip line comments before scanning so a `%` doesn't accidentally
         // eat half a definition.
         let cleaned = strip_line_comments(src);
+        let paired_ranges = paired_delimiter_declaration_ranges(&cleaned);
+        // Command definitions inside an X/XPP replacement body are local to
+        // the paired-delimiter invocation. Do not mistake them for global
+        // preamble declarations when the syntax-specific scanners run.
+        let command_source = mask_source_ranges(&cleaned, &paired_ranges);
 
         // \usepackage[opts]{a,b,c} and \RequirePackage{...}
         static PKG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -333,27 +352,49 @@ impl Extractor {
             }
         }
 
+        let mut declarations = Vec::new();
+
         // \newcommand / \renewcommand / \providecommand
-        self.scan_newcommand_like(&cleaned, file);
+        self.scan_newcommand_like(&command_source, file, &mut declarations);
 
         // \DeclareMathOperator[*]
-        self.scan_declare_math_operator(&cleaned, file);
+        self.scan_declare_math_operator(&command_source, file, &mut declarations);
 
         // \NewDocumentCommand / \RenewDocumentCommand / \ProvideDocumentCommand
-        self.scan_xparse(&cleaned, file);
+        self.scan_xparse(&command_source, file, &mut declarations);
 
         // \def and \edef (\edef normalized to \def)
-        self.scan_def(&cleaned, file);
+        self.scan_def(&command_source, file, &mut declarations);
 
         // \let\new=\old   (or \let\new\old)
-        self.scan_let(&cleaned, file);
+        self.scan_let(&command_source, file, &mut declarations);
 
         // \DeclarePairedDelimiter and common wrappers (e.g. svmacro.sty's
         // \newdelim) — lower to a 1-arg \newcommand using \left/\right.
-        self.scan_paired_delimiter(&cleaned, file);
+        self.scan_paired_delimiter(&cleaned, file, &paired_ranges, &mut declarations);
+
+        // Scanners are grouped by syntax for maintainability, but TeX applies
+        // declarations in lexical order. Stable sorting here makes a later
+        // declaration win even when it uses a scanner that ran earlier.
+        declarations.sort_by_key(|declaration| declaration.offset);
+        for declaration in declarations {
+            self.push(
+                file,
+                declaration.name,
+                declaration.body,
+                declaration.n_args,
+                declaration.default,
+                declaration.source,
+            );
+        }
     }
 
-    fn scan_newcommand_like(&mut self, src: &str, file: &Path) {
+    fn scan_newcommand_like(
+        &mut self,
+        src: &str,
+        file: &Path,
+        declarations: &mut Vec<PendingMacro>,
+    ) {
         static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"\\(newcommand|renewcommand|providecommand)\b").unwrap()
         });
@@ -393,11 +434,23 @@ impl Extractor {
             let _kind_override = head.contains("providecommand");
 
             let source = format!("{}{}", head, &src[start..sc.pos]);
-            self.push(file, name, body, n_args, default, source);
+            declarations.push(PendingMacro {
+                offset: m.start(),
+                name,
+                body,
+                n_args,
+                default,
+                source,
+            });
         }
     }
 
-    fn scan_declare_math_operator(&mut self, src: &str, file: &Path) {
+    fn scan_declare_math_operator(
+        &mut self,
+        src: &str,
+        _file: &Path,
+        declarations: &mut Vec<PendingMacro>,
+    ) {
         static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"\\DeclareMathOperator(\*)?(?:\s|\{)").unwrap()
         });
@@ -429,11 +482,18 @@ impl Extractor {
                 if starred { "*" } else { "" },
                 &src[start..sc.pos]
             );
-            self.push(file, name, body, 0, None, source);
+            declarations.push(PendingMacro {
+                offset: cap.get(0).unwrap().start(),
+                name,
+                body,
+                n_args: 0,
+                default: None,
+                source,
+            });
         }
     }
 
-    fn scan_xparse(&mut self, src: &str, file: &Path) {
+    fn scan_xparse(&mut self, src: &str, file: &Path, declarations: &mut Vec<PendingMacro>) {
         static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"\\(?:New|Renew|Provide)DocumentCommand\b").unwrap()
         });
@@ -459,11 +519,18 @@ impl Extractor {
             let n_args = count_mandatory_args(&spec);
             let default = leading_optional_default(&spec);
             let source = format!("{}{}", head, &src[start..sc.pos]);
-            self.push(file, name, body, n_args, default, source);
+            declarations.push(PendingMacro {
+                offset: m.start(),
+                name,
+                body,
+                n_args,
+                default,
+                source,
+            });
         }
     }
 
-    fn scan_def(&mut self, src: &str, file: &Path) {
+    fn scan_def(&mut self, src: &str, _file: &Path, declarations: &mut Vec<PendingMacro>) {
         static RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"\\(edef|def)\s*\\([A-Za-z@]+)").unwrap());
         let re = &*RE;
@@ -498,40 +565,120 @@ impl Extractor {
                 continue;
             };
             let source = format!("\\{} \\{}{}", kw, name, &src[after_name_end..sc.pos]);
-            self.push(file, name, body, n_args, None, source);
+            declarations.push(PendingMacro {
+                offset: cap.get(0).unwrap().start(),
+                name,
+                body,
+                n_args,
+                default: None,
+                source,
+            });
         }
     }
 
-    fn scan_paired_delimiter(&mut self, src: &str, file: &Path) {
-        // `\DeclarePairedDelimiter{\name}{open}{close}` (from mathtools) and
-        // the svmacro.sty wrapper `\newdelim{\name}{open}{close}` both produce
-        // a 1-arg macro that wraps its argument in `open` … `close`. For
-        // preview we always use \left/\right so the delimiters scale; the
-        // unscaled (non-star) form is a minor cosmetic loss.
-        static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"\\(DeclarePairedDelimiter|newdelim)\b").unwrap()
-        });
-        let re = &*RE;
-        for m in re.find_iter(src) {
+    fn scan_paired_delimiter(
+        &mut self,
+        src: &str,
+        _file: &Path,
+        declaration_ranges: &[Range<usize>],
+        declarations: &mut Vec<PendingMacro>,
+    ) {
+        // Lower mathtools' paired-delimiter declarations (plus the common
+        // svmacro.sty `\newdelim` / `\newdelimX` wrappers) to ordinary
+        // MathJax macros. For preview we always use \left/\right so the
+        // unscaled (non-star) form is a minor cosmetic loss. In X/XPP bodies,
+        // `\delimsize` denotes a matching interior delimiter, which is
+        // `\middle` in this always-scaled representation.
+        for m in paired_delimiter_regex().find_iter(src) {
+            // Ranges are the successfully parsed, outermost declarations.
+            // This also prevents a declaration-shaped command inside an X
+            // body from being promoted to a second global macro.
+            if !declaration_ranges
+                .iter()
+                .any(|range| range.start == m.start())
+            {
+                continue;
+            }
             let kw = m.as_str();
             let start = m.end();
             let mut sc = ArgScanner::new(src, start);
             let Some(name) = sc.command_name_arg() else {
                 continue;
             };
-            let Some(open) = sc.balanced_brace_arg() else {
-                continue;
+            let (n_args, pre, open, close, post, inner) = if kw.ends_with("XPP") {
+                let n_args = sc.optional_number_arg().unwrap_or(1);
+                let Some(pre) = sc.balanced_brace_arg() else {
+                    continue;
+                };
+                let Some(open) = sc.token_or_group_arg() else {
+                    continue;
+                };
+                let Some(close) = sc.token_or_group_arg() else {
+                    continue;
+                };
+                let Some(post) = sc.balanced_brace_arg() else {
+                    continue;
+                };
+                let Some(inner) = sc.balanced_brace_arg() else {
+                    continue;
+                };
+                (n_args, pre, open, close, post, inner)
+            } else if kw.ends_with('X') {
+                let n_args = sc.optional_number_arg().unwrap_or(1);
+                let Some(open) = sc.token_or_group_arg() else {
+                    continue;
+                };
+                let Some(close) = sc.token_or_group_arg() else {
+                    continue;
+                };
+                let Some(inner) = sc.balanced_brace_arg() else {
+                    continue;
+                };
+                (n_args, String::new(), open, close, String::new(), inner)
+            } else {
+                let Some(open) = sc.token_or_group_arg() else {
+                    continue;
+                };
+                let Some(close) = sc.token_or_group_arg() else {
+                    continue;
+                };
+                (
+                    1,
+                    String::new(),
+                    open,
+                    close,
+                    String::new(),
+                    "#1".to_string(),
+                )
             };
-            let Some(close) = sc.balanced_brace_arg() else {
-                continue;
-            };
-            let body = format!("\\left{} #1 \\right{}", open, close);
+            let open = if open.trim().is_empty() { "." } else { &open };
+            let close = if close.trim().is_empty() { "." } else { &close };
+            let inner = inner.replace(r"\delimsize", r"\middle");
+            let mut body = format!("{}\\left{} {} \\right{}{}", pre, open, inner, close, post);
+            if body_uses_unsupported_primitives(&body) {
+                // A standard X idiom locally redefines `\given` / `\st`
+                // inside the body. When that definition delegates to a
+                // private TeX helper, retain the useful fence/body shape and
+                // let the bundled public helper approximation handle it.
+                let inner = strip_local_command_definitions(&inner);
+                let fallback = format!("{}\\left{} {} \\right{}{}", pre, open, inner, close, post);
+                if fallback != body && !body_uses_unsupported_primitives(&fallback) {
+                    body = fallback;
+                }
+            }
             let source = format!("{}{}", kw, &src[start..sc.pos]);
-            self.push(file, name, body, 1, None, source);
+            declarations.push(PendingMacro {
+                offset: m.start(),
+                name,
+                body,
+                n_args,
+                default: None,
+                source,
+            });
         }
     }
 
-    fn scan_let(&mut self, src: &str, file: &Path) {
+    fn scan_let(&mut self, src: &str, _file: &Path, declarations: &mut Vec<PendingMacro>) {
         // \let\name=\target or \let\name\target — alias to target.
         static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"\\let\s*\\([A-Za-z@]+)\s*=?\s*(\\[A-Za-z@]+|.)").unwrap()
@@ -545,7 +692,14 @@ impl Extractor {
                 continue;
             }
             let source = cap.get(0).unwrap().as_str().to_string();
-            self.push(file, name, target.to_string(), 0, None, source);
+            declarations.push(PendingMacro {
+                offset: cap.get(0).unwrap().start(),
+                name,
+                body: target.to_string(),
+                n_args: 0,
+                default: None,
+                source,
+            });
         }
     }
 
@@ -1482,6 +1636,188 @@ impl<'a> ArgScanner<'a> {
         }
         None
     }
+
+    /// One required TeX argument used as a delimiter: either a balanced
+    /// `{...}` group, one control sequence (`\lVert`, `\{`), or one character
+    /// token (`(`, `[`, `.`). Mathtools accepts all of these spellings.
+    fn token_or_group_arg(&mut self) -> Option<String> {
+        self.skip_ws();
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        if self.bytes[self.pos] == b'{' {
+            return self.balanced_brace_arg();
+        }
+        let start = self.pos;
+        if self.bytes[self.pos] == b'\\' {
+            self.pos += 1;
+            if self.pos >= self.bytes.len() {
+                return None;
+            }
+            if self.bytes[self.pos].is_ascii_alphabetic() || self.bytes[self.pos] == b'@' {
+                while self.pos < self.bytes.len()
+                    && (self.bytes[self.pos].is_ascii_alphabetic() || self.bytes[self.pos] == b'@')
+                {
+                    self.pos += 1;
+                }
+            } else {
+                let ch = self.src[self.pos..].chars().next()?;
+                self.pos += ch.len_utf8();
+            }
+        } else {
+            let ch = self.src[self.pos..].chars().next()?;
+            self.pos += ch.len_utf8();
+        }
+        Some(self.src[start..self.pos].to_string())
+    }
+}
+
+fn paired_delimiter_regex() -> &'static Regex {
+    static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(
+            r"\\(DeclarePairedDelimiterXPP|DeclarePairedDelimiterX|DeclarePairedDelimiter|newdelimX|newdelim)\b",
+        )
+        .unwrap()
+    });
+    &RE
+}
+
+/// Return the successfully parsed, outermost paired-delimiter declarations.
+/// Their ranges are masked while the other macro scanners run so definitions
+/// stored inside an X/XPP body retain their local TeX meaning.
+fn paired_delimiter_declaration_ranges(src: &str) -> Vec<Range<usize>> {
+    let stored_ranges = stored_definition_ranges(src);
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for m in paired_delimiter_regex().find_iter(src) {
+        // A declaration stored inside another definition is code for that
+        // definition to execute later, not a preamble declaration in its own
+        // right. Leaving it out prevents both global promotion and masking of
+        // the enclosing replacement body. Ordinary TeX groups and immediately
+        // executed wrappers such as `\AtBeginDocument` deliberately remain
+        // live here.
+        if stored_ranges
+            .iter()
+            .any(|range| range.start < m.start() && range.contains(&m.start()))
+        {
+            continue;
+        }
+        if ranges.last().is_some_and(|range| m.start() < range.end) {
+            continue;
+        }
+        let keyword = m.as_str();
+        let mut scanner = ArgScanner::new(src, m.end());
+        if scanner.command_name_arg().is_none() {
+            continue;
+        }
+        let complete = if keyword.ends_with("XPP") {
+            scanner.optional_number_arg();
+            scanner.balanced_brace_arg().is_some()
+                && scanner.token_or_group_arg().is_some()
+                && scanner.token_or_group_arg().is_some()
+                && scanner.balanced_brace_arg().is_some()
+                && scanner.balanced_brace_arg().is_some()
+        } else if keyword.ends_with('X') {
+            scanner.optional_number_arg();
+            scanner.token_or_group_arg().is_some()
+                && scanner.token_or_group_arg().is_some()
+                && scanner.balanced_brace_arg().is_some()
+        } else {
+            scanner.token_or_group_arg().is_some() && scanner.token_or_group_arg().is_some()
+        };
+        if complete {
+            ranges.push(m.start()..scanner.pos);
+        }
+    }
+    ranges
+}
+
+/// Outermost command/environment definitions whose bodies are stored for
+/// later execution. Jumping to each parsed definition's end means nested
+/// definitions need not be returned separately: the outer range already
+/// supplies the context needed by callers.
+fn stored_definition_ranges(src: &str) -> Vec<Range<usize>> {
+    let bytes = src.as_bytes();
+    let mut ranges = Vec::new();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        if bytes[pos] != b'\\' {
+            pos += 1;
+            continue;
+        }
+        if let Some(end) = crate::parser::stored_definition_end(src, pos) {
+            ranges.push(pos..end);
+            pos = end;
+            continue;
+        }
+
+        // An unrecognised control sequence is executable context, so continue
+        // scanning after that one token. This reaches definitions inside
+        // wrappers while avoiding a false command at the second slash of `\\`.
+        pos += 1;
+        if bytes
+            .get(pos)
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'@')
+        {
+            while pos < bytes.len() && (bytes[pos].is_ascii_alphabetic() || bytes[pos] == b'@') {
+                pos += 1;
+            }
+        } else if pos < bytes.len() {
+            let token = src[pos..].chars().next().expect("control symbol token");
+            pos += token.len_utf8();
+        }
+    }
+    ranges
+}
+
+fn mask_source_ranges(src: &str, ranges: &[Range<usize>]) -> String {
+    if ranges.is_empty() {
+        return src.to_string();
+    }
+    let mut bytes = src.as_bytes().to_vec();
+    for range in ranges {
+        for byte in &mut bytes[range.clone()] {
+            if !matches!(*byte, b'\n' | b'\r') {
+                *byte = b' ';
+            }
+        }
+    }
+    // Replacing every non-newline byte with ASCII space preserves both byte
+    // offsets and valid UTF-8, even when a declaration contained Unicode.
+    String::from_utf8(bytes).expect("masked UTF-8 source")
+}
+
+/// Remove local `\newcommand`-family definitions from a paired-delimiter
+/// replacement body. This is only used as a fallback when the original body
+/// contains unsupported TeX primitives; ordinary MathJax-compatible local
+/// definitions are preserved.
+fn strip_local_command_definitions(src: &str) -> String {
+    static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand)\b").unwrap()
+    });
+    let mut out = String::with_capacity(src.len());
+    let mut copied_through = 0usize;
+    for found in RE.find_iter(src) {
+        if found.start() < copied_through {
+            continue;
+        }
+        let mut scanner = ArgScanner::new(src, found.end());
+        scanner.skip_ws();
+        if scanner.bytes.get(scanner.pos) == Some(&b'*') {
+            scanner.pos += 1;
+        }
+        if scanner.command_name_arg().is_none() {
+            continue;
+        }
+        scanner.optional_number_arg();
+        scanner.optional_arg();
+        if scanner.balanced_brace_arg().is_none() {
+            continue;
+        }
+        out.push_str(&src[copied_through..found.start()]);
+        copied_through = scanner.pos;
+    }
+    out.push_str(&src[copied_through..]);
+    out
 }
 
 #[cfg(test)]
@@ -1980,11 +2316,245 @@ mod tests {
     }
 
     #[test]
+    fn paired_delimiter_x_parses_arity_tokens_and_middle_delimiters() {
+        let m = extract(r"\DeclarePairedDelimiterX\Set[2]\{\}{#1 \mathrel{\delimsize\vert} #2}");
+        let set = find_by_name(&m, "Set").expect("Set extracted");
+        assert_eq!(set.n_args, 2);
+        assert_eq!(set.body, r"\left\{ #1 \mathrel{\middle\vert} #2 \right\}");
+    }
+
+    #[test]
+    fn paired_delimiter_xpp_includes_pre_and_post_code() {
+        let m = extract(r"\DeclarePairedDelimiterXPP\Prob[2]{\mathbb{P}_{#1}}[]{_{#1}}{#2}");
+        let prob = find_by_name(&m, "Prob").expect("Prob extracted");
+        assert_eq!(prob.n_args, 2);
+        assert_eq!(prob.body, r"\mathbb{P}_{#1}\left[ #2 \right]_{#1}");
+    }
+
+    #[test]
+    fn paired_delimiter_xpp_turns_empty_fence_groups_into_dots() {
+        let m = extract(r"\DeclarePairedDelimiterXPP{\eval}[2]{}{}{\rvert}{_{#2}}{#1}");
+        let eval = find_by_name(&m, "eval").expect("eval extracted");
+        assert_eq!(eval.n_args, 2);
+        assert_eq!(eval.body, r"\left. #1 \right\rvert_{#2}");
+    }
+
+    #[test]
+    fn paired_delimiter_variants_are_scanned_in_source_order() {
+        let m = extract(concat!(
+            r"\DeclarePairedDelimiter{\pair}{(}{)}",
+            "\n",
+            r"\DeclarePairedDelimiterX{\pair}[2]{[}{]}{#1,#2}",
+        ));
+        let pair = find_by_name(&m, "pair").expect("pair extracted");
+        assert_eq!(pair.n_args, 2);
+        assert_eq!(pair.body, r"\left[ #1,#2 \right]");
+    }
+
+    #[test]
+    fn newcommand_after_paired_delimiter_wins() {
+        let m = extract(concat!(
+            r"\DeclarePairedDelimiterX{\choice}[1]{(}{)}{paired-#1}",
+            "\n",
+            r"\renewcommand{\choice}[1]{renewed-#1}",
+        ));
+        let choice = find_by_name(&m, "choice").expect("choice extracted");
+        assert_eq!(choice.n_args, 1);
+        assert_eq!(choice.body, "renewed-#1");
+    }
+
+    #[test]
+    fn paired_delimiter_after_newcommand_wins() {
+        let m = extract(concat!(
+            r"\newcommand{\choice}[1]{original-#1}",
+            "\n",
+            r"\DeclarePairedDelimiterX{\choice}[1]{[}{]}{paired-#1}",
+        ));
+        let choice = find_by_name(&m, "choice").expect("choice extracted");
+        assert_eq!(choice.n_args, 1);
+        assert_eq!(choice.body, r"\left[ paired-#1 \right]");
+    }
+
+    #[test]
     fn newdelim_wrapper() {
         let m = extract(r"\newdelim{\abs}{\lvert}{\rvert}");
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].name, "abs");
         assert_eq!(m[0].body, r"\left\lvert #1 \right\rvert");
+    }
+
+    #[test]
+    fn newdelim_x_wrapper() {
+        let m = extract(r"\newdelimX\braket[2]{\langle}{\rangle}{#1\delimsize\vert#2}");
+        let braket = find_by_name(&m, "braket").expect("braket extracted");
+        assert_eq!(braket.n_args, 2);
+        assert_eq!(braket.body, r"\left\langle #1\middle\vert#2 \right\rangle");
+    }
+
+    #[test]
+    fn newdelim_x_uses_public_helper_when_private_local_definition_is_unsupported() {
+        let m = extract(concat!(
+            r"\newdelimX\set[1]\{\}{",
+            r"\renewcommand{\st}{\SV@st{\delimsize}}#1}",
+        ));
+        let set = find_by_name(&m, "set").expect("set extracted");
+        assert_eq!(set.n_args, 1);
+        assert_eq!(set.body, r"\left\{ #1 \right\}");
+    }
+
+    #[test]
+    fn local_x_body_redefinition_does_not_replace_global_macro() {
+        let m = extract(concat!(
+            r"\newcommand{\given}{GLOBAL}",
+            "\n",
+            r"\DeclarePairedDelimiterX\paren[1]{(}{)}{",
+            r"\renewcommand{\given}{LOCAL-\delimsize}#1}",
+        ));
+        let given = find_by_name(&m, "given").expect("global given retained");
+        assert_eq!(given.body, "GLOBAL");
+        let paren = find_by_name(&m, "paren").expect("paren extracted");
+        assert_eq!(
+            paren.body,
+            r"\left( \renewcommand{\given}{LOCAL-\middle}#1 \right)"
+        );
+    }
+
+    #[test]
+    fn paired_delimiter_stored_in_macro_body_is_not_promoted_or_masked() {
+        let m = extract(concat!(
+            r"\newcommand{\installpair}{\DeclarePairedDelimiterX\stored[1]{(}{)}{##1}}",
+            "\n",
+            r"\DeclarePairedDelimiter{\live}{[}{]}",
+        ));
+        // This is valid nested-definition TeX. The outer installer is not a
+        // safe MathJax macro because of its `##` parameter escape, but masking
+        // the stored declaration would erase that signal and emit a corrupted
+        // empty installer instead.
+        assert!(find_by_name(&m, "installpair").is_none());
+        assert!(find_by_name(&m, "stored").is_none());
+        assert_eq!(
+            find_by_name(&m, "live").map(|macro_| macro_.body.as_str()),
+            Some(r"\left[ #1 \right]")
+        );
+    }
+
+    #[test]
+    fn valid_nested_paired_delimiter_factory_remains_inert_and_unmasked() {
+        let src = r"\newcommand{\installpair}{\DeclarePairedDelimiterX\stored[1]{(}{)}{##1}}";
+        let ranges = paired_delimiter_declaration_ranges(src);
+        assert!(ranges.is_empty());
+        assert_eq!(mask_source_ranges(src, &ranges), src);
+        assert!(find_by_name(&extract(src), "stored").is_none());
+    }
+
+    #[test]
+    fn paired_delimiters_stay_inert_in_all_supported_definition_bodies() {
+        let cases = [
+            (
+                "newcommand",
+                r"\newcommand{\outer}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "renewcommand",
+                r"\renewcommand{\outer}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "providecommand",
+                r"\providecommand{\outer}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "DeclareRobustCommand",
+                r"\DeclareRobustCommand{\outer}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            ("def", r"\def\outer{\DeclarePairedDelimiter{\hidden}{(}{)}}"),
+            (
+                "edef",
+                r"\edef\outer{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "gdef",
+                r"\gdef\outer{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "xdef",
+                r"\xdef\outer{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "NewDocumentCommand",
+                r"\NewDocumentCommand{\outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "RenewDocumentCommand",
+                r"\RenewDocumentCommand{\outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "ProvideDocumentCommand",
+                r"\ProvideDocumentCommand{\outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "DeclareDocumentCommand",
+                r"\DeclareDocumentCommand{\outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "NewDocumentEnvironment",
+                r"\NewDocumentEnvironment{outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}{}",
+            ),
+            (
+                "RenewDocumentEnvironment",
+                r"\RenewDocumentEnvironment{outer}{}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "ProvideDocumentEnvironment",
+                r"\ProvideDocumentEnvironment{outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}{}",
+            ),
+            (
+                "DeclareDocumentEnvironment",
+                r"\DeclareDocumentEnvironment{outer}{}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "newenvironment",
+                r"\newenvironment{outer}{\DeclarePairedDelimiter{\hidden}{(}{)}}{}",
+            ),
+            (
+                "renewenvironment",
+                r"\renewenvironment{outer}{}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+            (
+                "DeclareMathOperator",
+                r"\DeclareMathOperator{\outer}{\DeclarePairedDelimiter{\hidden}{(}{)}}",
+            ),
+        ];
+
+        for (kind, src) in cases {
+            let ranges = paired_delimiter_declaration_ranges(src);
+            assert!(ranges.is_empty(), "{kind} leaked a nested declaration");
+            assert_eq!(
+                mask_source_ranges(src, &ranges),
+                src,
+                "{kind} body was masked"
+            );
+            assert!(
+                find_by_name(&extract(src), "hidden").is_none(),
+                "{kind} promoted a nested declaration"
+            );
+        }
+    }
+
+    #[test]
+    fn paired_delimiters_in_immediate_wrappers_and_groups_are_extracted() {
+        let m = extract(concat!(
+            r"\AtBeginDocument{\DeclarePairedDelimiterX\wrapped[1]{(}{)}{#1}}",
+            "\n",
+            r"{\DeclarePairedDelimiter{\grouped}{[}{]}}",
+        ));
+        assert_eq!(
+            find_by_name(&m, "wrapped").map(|macro_| macro_.body.as_str()),
+            Some(r"\left( #1 \right)")
+        );
+        assert_eq!(
+            find_by_name(&m, "grouped").map(|macro_| macro_.body.as_str()),
+            Some(r"\left[ #1 \right]")
+        );
     }
 
     #[test]

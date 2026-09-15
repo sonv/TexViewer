@@ -391,6 +391,26 @@ fn skip_braced_groups(src: &str, mut p: usize, count: usize) -> Option<usize> {
     Some(p)
 }
 
+/// Skip one undelimited TeX argument without executing its contents. A
+/// mandatory argument is either one balanced group or one token (including a
+/// control sequence such as `\langle`). Paired-delimiter declarations use
+/// both spellings for their opening and closing delimiters.
+fn skip_tex_argument(src: &str, p: usize) -> Option<usize> {
+    let p = skip_tex_space_and_comments(src, p);
+    if src.as_bytes().get(p) == Some(&b'{') {
+        return tex_inert_group_end(src, p, b'{', b'}');
+    }
+    let end = tex_token_end(src, p);
+    (end > p).then_some(end)
+}
+
+fn skip_tex_arguments(src: &str, mut p: usize, count: usize) -> Option<usize> {
+    for _ in 0..count {
+        p = skip_tex_argument(src, p)?;
+    }
+    Some(p)
+}
+
 /// Skip declarations whose braced bodies are stored as command definitions,
 /// not executed while the preamble is scanned. Otherwise a literal
 /// `\newenvironment` inside (say) `\def\factory{...}` would be activated.
@@ -484,10 +504,39 @@ fn skip_command_macro_declaration(src: &str, start: usize) -> Option<usize> {
 
     if matches!(keyword, "DeclarePairedDelimiter" | "newdelim") {
         p = skip_command_name_arg(src, p)?;
-        return skip_braced_groups(src, p, 2);
+        return skip_tex_arguments(src, p, 2);
+    }
+
+    if matches!(
+        keyword,
+        "DeclarePairedDelimiterX" | "DeclarePairedDelimiterXPP" | "newdelimX"
+    ) {
+        p = skip_command_name_arg(src, p)?;
+        p = skip_tex_space_and_comments(src, p);
+        if let Some((_, next)) = read_bracketed(src, p) {
+            p = next;
+        }
+        // X: open, close, replacement body.
+        // XPP: prefix, open, close, suffix, replacement body.
+        let argument_count = if keyword.ends_with("XPP") { 5 } else { 3 };
+        return skip_tex_arguments(src, p, argument_count);
     }
 
     None
+}
+
+/// Byte immediately after a declaration whose replacement text is stored for
+/// later execution. This is the shared lexical boundary used by extractors
+/// that must distinguish an immediately executed wrapper (for example,
+/// `\AtBeginDocument{...}`) from code embedded in a command or environment
+/// definition. It includes command-definition forms handled above plus plain
+/// `\newenvironment` / `\renewenvironment` begin and end replacements.
+pub(crate) fn stored_definition_end(src: &str, start: usize) -> Option<usize> {
+    if let Some(end) = skip_command_macro_declaration(src, start) {
+        return Some(end);
+    }
+    let keyword_end = environment_keyword_end(src, start)?;
+    parse_env_macro(src, keyword_end).map(|(_, _, end)| end)
 }
 
 fn advance_env_scan(bytes: &[u8], i: &mut usize, line: &mut usize, to: usize) {
@@ -772,17 +821,11 @@ fn tex_inert_group_end(src: &str, from: usize, open: u8, close: u8) -> Option<us
             }
             if bytes[token_start].is_ascii_alphabetic() || bytes[token_start] == b'@' {
                 i = token_start + 1;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'@')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'@') {
                     i += 1;
                 }
             } else {
-                i = token_start
-                    + src[token_start..]
-                        .chars()
-                        .next()
-                        .map_or(1, char::len_utf8);
+                i = token_start + src[token_start..].chars().next().map_or(1, char::len_utf8);
             }
             continue;
         }
@@ -4820,8 +4863,33 @@ mod tests {
             "\\DeclareMathOperator{\\factory}{\\newenvironment{hiddenOp}{}{}}\n",
             "\\DeclarePairedDelimiter{\\factory}",
             "{\\newenvironment{hiddenPair}{}{}}{)}\n",
+            "\\DeclarePairedDelimiterX{\\factory}[1]",
+            "\\langle{\\rangle}{\\newenvironment{hiddenPairX}{}{}#1}\n",
+            "\\DeclarePairedDelimiterXPP{\\factory}[2]",
+            "{\\operatorname{pre}}\\langle{\\rangle}{\\operatorname{post}}",
+            "{\\newenvironment{hiddenPairXPP}{}{}#1#2}\n",
+            "\\newdelimX{\\factory}[1]",
+            "\\langle{\\rangle}{\\newenvironment{hiddenNewDelimX}{}{}#1}\n",
         ));
         assert!(m.is_empty(), "nested text was treated as a declaration");
+    }
+
+    #[test]
+    fn paired_delimiter_x_declarations_stop_after_their_exact_arguments() {
+        let m = extract_env_macros(concat!(
+            "\\DeclarePairedDelimiterX{\\set}[2]",
+            "\\lbrace{\\rbrace}{#1\\delimsize\\vert",
+            "\\newenvironment{hiddenX}{}{}#2}\n",
+            "\\newenvironment{visibleAfterX}{}{}\n",
+            "\\DeclarePairedDelimiterXPP{\\inner}[2]",
+            "{\\operatorname{pre}}{\\langle}\\rangle{\\operatorname{post}}",
+            "{#1,\\newenvironment{hiddenXPP}{}{}#2}\n",
+            "\\newenvironment{visibleAfterXPP}{}{}\n",
+        ));
+        assert!(!m.contains_key("hiddenX"));
+        assert!(!m.contains_key("hiddenXPP"));
+        assert!(m.contains_key("visibleAfterX"));
+        assert!(m.contains_key("visibleAfterXPP"));
     }
 
     #[test]
