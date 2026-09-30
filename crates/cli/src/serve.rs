@@ -53,7 +53,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "81";
+const WS_PROTOCOL_VERSION: &str = "82";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -5426,6 +5426,12 @@ mod tests {
         assert!(!websocket_needs_reload(&query));
         assert!(websocket_needs_reload(&std::collections::HashMap::from([
             ("v".to_string(), "old".to_string(),)
+        ])));
+        // v81 shipped before the equation-number hover client. A tab that had
+        // not completed its first socket connection could otherwise attach to
+        // the newer daemon without reloading its stale inline viewer script.
+        assert!(websocket_needs_reload(&std::collections::HashMap::from([
+            ("v".to_string(), "81".to_string(),)
         ])));
         assert!(websocket_needs_reload(&std::collections::HashMap::new()));
     }

@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.46] — 2026-09-30
+
+### Fixed
+
+- **Existing preview tabs reliably pick up equation-number label hovers.**
+  The browser protocol now forces tabs with the previous client shell to
+  reload, closing an edge case where a current daemon could keep an older
+  inline viewer script that did not know how to hover displayed numbers.
+
 ## [2.1.45] — 2026-09-30
 
 ### Added
