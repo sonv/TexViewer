@@ -42,8 +42,8 @@ use table::{
 };
 use util::{
     balanced_group_end, capitalize, data_src, escape_attr, escape_html, escape_math, fnv_hash,
-    is_blank_line_separator, latex_command_arg, latex_command_args, latex_command_call,
-    latex_optional_usize, refkey_attr, role_label, role_pill_html, roman_upper, sanitize_id,
+    is_blank_line_separator, latex_command_arg, latex_command_call, latex_optional_usize,
+    refkey_attr, role_label, role_pill_html, roman_upper, sanitize_id,
 };
 
 #[derive(Debug, Clone)]
@@ -1989,7 +1989,11 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 String::new()
             };
             let num_html = equation_number_html(number.as_deref(), row_numbers);
-            let label_fingerprint = latex_command_args(body, "label").join("\u{1f}");
+            // Reuse preserves the display's child DOM, including its label
+            // carriers. Fingerprint their row association as well as the
+            // keys: moving an unchanged label between rows leaves the TeX
+            // below identical after strip_labels(), but needs fresh carriers.
+            let label_fingerprint = format!("{label:?}:{alias_html}:{row_refkey_html}");
             let hash = fnv_hash(&format!(
                 "d:{}:{}:{:?}:{}:{}",
                 env.as_deref().unwrap_or("[]"),
@@ -7405,169 +7409,113 @@ end = '{% endcall %}'
     }
 
     #[test]
-    fn equation_hover_previews_share_label_header_and_math_body() {
-        let out = crate::render_project_from_source(
-            Path::new("t.tex"),
+    fn display_label_carriers_ignore_comments_and_inert_tex() {
+        for env in ["equation", "align", "gather"] {
+            let source = format!(
+                concat!(
+                    "\\begin{{document}}\n\\begin{{{env}}}\n",
+                    "% \\label{{eq:commented}}\n",
+                    "\\def\\stored{{\\label{{eq:defined}}}}\n",
+                    "\\iffalse\\label{{eq:inactive}}\\fi\n",
+                    "a=b\\text{{\\detokenize{{\\label{{eq:literal}}}}}}\n",
+                    "\\label{{ eq:real }}\\label{{eq:alias}}\n",
+                    "\\end{{{env}}}\n",
+                    "\\eqref{{eq:real}} \\eqref{{eq:alias}} ",
+                    "\\eqref{{eq:commented}} \\eqref{{eq:defined}} ",
+                    "\\eqref{{eq:inactive}} \\eqref{{eq:literal}}\n",
+                    "\\end{{document}}\n",
+                ),
+                env = env,
+            );
+            let body = render_body(&source);
+            assert!(
+                body.contains(r#"class="math display" id="eq-real""#),
+                "{env} did not select the first live label: {body}"
+            );
+            assert_eq!(body.matches(r#"data-kind="eqref">(1)</a>"#).count(), 2);
+            for key in ["commented", "defined", "inactive", "literal"] {
+                assert!(
+                    !body.contains(&format!(r#"id="eq-{key}""#)),
+                    "{env} produced an anchor for inert label {key}"
+                );
+                assert!(
+                    body.contains(&format!(r#"data-kind="eqref">(eq:{key})</a>"#)),
+                    "{env} incorrectly numbered inert label {key}"
+                );
+            }
+            if env == "equation" {
+                assert!(body.contains(r#"data-refkey="eq:real""#));
+                assert!(body.contains(r#"data-refkey="eq:alias""#));
+                assert_eq!(body.matches(r#"class="label-anchor""#).count(), 1);
+            } else {
+                assert_eq!(body.matches(r#"class="eq-refkey-chip""#).count(), 2);
+                assert!(body.contains(r#"data-target="eq:real" tabindex="0""#));
+                assert!(body.contains(r#"data-target="eq:alias" tabindex="0""#));
+            }
+        }
+    }
+
+    #[test]
+    fn moving_display_label_between_rows_invalidates_math_reuse() {
+        for env in ["align", "gather"] {
+            let before = render_body(&format!(
+                "\\begin{{document}}\\begin{{{env}}}a=b\\label{{eq:move}}\\\\c=d\\end{{{env}}}\\end{{document}}"
+            ));
+            let after = render_body(&format!(
+                "\\begin{{document}}\\begin{{{env}}}a=b\\\\c=d\\label{{eq:move}}\\end{{{env}}}\\end{{document}}"
+            ));
+            // Removing either label leaves identical TeX and both rows keep
+            // their numbers. Only the label-to-row association has changed.
+            let mathjax_tex = |html: &str| {
+                html.split_once(r#"data-mathjax-tex=""#)
+                    .unwrap()
+                    .1
+                    .split_once('"')
+                    .unwrap()
+                    .0
+                    .to_string()
+            };
+            assert_eq!(mathjax_tex(&before), mathjax_tex(&after));
+            assert!(before.contains(concat!(
+                r#"<span class="eq-refkey-row"><span class="eq-refkey-chip""#,
+                r#" data-target="eq:move""#,
+            )));
+            assert!(after.contains(concat!(
+                r#"<span class="eq-refkey-row"></span>"#,
+                r#"<span class="eq-refkey-row"><span class="eq-refkey-chip""#,
+                r#" data-target="eq:move""#,
+            )));
+            assert_ne!(
+                display_math_hash(&before),
+                display_math_hash(&after),
+                "{env} must not transplant stale label-row carriers"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_display_aliases_ignore_inert_labels_and_preserve_escaped_keys() {
+        let out = render_markdown(
             concat!(
-                "\\begin{document}\n",
-                "\\begin{equation}\\label{eq:first}E=mc^2\\label{eq:alias}\\end{equation}\n",
-                "See \\eqref{eq:first} and \\eqref{eq:alias}.\n",
-                "\\end{document}\n",
-            )
-            .to_string(),
+                "$$\n\\begin{aligned}\n",
+                "% \\label{eq:commented}\n",
+                "\\def\\stored{\\label{eq:defined}}\n",
+                "\\iffalse\\label{eq:inactive}\\fi\n",
+                "a&=b\\text{\\detokenize{\\label{eq:literal}}}",
+                "\\label{ eq:real }\\\\\n",
+                "c&=d\\label{eq:<&\"alias}\n",
+                "\\end{aligned}\n$$\n",
+            ),
             &HtmlOptions::default(),
-        )
-        .unwrap();
-
-        let helpers_start = out
-            .html
-            .find("function equationNumberTarget(target)")
-            .expect("equation-number hover target helper is embedded");
-        let helpers_end = out.html[helpers_start..]
-            .find("function hideHoverPreview()")
-            .map(|offset| helpers_start + offset)
-            .expect("equation-number key helpers end before the shared preview cleanup");
-        let key_helpers = &out.html[helpers_start..helpers_end];
-
-        // Event delegation must cover both a single display number and every
-        // visible numbered row while excluding the placeholder for `\\notag`.
-        assert!(
-            key_helpers.contains("target.closest('#page .eq-num, #page .eq-num-row:not(.empty)')")
         );
-        // Single equations use the existing primary refkey plus zero-width
-        // alias anchors; multi-row equations map the parallel carrier lists
-        // by sibling index and collect every label chip on that row.
-        assert!(key_helpers.contains("math.getAttribute('data-refkey')"));
-        assert!(key_helpers.contains(".label-anchor[data-refkey]"));
-        assert!(key_helpers.contains("Array.prototype.indexOf.call(numberList.children, numberEl)"));
-        assert!(key_helpers.contains("math.querySelector('.eq-refkey-list')"));
-        assert!(key_helpers.contains(".eq-refkey-chip[data-target]"));
-        assert!(key_helpers.contains("chip.getAttribute('data-target')"));
-
-        // Alias anchors and secondary align-row chips are invisible carriers
-        // inside a display. Both hover and margin previews must promote them
-        // to their containing equation instead of cloning an empty chip.
-        let clone_start = out
-            .html
-            .find("function clonePreviewContent(link, target)")
-            .expect("shared preview clone helper is embedded");
-        let clone_end = out.html[clone_start..]
-            .find("function pinKeyFor(link)")
-            .map(|offset| clone_start + offset)
-            .expect("clone helper ends before margin pin helpers");
-        let clone_helper = &out.html[clone_start..clone_end];
-        assert!(clone_helper.contains("target.closest('.math.display')"));
-        assert!(clone_helper.contains("target.classList.contains('label-anchor')"));
-        assert!(clone_helper.contains("target.classList.contains('eq-refkey-chip')"));
-        assert!(clone_helper.contains("target = containingMath;"));
-
-        // Hover bubbles now mirror margin cards: exact raw keys occupy a
-        // header above a cloned target body. Keys are always text nodes.
-        let builder_start = out
-            .html
-            .find("function prepareHoverPreviewClone(clone)")
-            .expect("shared keyed hover builder is embedded");
-        let builder_end = out.html[builder_start..]
-            .find("function showHoverPreviewFor(link)")
-            .map(|offset| builder_start + offset)
-            .expect("hover builder ends before link preview entry point");
-        let preview_builder = &out.html[builder_start..builder_end];
-        assert!(preview_builder.contains("box.setAttribute('aria-hidden', 'true')"));
-        assert!(preview_builder.contains("box.setAttribute('inert', '')"));
-        assert!(preview_builder.contains("el.removeAttribute('tabindex')"));
-        assert!(preview_builder.contains("el.closest('svg')"));
-        assert!(preview_builder.contains("el.removeAttribute('id')"));
-        assert!(preview_builder.contains("header.className = 'hover-preview-header'"));
-        assert!(preview_builder.contains("code.className = 'margin-card-key'"));
-        assert!(preview_builder.contains("code.textContent = key"));
-        assert!(preview_builder.contains("body.className = 'hover-preview-body'"));
-        assert!(preview_builder.contains("body.appendChild(prepareHoverPreviewClone(clone))"));
-        let header_append = preview_builder
-            .find("box.appendChild(header)")
-            .expect("preview appends its label header");
-        let body_append = preview_builder
-            .find("box.appendChild(body)")
-            .expect("preview appends its rendered body");
-        assert!(
-            header_append < body_append,
-            "the label header must precede the rendered preview body"
-        );
-        assert!(
-            !preview_builder.contains("innerHTML"),
-            "label keys must be inserted as text, never parsed as HTML"
-        );
-
-        let link_preview_start = out
-            .html
-            .find("function showHoverPreviewFor(link)")
-            .expect("reference hover entry point is embedded");
-        let number_preview_start = out
-            .html
-            .find("function showEquationLabelPreviewFor(numberEl)")
-            .expect("equation-number hover entry point is embedded");
-        let link_preview = &out.html[link_preview_start..number_preview_start];
-        assert!(link_preview.contains("hoverPreviewKeysForLink(link)"));
-        assert!(
-            link_preview.contains("buildHoverPreview(hoverPreviewKeysForLink(link), clone, '')")
-        );
-
-        let number_preview_end = out.html[number_preview_start..]
-            .find("function refreshHoverPreviewAfterRender()")
-            .map(|offset| number_preview_start + offset)
-            .expect("number preview ends before post-render refresh");
-        let number_preview = &out.html[number_preview_start..number_preview_end];
-        assert!(number_preview.contains("numberEl.closest('.math.display')"));
-        assert!(number_preview.contains("clonePreviewContent(numberEl, math)"));
-        assert!(number_preview.contains("buildHoverPreview(keys, clone, 'equation-label-preview')"));
-        assert!(out.html.contains(".hover-preview-header {"));
-        assert!(out.html.contains(".hover-preview-keys {"));
-
-        // The document-level mouseover path invokes the scheduler, so live
-        // body patches do not need to attach listeners to newly rendered
-        // equation numbers. Numbered-but-unlabeled rows stop before a popup.
+        assert_eq!(out.body_html.matches(r#"class="label-anchor""#).count(), 2);
+        assert!(out.body_html.contains(r#"data-refkey="eq:real""#));
         assert!(out
-            .html
-            .contains("scheduleEquationLabelPreview(equationNumber)"));
-        assert!(out
-            .html
-            .contains("if (!equationNumberRefkeys(numberEl).length) return false;"));
-
-        // The common post-render decorator also owns hover-preview cleanup:
-        // live patches must cancel disconnected pending anchors and discard a
-        // visible equation-label popup when its text keys become stale.
-        let decorator_start = out
-            .html
-            .find("function decorateRefkeyChips(_root)")
-            .expect("post-render decorator is embedded");
-        let decorator_end = out.html[decorator_start..]
-            .find("function isPinnableLink(target)")
-            .map(|offset| decorator_start + offset)
-            .expect("post-render decorator ends before link helpers");
-        assert!(
-            out.html[decorator_start..decorator_end].contains("refreshHoverPreviewAfterRender();")
-        );
-
-        let refresh_start = out
-            .html
-            .find("function refreshHoverPreviewAfterRender()")
-            .expect("post-render hover refresh hook is embedded");
-        let refresh_end = out.html[refresh_start..]
-            .find("function scheduleHoverPreviewWith(source, show)")
-            .map(|offset| refresh_start + offset)
-            .expect("hover refresh hook ends before the shared scheduler");
-        let refresh_hook = &out.html[refresh_start..refresh_end];
-        assert!(refresh_hook.contains("if (!hoverPreviewSource.isConnected)"));
-        assert!(refresh_hook.contains(".equation-label-preview-keys code"));
-        assert!(refresh_hook.contains("function(code) { return code.textContent; }"));
-        assert!(refresh_hook.contains(".hover-preview-body .math.display"));
-        assert!(refresh_hook.contains("currentMath.getAttribute('data-hash')"));
-        assert!(refresh_hook.contains("shownMath.getAttribute('data-hash')"));
-        assert!(refresh_hook.contains("clonePreviewContent(hoverPreviewSource, currentTarget)"));
-        assert!(refresh_hook.contains("shownClone.isEqualNode(freshClone)"));
-        assert!(refresh_hook.contains("positionHoverPreview(hoverPreviewEl, hoverPreviewSource)"));
-        assert!(out.html.contains("hoverPreviewSource = source;"));
-        assert!(out.html.contains("if (!link.isConnected) return;"));
-        assert!(out.html.contains("if (touched && touched.length)"));
+            .body_html
+            .contains(r#"data-refkey="eq:&lt;&amp;&quot;alias""#));
+        for key in ["commented", "defined", "inactive", "literal"] {
+            assert!(!out.body_html.contains(&format!(r#"id="eq-{key}""#)));
+        }
     }
 
     #[test]

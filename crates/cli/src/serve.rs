@@ -53,7 +53,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "83";
+const WS_PROTOCOL_VERSION: &str = "84";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -5437,6 +5437,10 @@ mod tests {
         // reference previews predate the shared labeled header + math body.
         assert!(websocket_needs_reload(&std::collections::HashMap::from([
             ("v".to_string(), "82".to_string(),)
+        ])));
+        // v83 predates hover snapshots following deferred MathJax completion.
+        assert!(websocket_needs_reload(&std::collections::HashMap::from([
+            ("v".to_string(), "83".to_string(),)
         ])));
         assert!(websocket_needs_reload(&std::collections::HashMap::new()));
     }

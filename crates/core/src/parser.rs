@@ -4741,7 +4741,10 @@ fn find_first_omitref(src: &str) -> Option<String> {
 }
 
 fn extract_label(src: &str) -> Option<String> {
-    find_first_label(src)
+    live_braced_command_calls(src, &["label"], 0)
+        .into_iter()
+        .map(|call| call.value.trim().to_string())
+        .find(|label| !label.is_empty())
 }
 
 #[cfg(test)]

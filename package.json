@@ -6,10 +6,12 @@
   "scripts": {
     "lint:client": "cat crates/core/src/assets/client/header.js crates/core/src/assets/client/viewer.js crates/core/src/assets/client/proof.js crates/core/src/assets/client/patch.js crates/core/src/assets/client/footer.js | eslint --stdin --stdin-filename=crates/core/src/assets/client.js",
     "lint:engine": "eslint crates/core/src/engines/assets/mathjax.js",
-    "lint": "npm run lint:client && npm run lint:engine"
+    "lint": "npm run lint:client && npm run lint:engine",
+    "test:hover": "cargo build -p mathpreview-cli && node --test tests/browser/hover-preview.test.mjs"
   },
   "devDependencies": {
     "eslint": "^9.0.0",
-    "globals": "^17.6.0"
+    "globals": "^17.6.0",
+    "playwright": "1.62.1"
   }
 }

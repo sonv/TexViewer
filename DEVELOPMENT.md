@@ -84,6 +84,19 @@ Only on explicit request — releases are outward-facing. The flow:
 
 ## Verification cookbook
 
+The hover regression suite runs the complete viewer against a temporary local
+daemon and bundled MathJax, including delayed rendering and live editor patches:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run test:hover
+```
+
+`test:hover` rebuilds the CLI before opening the browser. Tests isolate personal
+configuration and clean up their temporary files and daemon processes. They
+cover aliases, commented labels, row ownership, stale math, and hover dismissal.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,

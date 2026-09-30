@@ -13,6 +13,21 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.48] — 2026-09-30
+
+### Fixed
+
+- **Hover previews follow deferred math rendering.** A bubble opened while
+  MathJax is loading or updating now refreshes when its equation finishes,
+  instead of retaining raw TeX or an old equation. Leaving the hover cancels
+  the refresh; unrelated and off-screen math is not typeset for the popup.
+- **Labels follow their rows during live edits.** Moving a label between
+  `align` or `gather` rows updates the equation-number hover and refkey overlay
+  without reloading the page.
+- **Commented and inert labels stay out of previews.** Equation labels,
+  aliases, and row keys use the same executable-label scanning as numbering,
+  including labels inside literal text or dormant macro definitions.
+
 ## [2.1.47] — 2026-09-30
 
 ### Changed

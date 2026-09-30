@@ -11,7 +11,7 @@ use crate::sync::MathRow;
 
 use super::util::{
     asset_url, css_number, escape_attr, escape_html, escape_math, escape_tex_text, fnv_hash,
-    is_relax_option, latex_command_args, latex_command_call, latex_optional_arg, parse_latex_number,
+    is_relax_option, latex_command_call, latex_optional_arg, parse_latex_number,
     parse_number_prefix, refkey_attr, sanitize_id, strip_wrapping_braces,
 };
 
@@ -95,7 +95,13 @@ pub(super) fn math_row_labels(body: &str) -> Vec<Vec<String>> {
     rows.into_iter()
         .map(|row| {
             let mut row_labels = Vec::new();
-            for label in latex_command_args(row, "label") {
+            // Match numbering's executable-label scan: comments, dormant
+            // definitions and literal TeX must not become visible refkeys.
+            for label in crate::parser::live_braced_command_calls(row, &["label"], 0)
+                .into_iter()
+                .map(|call| call.value.trim().to_string())
+                .filter(|label| !label.is_empty())
+            {
                 if seen.iter().any(|existing| existing == &label) {
                     continue;
                 }
@@ -288,7 +294,8 @@ pub(super) fn label_alias_anchors(body: &str, primary: Option<&str>) -> String {
     let mut out = String::new();
     for label in crate::parser::live_braced_command_calls(body, &["label"], 0)
         .into_iter()
-        .map(|call| call.value)
+        .map(|call| call.value.trim().to_string())
+        .filter(|label| !label.is_empty())
     {
         if primary == Some(label.as_str()) || seen.iter().any(|s| s == &label) {
             continue;

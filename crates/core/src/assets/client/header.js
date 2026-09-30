@@ -14,6 +14,7 @@
   var hoverPreviewTimer = 0;
   var hoverPreviewEl = null;
   var hoverPreviewSource = null;
+  var hoverPreviewObserver = null;
   var topbarHidden = false;
   var navRefreshTimer = 0;
   var zoomCommitTimer = 0;

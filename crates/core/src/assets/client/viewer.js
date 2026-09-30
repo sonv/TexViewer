@@ -1939,14 +1939,21 @@
     return document.getElementById(id);
   }
 
-  function clonePreviewContent(link, target) {
+  // sourceRoots optionally records the live nodes represented by the clone.
+  // Hover previews use them to notice deferred MathJax completion without
+  // observing or typesetting the rest of the document.
+  function clonePreviewContent(link, target, sourceRoots) {
     // Citation: target is a <dt>, glue its <dd> sibling into the clone.
     if (link.classList.contains('cite') && target.tagName === 'DT') {
       var wrap = document.createElement('div');
       wrap.className = 'bib-preview';
       wrap.appendChild(target.cloneNode(true));
+      if (sourceRoots) sourceRoots.push(target);
       var dd = target.nextElementSibling;
-      if (dd && dd.tagName === 'DD') wrap.appendChild(dd.cloneNode(true));
+      if (dd && dd.tagName === 'DD') {
+        wrap.appendChild(dd.cloneNode(true));
+        if (sourceRoots) sourceRoots.push(dd);
+      }
       return wrap;
     }
     // Alias labels on a single equation and non-primary row labels in an
@@ -1981,6 +1988,7 @@
         }
         if (el.classList.contains('math')) {
           bundle.appendChild(el.cloneNode(true));
+          if (sourceRoots) sourceRoots.push(el);
           el = el.nextElementSibling;
           continue;
         }
@@ -1988,6 +1996,7 @@
       }
       if (bundle.children.length) return bundle;
     }
+    if (sourceRoots) sourceRoots.push(target);
     return target.cloneNode(true);
   }
 
@@ -4464,6 +4473,10 @@
       clearTimeout(hoverPreviewTimer);
       hoverPreviewTimer = 0;
     }
+    if (hoverPreviewObserver) {
+      hoverPreviewObserver.disconnect();
+      hoverPreviewObserver = null;
+    }
     if (hoverPreviewEl && hoverPreviewEl.parentNode) {
       hoverPreviewEl.parentNode.removeChild(hoverPreviewEl);
     }
@@ -4540,17 +4553,61 @@
     return box;
   }
 
+  function observeHoverPreviewMath(source, roots, show) {
+    if (!window.MutationObserver) return;
+    var pending = new Set();
+    function add(math, root) {
+      // Proof bodies are hidden in hover previews. Waiting for their lazy
+      // math would prevent visible theorem statements from ever refreshing.
+      // Only an ancestor included in this clone hides it: an equation linked
+      // from inside a proof is still visible when previewed on its own.
+      var proof = math.closest('.proof');
+      if (isRawMathNode(math) && !(proof && root.contains(proof))) pending.add(math);
+    }
+    roots.forEach(function(root) {
+      if (root.matches('.math[data-hash]')) add(root, root);
+      root.querySelectorAll('.math[data-hash]').forEach(function(math) { add(math, root); });
+    });
+    if (!pending.size) return;
+    // Observe only the pending equations represented by this popup. Each
+    // equation leaves the set once rendered; rebuild the snapshot once the
+    // batch is ready rather than cloning a large theorem per glyph/mutation.
+    var observer = new MutationObserver(function(records) {
+      if (hoverPreviewObserver !== observer || hoverPreviewSource !== source) return;
+      if (!source.isConnected) {
+        hideHoverPreview();
+        return;
+      }
+      records.forEach(function(record) {
+        var math = closestMath(record.target);
+        if (pending.has(math) && !isRawMathNode(math)) pending.delete(math);
+      });
+      if (!pending.size) show(source);
+    });
+    hoverPreviewObserver = observer;
+    pending.forEach(function(math) {
+      observer.observe(math, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-mp-stale'],
+      });
+    });
+  }
+
   function showHoverPreviewFor(link) {
     hideHoverPreview();
     if (!link.isConnected) return;
     var target = resolveLinkTarget(link);
     if (!target) return;
-    var clone = clonePreviewContent(link, target);
+    var roots = [];
+    var clone = clonePreviewContent(link, target, roots);
     var box = buildHoverPreview(hoverPreviewKeysForLink(link), clone, '');
     document.body.appendChild(box);
     positionHoverPreview(box, link);
     hoverPreviewEl = box;
     hoverPreviewSource = link;
+    observeHoverPreviewMath(link, roots, showHoverPreviewFor);
   }
 
   function showEquationLabelPreviewFor(numberEl) {
@@ -4560,12 +4617,14 @@
     if (!keys.length) return;
     var math = numberEl.closest('.math.display');
     if (!math) return;
-    var clone = clonePreviewContent(numberEl, math);
+    var roots = [];
+    var clone = clonePreviewContent(numberEl, math, roots);
     var box = buildHoverPreview(keys, clone, 'equation-label-preview');
     document.body.appendChild(box);
     positionHoverPreview(box, numberEl);
     hoverPreviewEl = box;
     hoverPreviewSource = numberEl;
+    observeHoverPreviewMath(numberEl, roots, showEquationLabelPreviewFor);
   }
 
   function refreshHoverPreviewAfterRender() {
