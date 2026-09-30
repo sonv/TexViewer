@@ -4398,12 +4398,54 @@
   // touched root): the layer is measured from live geometry, so any render
   // just means "rebuild the layer".
   function decorateRefkeyChips(_root) {
+    refreshHoverPreviewAfterRender();
     scheduleRefkeys();
   }
 
   function isPinnableLink(target) {
     if (!target || !target.closest) return null;
     return target.closest('#page a.ref[href^="#"], #page a.cite[href^="#"]');
+  }
+
+  function equationNumberTarget(target) {
+    if (!target || !target.closest) return null;
+    return target.closest('#page .eq-num, #page .eq-num-row:not(.empty)');
+  }
+
+  function equationNumberRefkeys(numberEl) {
+    if (!numberEl) return [];
+    var math = numberEl.closest('.math.display');
+    if (!math) return [];
+    var keys = [];
+    function addKey(key) {
+      if (key && keys.indexOf(key) === -1) keys.push(key);
+    }
+
+    if (numberEl.classList.contains('eq-num')) {
+      // The display owns its primary label; zero-width alias anchors carry
+      // any additional \label calls in their original source order.
+      addKey(math.getAttribute('data-refkey'));
+      math.querySelectorAll('.label-anchor[data-refkey]').forEach(function(anchor) {
+        addKey(anchor.getAttribute('data-refkey'));
+      });
+      return keys;
+    }
+
+    // Multi-row environments keep their number and refkey carriers in
+    // parallel row lists. Map by sibling index so hovering (2b) reveals only
+    // that row's labels, including multiple labels on the same row.
+    var numberList = numberEl.parentElement;
+    var rowIndex = numberList
+      ? Array.prototype.indexOf.call(numberList.children, numberEl)
+      : -1;
+    var refkeyList = math.querySelector('.eq-refkey-list');
+    var refkeyRow = refkeyList && rowIndex >= 0 ? refkeyList.children[rowIndex] : null;
+    if (refkeyRow) {
+      refkeyRow.querySelectorAll('.eq-refkey-chip[data-target]').forEach(function(chip) {
+        addKey(chip.getAttribute('data-target'));
+      });
+    }
+    return keys;
   }
 
   function hideHoverPreview() {
@@ -4437,6 +4479,7 @@
 
   function showHoverPreviewFor(link) {
     hideHoverPreview();
+    if (!link.isConnected) return;
     var target = resolveLinkTarget(link);
     if (!target) return;
     var clone = clonePreviewContent(link, target);
@@ -4449,13 +4492,74 @@
     hoverPreviewSource = link;
   }
 
-  function scheduleHoverPreview(link) {
-    if (hoverPreviewSource === link && hoverPreviewEl) return;
+  function showEquationLabelPreviewFor(numberEl) {
+    hideHoverPreview();
+    if (!numberEl.isConnected) return;
+    var keys = equationNumberRefkeys(numberEl);
+    if (!keys.length) return;
+    var box = document.createElement('div');
+    box.className = 'hover-preview equation-label-preview';
+    var keyList = document.createElement('div');
+    keyList.className = 'equation-label-preview-keys';
+    keys.forEach(function(key) {
+      var code = document.createElement('code');
+      code.textContent = key;
+      keyList.appendChild(code);
+    });
+    box.appendChild(keyList);
+    document.body.appendChild(box);
+    positionHoverPreview(box, numberEl);
+    hoverPreviewEl = box;
+    hoverPreviewSource = numberEl;
+  }
+
+  function refreshHoverPreviewAfterRender() {
+    if (!hoverPreviewSource) return;
+    if (!hoverPreviewSource.isConnected) {
+      hideHoverPreview();
+      return;
+    }
+    // A same-node math transplant can update label carriers without emitting
+    // mouseout. Never leave the old keys floating beside the new equation.
+    if (hoverPreviewEl && hoverPreviewEl.classList.contains('equation-label-preview')) {
+      var currentKeys = equationNumberRefkeys(hoverPreviewSource);
+      var shownKeys = Array.prototype.map.call(
+        hoverPreviewEl.querySelectorAll('.equation-label-preview-keys code'),
+        function(code) { return code.textContent; }
+      );
+      if (currentKeys.length !== shownKeys.length ||
+          currentKeys.some(function(key, i) { return key !== shownKeys[i]; })) {
+        hideHoverPreview();
+        return;
+      }
+    }
+    if (hoverPreviewEl) positionHoverPreview(hoverPreviewEl, hoverPreviewSource);
+  }
+
+  function scheduleHoverPreviewWith(source, show) {
+    if (hoverPreviewSource === source && hoverPreviewEl) return;
     if (hoverPreviewTimer) clearTimeout(hoverPreviewTimer);
+    // Remember pending sources too. The shared post-render hook can then
+    // cancel a delayed preview whose anchor was replaced by a live patch.
+    hoverPreviewSource = source;
     hoverPreviewTimer = setTimeout(function() {
       hoverPreviewTimer = 0;
-      showHoverPreviewFor(link);
+      show(source);
     }, 250);
+  }
+
+  function scheduleHoverPreview(link) {
+    scheduleHoverPreviewWith(link, showHoverPreviewFor);
+  }
+
+  function scheduleEquationLabelPreview(numberEl) {
+    if (!equationNumberRefkeys(numberEl).length) return false;
+    // The focusable math wrapper advertises "Copy as LaTeX" through title.
+    // An empty title on the number stops that inherited native tooltip from
+    // competing with this more useful reverse-label preview.
+    numberEl.setAttribute('title', '');
+    scheduleHoverPreviewWith(numberEl, showEquationLabelPreviewFor);
+    return true;
   }
 
   // Keep the `--topbar-height` layout variable in sync with the toolbar's

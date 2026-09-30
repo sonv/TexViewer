@@ -83,8 +83,11 @@
           var touched = await applyPatch(msg.ops, msg.blocks);
           applyMode(currentProofMode, touched || undefined);
           setRefkeysVisible(refkeysVisible, false);
-          if (touched) touched.forEach(function(root) { decorateRefkeyChips(root); });
-          else decorateRefkeyChips(document.getElementById('page'));
+          if (touched && touched.length) {
+            touched.forEach(function(root) { decorateRefkeyChips(root); });
+          } else {
+            decorateRefkeyChips(document.getElementById('page'));
+          }
           restoreSourceHighlight();
           restoreSourceRange();
           restoreMathSearchHighlights();

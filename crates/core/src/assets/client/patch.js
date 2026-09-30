@@ -355,12 +355,24 @@
   document.addEventListener('mouseover', function(e) {
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn && !fn._fnPos) { fn._fnPos = true; positionFootnotePopover(fn); }
-    var link = isPinnableLink(e.target);
-    if (link) scheduleHoverPreview(link);
+    var equationNumber = equationNumberTarget(e.target);
+    if (equationNumber) {
+      scheduleEquationLabelPreview(equationNumber);
+    } else {
+      var link = isPinnableLink(e.target);
+      if (link) scheduleHoverPreview(link);
+    }
   });
   document.addEventListener('mouseout', function(e) {
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
+    var equationNumber = equationNumberTarget(e.target);
+    if (equationNumber) {
+      var numberRelated = e.relatedTarget;
+      if (numberRelated && equationNumber.contains(numberRelated)) return;
+      hideHoverPreview();
+      return;
+    }
     var link = isPinnableLink(e.target);
     if (!link) return;
     var related = e.relatedTarget;

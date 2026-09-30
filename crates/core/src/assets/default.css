@@ -2620,6 +2620,22 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
 .hover-preview .eq-num,
 .hover-preview .eq-num-list,
 .hover-preview .eq-num-row { display: none !important; }
+.equation-label-preview {
+  padding: 5px 8px;
+  max-width: min(480px, calc(100vw - 32px));
+}
+.equation-label-preview-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.equation-label-preview code {
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8em;
+  line-height: 1.3;
+  white-space: nowrap;
+}
 @keyframes hover-preview-in {
   from { opacity: 0; }
   to   { opacity: 1; }

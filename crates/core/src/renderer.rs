@@ -7345,6 +7345,164 @@ end = '{% endcall %}'
     }
 
     #[test]
+    fn equation_number_hover_carriers_preserve_aliases_and_row_alignment() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "\\section{S}\n",
+                "\\begin{equation}",
+                "\\label{eq:single}a=b\\label{eq:single-alias}",
+                "\\end{equation}\n",
+                "\\begin{align}\n",
+                "a &= b \\label{eq:a}\\label{eq:a-alias}\\\\\n",
+                "c &= d \\\\\n",
+                "e &= f \\notag\\\\\n",
+                "g &= h \\label{eq:c}\n",
+                "\\end{align}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        // A single display exposes its primary key on the display itself and
+        // retains aliases as label anchors. The delegated hover handler reads
+        // both carriers so it can show every key without reparsing TeX.
+        assert!(out.body_html.contains(
+            r#"class="math display" id="eq-single" data-src="t.tex:3:1" data-refkey="eq:single""#
+        ));
+        assert!(out.body_html.contains(
+            r#"class="label-anchor" id="eq-single-alias" data-refkey="eq:single-alias""#
+        ));
+
+        // Multi-row displays keep one refkey wrapper per rendered row. The
+        // second row is numbered but unlabeled and the third is `\\notag`;
+        // both empty wrappers are essential because the client maps equation
+        // numbers to labels by sibling index. The first row also proves that
+        // multiple labels on one equation remain available in source order.
+        assert!(out.body_html.contains(concat!(
+            r#"<span class="eq-refkey-list">"#,
+            r#"<span class="eq-refkey-row">"#,
+            r#"<span class="eq-refkey-chip" data-target="eq:a" tabindex="0" title="pin eq:a to margin">eq:a</span>"#,
+            r#"<span class="eq-refkey-chip" id="eq-a-alias" data-target="eq:a-alias" tabindex="0" title="pin eq:a-alias to margin">eq:a-alias</span>"#,
+            r#"</span>"#,
+            r#"<span class="eq-refkey-row"></span>"#,
+            r#"<span class="eq-refkey-row"></span>"#,
+            r#"<span class="eq-refkey-row">"#,
+            r#"<span class="eq-refkey-chip" id="eq-c" data-target="eq:c" tabindex="0" title="pin eq:c to margin">eq:c</span>"#,
+            r#"</span></span>"#,
+        )));
+        assert!(out.body_html.contains(concat!(
+            r#"<span class="eq-num-list" aria-hidden="true">"#,
+            r#"<span class="eq-num-row">(1.2)</span>"#,
+            r#"<span class="eq-num-row">(1.3)</span>"#,
+            r#"<span class="eq-num-row empty"></span>"#,
+            r#"<span class="eq-num-row">(1.4)</span>"#,
+            r#"</span>"#,
+        )));
+    }
+
+    #[test]
+    fn equation_number_label_hover_client_is_delegated_and_text_only() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\begin{document}\n",
+                "\\begin{equation}\\label{eq:first}E=mc^2\\end{equation}\n",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+
+        let helpers_start = out
+            .html
+            .find("function equationNumberTarget(target)")
+            .expect("equation-number hover target helper is embedded");
+        let helpers_end = out.html[helpers_start..]
+            .find("function hideHoverPreview()")
+            .map(|offset| helpers_start + offset)
+            .expect("equation-number key helpers end before the shared preview cleanup");
+        let key_helpers = &out.html[helpers_start..helpers_end];
+
+        // Event delegation must cover both a single display number and every
+        // visible numbered row while excluding the placeholder for `\\notag`.
+        assert!(
+            key_helpers.contains("target.closest('#page .eq-num, #page .eq-num-row:not(.empty)')")
+        );
+        // Single equations use the existing primary refkey plus zero-width
+        // alias anchors; multi-row equations map the parallel carrier lists
+        // by sibling index and collect every label chip on that row.
+        assert!(key_helpers.contains("math.getAttribute('data-refkey')"));
+        assert!(key_helpers.contains(".label-anchor[data-refkey]"));
+        assert!(key_helpers.contains("Array.prototype.indexOf.call(numberList.children, numberEl)"));
+        assert!(key_helpers.contains("math.querySelector('.eq-refkey-list')"));
+        assert!(key_helpers.contains(".eq-refkey-chip[data-target]"));
+        assert!(key_helpers.contains("chip.getAttribute('data-target')"));
+
+        let preview_start = out
+            .html
+            .find("function showEquationLabelPreviewFor(numberEl)")
+            .expect("equation-label preview builder is embedded");
+        let preview_end = out.html[preview_start..]
+            .find("function scheduleHoverPreviewWith(source, show)")
+            .map(|offset| preview_start + offset)
+            .expect("preview builder ends before the shared scheduler");
+        let preview_builder = &out.html[preview_start..preview_end];
+        assert!(preview_builder.contains("box.className = 'hover-preview equation-label-preview'"));
+        assert!(preview_builder.contains("code.textContent = key"));
+        assert!(
+            !preview_builder.contains("innerHTML"),
+            "label keys must be inserted as text, never parsed as HTML"
+        );
+
+        // The document-level mouseover path invokes the scheduler, so live
+        // body patches do not need to attach listeners to newly rendered
+        // equation numbers. Numbered-but-unlabeled rows stop before a popup.
+        assert!(out
+            .html
+            .contains("scheduleEquationLabelPreview(equationNumber)"));
+        assert!(out
+            .html
+            .contains("if (!equationNumberRefkeys(numberEl).length) return false;"));
+
+        // The common post-render decorator also owns hover-preview cleanup:
+        // live patches must cancel disconnected pending anchors and discard a
+        // visible equation-label popup when its text keys become stale.
+        let decorator_start = out
+            .html
+            .find("function decorateRefkeyChips(_root)")
+            .expect("post-render decorator is embedded");
+        let decorator_end = out.html[decorator_start..]
+            .find("function isPinnableLink(target)")
+            .map(|offset| decorator_start + offset)
+            .expect("post-render decorator ends before link helpers");
+        assert!(
+            out.html[decorator_start..decorator_end].contains("refreshHoverPreviewAfterRender();")
+        );
+
+        let refresh_start = out
+            .html
+            .find("function refreshHoverPreviewAfterRender()")
+            .expect("post-render hover refresh hook is embedded");
+        let refresh_end = out.html[refresh_start..]
+            .find("function scheduleHoverPreviewWith(source, show)")
+            .map(|offset| refresh_start + offset)
+            .expect("hover refresh hook ends before the shared scheduler");
+        let refresh_hook = &out.html[refresh_start..refresh_end];
+        assert!(refresh_hook.contains("if (!hoverPreviewSource.isConnected)"));
+        assert!(refresh_hook.contains(".equation-label-preview-keys code"));
+        assert!(refresh_hook.contains("function(code) { return code.textContent; }"));
+        assert!(refresh_hook.contains("positionHoverPreview(hoverPreviewEl, hoverPreviewSource)"));
+        assert!(out.html.contains("hoverPreviewSource = source;"));
+        assert!(out.html.contains("if (!link.isConnected) return;"));
+        assert!(out.html.contains("if (touched && touched.length)"));
+    }
+
+    #[test]
     fn display_label_changes_affect_math_reuse_hash() {
         let first = crate::render_project_from_source(
             Path::new("t.tex"),

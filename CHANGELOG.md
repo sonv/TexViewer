@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.45] — 2026-09-30
+
+### Added
+
+- **Displayed equation numbers reveal their LaTeX labels on hover.** Hovering
+  an automatically generated equation number shows the exact `\label{...}`
+  key in a compact preview. Multiple aliases remain in source order, and each
+  numbered `align` or `gather` row shows only the keys declared on that row;
+  unlabeled rows continue without a hover popup.
+
 ## [2.1.44] — 2026-09-15
 
 ### Fixed
