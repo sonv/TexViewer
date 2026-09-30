@@ -53,7 +53,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "82";
+const WS_PROTOCOL_VERSION: &str = "83";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -5432,6 +5432,11 @@ mod tests {
         // the newer daemon without reloading its stale inline viewer script.
         assert!(websocket_needs_reload(&std::collections::HashMap::from([
             ("v".to_string(), "81".to_string(),)
+        ])));
+        // v82 has the first reverse-label hover, but its key-only popup and
+        // reference previews predate the shared labeled header + math body.
+        assert!(websocket_needs_reload(&std::collections::HashMap::from([
+            ("v".to_string(), "82".to_string(),)
         ])));
         assert!(websocket_needs_reload(&std::collections::HashMap::new()));
     }

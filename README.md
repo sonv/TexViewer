@@ -929,9 +929,11 @@ a Rust roundtrip unless they are controlling the daemon itself.
   page, so section/equation margins remain part of both the anchor position and
   line flow, without forcing MathJax to render its equations.
   Independently of this overlay, hovering a generated displayed-equation
-  number reveals its exact `\label{...}` key (or keys). Each `align`/`gather`
-  row shows only its own keys, and an unlabeled row shows nothing. Keys are
-  never inferred: `\label{first}` displays `first`, not `e:first`.
+  number opens the same equation preview used by references, with its exact
+  `\label{...}` key (or keys) in a header above the math. `\ref` / `\eqref`
+  hover previews use the same labeled header. Each `align`/`gather` row shows
+  only its own keys, and an unlabeled row shows nothing. Keys are never
+  inferred: `\label{first}` displays `first`, not `e:first`.
   MathJax-authored manual `\tag` values are not generated equation numbers,
   so they do not receive this hover label.
 - `lines` toggles typeset line numbers (LaTeX `lineno`-style): every
@@ -947,7 +949,8 @@ a Rust roundtrip unless they are controlling the daemon itself.
   entry (typeset math preserved) instead of scrolling to it — click again
   or the `×` to unpin, use `↔` to expand it horizontally over the text, and
   drag the `⋮⋮` grip to reorder. Hovering a `\ref`/`\cite` shows a quick,
-  proof-less preview regardless of mode. The preview stays at least as large
+  proof-less preview regardless of mode, with the raw label or citation key in
+  a header above the referenced content. The preview stays at least as large
   as the configured document font by default; **Hover preview size** in the
   config panel can magnify it from 100–300%. It follows zoom once the page is
   enlarged beyond natural size. A left-margin refkey chip (needs `keys` on)

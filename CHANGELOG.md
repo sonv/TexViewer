@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.47] — 2026-09-30
+
+### Changed
+
+- **Equation hover previews now match margin cards.** Hovering a displayed
+  equation number shows the rendered equation with its exact `\label{...}`
+  key in a header above it. Reference and citation hover bubbles use the same
+  labeled header, including aliases and secondary `align` / `gather` rows that
+  previously resolved to an empty internal carrier.
+
 ## [2.1.46] — 2026-09-30
 
 ### Fixed

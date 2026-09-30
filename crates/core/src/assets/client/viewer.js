@@ -1949,6 +1949,17 @@
       if (dd && dd.tagName === 'DD') wrap.appendChild(dd.cloneNode(true));
       return wrap;
     }
+    // Alias labels on a single equation and non-primary row labels in an
+    // align/gather environment are represented by zero-content carrier
+    // elements inside the display. Preview the containing equation, not the
+    // invisible carrier. This path is shared by hover bubbles and margin
+    // cards, so both interactions show the same useful content.
+    var containingMath = target.closest && target.closest('.math.display');
+    if (containingMath &&
+        (target.classList.contains('label-anchor') ||
+         target.classList.contains('eq-refkey-chip'))) {
+      target = containingMath;
+    }
     // Empty label-anchor — typically `\label{...}` placed at the top of a
     // `\begin{subequations}` group, where the label sits as a zero-content
     // marker BEFORE the actual `\begin{equation}` / `align` children.
@@ -4477,15 +4488,65 @@
     el.style.top = top + 'px';
   }
 
+  function hoverPreviewKeysForLink(link) {
+    var key = link &&
+      (link.getAttribute('data-target') || link.getAttribute('data-key'));
+    return key ? [key] : [];
+  }
+
+  function prepareHoverPreviewClone(clone) {
+    // A hover popup is a visual snapshot, not a second interactive copy of
+    // the document. Keep it out of keyboard/assistive-tech navigation and
+    // drop document-level HTML ids so references never resolve into the
+    // transient clone. MathJax's SVG ids must remain intact because its
+    // glyph <use href="#..."> links resolve against them.
+    if (clone.hasAttribute('tabindex')) clone.removeAttribute('tabindex');
+    clone.querySelectorAll('[tabindex]').forEach(function(el) {
+      el.removeAttribute('tabindex');
+    });
+    var idNodes = [clone];
+    clone.querySelectorAll('[id]').forEach(function(el) { idNodes.push(el); });
+    idNodes.forEach(function(el) {
+      if (!(el.closest && el.closest('svg'))) el.removeAttribute('id');
+    });
+    return clone;
+  }
+
+  function buildHoverPreview(keys, clone, extraClass) {
+    var box = document.createElement('div');
+    box.className = 'hover-preview' + (extraClass ? ' ' + extraClass : '');
+    box.setAttribute('aria-hidden', 'true');
+    box.setAttribute('inert', '');
+    if (keys.length) {
+      var header = document.createElement('div');
+      header.className = 'hover-preview-header';
+      var keyList = document.createElement('div');
+      // Keep the equation-specific class while it remains the live-patch key
+      // fingerprint queried by refreshHoverPreviewAfterRender().
+      keyList.className = 'hover-preview-keys equation-label-preview-keys';
+      keys.forEach(function(key) {
+        var code = document.createElement('code');
+        code.className = 'margin-card-key';
+        code.textContent = key;
+        keyList.appendChild(code);
+      });
+      header.appendChild(keyList);
+      box.appendChild(header);
+    }
+    var body = document.createElement('div');
+    body.className = 'hover-preview-body';
+    body.appendChild(prepareHoverPreviewClone(clone));
+    box.appendChild(body);
+    return box;
+  }
+
   function showHoverPreviewFor(link) {
     hideHoverPreview();
     if (!link.isConnected) return;
     var target = resolveLinkTarget(link);
     if (!target) return;
     var clone = clonePreviewContent(link, target);
-    var box = document.createElement('div');
-    box.className = 'hover-preview';
-    box.appendChild(clone);
+    var box = buildHoverPreview(hoverPreviewKeysForLink(link), clone, '');
     document.body.appendChild(box);
     positionHoverPreview(box, link);
     hoverPreviewEl = box;
@@ -4497,16 +4558,10 @@
     if (!numberEl.isConnected) return;
     var keys = equationNumberRefkeys(numberEl);
     if (!keys.length) return;
-    var box = document.createElement('div');
-    box.className = 'hover-preview equation-label-preview';
-    var keyList = document.createElement('div');
-    keyList.className = 'equation-label-preview-keys';
-    keys.forEach(function(key) {
-      var code = document.createElement('code');
-      code.textContent = key;
-      keyList.appendChild(code);
-    });
-    box.appendChild(keyList);
+    var math = numberEl.closest('.math.display');
+    if (!math) return;
+    var clone = clonePreviewContent(numberEl, math);
+    var box = buildHoverPreview(keys, clone, 'equation-label-preview');
     document.body.appendChild(box);
     positionHoverPreview(box, numberEl);
     hoverPreviewEl = box;
@@ -4529,6 +4584,35 @@
       );
       if (currentKeys.length !== shownKeys.length ||
           currentKeys.some(function(key, i) { return key !== shownKeys[i]; })) {
+        hideHoverPreview();
+        return;
+      }
+      // The popup now contains a clone of the equation as well as its key.
+      // If an in-place live patch changes the math while retaining the same
+      // label, dismiss the old clone instead of showing stale content.
+      var currentMath = hoverPreviewSource.closest('.math.display');
+      var shownMath = hoverPreviewEl.querySelector('.hover-preview-body .math.display');
+      if (!currentMath || !shownMath ||
+          currentMath.getAttribute('data-hash') !== shownMath.getAttribute('data-hash')) {
+        hideHoverPreview();
+        return;
+      }
+    } else if (hoverPreviewEl) {
+      // A referenced theorem/equation/bibliography entry can change while
+      // the link being hovered lives in an untouched block. Compare a fresh,
+      // inert clone to the visible snapshot so ordinary ref/cite previews do
+      // not survive a patch with stale content.
+      var currentTarget = resolveLinkTarget(hoverPreviewSource);
+      var shownBody = hoverPreviewEl.querySelector('.hover-preview-body');
+      var shownClone = shownBody && shownBody.firstElementChild;
+      if (!currentTarget || !shownClone) {
+        hideHoverPreview();
+        return;
+      }
+      var freshClone = prepareHoverPreviewClone(
+        clonePreviewContent(hoverPreviewSource, currentTarget)
+      );
+      if (!shownClone.isEqualNode(freshClone)) {
         hideHoverPreview();
         return;
       }

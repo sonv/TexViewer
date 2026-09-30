@@ -7405,12 +7405,13 @@ end = '{% endcall %}'
     }
 
     #[test]
-    fn equation_number_label_hover_client_is_delegated_and_text_only() {
+    fn equation_hover_previews_share_label_header_and_math_body() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),
             concat!(
                 "\\begin{document}\n",
-                "\\begin{equation}\\label{eq:first}E=mc^2\\end{equation}\n",
+                "\\begin{equation}\\label{eq:first}E=mc^2\\label{eq:alias}\\end{equation}\n",
+                "See \\eqref{eq:first} and \\eqref{eq:alias}.\n",
                 "\\end{document}\n",
             )
             .to_string(),
@@ -7443,21 +7444,83 @@ end = '{% endcall %}'
         assert!(key_helpers.contains(".eq-refkey-chip[data-target]"));
         assert!(key_helpers.contains("chip.getAttribute('data-target')"));
 
-        let preview_start = out
+        // Alias anchors and secondary align-row chips are invisible carriers
+        // inside a display. Both hover and margin previews must promote them
+        // to their containing equation instead of cloning an empty chip.
+        let clone_start = out
             .html
-            .find("function showEquationLabelPreviewFor(numberEl)")
-            .expect("equation-label preview builder is embedded");
-        let preview_end = out.html[preview_start..]
-            .find("function scheduleHoverPreviewWith(source, show)")
-            .map(|offset| preview_start + offset)
-            .expect("preview builder ends before the shared scheduler");
-        let preview_builder = &out.html[preview_start..preview_end];
-        assert!(preview_builder.contains("box.className = 'hover-preview equation-label-preview'"));
+            .find("function clonePreviewContent(link, target)")
+            .expect("shared preview clone helper is embedded");
+        let clone_end = out.html[clone_start..]
+            .find("function pinKeyFor(link)")
+            .map(|offset| clone_start + offset)
+            .expect("clone helper ends before margin pin helpers");
+        let clone_helper = &out.html[clone_start..clone_end];
+        assert!(clone_helper.contains("target.closest('.math.display')"));
+        assert!(clone_helper.contains("target.classList.contains('label-anchor')"));
+        assert!(clone_helper.contains("target.classList.contains('eq-refkey-chip')"));
+        assert!(clone_helper.contains("target = containingMath;"));
+
+        // Hover bubbles now mirror margin cards: exact raw keys occupy a
+        // header above a cloned target body. Keys are always text nodes.
+        let builder_start = out
+            .html
+            .find("function prepareHoverPreviewClone(clone)")
+            .expect("shared keyed hover builder is embedded");
+        let builder_end = out.html[builder_start..]
+            .find("function showHoverPreviewFor(link)")
+            .map(|offset| builder_start + offset)
+            .expect("hover builder ends before link preview entry point");
+        let preview_builder = &out.html[builder_start..builder_end];
+        assert!(preview_builder.contains("box.setAttribute('aria-hidden', 'true')"));
+        assert!(preview_builder.contains("box.setAttribute('inert', '')"));
+        assert!(preview_builder.contains("el.removeAttribute('tabindex')"));
+        assert!(preview_builder.contains("el.closest('svg')"));
+        assert!(preview_builder.contains("el.removeAttribute('id')"));
+        assert!(preview_builder.contains("header.className = 'hover-preview-header'"));
+        assert!(preview_builder.contains("code.className = 'margin-card-key'"));
         assert!(preview_builder.contains("code.textContent = key"));
+        assert!(preview_builder.contains("body.className = 'hover-preview-body'"));
+        assert!(preview_builder.contains("body.appendChild(prepareHoverPreviewClone(clone))"));
+        let header_append = preview_builder
+            .find("box.appendChild(header)")
+            .expect("preview appends its label header");
+        let body_append = preview_builder
+            .find("box.appendChild(body)")
+            .expect("preview appends its rendered body");
+        assert!(
+            header_append < body_append,
+            "the label header must precede the rendered preview body"
+        );
         assert!(
             !preview_builder.contains("innerHTML"),
             "label keys must be inserted as text, never parsed as HTML"
         );
+
+        let link_preview_start = out
+            .html
+            .find("function showHoverPreviewFor(link)")
+            .expect("reference hover entry point is embedded");
+        let number_preview_start = out
+            .html
+            .find("function showEquationLabelPreviewFor(numberEl)")
+            .expect("equation-number hover entry point is embedded");
+        let link_preview = &out.html[link_preview_start..number_preview_start];
+        assert!(link_preview.contains("hoverPreviewKeysForLink(link)"));
+        assert!(
+            link_preview.contains("buildHoverPreview(hoverPreviewKeysForLink(link), clone, '')")
+        );
+
+        let number_preview_end = out.html[number_preview_start..]
+            .find("function refreshHoverPreviewAfterRender()")
+            .map(|offset| number_preview_start + offset)
+            .expect("number preview ends before post-render refresh");
+        let number_preview = &out.html[number_preview_start..number_preview_end];
+        assert!(number_preview.contains("numberEl.closest('.math.display')"));
+        assert!(number_preview.contains("clonePreviewContent(numberEl, math)"));
+        assert!(number_preview.contains("buildHoverPreview(keys, clone, 'equation-label-preview')"));
+        assert!(out.html.contains(".hover-preview-header {"));
+        assert!(out.html.contains(".hover-preview-keys {"));
 
         // The document-level mouseover path invokes the scheduler, so live
         // body patches do not need to attach listeners to newly rendered
@@ -7496,6 +7559,11 @@ end = '{% endcall %}'
         assert!(refresh_hook.contains("if (!hoverPreviewSource.isConnected)"));
         assert!(refresh_hook.contains(".equation-label-preview-keys code"));
         assert!(refresh_hook.contains("function(code) { return code.textContent; }"));
+        assert!(refresh_hook.contains(".hover-preview-body .math.display"));
+        assert!(refresh_hook.contains("currentMath.getAttribute('data-hash')"));
+        assert!(refresh_hook.contains("shownMath.getAttribute('data-hash')"));
+        assert!(refresh_hook.contains("clonePreviewContent(hoverPreviewSource, currentTarget)"));
+        assert!(refresh_hook.contains("shownClone.isEqualNode(freshClone)"));
         assert!(refresh_hook.contains("positionHoverPreview(hoverPreviewEl, hoverPreviewSource)"));
         assert!(out.html.contains("hoverPreviewSource = source;"));
         assert!(out.html.contains("if (!link.isConnected) return;"));
