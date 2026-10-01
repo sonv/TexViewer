@@ -387,7 +387,7 @@
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
   });
-  document.addEventListener('scroll', hideHoverPreview, { passive: true });
+  document.addEventListener('scroll', handleHoverPreviewScroll, { passive: true });
 
   // Every keyboard feature and every fixed viewer button routes through this
   // action registry. `[keybindings]` only names actions; it never needs to know
@@ -1721,6 +1721,9 @@
   });
 
   var pendingTypeset = new Set();
+  // Hover demand is separate from viewport work: dismissing a popup must not
+  // cancel an ordinary live-edit batch that happens to contain the same math.
+  var hoverTypeset = new Set();
   var typesetTimer = 0;
   var typesetBusy = false;
   var initialTypesetQueued = false;
@@ -2317,8 +2320,54 @@
   }
 
   function scheduleTypesetFlush(delay) {
-    if (!pendingTypeset.size || typesetTimer) return;
+    if ((!pendingTypeset.size && !hoverTypeset.size) || typesetTimer) return;
     typesetTimer = setTimeout(flushTypeset, delay);
+  }
+
+  function requestHoverTypeset(nodes) {
+    nodes.forEach(function(node) {
+      if (isUntypesetMathNode(node)) hoverTypeset.add(node);
+    });
+    scheduleTypesetFlush(0);
+  }
+
+  function cancelHoverTypeset() {
+    hoverTypeset.clear();
+  }
+
+  function liftHoverTypesetBlocks(nodes) {
+    var blocks = new Set();
+    nodes.forEach(function(node) {
+      var block = node.closest('main#page > .blk');
+      if (block) blocks.add(block);
+    });
+    var token = {};
+    var lifted = Array.from(blocks, function(block) {
+      var entry = {
+        block: block,
+        contentVisibility: block.style.contentVisibility,
+        contain: block.style.contain,
+      };
+      block.__mpHoverTypesetToken = token;
+      block.style.contain = 'layout style paint';
+      block.style.contentVisibility = 'visible';
+      return entry;
+    });
+    return function restore() {
+      lifted.forEach(function(entry) {
+        entry.block.style.contentVisibility = entry.contentVisibility;
+        entry.block.style.contain = entry.contain;
+      });
+      // Synthetic unskip events can arrive after restoration, especially in
+      // WebKit. Do not let them enqueue unrelated equations in these blocks.
+      setTimeout(function() {
+        lifted.forEach(function(entry) {
+          if (entry.block.__mpHoverTypesetToken === token) {
+            delete entry.block.__mpHoverTypesetToken;
+          }
+        });
+      }, 250);
+    };
   }
 
   // Viewport-lazy typesetting. Blocks have `content-visibility: auto`, so
@@ -2348,7 +2397,7 @@
         // viewer.js may briefly lift a skipped block to cache lightweight key
         // and line-number geometry. That pass must not turn local typesetting
         // into an eager whole-document MathJax run.
-        if (blk.__mpOverlayPrelayoutToken) return;
+        if (blk.__mpOverlayPrelayoutToken || blk.__mpHoverTypesetToken) return;
         blk.__mpLazyTypeset = false;
         blk.removeEventListener('contentvisibilityautostatechange', onState);
         queueUntypesetMath(blk);
@@ -2360,7 +2409,12 @@
   function queueTypeset(nodes) {
     nodes.forEach(function(node) {
       if (!isRawMathNode(node)) return;
-      if (inSkippedBlock(node) && deferTypesetUntilVisible(node)) return;
+      var block = node.closest('main#page > .blk');
+      // A live patch can scan this block while a hover batch has temporarily
+      // lifted it. That must not promote its unrequested siblings to eager
+      // work. The viewport observer still handles genuine reader navigation.
+      if (((block && block.__mpHoverTypesetToken) || inSkippedBlock(node)) &&
+          deferTypesetUntilVisible(node)) return;
       syncMathSourceText(node);
       pendingTypeset.add(node);
       node.classList.add('math-pending');
@@ -2500,7 +2554,7 @@
   async function bgFillStep() {
     bgFillTimer = 0;
     if (typesetMode() !== 'background') return;
-    if (printFlushPromise || typesetBusy || windowQueue.size) { scheduleBgFill(600); return; }
+    if (printFlushPromise || typesetBusy || hoverTypeset.size || windowQueue.size) { scheduleBgFill(600); return; }
     var page = pageEl();
     if (!page) return;
     var blocks = pageBlocks(page);
@@ -2553,7 +2607,7 @@
     // Yield to the print flush, an in-progress typeset batch, and visible
     // native diagrams. The exact-visible math queue above still runs first;
     // this queue is the wider 150%-viewport look-ahead buffer.
-    if (printFlushPromise || typesetBusy || tikzVisibleQueue.size || tikzBusy) {
+    if (printFlushPromise || typesetBusy || hoverTypeset.size || tikzVisibleQueue.size || tikzBusy) {
       scheduleWindowDrain(150);
       return;
     }
@@ -2638,28 +2692,44 @@
 
   async function flushTypeset() {
     typesetTimer = 0;
+    hoverTypeset.forEach(function(node) {
+      if (!isUntypesetMathNode(node)) hoverTypeset.delete(node);
+    });
+    if (!pendingTypeset.size && !hoverTypeset.size) return;
     if (typesetBusy) {
       typesetTimer = setTimeout(flushTypeset, TYPESET_BUSY_RETRY_MS);
       return;
     }
-    if (!pendingTypeset.size) return;
     if (!window.__mpEngine || !window.__mpEngine.isReady()) {
       typesetTimer = setTimeout(flushTypeset, TYPESET_IDLE_MS);
       return;
     }
 
-    var nodes = Array.from(pendingTypeset).filter(isUntypesetMathNode);
+    // Bound demanded work so leaving a large theorem can cancel the rest.
+    // In-flight MathJax is allowed to finish through the shared scheduler.
+    var demanded = Array.from(hoverTypeset).slice(0, 40);
+    demanded.forEach(function(node) { hoverTypeset.delete(node); });
+    var nodes = Array.from(new Set(demanded.concat(
+      Array.from(pendingTypeset).filter(isUntypesetMathNode)
+    )));
     pendingTypeset.clear();
     if (!nodes.length) return;
 
     typesetBusy = true;
     var anchor = captureTypesetViewportAnchor();
+    var hoverAnchor = hoverPreviewEl && hoverPreviewSource ? {
+      source: hoverPreviewSource,
+      rect: hoverPreviewSource.getBoundingClientRect(),
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+    } : null;
+    var restoreBlocks = liftHoverTypesetBlocks(demanded);
     setStatus('updating', '↻ typesetting ' + nodes.length + ' math');
     var tStart = performance.now();
     try {
+      demanded.forEach(syncMathSourceText);
       await window.__mpEngine.typeset(nodes);
       seedTypesetBlockIntrinsicSizes(nodes);
-      settleTypesetViewportAnchor(anchor);
       var ms = Math.round(performance.now() - tStart);
       nodes.forEach(function(node) { node.classList.remove('math-pending'); });
       restoreMathSearchHighlights();
@@ -2675,11 +2745,23 @@
       console.error('mathpreview engine:', e);
       setStatus('dead', '○ engine error');
     } finally {
+      restoreBlocks();
+      settleTypesetViewportAnchor(anchor);
+      if (hoverAnchor && hoverPreviewSource === hoverAnchor.source &&
+          (window.scrollX !== hoverAnchor.scrollX || window.scrollY !== hoverAnchor.scrollY)) {
+        // A scroll event may still be queued when the engine resolves. Use
+        // the pre-batch rectangle, not an observer-refreshed popup's position,
+        // to distinguish actual scrolling from stationary-reader anchoring.
+        var rect = hoverAnchor.source.getBoundingClientRect();
+        if (Math.abs(rect.top - hoverAnchor.rect.top) >= 1 ||
+            Math.abs(rect.left - hoverAnchor.rect.left) >= 1) hideHoverPreview();
+      }
+      if (hoverPreviewEl && hoverPreviewSource && hoverPreviewSource.isConnected) {
+        positionHoverPreview(hoverPreviewEl, hoverPreviewSource);
+      }
       typesetBusy = false;
       scheduleNavigationRefresh(NAV_RENDER_IDLE_MS, false);
-      if (pendingTypeset.size && !typesetTimer) {
-        scheduleTypesetFlush(TYPESET_IDLE_MS);
-      }
+      scheduleTypesetFlush(hoverTypeset.size ? 0 : TYPESET_IDLE_MS);
       // Watch the rest of the document so each block typesets as it nears the
       // viewport; in 'background' mode also fill the rest while idle.
       observeTypesetWindow();

@@ -13,6 +13,21 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.49] - 2026-10-01
+
+### Fixed
+
+- **Distant equation references render on hover.** Opening a preview now
+  requests its unrendered math even when the source has never been scrolled
+  into view. Rendering shares the normal engine queue and leaves unrelated
+  equations lazy. Dismissing or replacing the hover cancels queued work.
+- **Inline text retains authored spaces.** Expressions such as
+  `\emph{at or after} $a$` keep their space, including during live edits.
+  Intentional adjacency, TeX control-word delimiters, and comment line joining
+  retain their usual behavior.
+- Existing preview tabs reload onto the fixed viewer after the daemon is
+  upgraded, through the paired client/server protocol bump to 85.
+
 ## [2.1.48] — 2026-09-30
 
 ### Fixed

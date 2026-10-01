@@ -2185,10 +2185,10 @@ impl<'a> Parser<'a> {
                           end: Pos,
                           file: &Path| {
             if let Some(start) = text_start.take() {
-                if !text_buf.is_empty()
-                    && (text_buf.chars().any(|c| !c.is_whitespace())
-                        || contains_blank_line(text_buf))
-                {
+                // Whitespace between independently parsed inline nodes is
+                // visible content, too: `\emph{word} $x$` needs its space.
+                // The renderer owns trimming at paragraph/block boundaries.
+                if !text_buf.is_empty() {
                     out.push(Node {
                         kind: NodeKind::Text(std::mem::take(text_buf)),
                         span: Span {
@@ -2230,6 +2230,21 @@ impl<'a> Parser<'a> {
                     span: self.span_from(start),
                     children: vec![],
                 });
+                // A comment suppresses its line ending, and indentation on
+                // the next line is not an interword space. Consume both here
+                // so retaining whitespace text nodes cannot undo `%` joining.
+                if self.peek_byte() == Some(b'\n') {
+                    let mut next = self.byte + 1;
+                    while matches!(self.bytes.get(next), Some(b' ' | b'\t' | b'\r')) {
+                        next += 1;
+                    }
+                    // An actually blank next line still ends the paragraph.
+                    // Keep that complete separator for the renderer's normal
+                    // blank-line handling rather than reducing it to one LF.
+                    if self.bytes.get(next) != Some(&b'\n') {
+                        self.advance_to(next);
+                    }
+                }
                 continue;
             }
 
@@ -2748,6 +2763,7 @@ impl<'a> Parser<'a> {
                 flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                 self.advance_to(cmd_name_end);
                 let mut raw = format!("\\{}", cmd);
+                let mut has_args = false;
                 // Drag in trailing args until we hit non-arg content.
                 loop {
                     let saved = self.byte;
@@ -2755,16 +2771,28 @@ impl<'a> Parser<'a> {
                     let after_ws = self.byte;
                     if let Some(o) = self.optional_arg_raw() {
                         raw.push_str(&o);
+                        has_args = true;
                         continue;
                     }
                     if let Some(g) = self.brace_group_raw() {
                         raw.push_str(&g);
+                        has_args = true;
                         continue;
                     }
-                    // Restore positional whitespace so it doesn't get eaten.
-                    if after_ws != saved {
-                        // Rewind not supported simply; just stop. Whitespace
-                        // gets resumed below.
+                    // Whitespace directly after a bare control word delimits
+                    // the token, not the visible text: `\TeX $x$` joins, while
+                    // `\TeX{} $x$` and `\emph{text} $x$` retain their spaces.
+                    // A blank line is still a paragraph boundary, not a word
+                    // delimiter. A trailing `*` is not a control-word letter.
+                    let bare_control_word =
+                        !has_args && cmd.bytes().all(|b| b.is_ascii_alphabetic() || b == b'@');
+                    let blank_line = self.src[saved..after_ws]
+                        .bytes()
+                        .filter(|b| *b == b'\n')
+                        .take(2)
+                        .count()
+                        == 2;
+                    if after_ws != saved && (!bare_control_word || blank_line) {
                         self.byte = saved;
                         self.line = self.pos_line_at(saved);
                         self.col = self.pos_col_at(saved);
@@ -4516,23 +4544,6 @@ fn list_kind_for(env: &str) -> Option<ListKind> {
     })
 }
 
-fn contains_blank_line(s: &str) -> bool {
-    let mut newlines = 0u8;
-    for ch in s.chars() {
-        match ch {
-            '\n' => {
-                newlines += 1;
-                if newlines >= 2 {
-                    return true;
-                }
-            }
-            ' ' | '\t' | '\r' => {}
-            _ => newlines = 0,
-        }
-    }
-    false
-}
-
 /// Split an enumerate/itemize body into `(marker, slice_start, slice_end)`
 /// chunks per `\item`. Skips over any nested `\begin{X}...\end{X}` so
 /// nested lists don't trigger a top-level split.
@@ -4990,7 +5001,9 @@ mod tests {
             "recursive expansion did not fall back to an opaque environment"
         );
         assert!(
-            nodes.len() <= MAX_USER_ENV_EXPANSIONS * 2 + 1,
+            // Expansion nodes plus the root body and its preserved trailing
+            // whitespace. Whitespace retention must not weaken the budget.
+            nodes.len() <= MAX_USER_ENV_EXPANSIONS * 2 + 2,
             "recursive expansion escaped its work bound: {} nodes",
             nodes.len()
         );
@@ -6319,6 +6332,36 @@ After $y$.
         assert!(matches!(&n[0].kind, NodeKind::InlineMath(s) if s == "a"));
         assert!(matches!(&n[1].kind, NodeKind::Text(s) if s == "\n\n"));
         assert!(matches!(&n[2].kind, NodeKind::InlineMath(s) if s == "b"));
+    }
+
+    #[test]
+    fn whitespace_between_inline_nodes_is_preserved_with_source_positions() {
+        for separator in [" ", "\n", "\n  ", "\t"] {
+            let source = format!(r"\emph{{at or after}}{separator}$a$");
+            let nodes = parse(&source);
+            assert_eq!(nodes.len(), 3, "{source:?}: {nodes:#?}");
+            assert!(matches!(
+                &nodes[1].kind,
+                NodeKind::Text(text) if text == separator
+            ));
+            assert_eq!(nodes[1].span.start, nodes[0].span.end);
+            assert_eq!(nodes[1].span.end, nodes[2].span.start);
+            assert_eq!(nodes[1].span.start.byte, 18);
+            assert_eq!(nodes[2].span.start.byte, (18 + separator.len()) as u32);
+            assert!(matches!(&nodes[2].kind, NodeKind::InlineMath(body) if body == "a"));
+        }
+    }
+
+    #[test]
+    fn adjacent_inline_nodes_do_not_gain_whitespace() {
+        let nodes = parse(r"\emph{at or after}$a$\textbf{next}\ref{last}");
+        assert_eq!(nodes.len(), 4, "{nodes:#?}");
+        assert!(!nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::Text(_))));
+        for pair in nodes.windows(2) {
+            assert_eq!(pair[0].span.end, pair[1].span.start);
+        }
     }
 
     #[test]

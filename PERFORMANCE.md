@@ -217,6 +217,22 @@ MathJax batch runs at a time; each path sets it, awaits, clears it).
    *everything* before opening the print dialog. It sets `typesetBusy`, so paths
    2 and 3 yield to it while it runs.
 
+5. **Hover demand.** A reference can point to math that has never entered the
+   viewport. `observeHoverPreviewMath` requests only the raw equations shown
+   in that popup, excluding hidden proof descendants. `flushTypeset` merges
+   up to 40 demanded equations with ordinary pending work under the same
+   `typesetBusy` lock. Demand has separate ownership so dismissing the popup
+   cancels future batches without dropping viewport or live-edit work.
+
+   Only the demanded source blocks have their containment lifted. A dedicated
+   marker prevents both synthetic unskip events and interleaved live patches
+   from enrolling their unrelated equations. The batch seeds intrinsic sizes,
+   restores containment even on failure, and settles the reading position.
+   Hover refreshes retain their position through scroll anchoring, but a real
+   reader scroll still dismisses the popup. `npm run test:hover` covers cold
+   sources above and below the reader, cancellation, live patches, and errors.
+   Set `MATHPREVIEW_TEST_BROWSER=webkit` to run the same suite in WebKit.
+
 ### Switching modes live
 
 `typeset-mode` is pure client behavior, so it applies with no reload:

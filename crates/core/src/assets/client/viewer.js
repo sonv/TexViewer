@@ -4469,6 +4469,7 @@
   }
 
   function hideHoverPreview() {
+    cancelHoverTypeset();
     if (hoverPreviewTimer) {
       clearTimeout(hoverPreviewTimer);
       hoverPreviewTimer = 0;
@@ -4484,8 +4485,22 @@
     hoverPreviewSource = null;
   }
 
+  function handleHoverPreviewScroll() {
+    // Rendering a distant source above the reader can trigger native scroll
+    // anchoring or our own viewport correction. Keep a stationary anchor's
+    // popup, but still dismiss on an actual reader scroll.
+    var before = hoverPreviewEl && hoverPreviewEl.__mpAnchorRect;
+    if (before && hoverPreviewSource && hoverPreviewSource.isConnected) {
+      var after = hoverPreviewSource.getBoundingClientRect();
+      if (Math.abs(before.top - after.top) < 1 &&
+          Math.abs(before.left - after.left) < 1) return;
+    }
+    hideHoverPreview();
+  }
+
   function positionHoverPreview(el, anchor) {
     var rect = anchor.getBoundingClientRect();
+    el.__mpAnchorRect = { top: rect.top, left: rect.left };
     var pad = 8;
     el.style.left = '0px';
     el.style.top = '0px';
@@ -4593,6 +4608,9 @@
         attributeFilter: ['data-mp-stale'],
       });
     });
+    // Lazy originals may never enter the viewport. Demand only the visible
+    // math represented by this popup, through the serialized engine queue.
+    requestHoverTypeset(pending);
   }
 
   function showHoverPreviewFor(link) {

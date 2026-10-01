@@ -7,15 +7,18 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { after, before, test } from 'node:test';
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
 
 // Exercise the real embedded bundle, daemon patches, and vendored MathJax.
 // `npm run test:hover` builds the CLI first so edits to include_str! assets
 // cannot accidentally be tested against an old binary.
 const binary = resolve('target/debug/mathpreview-cli');
 const popup = '.hover-preview';
+const browserName = process.env.MATHPREVIEW_TEST_BROWSER || 'chromium';
+const browserType = { chromium, webkit }[browserName];
+assert.ok(browserType, `Unsupported test browser: ${browserName}`);
 let browser;
-before(async () => { browser = await chromium.launch(); });
+before(async () => { browser = await browserType.launch(); });
 after(async () => { await browser?.close(); });
 
 function documentSource(math) {
@@ -32,10 +35,10 @@ ${Array.from({ length: 20 }, (_, i) => `Stable paragraph ${i}.`).join('\n\n')}
 
 const equation = String.raw`\begin{equation}\label{eq:first}E=mc^2\label{eq:alias}\end{equation}`;
 
-async function fixture(t, math = equation) {
+async function fixture(t, math = equation, source = documentSource) {
   const directory = await mkdtemp(join(tmpdir(), 'mathpreview-hover-test-'));
   const input = join(directory, 'notes.tex');
-  await writeFile(input, documentSource(math));
+  await writeFile(input, source(math));
   const portProbe = createServer();
   portProbe.listen(0, '127.0.0.1');
   await once(portProbe, 'listening');
@@ -75,8 +78,8 @@ async function fixture(t, math = equation) {
     } catch { /* wait for the listener */ }
     await delay(50);
   }
-  async function open() {
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+  async function open(fragment = '') {
+    await page.goto(url + fragment, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.querySelector('#ws-status')?.textContent.includes('live'));
   }
   async function update(nextMath) {
@@ -84,7 +87,7 @@ async function fixture(t, math = equation) {
     const response = await fetch(`${url}/buffer`, {
       method: 'POST',
       headers: { 'x-mathpreview-path': input },
-      body: documentSource(nextMath),
+      body: source(nextMath),
     });
     assert.equal(response.status, 204);
     for (let attempt = 0; !events.includes('patch'); attempt++) {
@@ -108,6 +111,7 @@ async function holdMathJax(page) {
 async function hover(page, selector) {
   // Dispatch the delegated event without moving the pointer: a layout change
   // while typesetting should not turn a readiness test into a mouseout test.
+  await page.locator(selector).dispatchEvent('mouseout');
   await page.locator(selector).dispatchEvent('mouseover');
   await page.waitForSelector(popup);
 }
@@ -116,11 +120,203 @@ async function keys(page) {
   return page.locator(`${popup} .hover-preview-keys code`).allTextContents();
 }
 
+const distantParagraphs = Array.from({ length: 160 }, (_, i) => `Distant paragraph ${i}.`).join('\n\n');
+const distantReferences = String.raw`See \eqref{eq:first}, \eqref{eq:other}, \eqref{eq:proof}, and \ref{thm:far}.`;
+const distantTheorem = String.raw`\begin{theorem}\label{thm:far}
+${equation}
+\begin{equation}\label{eq:other}a=b\end{equation}
+\begin{proof}
+\begin{equation}\label{eq:proof}c=d\end{equation}
+\end{proof}
+\end{theorem}`;
+function distantSource(body) {
+  return String.raw`\documentclass{article}
+\newtheorem{theorem}{Theorem}
+\begin{document}
+${body}
+\end{document}`;
+}
+const distantBody = `${distantReferences}\n\n${distantParagraphs}\n\n${distantTheorem}
+\\begin{equation}\\label{eq:remote}u=v\\end{equation}`;
+
+async function assertCold(page, selector) {
+  assert.equal(await page.locator(`${selector} svg`).count(), 0, `${selector} should remain lazy`);
+}
+
+test('typing or deleting a space between emphasis and inline math updates the live preview', { timeout: 30000 }, async t => {
+  const snippet = String.raw`\emph{at or after} $a$`;
+  const { page, open, update } = await fixture(t, snippet);
+  await open();
+  const separator = () => page.locator('#page em').evaluate(el => {
+    const next = el.parentElement.nextSibling;
+    return next.nodeType === Node.TEXT_NODE ? next.textContent : '';
+  });
+  assert.equal(await separator(), ' ');
+  await update(snippet.replace('} $', '}$'));
+  assert.equal(await separator(), '');
+  await update(snippet);
+  assert.equal(await separator(), ' ');
+});
+
+test('hover renders a never-visited distant equation without rendering its neighbors', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, distantBody, distantSource);
+  await open();
+  await page.waitForFunction(() => window.__mpEngine.isReady());
+  await assertCold(page, '#eq-first');
+  const distance = await page.locator('#eq-first').evaluate(el => el.closest('main#page > .blk').getBoundingClientRect().top);
+  assert.ok(distance > 1800, `source is only ${distance}px away`);
+  assert.ok(await page.locator('#eq-first').evaluate(el => el.closest('main#page > .blk') === document.querySelector('#eq-other').closest('main#page > .blk')));
+  const before = await page.evaluate(() => window.scrollY);
+  await hover(page, '#page a.ref[data-target="eq:first"]');
+  await page.waitForSelector(`${popup} svg`);
+  await page.waitForSelector('#eq-first svg', { state: 'attached' });
+  await delay(400); // include deferred synthetic content-visibility events
+  await assertCold(page, '#eq-other');
+  await assertCold(page, '#eq-proof');
+  await assertCold(page, '#eq-remote');
+  assert.deepEqual(await keys(page), ['eq:first']);
+  assert.equal(await page.evaluate(() => window.scrollY), before);
+  assert.equal(await page.locator('#eq-first').evaluate(el => el.closest('main#page > .blk').style.contentVisibility), '');
+});
+
+test('distant theorem demand excludes hidden proofs, but a direct proof equation reference works', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, distantBody, distantSource);
+  await open();
+  await hover(page, '#page a.ref[data-target="thm:far"]');
+  await page.waitForFunction(() => document.querySelectorAll('.hover-preview .math.display svg').length === 2);
+  await assertCold(page, '#eq-proof');
+  await hover(page, '#page a.ref[data-target="eq:proof"]');
+  await page.waitForSelector(`${popup} svg`);
+  assert.deepEqual(await keys(page), ['eq:proof']);
+});
+
+test('dismissed or superseded distant demand is cancelled before engine readiness', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, distantBody, distantSource);
+  const release = await holdMathJax(page);
+  t.after(release);
+  await open();
+  const first = '#page a.ref[data-target="eq:first"]';
+  await hover(page, first);
+  await page.locator(first).dispatchEvent('mouseout');
+  await hover(page, '#page a.ref[data-target="eq:other"]');
+  release();
+  await page.waitForSelector(`${popup} svg`);
+  await delay(400);
+  assert.deepEqual(await keys(page), ['eq:other']);
+  await assertCold(page, '#eq-first');
+  await assertCold(page, '#eq-proof');
+});
+
+test('a patch removing a distant target cancels its queued demand', { timeout: 30000 }, async t => {
+  const { page, open, update } = await fixture(t, distantBody, distantSource);
+  const release = await holdMathJax(page);
+  t.after(release);
+  await open();
+  await hover(page, '#page a.ref[data-target="eq:first"]');
+  await update(distantBody.replace(equation, 'Equation removed.'));
+  await page.waitForSelector(popup, { state: 'detached' });
+  release();
+  await page.waitForFunction(() => window.__mpEngine.isReady());
+  await delay(400);
+  assert.equal(await page.locator(popup).count(), 0);
+});
+
+async function holdNextTypeset(page) {
+  await page.waitForFunction(() => window.__mpEngine.isReady());
+  await page.evaluate(() => {
+    const engine = window.__mpEngine;
+    const original = engine.typeset.bind(engine);
+    engine.typeset = async nodes => {
+      engine.typeset = original;
+      await new Promise(resolveGate => { window.resumeDemandTest = resolveGate; });
+      return original(nodes);
+    };
+  });
+}
+
+test('a live patch during demand does not enroll unrelated distant math', { timeout: 30000 }, async t => {
+  const { page, open, update } = await fixture(t, distantBody, distantSource);
+  await open();
+  await holdNextTypeset(page);
+  const reference = '#page a.ref[data-target="eq:first"]';
+  await hover(page, reference);
+  await page.waitForFunction(() => typeof window.resumeDemandTest === 'function');
+  await update(distantBody.replace('Distant paragraph 0.', 'Edited paragraph 0.'));
+  await page.locator(reference).dispatchEvent('mouseout');
+  await page.evaluate(() => window.resumeDemandTest());
+  await page.waitForSelector('#eq-first svg', { state: 'attached' });
+  await delay(500);
+  await assertCold(page, '#eq-other');
+  await assertCold(page, '#eq-proof');
+  assert.equal(await page.locator(popup).count(), 0);
+});
+
+test('a real scroll racing demand completion dismisses the hover', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, distantBody, distantSource);
+  await open();
+  await holdNextTypeset(page);
+  await hover(page, '#page a.ref[data-target="eq:first"]');
+  await page.waitForFunction(() => typeof window.resumeDemandTest === 'function');
+  await page.evaluate(() => {
+    window.scrollBy(0, 200);
+    window.resumeDemandTest();
+  });
+  await page.waitForSelector(popup, { state: 'detached' });
+  await page.waitForSelector('#eq-first svg', { state: 'attached' });
+  await delay(300);
+  assert.equal(await page.locator(popup).count(), 0);
+  assert.ok(await page.evaluate(() => window.scrollY >= 199));
+});
+
+test('an engine failure restores lifted containment and leaves the shared queue usable', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, distantBody, distantSource);
+  await open();
+  await page.waitForFunction(() => window.__mpEngine.isReady());
+  await page.evaluate(() => {
+    const engine = window.__mpEngine;
+    const original = engine.typeset.bind(engine);
+    engine.typeset = async () => {
+      engine.typeset = original;
+      throw new Error('Intentional hover test failure');
+    };
+  });
+  await hover(page, '#page a.ref[data-target="eq:first"]');
+  await page.waitForFunction(() => document.querySelector('#ws-status')?.textContent.includes('engine error'));
+  assert.deepEqual(await page.locator('#eq-first').evaluate(el => {
+    const style = el.closest('main#page > .blk').style;
+    return [style.contentVisibility, style.contain];
+  }), ['', '']);
+  await hover(page, '#page a.ref[data-target="eq:other"]');
+  await page.waitForSelector(`${popup} svg`);
+  assert.deepEqual(await keys(page), ['eq:other']);
+});
+
+test('an unvisited source above the reader renders without dismissing the popup or moving the reference', { timeout: 30000 }, async t => {
+  const body = `${distantParagraphs}\n\n${distantTheorem}\n\n${distantParagraphs}\n\n\\section{References}\\label{bottom}\n${distantReferences}`;
+  const { page, open } = await fixture(t, body, distantSource);
+  await open('#bottom');
+  const reference = '#page a.ref[data-target="eq:first"]';
+  await page.locator(reference).scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => window.__mpEngine.isReady());
+  await delay(400);
+  await assertCold(page, '#eq-first');
+  const before = await page.locator(reference).evaluate(el => el.getBoundingClientRect().top);
+  await hover(page, reference);
+  await page.waitForSelector(`${popup} svg`);
+  await delay(400);
+  assert.equal(await page.locator(popup).count(), 1);
+  const afterTop = await page.locator(reference).evaluate(el => el.getBoundingClientRect().top);
+  assert.ok(Math.abs(afterTop - before) < 2, `reference moved by ${afterTop - before}px`);
+  await assertCold(page, '#eq-other');
+  await page.evaluate(() => window.scrollBy(0, -200));
+  await page.waitForSelector(popup, { state: 'detached' });
+});
+
 test('the previous viewer shell is asked to reload onto the fixed client', { timeout: 30000 }, async t => {
   const { page, open } = await fixture(t);
   await open();
   const event = await page.evaluate(() => new Promise((resolveEvent, reject) => {
-    const socket = new WebSocket(`ws://${location.host}/ws?v=83`);
+    const socket = new WebSocket(`ws://${location.host}/ws?v=84`);
     const timer = setTimeout(() => { socket.close(); reject(new Error('No reload message')); }, 5000);
     socket.onmessage = ({ data }) => {
       clearTimeout(timer);

@@ -6553,8 +6553,9 @@ end = '{% endcall %}'
 
     #[test]
     fn user_newcommand_expands_in_text() {
-        let body =
-            render_body("\\newcommand{\\hello}{world}\n\\begin{document}\nsay \\hello now\n\\end{document}\n");
+        let body = render_body(
+            "\\newcommand{\\hello}{world}\n\\begin{document}\nsay \\hello{} now\n\\end{document}\n",
+        );
         assert!(text_content(&body).contains("say world now"), "{body}");
     }
 
@@ -7010,6 +7011,155 @@ end = '{% endcall %}'
         let text = text_content(&out.body_html);
         assert!(text.contains(r"\(x\) and after."));
         assert!(!text.contains(r"\(x\)and after."));
+    }
+
+    #[test]
+    fn whitespace_between_inline_nodes_survives_in_all_text_containers() {
+        let pairs = [
+            (r"\emph{at or after}", "$a$", "at or after", r"\(a\)"),
+            ("$a$", r"\emph{at or after}", r"\(a\)", "at or after"),
+            ("$a$", "$b$", r"\(a\)", r"\(b\)"),
+            (r"\emph{left}", r"\textbf{right}", "left", "right"),
+            (r"\ref{missing}", "$a$", "missing", r"\(a\)"),
+            ("$a$", r"\ref{missing}", r"\(a\)", "missing"),
+        ];
+        let containers = [
+            ("", ""),
+            (r"\begin{theorem}", r"\end{theorem}"),
+            (r"\begin{proof}", r"\end{proof}"),
+            (r"\begin{theorem}\begin{proof}", r"\end{proof}\end{theorem}"),
+            (r"\begin{center}", r"\end{center}"),
+            (r"\begin{itemize}\item ", r"\end{itemize}"),
+        ];
+        for (before, after) in containers {
+            for (left, right, left_text, right_text) in pairs {
+                for separator in ["", " ", "\n", "\n  ", "\t"] {
+                    let source = format!(
+                        "\\newtheorem{{theorem}}{{Theorem}}\n\\begin{{document}}\n{before}{left}{separator}{right}{after}\n\\end{{document}}\n"
+                    );
+                    let body = render_body(&source);
+                    let expected = format!(
+                        "{left_text}{}{right_text}",
+                        if separator.is_empty() { "" } else { " " }
+                    );
+                    assert!(
+                        text_content(&body).contains(&expected),
+                        "{source:?}: expected {expected:?} in {body}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inline_whitespace_changes_diff_hash_without_moving_content_anchors() {
+        let render = |separator: &str| {
+            crate::render_project_from_source(
+                Path::new("t.tex"),
+                format!(
+                    "\\begin{{document}}\n\\emph{{at or after}}{separator}$a$\n\\end{{document}}"
+                ),
+                &HtmlOptions::default(),
+            )
+            .unwrap()
+        };
+        let adjacent = render("");
+        let spaced = render(" ");
+        let newline = render("\n");
+        assert_eq!(adjacent.blocks.len(), 1);
+        assert_eq!(spaced.blocks.len(), 1);
+        assert_ne!(adjacent.blocks[0].diff_hash, spaced.blocks[0].diff_hash);
+        assert_eq!(spaced.blocks[0].diff_hash, newline.blocks[0].diff_hash);
+        let math_anchor = |output: &crate::RenderOutput| {
+            output
+                .sync
+                .entries
+                .iter()
+                .find(|entry| entry.element_id.starts_with("im-"))
+                .unwrap()
+                .start
+        };
+        assert_eq!(math_anchor(&adjacent).col, 19);
+        assert_eq!(math_anchor(&spaced).col, 20);
+        assert_eq!(math_anchor(&newline).line, 3);
+        assert_eq!(math_anchor(&newline).col, 1);
+    }
+
+    #[test]
+    fn inline_whitespace_does_not_create_empty_paragraph_blocks() {
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            concat!(
+                "\\newtheorem{theorem}{Theorem}\n",
+                "\\begin{document}\n  ",
+                "\\section{Heading}\n  ",
+                "\\[a=b\\]\n  ",
+                "\\begin{theorem}\\emph{left} $a$\\end{theorem}\n  ",
+                "\\end{document}\n",
+            )
+            .to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(out.blocks.len(), 3, "{}", out.body_html);
+        assert!(!out.body_html.contains(r#"<p class="para">"#));
+    }
+
+    #[test]
+    fn comments_do_not_turn_suppressed_line_endings_into_inline_spaces() {
+        for (separator, expected) in [
+            ("% comment\n", r"left\(a\)"),
+            ("% comment\n  ", r"left\(a\)"),
+            (" % comment\n", r"left \(a\)"),
+        ] {
+            let source =
+                format!("\\begin{{document}}\n\\emph{{left}}{separator}$a$\n\\end{{document}}");
+            let body = render_body(&source);
+            assert!(text_content(&body).contains(expected), "{source:?}: {body}");
+        }
+        let separated = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\n\\emph{left}% comment\n  \n$a$\n\\end{document}".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(separated.blocks.len(), 2, "{}", separated.body_html);
+    }
+
+    #[test]
+    fn bare_control_word_delimiters_are_not_visible_inline_spaces() {
+        for (source, expected) in [
+            (r"\TeX $a$", r"TeX\(a\)"),
+            (r"\TeX{} $a$", r"TeX \(a\)"),
+            (r"\TeX\ $a$", r"TeX \(a\)"),
+            (r"\textasciitilde $a$", r"~\(a\)"),
+            (r"\textasciitilde{} $a$", r"~ \(a\)"),
+            (r"\textasciitilde\ $a$", r"~ \(a\)"),
+            (r"\emph{x}\relax $a$", r"x\(a\)"),
+            (r"\emph{x}\relax{} $a$", r"x \(a\)"),
+            (r"\emph{x}\relax\ $a$", r"x \(a\)"),
+            ("\\TeX\n  $a$", r"TeX\(a\)"),
+        ] {
+            let body = render_body(&format!("\\begin{{document}}{source}\\end{{document}}"));
+            assert_eq!(text_content(&body), expected, "{source:?}: {body}");
+        }
+        for (source, expected) in [
+            (r"say \hello now", "say worldnow"),
+            (r"say \hello{} now", "say world now"),
+            (r"say \hello\ now", "say world now"),
+        ] {
+            let body = render_body(&format!(
+                "\\newcommand{{\\hello}}{{world}}\n\\begin{{document}}{source}\\end{{document}}"
+            ));
+            assert_eq!(text_content(&body), expected, "{source:?}: {body}");
+        }
+        let separated = crate::render_project_from_source(
+            Path::new("t.tex"),
+            "\\begin{document}\\TeX\n  \n$a$\\end{document}".to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(separated.blocks.len(), 2, "{}", separated.body_html);
     }
 
     #[test]
