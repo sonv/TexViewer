@@ -34,6 +34,18 @@ ${Array.from({ length: 20 }, (_, i) => `Stable paragraph ${i}.`).join('\n\n')}
 }
 
 const equation = String.raw`\begin{equation}\label{eq:first}E=mc^2\label{eq:alias}\end{equation}`;
+const probabilityAlign = String.raw`\begin{align}
+  \PP(T_N\le a-K\sqrt L)&\le\frac{e^{-K^2}}{1-\delta},
+  \label{eq:main-early}\\
+  \PP(T_N>a+K\sqrt L)&\le\frac{\sqrt\pi}{2\delta K}.
+  \label{eq:main-late}
+\end{align}`;
+const probabilityReferences = String.raw`See \eqref{eq:main-early} and \eqref{eq:main-late}.`;
+
+function probabilitySource(body) {
+  return documentSource(body).replace('\\begin{document}', String.raw`\newcommand{\PP}{\mathbb{P}}
+\begin{document}`);
+}
 
 async function fixture(t, math = equation, source = documentSource) {
   const directory = await mkdtemp(join(tmpdir(), 'mathpreview-hover-test-'));
@@ -118,6 +130,34 @@ async function hover(page, selector) {
 
 async function keys(page) {
   return page.locator(`${popup} .hover-preview-keys code`).allTextContents();
+}
+
+async function assertLabelOnly(page, expectedKeys) {
+  assert.deepEqual(await keys(page), expectedKeys);
+  assert.equal(await page.locator(`${popup}.equation-label-preview`).count(), 1);
+  assert.equal(await page.locator(`${popup} .hover-preview-body, ${popup} .math, ${popup} svg`).count(), 0);
+  assert.equal(await page.locator(popup).getAttribute('aria-hidden'), 'true');
+  assert.equal(await page.locator(popup).getAttribute('inert'), '');
+  assert.equal(await page.locator(`${popup} [tabindex]`).count(), 0);
+}
+
+async function assertHighlightedRow(page, expectedRow, expectedRows = 2) {
+  await page.waitForSelector(`${popup} svg .hover-preview-row-target`);
+  const actual = await page.locator(`${popup} svg`).evaluate(svg => {
+    const table = svg.querySelector('[data-mml-node="mtable"]');
+    const rows = table ? Array.from(table.children).filter(row =>
+      row.matches('[data-mml-node="mtr"], [data-mml-node="mlabeledtr"]')) : [];
+    const targets = Array.from(svg.querySelectorAll('.hover-preview-row-target'));
+    return { rows: rows.length, targets: targets.map(target => rows.indexOf(target)) };
+  });
+  assert.deepEqual(actual, { rows: expectedRows, targets: [expectedRow] });
+  const band = page.locator(`${popup} .hover-preview-row-target > rect.hover-preview-row-highlight`);
+  assert.equal(await band.count(), 1, 'the referenced row has a visible highlight band');
+  assert.ok(await band.evaluate(rect => {
+    const bounds = rect.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0 && getComputedStyle(rect).fill !== 'none';
+  }), 'the mounted highlight has nonzero geometry');
+  assert.equal(await page.locator('#page .hover-preview-row-target').count(), 0, 'highlight belongs only to the preview clone');
 }
 
 const distantParagraphs = Array.from({ length: 160 }, (_, i) => `Distant paragraph ${i}.`).join('\n\n');
@@ -316,7 +356,7 @@ test('the previous viewer shell is asked to reload onto the fixed client', { tim
   const { page, open } = await fixture(t);
   await open();
   const event = await page.evaluate(() => new Promise((resolveEvent, reject) => {
-    const socket = new WebSocket(`ws://${location.host}/ws?v=85`);
+    const socket = new WebSocket(`ws://${location.host}/ws?v=86`);
     const timer = setTimeout(() => { socket.close(); reject(new Error('No reload message')); }, 5000);
     socket.onmessage = ({ data }) => {
       clearTimeout(timer);
@@ -327,22 +367,30 @@ test('the previous viewer shell is asked to reload onto the fixed client', { tim
   assert.equal(event, 'full-reload');
 });
 
-test('number hover follows delayed MathJax and preserves aliases safely', { timeout: 30000 }, async t => {
+test('number hover shows labels only before and after MathJax is ready', { timeout: 30000 }, async t => {
   const { page, open } = await fixture(t);
   const release = await holdMathJax(page);
   t.after(release);
   await open();
   await hover(page, '#eq-first .eq-num');
-  assert.deepEqual(await keys(page), ['eq:first', 'eq:alias']);
-  assert.equal(await page.locator(`${popup} svg`).count(), 0);
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
   release();
   await page.waitForSelector('#eq-first svg');
-  await page.waitForSelector(`${popup} svg`);
-  assert.deepEqual(await keys(page), ['eq:first', 'eq:alias']);
-  assert.equal(await page.locator(popup).getAttribute('aria-hidden'), 'true');
-  assert.equal(await page.locator(popup).getAttribute('inert'), '');
-  assert.equal(await page.locator(`${popup} [tabindex]`).count(), 0);
-  assert.equal(await page.locator(`${popup} .math.display[id]`).count(), 0);
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
+});
+
+test('a number-only hover never demands a distant equation', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, distantBody, distantSource);
+  const release = await holdMathJax(page);
+  t.after(release);
+  await open();
+  await hover(page, '#eq-first .eq-num');
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
+  release();
+  await page.waitForFunction(() => window.__mpEngine.isReady());
+  await delay(500);
+  await assertCold(page, '#eq-first');
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
 });
 
 test('alias reference hover also follows delayed MathJax', { timeout: 30000 }, async t => {
@@ -356,7 +404,7 @@ test('alias reference hover also follows delayed MathJax', { timeout: 30000 }, a
   await page.waitForSelector(`${popup} .math.display svg`);
 });
 
-test('leaving the number cancels its pending rendering observation', { timeout: 30000 }, async t => {
+test('leaving a number dismisses its label without later resurrection', { timeout: 30000 }, async t => {
   const { page, open } = await fixture(t);
   const release = await holdMathJax(page);
   t.after(release);
@@ -370,7 +418,7 @@ test('leaving the number cancels its pending rendering observation', { timeout: 
   assert.equal(await page.locator(popup).count(), 0, 'typesetting must not resurrect a dismissed hover');
 });
 
-test('removing an equation during a patch cancels its pending hover', { timeout: 30000 }, async t => {
+test('removing an equation during a patch dismisses its number label', { timeout: 30000 }, async t => {
   const { page, open, update } = await fixture(t);
   const release = await holdMathJax(page);
   t.after(release);
@@ -412,7 +460,7 @@ c&=d\label{eq:moved}
   await open();
   await page.waitForSelector('#eq-moved svg');
   await hover(page, '#eq-moved .eq-num-row:first-child');
-  assert.deepEqual(await keys(page), ['eq:moved']);
+  await assertLabelOnly(page, ['eq:moved']);
   await update(afterMove);
   await page.waitForFunction(() => document.querySelector('#eq-moved')?.dataset.tex.includes('c&=d\\label{eq:moved}'));
   await page.waitForSelector(popup, { state: 'detached' });
@@ -420,7 +468,7 @@ c&=d\label{eq:moved}
   await delay(350);
   assert.equal(await page.locator(popup).count(), 0, 'old row is now unlabeled');
   await hover(page, '#eq-moved .eq-num-row:nth-child(2)');
-  assert.deepEqual(await keys(page), ['eq:moved']);
+  await assertLabelOnly(page, ['eq:moved']);
 });
 
 test('commented labels never appear in align or gather hover headers', { timeout: 30000 }, async t => {
@@ -433,10 +481,219 @@ c=d\label{eq:gather} % \label{eq:gather-ghost}
   const { page, open } = await fixture(t, math);
   await open();
   await hover(page, '#eq-align .eq-num-row');
-  assert.deepEqual(await keys(page), ['eq:align']);
+  await assertLabelOnly(page, ['eq:align']);
   await page.locator('#eq-align .eq-num-row').dispatchEvent('mouseout');
   await hover(page, '#eq-gather .eq-num-row');
-  assert.deepEqual(await keys(page), ['eq:gather']);
+  await assertLabelOnly(page, ['eq:gather']);
+});
+
+test('each probability estimate reference highlights its own align row, while numbers show only labels', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, `${probabilityAlign}\n${probabilityReferences}`, probabilitySource);
+  await open();
+  for (const [row, key] of ['eq:main-early', 'eq:main-late'].entries()) {
+    await hover(page, `#page a.ref[data-target="${key}"]`);
+    await assertHighlightedRow(page, row);
+    assert.deepEqual(await keys(page), [key]);
+    assert.equal(await page.locator(`${popup} [data-mml-node="merror"]`).count(), 0, 'the custom probability macro renders');
+    assert.equal(await page.locator(`${popup} .math.display[id]`).count(), 0);
+    await hover(page, `#eq-main-early .eq-num-row:nth-child(${row + 1})`);
+    await assertLabelOnly(page, [key]);
+  }
+});
+
+test('at 200 percent hover size both row bands fit without clipping by an inner ancestor', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, `${probabilityAlign}\n${probabilityReferences}`, probabilitySource);
+  await open();
+  await page.evaluate(() => document.documentElement.style.setProperty('--hover-preview-scale', '2'));
+  for (const [row, key] of ['eq:main-early', 'eq:main-late'].entries()) {
+    await hover(page, `#page a.ref[data-target="${key}"]`);
+    await assertHighlightedRow(page, row);
+    const geometry = await page.locator(`${popup} rect.hover-preview-row-highlight`).evaluate(band => {
+      const box = band.closest('.hover-preview');
+      const bounds = band.getBoundingClientRect();
+      const popupBounds = box.getBoundingClientRect();
+      const clipped = [];
+      for (let ancestor = band.parentElement; ancestor && ancestor !== box; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor);
+        const ancestorBounds = ancestor.getBoundingClientRect();
+        const clipsX = style.overflowX !== 'visible' &&
+          (bounds.left < ancestorBounds.left - 0.5 || bounds.right > ancestorBounds.right + 0.5);
+        const clipsY = style.overflowY !== 'visible' &&
+          (bounds.top < ancestorBounds.top - 0.5 || bounds.bottom > ancestorBounds.bottom + 0.5);
+        if (clipsX || clipsY) clipped.push(`${ancestor.tagName}.${ancestor.getAttribute('class') || ''} [overflow: ${style.overflowX}/${style.overflowY}]`);
+      }
+      return {
+        fitsX: bounds.left >= popupBounds.left && bounds.right <= popupBounds.right,
+        fitsY: bounds.top >= popupBounds.top && bounds.bottom <= popupBounds.bottom,
+        clipped,
+      };
+    });
+    assert.deepEqual(geometry, { fitsX: true, fitsY: true, clipped: [] });
+  }
+});
+
+test('wide highlighted alignments are clipped by the outer popup without escaping the viewport', { timeout: 30000 }, async t => {
+  const wideExpression = Array.from({ length: 60 }, (_, i) => `x_{${i}}`).join('+');
+  const math = String.raw`\begin{align}
+y&=${wideExpression}\label{eq:wide}\\
+z&=0\label{eq:short}
+\end{align}
+See \eqref{eq:wide}.`;
+  const { page, open } = await fixture(t, math);
+  await page.setViewportSize({ width: 800, height: 900 });
+  await open();
+  await page.evaluate(() => document.documentElement.style.setProperty('--hover-preview-scale', '2'));
+  await hover(page, '#page a.ref[data-target="eq:wide"]');
+  await assertHighlightedRow(page, 0);
+  const geometry = await page.locator(popup).evaluate(box => {
+    const bounds = box.getBoundingClientRect();
+    const math = box.querySelector('.math.display');
+    const band = box.querySelector('rect.hover-preview-row-highlight').getBoundingClientRect();
+    return {
+      boundedX: bounds.left >= 0 && bounds.right <= window.innerWidth,
+      boundedY: bounds.top >= 0 && bounds.bottom <= window.innerHeight,
+      scrollsX: box.scrollWidth > box.clientWidth,
+      outerOverflow: getComputedStyle(box).overflowX,
+      innerOverflow: getComputedStyle(math).overflowX,
+      bandExceedsBox: band.width > box.clientWidth,
+      pageBounded: document.documentElement.scrollWidth <= window.innerWidth,
+    };
+  });
+  assert.deepEqual(geometry, {
+    boundedX: true, boundedY: true, scrollsX: true, outerOverflow: 'auto',
+    innerOverflow: 'visible', bandExceedsBox: true, pageBounded: true,
+  });
+});
+
+test('distant align references gain the right row highlight when delayed MathJax finishes', { timeout: 30000 }, async t => {
+  const body = `${probabilityReferences}\n\n${distantParagraphs}\n\n${probabilityAlign}\n${equation}`;
+  const { page, open } = await fixture(t, body, probabilitySource);
+  const release = await holdMathJax(page);
+  t.after(release);
+  await open();
+  await assertCold(page, '#eq-main-early');
+  const before = await page.evaluate(() => window.scrollY);
+  await hover(page, '#page a.ref[data-target="eq:main-late"]');
+  assert.deepEqual(await keys(page), ['eq:main-late']);
+  assert.equal(await page.locator(`${popup} .hover-preview-row-target`).count(), 0);
+  release();
+  await assertHighlightedRow(page, 1);
+  await assertCold(page, '#eq-first');
+  assert.equal(await page.evaluate(() => window.scrollY), before);
+  await hover(page, '#page a.ref[data-target="eq:main-early"]');
+  await assertHighlightedRow(page, 0);
+});
+
+test('a primary label and its aliases on the second row select the outer align row, not a nested matrix', { timeout: 30000 }, async t => {
+  const math = String.raw`\begin{align}
+A&=\begin{pmatrix}a&b\\c&d\end{pmatrix}\\
+B&=C\label{eq:second}\label{eq:second-alias}
+\end{align}
+See \eqref{eq:second} and \eqref{eq:second-alias}.`;
+  const { page, open } = await fixture(t, math);
+  await open();
+  for (const key of ['eq:second', 'eq:second-alias']) {
+    await hover(page, `#page a.ref[data-target="${key}"]`);
+    await assertHighlightedRow(page, 1);
+    assert.ok(await page.locator(`${popup} [data-mml-node="mtable"]`).count() > 1, 'fixture contains a nested matrix');
+    assert.deepEqual(await keys(page), [key]);
+  }
+  await hover(page, '#eq-second .eq-num-row:nth-child(2)');
+  await assertLabelOnly(page, ['eq:second', 'eq:second-alias']);
+  await page.locator('#eq-second .eq-num-row:nth-child(2)').dispatchEvent('mouseout');
+  await page.locator('#eq-second .eq-num-row:first-child').dispatchEvent('mouseover');
+  await delay(350);
+  assert.equal(await page.locator(popup).count(), 0, 'the unlabeled first row has no label tooltip');
+});
+
+test('gather references keep their row mapping across an unnumbered row', { timeout: 30000 }, async t => {
+  const math = String.raw`\begin{gather}
+a=b\label{eq:top}\\
+c=d\notag\\
+e=f\label{eq:bottom}
+\end{gather}
+See \eqref{eq:top} and \eqref{eq:bottom}.`;
+  const { page, open } = await fixture(t, math);
+  await open();
+  await hover(page, '#page a.ref[data-target="eq:top"]');
+  await assertHighlightedRow(page, 0, 3);
+  await hover(page, '#page a.ref[data-target="eq:bottom"]');
+  await assertHighlightedRow(page, 2, 3);
+  await hover(page, '#eq-top .eq-num-row:nth-child(3)');
+  await assertLabelOnly(page, ['eq:bottom']);
+});
+
+test('moving a referenced label dismisses its old highlight and highlights the new row on next hover', { timeout: 30000 }, async t => {
+  const beforeMove = String.raw`\begin{align}
+a&=b\label{eq:moved}\\
+c&=d
+\end{align}
+See \eqref{eq:moved}.`;
+  const afterMove = beforeMove.replace('a&=b\\label{eq:moved}', 'a&=b').replace('c&=d', 'c&=d\\label{eq:moved}');
+  const { page, open, update } = await fixture(t, beforeMove);
+  await open();
+  await hover(page, '#page a.ref[data-target="eq:moved"]');
+  await assertHighlightedRow(page, 0);
+  await update(afterMove);
+  await page.waitForSelector(popup, { state: 'detached' });
+  await hover(page, '#page a.ref[data-target="eq:moved"]');
+  await assertHighlightedRow(page, 1);
+});
+
+test('an unrelated live patch preserves a highlighted reference preview', { timeout: 30000 }, async t => {
+  const math = `${probabilityAlign}\n${probabilityReferences}\n\nUnrelated text before editing.`;
+  const { page, open, update } = await fixture(t, math, probabilitySource);
+  await open();
+  await hover(page, '#page a.ref[data-target="eq:main-late"]');
+  await assertHighlightedRow(page, 1);
+  await update(math.replace('Unrelated text before editing.', 'Unrelated text after editing.'));
+  await assertHighlightedRow(page, 1);
+  assert.deepEqual(await keys(page), ['eq:main-late']);
+});
+
+test('reference row highlighting does not copy an unrelated editor or copy selection', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, `${probabilityAlign}\n${probabilityReferences}`, probabilitySource);
+  await open();
+  await page.waitForSelector('#eq-main-early svg');
+  await page.locator('#eq-main-early').evaluate(math => {
+    math.classList.add('source-active', 'math-selected');
+    const row = math.querySelector('[data-mml-node="mtr"]');
+    for (const className of ['mp-row-hl', 'mp-row-select']) {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('class', className);
+      row.prepend(rect);
+    }
+  });
+  await hover(page, '#page a.ref[data-target="eq:main-late"]');
+  await assertHighlightedRow(page, 1);
+  assert.equal(await page.locator(`${popup} .source-active, ${popup} .math-selected, ${popup} rect.mp-row-hl, ${popup} rect.mp-row-select`).count(), 0);
+  assert.equal(await page.locator('#eq-main-early.source-active.math-selected').count(), 1, 'source selection is untouched');
+  assert.equal(await page.locator('#eq-main-early rect.mp-row-hl, #eq-main-early rect.mp-row-select').count(), 2);
+});
+
+test('a stale align preview waits for the new row layout before highlighting', { timeout: 30000 }, async t => {
+  const math = `${probabilityAlign}\n${probabilityReferences}`;
+  const { page, open, update } = await fixture(t, math, probabilitySource);
+  await open();
+  await page.waitForSelector('#eq-main-early svg');
+  await holdNextTypeset(page);
+  await update(math.replace('\\begin{align}', String.raw`\begin{align}
+z&=0\\`));
+  await page.waitForSelector('#eq-main-early[data-mp-stale]');
+  await page.waitForFunction(() => typeof window.resumeDemandTest === 'function');
+  await hover(page, '#page a.ref[data-target="eq:main-late"]');
+  assert.equal(await page.locator(`${popup} .hover-preview-row-target`).count(), 0, 'old two-row SVG cannot identify the new third row');
+  await page.evaluate(() => window.resumeDemandTest());
+  await assertHighlightedRow(page, 2, 3);
+  assert.deepEqual(await keys(page), ['eq:main-late']);
+});
+
+test('an unlabeled single equation number opens no empty tooltip', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, String.raw`\begin{equation}a=b\end{equation}`);
+  await open();
+  await page.locator('#page .eq-num').dispatchEvent('mouseover');
+  await delay(350);
+  assert.equal(await page.locator(popup).count(), 0);
 });
 
 test('hover opened during a live stale-math placeholder updates to the new equation', { timeout: 30000 }, async t => {
@@ -456,7 +713,7 @@ test('hover opened during a live stale-math placeholder updates to the new equat
   await update(equation.replace('mc^2', 'mc^3'));
   await page.waitForSelector('#eq-first[data-mp-stale]');
   await page.waitForFunction(() => typeof window.resumeHoverTestTypeset === 'function');
-  await hover(page, '#eq-first .eq-num');
+  await hover(page, '#page a.ref[data-target="eq:first"]');
   assert.equal(await page.locator(`${popup} [data-mp-stale]`).count(), 1);
   assert.ok(await page.locator(`${popup} [data-c="32"]`).count(), 'placeholder still shows exponent 2');
   await page.evaluate(() => window.resumeHoverTestTypeset());
@@ -468,5 +725,5 @@ test('hover opened during a live stale-math placeholder updates to the new equat
       preview.querySelector('[data-c="33"]');
   });
   assert.equal(await page.locator(`${popup} [data-c="32"]`).count(), 0);
-  assert.deepEqual(await keys(page), ['eq:first', 'eq:alias']);
+  assert.deepEqual(await keys(page), ['eq:first']);
 });

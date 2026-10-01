@@ -2617,6 +2617,11 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   overflow-x: auto;
   overflow-y: hidden;
 }
+/* The row band includes padding beyond the glyphs. Let the outer popup own
+   overflow so the inner equation box cannot shave off that padding. */
+.hover-preview .math.display:has(.hover-preview-row-target) {
+  overflow: visible;
+}
 .hover-preview .eq-num,
 .hover-preview .eq-num-list,
 .hover-preview .eq-num-row { display: none !important; }
@@ -2632,6 +2637,18 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   display: flex;
   flex-wrap: wrap;
   gap: 4px 8px;
+}
+.equation-label-preview .hover-preview-header {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.hover-preview-row-highlight {
+  fill: rgba(91, 62, 162, 0.18);
+  pointer-events: none;
+}
+body.theme-dark .hover-preview-row-highlight {
+  fill: rgba(179, 157, 232, 0.28);
 }
 @keyframes hover-preview-in {
   from { opacity: 0; }

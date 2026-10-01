@@ -18,3 +18,9 @@
   width: 100%;
   min-width: 0 !important;
 }
+/* Hover row bands extend beyond the SVG's glyph bounds. Both engine boxes
+   must let the outer popup handle clipping and scrolling. */
+.hover-preview .math.display mjx-container:has(.hover-preview-row-target),
+.hover-preview .math.display svg:has(.hover-preview-row-target) {
+  overflow: visible;
+}

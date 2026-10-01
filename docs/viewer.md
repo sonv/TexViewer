@@ -44,18 +44,19 @@ extend into the gutter when there is space, with an ellipsis in narrow windows.
 Keys are prepared for the whole document before scrolling, without requiring
 MathJax to typeset every off-screen equation.
 
-Hovering a generated displayed-equation number opens its equation preview with
-the exact `\label{...}` key above the math. `\ref` and `\eqref` previews use
-the same header. Each `align` or `gather` row shows only its own keys, and an
-unlabeled row has none. The viewer does not infer prefixes: `\label{first}`
-shows `first`, not `e:first`. Manual MathJax `\tag` values are not generated
+Hovering a generated displayed-equation number shows only its exact
+`\label{...}` key, without repeating the equation. Each `align` or `gather`
+row shows only its own keys, including aliases, and an unlabeled row has no
+popup. The viewer does not infer prefixes: `\label{first}` shows `first`, not
+`e:first`. Manual MathJax `\tag` values are not generated
 equation numbers and do not receive this hover label.
 
 Hovering a reference or citation shows a quick preview without the proof, with
-the label or citation key at the top. This works whether or not `margin` mode
-is on. **Hover preview size** in the config panel sets magnification from
-100–300%. By default the preview is at least as large as the document font. It
-also follows page zoom above natural size.
+the label or citation key at the top. References to multi-row equations retain
+the full display and highlight the referenced row. This works whether or not
+`margin` mode is on. **Hover preview size** in the config panel sets
+magnification from 100–300%. By default the preview is at least as large as the
+document font. It also follows page zoom above natural size.
 
 With `margin` on, clicking a reference or citation pins the theorem, equation,
 or bibliography entry beside the page. Click again, or use `×`, to unpin it.

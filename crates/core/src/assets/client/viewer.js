@@ -4550,7 +4550,61 @@
     idNodes.forEach(function(el) {
       if (!(el.closest && el.closest('svg'))) el.removeAttribute('id');
     });
+    // Editor/copy selection is not reference identity. In particular, a
+    // selection on another align row must not ride into this preview.
+    clone.querySelectorAll('rect.mp-row-hl, rect.mp-row-select').forEach(function(el) {
+      el.remove();
+    });
+    var selected = [clone];
+    clone.querySelectorAll('.source-active, .source-range, .mp-math-active, .math-selected')
+      .forEach(function(el) { selected.push(el); });
+    selected.forEach(function(el) {
+      el.classList.remove('source-active', 'source-range', 'mp-math-active', 'math-selected');
+    });
     return clone;
+  }
+
+  function cloneHoverPreviewContent(link, target, sourceRoots) {
+    var clone = prepareHoverPreviewClone(clonePreviewContent(link, target, sourceRoots));
+    if (!clone.matches('.math.display') || isRawMathNode(clone)) return clone;
+    var key = link.getAttribute('data-target');
+    var refkeys = clone.querySelector('.eq-refkey-list');
+    if (!key || !refkeys) return clone;
+    var rows = mathRowGroups(clone);
+    // Do not guess an index when the engine has merged/dropped a row. The
+    // outer-row helper excludes nested matrices and cases automatically.
+    if (rows.length < 2 || rows.length !== refkeys.children.length) return clone;
+    for (var i = 0; i < refkeys.children.length; i++) {
+      var chips = refkeys.children[i].querySelectorAll('.eq-refkey-chip[data-target]');
+      for (var j = 0; j < chips.length; j++) {
+        // The primary label identifies the entire display, and can belong to
+        // a later row. Resolve all labels through the same row carriers.
+        if (chips[j].getAttribute('data-target') === key) {
+          rows[i].classList.add('hover-preview-row-target');
+          return clone;
+        }
+      }
+    }
+    return clone;
+  }
+
+  function paintHoverPreviewRow(box) {
+    var row = box.querySelector('.hover-preview-row-target');
+    if (!row || !row.getBBox) return;
+    var bounds;
+    try { bounds = row.getBBox(); } catch (e) { return; }
+    if (!bounds || !isFinite(bounds.width) || !isFinite(bounds.height) ||
+        bounds.width <= 0 || bounds.height <= 0) return;
+    var padX = bounds.height * 0.1;
+    var padY = bounds.height * 0.12;
+    var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('class', 'hover-preview-row-highlight');
+    rect.setAttribute('x', bounds.x - padX);
+    rect.setAttribute('y', bounds.y - padY);
+    rect.setAttribute('width', bounds.width + 2 * padX);
+    rect.setAttribute('height', bounds.height + 2 * padY);
+    rect.setAttribute('rx', padY / 2);
+    row.insertBefore(rect, row.firstChild);
   }
 
   function buildHoverPreview(keys, clone, extraClass) {
@@ -4574,10 +4628,12 @@
       header.appendChild(keyList);
       box.appendChild(header);
     }
-    var body = document.createElement('div');
-    body.className = 'hover-preview-body';
-    body.appendChild(prepareHoverPreviewClone(clone));
-    box.appendChild(body);
+    if (clone) {
+      var body = document.createElement('div');
+      body.className = 'hover-preview-body';
+      body.appendChild(prepareHoverPreviewClone(clone));
+      box.appendChild(body);
+    }
     return box;
   }
 
@@ -4632,9 +4688,12 @@
     var target = resolveLinkTarget(link);
     if (!target) return;
     var roots = [];
-    var clone = clonePreviewContent(link, target, roots);
+    var clone = cloneHoverPreviewContent(link, target, roots);
     var box = buildHoverPreview(hoverPreviewKeysForLink(link), clone, '');
     document.body.appendChild(box);
+    // Measure only the mounted preview, not a detached clone or a skipped
+    // distant original. SVG-local coordinates scale with the popup's math.
+    paintHoverPreviewRow(box);
     positionHoverPreview(box, link);
     hoverPreviewEl = box;
     hoverPreviewSource = link;
@@ -4646,16 +4705,11 @@
     if (!numberEl.isConnected) return;
     var keys = equationNumberRefkeys(numberEl);
     if (!keys.length) return;
-    var math = numberEl.closest('.math.display');
-    if (!math) return;
-    var roots = [];
-    var clone = clonePreviewContent(numberEl, math, roots);
-    var box = buildHoverPreview(keys, clone, 'equation-label-preview');
+    var box = buildHoverPreview(keys, null, 'equation-label-preview');
     document.body.appendChild(box);
     positionHoverPreview(box, numberEl);
     hoverPreviewEl = box;
     hoverPreviewSource = numberEl;
-    observeHoverPreviewMath(numberEl, roots, showEquationLabelPreviewFor);
   }
 
   function refreshHoverPreviewAfterRender() {
@@ -4677,16 +4731,6 @@
         hideHoverPreview();
         return;
       }
-      // The popup now contains a clone of the equation as well as its key.
-      // If an in-place live patch changes the math while retaining the same
-      // label, dismiss the old clone instead of showing stale content.
-      var currentMath = hoverPreviewSource.closest('.math.display');
-      var shownMath = hoverPreviewEl.querySelector('.hover-preview-body .math.display');
-      if (!currentMath || !shownMath ||
-          currentMath.getAttribute('data-hash') !== shownMath.getAttribute('data-hash')) {
-        hideHoverPreview();
-        return;
-      }
     } else if (hoverPreviewEl) {
       // A referenced theorem/equation/bibliography entry can change while
       // the link being hovered lives in an untouched block. Compare a fresh,
@@ -4699,10 +4743,16 @@
         hideHoverPreview();
         return;
       }
-      var freshClone = prepareHoverPreviewClone(
-        clonePreviewContent(hoverPreviewSource, currentTarget)
-      );
-      if (!shownClone.isEqualNode(freshClone)) {
+      var freshClone = cloneHoverPreviewContent(hoverPreviewSource, currentTarget);
+      // The background band is measured after mounting, not source content.
+      // Exclude only that decoration from the stale-snapshot comparison.
+      var comparableClone = shownClone;
+      if (shownClone.querySelector('rect.hover-preview-row-highlight')) {
+        comparableClone = shownClone.cloneNode(true);
+        comparableClone.querySelectorAll('rect.hover-preview-row-highlight')
+          .forEach(function(rect) { rect.remove(); });
+      }
+      if (!comparableClone.isEqualNode(freshClone)) {
         hideHoverPreview();
         return;
       }

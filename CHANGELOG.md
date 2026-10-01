@@ -13,6 +13,24 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.51] - 2026-10-01
+
+### Changed
+
+- **Equation-number hovers show labels only.** Hovering a displayed number
+  shows the exact source label and any aliases on that row, without repeating
+  the equation or requesting math rendering.
+
+### Fixed
+
+- **Multi-row reference previews identify the referenced row.** Hovers for
+  `align` and `gather` references keep the full display for context and
+  highlight the matching row, including labels on later rows and aliases.
+  Highlights follow deferred rendering and live edits, without changing the
+  original display or copying editor selections into the preview.
+- Existing tabs reload onto the new hover behavior after the daemon is
+  upgraded, through the paired client/server protocol bump to 87.
+
 ## [2.1.50] - 2026-10-01
 
 ### Added
