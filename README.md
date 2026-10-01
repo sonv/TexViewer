@@ -5,11 +5,18 @@ document update in your browser, without rebuilding a PDF or saving the buffer.
 
 ## See it in action
 
-| Introduction · 2:14 | Installation · 1:12 |
-| --- | --- |
-| [![Download the mathpreview introduction](promo/poster-intro.png)](promo/mathpreview-intro-github.mp4?raw=true) | [![Download the installation walkthrough](promo/poster-install.png)](promo/mathpreview-install.mp4?raw=true) |
+### Introduction · 2:14 
 
-Click either thumbnail to download the MP4 (about 10 MB each).
+https://github.com/user-attachments/assets/8230e105-20da-42de-9c21-0dcfb8c2ee82
+
+### Installation · 1:12
+
+https://github.com/user-attachments/assets/0cfe7873-e2bb-4ff5-a519-2f81ebbf73d6
+
+
+
+
+
 
 ## What it does
 
