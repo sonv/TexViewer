@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     EnvironmentBoundary, ListKind, MarkdownAlignment, Node, NodeKind, Pos, RefKind, Span,
@@ -343,6 +343,7 @@ pub fn render_body_only(
         step_counter: 0,
         case_counter: 0,
         source_anchors: Vec::new(),
+        emitted_manual_bib_keys: HashSet::new(),
         chunk_depth: 0,
         pending_sub: None,
         tikz_assets: HashMap::new(),
@@ -1240,6 +1241,9 @@ struct RenderCtx<'a> {
     step_counter: usize,
     case_counter: usize,
     source_anchors: Vec<SourceAnchor>,
+    /// A repeated include can present the same bibliography source twice.
+    /// Only one DOM node may own each citation target.
+    emitted_manual_bib_keys: HashSet<String>,
     /// Nesting depth of `write_chunked_children`; only the outermost call
     /// (depth 1) captures sub-block structure, so a theorem nested inside a
     /// proof body doesn't clobber the outer block's chunks.
@@ -2117,6 +2121,59 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 ).unwrap();
             }
             writeln!(out, "</dl></section>").unwrap();
+        }
+        NodeKind::TheBibliography => {
+            let id = ctx.idgen.next("srcw");
+            record_container(ctx, &id, &n.span, None);
+            writeln!(
+                out,
+                r#"<section class="references" id="{id}" data-src="{}"><h2>References</h2>"#,
+                escape_attr(&data_src(&n.span)),
+            )
+            .unwrap();
+            let first_item = n
+                .children
+                .iter()
+                .position(|child| matches!(child.kind, NodeKind::BibliographyItem { .. }))
+                .unwrap_or(n.children.len());
+            write_children(out, &n.children[..first_item], ctx);
+            writeln!(out, r#"<dl class="bib-list bib-style-manual">"#).unwrap();
+            write_children(out, &n.children[first_item..], ctx);
+            writeln!(out, "</dl></section>").unwrap();
+        }
+        NodeKind::BibliographyItem { key, label } => {
+            let display = ctx
+                .labels
+                .bibliography_item_label(&n.span)
+                .or(label.as_deref())
+                .unwrap_or(key);
+            // Duplicate/empty keys still show their authored entry, but only
+            // the first definition owns the citation target and pin lookup.
+            let is_target = ctx.labels.bibliography_item_is_target(key, &n.span)
+                && ctx.emitted_manual_bib_keys.insert(key.clone());
+            let id = if is_target {
+                format!("bib-{}", ctx.labels.citation_number[key])
+            } else {
+                ctx.idgen.next("srcw")
+            };
+            record_container(ctx, &id, &n.span, None);
+            let body_id = ctx.idgen.next("srcw");
+            record_container(ctx, &body_id, &n.span, None);
+            let key_attr = if is_target {
+                format!(r#" data-key="{}""#, escape_attr(key))
+            } else {
+                String::new()
+            };
+            write!(
+                out,
+                r#"<dt id="{id}" class="bib-label" data-src="{src}"{key_attr}>[{display}]</dt><dd id="{body_id}" class="bib-entry" data-src="{src}">"#,
+                id = escape_attr(&id),
+                src = escape_attr(&data_src(&n.span)),
+                display = render_bibliography_label(display, ctx.labels),
+            )
+            .unwrap();
+            write_children(out, &n.children, ctx);
+            writeln!(out, "</dd>").unwrap();
         }
         NodeKind::List { kind } => {
             let (open, close) = match kind {
@@ -3339,6 +3396,8 @@ fn is_chunked_block_child(node: &Node) -> bool {
         NodeKind::DisplayMath { .. }
             | NodeKind::Subequations { .. }
             | NodeKind::List { .. }
+            | NodeKind::TheBibliography
+            | NodeKind::BibliographyItem { .. }
             | NodeKind::OpaqueEnv { .. }
             | NodeKind::UnsupportedEnvBoundary { .. }
             | NodeKind::Letter { .. }
@@ -3567,6 +3626,15 @@ fn citation_delimiters(style: BibStyle) -> (char, char) {
 }
 
 fn citation_links_html(keys: &[String], labels: &LabelTable) -> String {
+    // A custom bibitem label may itself contain a citation (or a macro that
+    // expands to one). Do not recursively expand labels or nest links there.
+    if BIBLIOGRAPHY_LABEL_ACTIVE.with(|active| active.get()) {
+        return keys
+            .iter()
+            .map(|key| escape_html(key))
+            .collect::<Vec<_>>()
+            .join("; ");
+    }
     keys.iter()
         .map(|key| {
             let number = labels.citation_number.get(key).copied().unwrap_or(0);
@@ -3574,7 +3642,11 @@ fn citation_links_html(keys: &[String], labels: &LabelTable) -> String {
                 Some(display) => format!(
                     r##"<a class="cite" href="#bib-{number}" data-key="{key}">{label}</a>"##,
                     key = escape_attr(key),
-                    label = escape_html(display),
+                    label = if labels.is_manual_citation(key) {
+                        render_bibliography_label(display, labels)
+                    } else {
+                        escape_html(display)
+                    },
                 ),
                 None => format!(
                     r#"<span class="cite missing" data-key="{key}">{label}</span>"#,
@@ -3585,6 +3657,45 @@ fn citation_links_html(keys: &[String], labels: &LabelTable) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// Bibitem labels are inline TeX, but they also appear inside citation links.
+/// Keep formatting while preventing recursive label expansion and nested
+/// anchors. The regex only sees HTML produced by the inline renderer.
+fn render_bibliography_label(label: &str, labels: &LabelTable) -> String {
+    struct LabelGuard;
+    impl Drop for LabelGuard {
+        fn drop(&mut self) {
+            BIBLIOGRAPHY_LABEL_ACTIVE.with(|active| active.set(false));
+        }
+    }
+    if BIBLIOGRAPHY_LABEL_ACTIVE.with(|active| active.replace(true)) {
+        return escape_html(label);
+    }
+    let _guard = LabelGuard;
+    let rendered = render_inline_latex(label, labels);
+    static ANCHOR_TAG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    ANCHOR_TAG
+        .get_or_init(|| regex::Regex::new(r"(?i)</?a(?:\s[^>]*|)>").unwrap())
+        .replace_all(&rendered, "")
+        .into_owned()
+}
+
+fn unescape_latex_url(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    let mut chars = url.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\'
+            && chars
+                .peek()
+                .is_some_and(|ch| matches!(ch, '%' | '&' | '#' | '_' | '{' | '}'))
+        {
+            out.push(chars.next().unwrap());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// LaTeX-text → HTML for strings extracted into AST fields (section titles,
@@ -3877,7 +3988,9 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
         }
         let name = &s[cmd_start..cmd_end];
 
-        if crate::parser::is_inline_literal_command(name) {
+        if crate::parser::is_inline_literal_command(name)
+            && !matches!(name, "url" | "href" | "nolinkurl")
+        {
             if let Some((payload, next)) = crate::parser::inline_literal_payload(s, name, cmd_end) {
                 write!(
                     out,
@@ -3929,6 +4042,39 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
         if let Some(next) = render_text_macro(&mut out, name, s, cmd_end, labels) {
             i = next;
             continue;
+        }
+
+        // BibTeX-generated entries separate fields with this text-space
+        // command. Preserve it even when the parser consumed its separator.
+        if name == "newblock" {
+            out.push(' ');
+            i = skip_tex_argument_space(s, cmd_end);
+            continue;
+        }
+        if matches!(name, "url" | "href" | "nolinkurl") {
+            if let Some((destination, next)) = crate::parser::url_argument(s, cmd_end) {
+                let destination = unescape_latex_url(&destination);
+                let (text, next) = if name == "href" {
+                    match read_delim(s, next, b'{', b'}') {
+                        Some((text, end)) => (render_inline_latex(&text, labels), end),
+                        None => (escape_html(&destination), next),
+                    }
+                } else {
+                    (escape_html(&destination), next)
+                };
+                if name != "nolinkurl" && safe_markdown_url(&destination) {
+                    write!(
+                        out,
+                        r#"<a class="latex-link" href="{}">{text}</a>"#,
+                        escape_attr(&destination)
+                    )
+                    .unwrap();
+                } else {
+                    out.push_str(&text);
+                }
+                i = next;
+                continue;
+            }
         }
 
         // The remaining three TeX-special characters have named text-mode
@@ -4214,6 +4360,7 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     static EXPAND_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static INLINE_RENDER_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static BIBLIOGRAPHY_LABEL_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEXT_MACRO_EXPANSIONS_LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TEXT_MACRO_BYTES_LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TEXT_MACRO_DOCUMENT_EXPANSIONS_LEFT: std::cell::Cell<usize> =
@@ -7890,6 +8037,118 @@ end = '{% endcall %}'
         assert!(text.contains("Case I: Diagonal. Case text."));
         assert!(!out.body_html.contains(r#"\restartsteps"#));
         assert!(!out.body_html.contains(r#"\begin{proofcases}"#));
+    }
+
+    #[test]
+    fn manual_bibliography_uses_list_order_and_preserves_formatted_entries() {
+        let body = render_body(
+            r"\begin{document}
+See \cite{second,custom,first}.
+\begin{thebibliography}{99}
+\bibitem{first} First Author.\newblock \emph{First title}. $x^2$.
+\bibitem[\textbf{AB24}]{custom} Custom author.
+\bibitem{second} Second author. \href{https://example.org/paper}{Paper link}.
+\bibitem{uncited} Uncited author. \url{https://example.org/notes}.
+\end{thebibliography}
+\end{document}",
+        );
+        assert!(body.contains(r#"data-key="second">2</a>"#), "{body}");
+        assert!(body.contains(r#"data-key="first">1</a>"#));
+        assert!(body.contains(r#"data-key="custom"><strong>AB24</strong></a>"#));
+        assert!(body.contains("[<strong>AB24</strong>]</dt>"));
+        assert!(body.contains(r#"data-key="uncited">[3]</dt>"#));
+        assert!(body.contains("<em>First title</em>"));
+        assert!(body.contains(r#"class="math inline""#));
+        assert!(body.contains(r#"href="https://example.org/paper">Paper link</a>"#));
+        assert!(body.contains(r#"href="https://example.org/notes">https://example.org/notes</a>"#));
+        assert!(!body.contains("unsupported-env"));
+        assert!(!text_content(&body).contains("99"));
+        let text = text_content(&body)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("First Author. First title"), "{text}");
+    }
+
+    #[test]
+    fn manual_bibliography_labels_cannot_recursively_expand_or_nest_links() {
+        let body = render_body(
+            r"\begin{document}
+\cite{loop,link,unsafe}
+\begin{thebibliography}{99}
+\bibitem[\cite{loop}\cite{loop}]{loop} First.
+\bibitem[\href{https://example.org}{\emph{Link}}]{link} Second.
+\bibitem[<script>]{unsafe} Third. \href{javascript:alert(1)}{Safe text}.
+\end{thebibliography}
+\end{document}",
+        );
+        assert!(
+            body.len() < 10_000,
+            "recursive labels must have bounded output"
+        );
+        assert_eq!(body.matches("<a ").count(), 3, "{body}");
+        assert!(body.contains(r#"data-key="link"><em>Link</em></a>"#));
+        assert!(!body.contains("<script>"));
+        assert!(!body.contains("javascript:"));
+        assert!(text_content(&body).contains("Safe text"));
+    }
+
+    #[test]
+    fn manual_bibliography_duplicate_keys_have_one_target() {
+        let body = render_body(
+            r"\begin{document}
+\cite{same}
+\begin{thebibliography}{99}
+\bibitem[First]{same} Original.
+\bibitem[Second]{same} Duplicate.
+\end{thebibliography}
+\end{document}",
+        );
+        assert_eq!(body.matches(r#"id="bib-1""#).count(), 1);
+        assert_eq!(body.matches(r#"data-key="same""#).count(), 2);
+        assert!(body.contains(r#"data-key="same">First</a>"#));
+        assert!(text_content(&body).contains("[Second]"));
+        assert!(text_content(&body).contains("Duplicate."));
+    }
+
+    #[test]
+    fn bibliography_urls_preserve_percent_escapes_without_parsing_url_tex() {
+        let body = render_body(
+            r"\begin{thebibliography}{9}
+\bibitem{url} \emph{\url{https://example.org/a%20b?x=1&y=2}}.
+\href{https://example.org/a\%20b?x=1\&y=2\#part}{A \textbf{link}}.
+\nolinkurl{https://example.org/raw%20url}.
+\end{thebibliography}",
+        );
+        assert!(body.contains(r#"href="https://example.org/a%20b?x=1&amp;y=2""#));
+        assert!(body.contains(
+            r#"href="https://example.org/a%20b?x=1&amp;y=2#part">A <strong>link</strong></a>"#
+        ));
+        assert_eq!(body.matches("<a ").count(), 2);
+        assert!(body.contains("https://example.org/raw%20url"));
+        assert!(!body.contains("unsupported-env"));
+    }
+
+    #[test]
+    fn manual_bibliography_newblock_retains_following_word_source_position() {
+        let source =
+            r"\begin{thebibliography}{9}\bibitem{a}Author.\newblock Title\end{thebibliography}";
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            source.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let title = source.find("Title").unwrap();
+        let entry = out
+            .sync
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.start.byte as usize == title && entry.end.byte as usize == title + 5
+            })
+            .expect("Title has its actual source byte range");
+        assert_eq!(entry.start.col as usize, title + 1);
     }
 
     #[test]

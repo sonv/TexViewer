@@ -1058,6 +1058,7 @@ body.page-mode-dynamic main#page {
 .para-break { display: block; height: 0; }
 .ref { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
 .cite { color: var(--supporting); text-decoration: none; }
+.cite-group { overflow-wrap: anywhere; }
 .cite:hover { text-decoration: underline; }
 .cite.missing { color: #999; font-family: monospace; font-size: 0.9em; }
 /* Bottom margin is the FULL title→abstract gap: .paper-abstract must not
@@ -1098,6 +1099,11 @@ body.page-mode-dynamic main#page {
 .bib-list.bib-style-numeric    { grid-template-columns: 2.4em 1fr; }
 .bib-list.bib-style-alphabetic { grid-template-columns: max-content 1fr; }
 .bib-list.bib-style-authoryear { grid-template-columns: max-content 1fr; }
+.bib-list.bib-style-manual { grid-template-columns: fit-content(35%) minmax(0, 1fr); }
+.bib-style-manual > .bib-label { white-space: normal; overflow-wrap: anywhere; }
+.bib-style-manual > .bib-entry { min-width: 0; overflow-wrap: anywhere; }
+.bib-preview .bib-label { white-space: normal; overflow-wrap: anywhere; }
+.bib-preview .bib-entry { overflow-wrap: anywhere; }
 .bib-label { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
 .bib-entry { margin: 0; }
 .bib-entry em { font-style: italic; }

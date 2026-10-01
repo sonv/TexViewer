@@ -8,7 +8,8 @@
     "lint:engine": "eslint crates/core/src/engines/assets/mathjax.js",
     "lint": "npm run lint:client && npm run lint:engine",
     "test:hover": "cargo build -p mathpreview-cli && node --test tests/browser/hover-preview.test.mjs",
-    "test:config": "cargo build -p mathpreview-cli && node --test tests/browser/equation-config.test.mjs"
+    "test:config": "cargo build -p mathpreview-cli && node --test tests/browser/equation-config.test.mjs",
+    "test:bibliography": "cargo build -p mathpreview-cli && node --test tests/browser/bibliography.test.mjs"
   },
   "devDependencies": {
     "eslint": "^9.0.0",

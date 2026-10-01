@@ -70,6 +70,38 @@ with `\addbibresource` or `\bibliography`. Alphabetic and author-year
 entries are sorted by author and year. Body-level `\bibliographystyle{plain}`
 is honored, and bibliography files resolve relative to the main TeX file.
 
+Manual bibliographies use the same citation links, hover previews, and margin
+cards. No `.bib` file or BibTeX installation is needed:
+
+```tex
+See \cite{knuth,notes}.
+
+\begin{thebibliography}{99}
+  \bibitem{knuth}
+  Donald E. Knuth. \emph{The TeXbook}. Addison-Wesley, 1984.
+
+  \bibitem[Notes]{notes}
+  Course notes. \url{https://example.org/notes}.
+\end{thebibliography}
+```
+
+Plain `\bibitem{key}` entries are numbered in bibliography order, not citation
+order. Optional labels such as `\bibitem[Notes]{notes}` are shown as written
+and do not advance that numeric counter. Every manual entry remains visible,
+including uncited entries. The `{99}` argument is a LaTeX width hint, not text.
+
+Entry bodies support normal text formatting, math, `\newblock`, and safe
+`\url` and `\href` links. You can put the whole environment in an `\input`
+file, or place `\input{entries}` inside it. Explicitly included `.bbl` files
+using `thebibliography` work the same way. Unsaved edits and source jumps
+retain the included file's location. When keys overlap, an inline entry takes
+precedence over the `.bib` entry, and the first inline definition owns the link.
+
+The preview approximates common BibTeX and biblatex style families. It does
+not run arbitrary `.bst` files or interpret package-specific bibliography
+programs. Natbib's structured optional labels are shown literally rather than
+decoded into separate author and year fields.
+
 `\includegraphics` supports project-local raster and SVG images and cached
 PNG previews of PDF figures, with common width, height, and scale options.
 

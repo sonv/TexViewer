@@ -260,6 +260,14 @@ LaTeX accepts unsaved root, include, preamble, and bibliography buffers. If a
 caller is updating an included file, `request.path` must still identify the
 project root and the child belongs in `file_overrides`.
 
+External `.bib` records belong to the bibliography cache. Native
+`thebibliography` entries do not. They stay in the freshly parsed AST, with
+include-spanning boundaries folded after the ordered source fragments are
+parsed. Numbering keeps manual display labels separate from unique citation
+target IDs, and the renderer uses the same adjacent bibliography label/entry
+elements as external references. Both sources therefore share hover, pin,
+source-sync, and live-patch behavior without changing the converter API.
+
 ### Markdown
 
 ```text

@@ -227,6 +227,15 @@ pub enum NodeKind {
     /// rendered references section. Entries come from the project's loaded
     /// `.bib` files.
     Bibliography,
+    /// Native `\begin{thebibliography}{width}`. Entries are retained in
+    /// authored order, including uncited items, instead of loaded from `.bib`.
+    TheBibliography,
+    /// `\bibitem[label]{key}` with normally parsed entry content in children.
+    /// The optional label is raw TeX, not an HTML string or citation counter.
+    BibliographyItem {
+        key: String,
+        label: Option<String>,
+    },
     /// `\maketitle` — placeholder for the title block. Body sourced from
     /// `\title{…}` / `\author{…}` / `\date{…}` in the preamble.
     MakeTitle,

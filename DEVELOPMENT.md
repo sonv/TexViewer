@@ -114,6 +114,11 @@ including live updates, saved settings, TOML edits, and scope inheritance.
 Both browser suites accept `MATHPREVIEW_TEST_BROWSER=webkit` to check WebKit
 instead of the default Chromium engine.
 
+`npm run test:bibliography` checks manual `thebibliography` entries and the
+existing `.bib` styles, including citation hovers, margin pins, included-file
+source jumps, encoded URLs, and live bibliography edits. It accepts the same
+browser selection variable.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,

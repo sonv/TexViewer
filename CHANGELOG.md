@@ -13,6 +13,20 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.53] - 2026-10-01
+
+### Added
+
+- Native `thebibliography` and `\bibitem` support, including custom labels,
+  uncited entries, formatted text, math, citation hovers, and margin cards.
+  Manual numbering follows bibliography order. Existing `.bib` styles remain
+  available alongside it.
+- Bibliographies can live in included files or include entry files themselves.
+  Unsaved edits update the preview, and source jumps use the entry's own file.
+- `\newblock` spacing and safe `\url` / `\href` links in bibliography text.
+  Long custom labels wrap in the page and previews. Existing tabs reload onto
+  the new styling after a daemon upgrade (protocol 89).
+
 ## [2.1.52] - 2026-10-01
 
 ### Added

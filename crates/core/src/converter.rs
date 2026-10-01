@@ -1767,6 +1767,48 @@ See \eqref{eq:last} and \ref{thm:last}.
     }
 
     #[test]
+    fn latex_inline_bibliography_uses_unsaved_include_and_fresh_labels() {
+        let dir = temp_dir("inline-bibliography");
+        let root = dir.join("main.tex");
+        let entries = dir.join("entries.tex");
+        let source = "\\begin{document}\nSee \\cite{second,first}.\n\\begin{thebibliography}{99}\n\\input{entries}\n\\end{thebibliography}\n\\end{document}";
+        std::fs::write(&root, source).unwrap();
+        std::fs::write(
+            &entries,
+            "\\bibitem{first} Disk title.\n\\bibitem{second} Second.\n",
+        )
+        .unwrap();
+        let opts = HtmlOptions::default();
+        let disk = LatexConverter
+            .convert(ConversionRequest::from_path(&root), &opts)
+            .unwrap();
+        assert!(disk.body_html.contains(r#"data-key="second">2</a>"#));
+        let live = LatexConverter
+            .convert(
+                ConversionRequest::from_path(&root).with_file_override(
+                    &entries,
+                    "\\bibitem[Live]{first} Buffer title.\n\\bibitem{second} Second.\n",
+                ),
+                &opts,
+            )
+            .unwrap();
+        assert!(live.body_html.contains(r#"data-key="first">Live</a>"#));
+        assert!(live.body_html.contains(r#"data-key="second">1</a>"#));
+        assert!(live.body_html.contains(">Buffer</span>"));
+        assert!(!live.body_html.contains(">Disk</span>"));
+        assert!(live.dependencies.iter().any(|dependency| {
+            dependency.kind == DependencyKind::include() && same_path(&dependency.path, &entries)
+        }));
+        assert!(live
+            .sync
+            .entries
+            .iter()
+            .any(|entry| { same_path(&entry.file, &entries) && entry.start.line == 1 }));
+        assert!(std::fs::read_to_string(&entries).unwrap().contains("Disk title"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn markdown_root_source_wins_over_duplicate_override() {
         let root = Path::new("notes.md");
         let converted = MarkdownConverter

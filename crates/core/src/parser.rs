@@ -55,6 +55,9 @@ thread_local! {
     /// for each outermost use, so a long document with many ordinary uses does
     /// not exhaust one document-global allowance.
     static ENV_EXPANSION_ACTIVE: Cell<u32> = const { Cell::new(0) };
+    /// Native bibliographies may cross `\input` fragment boundaries. Keep
+    /// their lexical context until all ordered project fragments are parsed.
+    static BIBLIOGRAPHY_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 const MAX_USER_ENV_EXPANSIONS: usize = 1024;
@@ -1117,6 +1120,40 @@ pub(crate) fn inline_literal_payload(
     inline_literal_payload_with_dynamic(src, command, after_word, dynamic)
 }
 
+/// URL destinations use literal percent signs, not TeX line comments. Keep
+/// this reader shared with the renderer so grouped URLs and direct commands
+/// agree on their boundary. The returned destination retains TeX escapes.
+pub(crate) fn url_argument(src: &str, after_word: usize) -> Option<(String, usize)> {
+    let bytes = src.as_bytes();
+    let start = skip_tex_space_and_comments(src, after_word);
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i += 1;
+                if i < bytes.len() {
+                    i += src[i..].chars().next()?.len_utf8();
+                }
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((src[start + 1..i].to_string(), i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += src[i..].chars().next()?.len_utf8();
+    }
+    None
+}
+
 fn inline_literal_payload_with_dynamic(
     src: &str,
     command: &str,
@@ -1128,6 +1165,9 @@ fn inline_literal_payload_with_dynamic(
         after_word += 1;
     }
     let base = command.trim_end_matches('*');
+    if matches!(base, "url" | "href" | "nolinkurl") {
+        return url_argument(src, after_word);
+    }
     if dynamic || matches!(base, "Verb" | "lstinline" | "mintinline" | "mint") {
         after_word = skip_ascii_ws(src, after_word);
         if let Some((_, end)) = read_bracketed(src, after_word) {
@@ -1165,7 +1205,7 @@ fn inline_literal_payload_with_dynamic(
 fn is_static_inline_literal_command(command: &str) -> bool {
     matches!(
         command.trim_end_matches('*'),
-        "verb" | "Verb" | "lstinline" | "mintinline" | "mint"
+        "verb" | "Verb" | "lstinline" | "mintinline" | "mint" | "url" | "href" | "nolinkurl"
     )
 }
 
@@ -2068,12 +2108,126 @@ pub fn parse_body_with_overrides(
         .with(|commands| *commands.borrow_mut() = literal_commands_for_project(project, overrides));
     ENV_EXPANSIONS_LEFT.with(|budget| budget.set(MAX_USER_ENV_EXPANSIONS));
     ENV_EXPANSION_ACTIVE.with(|active| active.set(0));
+    BIBLIOGRAPHY_DEPTH.with(|depth| depth.set(0));
     let mut nodes = Vec::new();
     for f in &project.files {
         let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0);
         p.parse_block_into(&mut nodes, None);
     }
-    Ok(nodes)
+    Ok(fold_native_bibliographies(nodes))
+}
+
+const BIBLIOGRAPHY_END_MARKER: &str = "mathpreview-thebibliography-end";
+
+fn bibliography_item_header(
+    src: &str,
+    after_word: usize,
+) -> Option<(String, Option<String>, usize)> {
+    let mut at = skip_tex_space_and_comments(src, after_word);
+    let label = if src.as_bytes().get(at) == Some(&b'[') {
+        let start = at + 1;
+        at = start;
+        loop {
+            match src.as_bytes().get(at).copied()? {
+                b']' => break,
+                b'%' => {
+                    at = src[at..]
+                        .find('\n')
+                        .map(|offset| at + offset)
+                        .unwrap_or(src.len());
+                }
+                b'{' => at = tex_group_end(src, at, b'{', b'}')?,
+                b'\\' => at = tex_token_end(src, at),
+                _ => at += src[at..].chars().next()?.len_utf8(),
+            }
+        }
+        let label = executable_latex_source(&src[start..at]);
+        at = skip_tex_space_and_comments(src, at + 1);
+        Some(label.trim().to_string())
+    } else {
+        None
+    };
+    let (key, end) = read_braced(src, at)?;
+    let key = executable_latex_source(&key).trim().to_string();
+    (!key.is_empty()).then_some((key, label, end))
+}
+
+/// Fold native bibliography boundaries only after include fragments have
+/// joined. Every child retains its original file and position, unlike joining
+/// the input strings before parsing. Markers are internal to this parse pass.
+fn fold_native_bibliographies(nodes: Vec<Node>) -> Vec<Node> {
+    let mut out = Vec::new();
+    let mut open: Vec<Node> = Vec::new();
+    for mut node in nodes {
+        node.children = fold_native_bibliographies(node.children);
+        if matches!(node.kind, NodeKind::TheBibliography) {
+            open.push(node);
+            continue;
+        }
+        if matches!(&node.kind, NodeKind::OpaqueCmd { name, .. } if name == BIBLIOGRAPHY_END_MARKER)
+        {
+            if let Some(mut bibliography) = open.pop() {
+                if bibliography.span.file == node.span.file {
+                    bibliography.span.end = node.span.end;
+                }
+                bibliography.children = fold_bibliography_items(bibliography.children);
+                if let Some(parent) = open.last_mut() {
+                    parent.children.push(bibliography);
+                } else {
+                    out.push(bibliography);
+                }
+            }
+            continue;
+        }
+        if let Some(bibliography) = open.last_mut() {
+            if bibliography.span.file == node.span.file {
+                bibliography.span.end = node.span.end;
+            }
+            bibliography.children.push(node);
+        } else {
+            out.push(node);
+        }
+    }
+    // A temporarily missing closer must still show complete entries while
+    // the user types, without losing any already parsed source positions.
+    while let Some(mut bibliography) = open.pop() {
+        bibliography.children = fold_bibliography_items(bibliography.children);
+        if let Some(parent) = open.last_mut() {
+            parent.children.push(bibliography);
+        } else {
+            out.push(bibliography);
+        }
+    }
+    out
+}
+
+fn fold_bibliography_items(nodes: Vec<Node>) -> Vec<Node> {
+    let mut out = Vec::new();
+    let mut current: Option<Node> = None;
+    for node in nodes {
+        if matches!(node.kind, NodeKind::BibliographyItem { .. }) {
+            if let Some(mut previous) = current.take() {
+                if previous.span.file == node.span.file {
+                    previous.span.end = node.span.start;
+                }
+                out.push(previous);
+            }
+            current = Some(node);
+        } else if let Some(item) = current.as_mut() {
+            if item.span.file == node.span.file {
+                item.span.end = node.span.end;
+            }
+            item.children.push(node);
+        } else {
+            // Keep pre-item content rather than silently discarding authored
+            // text. Generated `.bbl` setup declarations are skipped earlier.
+            out.push(node);
+        }
+    }
+    if let Some(item) = current {
+        out.push(item);
+    }
+    out
 }
 
 struct Parser<'a> {
@@ -2410,6 +2564,105 @@ impl<'a> Parser<'a> {
                 }
                 let cmd = self.src[self.byte + 1..cmd_name_end].to_string();
                 let cmd_start = self.pos();
+
+                if BIBLIOGRAPHY_DEPTH.with(|depth| depth.get() > 0) {
+                    // BibTeX-generated `.bbl` files often install helper
+                    // commands. Their stored replacement text is not an item
+                    // and must not create a visible or referenceable entry.
+                    if let Some(end) = stored_definition_end(self.src, self.byte) {
+                        flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                        self.advance_to(end);
+                        continue;
+                    }
+                    if cmd == "string" {
+                        flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                        let token_start = skip_tex_space_and_comments(self.src, cmd_name_end);
+                        let token_end = tex_token_end(self.src, token_start);
+                        let raw = self.src[token_start..token_end].to_string();
+                        self.advance_to(token_end);
+                        out.push(Node {
+                            kind: NodeKind::OpaqueCmd {
+                                name: "inline-literal".into(),
+                                raw,
+                            },
+                            span: self.span_from(cmd_start),
+                            children: vec![],
+                        });
+                        continue;
+                    }
+                    if cmd == "end" {
+                        if let Some(token) = environment_token_at(self.src, self.byte) {
+                            if token.name == "thebibliography" {
+                                flush_text(
+                                    &mut text_buf,
+                                    &mut text_start,
+                                    out,
+                                    self.pos(),
+                                    &self.file,
+                                );
+                                self.advance_to(token.end);
+                                BIBLIOGRAPHY_DEPTH.with(|depth| depth.set(depth.get() - 1));
+                                out.push(Node {
+                                    kind: NodeKind::OpaqueCmd {
+                                        name: BIBLIOGRAPHY_END_MARKER.into(),
+                                        raw: String::new(),
+                                    },
+                                    span: self.span_from(cmd_start),
+                                    children: vec![],
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                    if cmd == "bibitem" {
+                        if let Some((key, label, end)) =
+                            bibliography_item_header(self.src, cmd_name_end)
+                        {
+                            flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                            self.advance_to(end);
+                            out.push(Node {
+                                kind: NodeKind::BibliographyItem { key, label },
+                                span: self.span_from(cmd_start),
+                                children: vec![],
+                            });
+                            continue;
+                        }
+                    }
+                    if cmd == "newblock" {
+                        flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                        self.advance_to(cmd_name_end);
+                        out.push(Node {
+                            kind: NodeKind::OpaqueCmd {
+                                name: cmd,
+                                raw: r"\newblock".into(),
+                            },
+                            span: self.span_from(cmd_start),
+                            children: vec![],
+                        });
+                        continue;
+                    }
+                }
+
+                if matches!(cmd.as_str(), "url" | "href" | "nolinkurl") {
+                    if let Some((_, mut end)) = url_argument(self.src, cmd_name_end) {
+                        if cmd == "href" {
+                            if let Some((_, text_end)) =
+                                read_braced(self.src, skip_tex_space_and_comments(self.src, end))
+                            {
+                                end = text_end;
+                            }
+                        }
+                        flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                        let raw = self.src[self.byte..end].to_string();
+                        self.advance_to(end);
+                        out.push(Node {
+                            kind: NodeKind::OpaqueCmd { name: cmd, raw },
+                            span: self.span_from(cmd_start),
+                            children: vec![],
+                        });
+                        continue;
+                    }
+                }
 
                 if is_inline_literal_command(&cmd) {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
@@ -2909,6 +3162,25 @@ impl<'a> Parser<'a> {
         // would add a stack frame per level and eventually abort the process.
         if self.depth >= MAX_NESTING_DEPTH {
             self.capture_opaque_env(out, start, env);
+            return;
+        }
+
+        if env == "thebibliography" {
+            if BIBLIOGRAPHY_DEPTH.with(|depth| depth.get() >= MAX_NESTING_DEPTH) {
+                self.capture_opaque_env(out, start, env);
+                return;
+            }
+            // The required argument is only the widest-label layout hint.
+            // Do not capture the body here: `\input` may split it across
+            // project fragments that need their own source-file positions.
+            self.skip_tex_argument_space();
+            let _ = self.balanced_brace_arg();
+            BIBLIOGRAPHY_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+            out.push(Node {
+                kind: NodeKind::TheBibliography,
+                span: self.span_from(start),
+                children: vec![],
+            });
             return;
         }
 
@@ -5840,6 +6112,352 @@ After $y$.
             })
             .collect();
         assert_eq!(math, ["live"]);
+    }
+
+    #[test]
+    fn native_bibliography_preserves_entry_content_order_and_source_spans() {
+        let source = concat!(
+            "Before \\cite{second}.\n",
+            "\\begin{thebibliography}{99}\n",
+            "\\bibitem{first} René. \\emph{A title} with $x^2$.\n",
+            "\\newblock Publisher, 2020.\n",
+            "\\bibitem[Au21]{second} Another title.\n",
+            "\\end{thebibliography}\n",
+            "After.\n",
+        );
+        let nodes = parse(source);
+        let bibliography = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+            .unwrap();
+        let entries: Vec<_> = bibliography
+            .children
+            .iter()
+            .filter(|node| matches!(node.kind, NodeKind::BibliographyItem { .. }))
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(&entries[0].kind,
+            NodeKind::BibliographyItem { key, label: None } if key == "first"));
+        assert!(matches!(&entries[1].kind,
+            NodeKind::BibliographyItem { key, label: Some(label) }
+                if key == "second" && label == "Au21"));
+        assert_eq!(entries[0].span.start.line, 3);
+        assert_eq!(entries[1].span.start.line, 5);
+        assert_eq!(bibliography.span.start.line, 2);
+        assert_eq!(bibliography.span.end.line, 6);
+        assert_eq!(
+            entries[0].span.start.byte as usize,
+            source.find(r"\bibitem{first}").unwrap()
+        );
+        let inline_math = entries[0]
+            .children
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::InlineMath(_)))
+            .unwrap();
+        assert_eq!(
+            inline_math.span.start.byte as usize,
+            source.find("$x^2$").unwrap()
+        );
+        assert!(entries[0].children.iter().any(|node| {
+            matches!(&node.kind, NodeKind::OpaqueCmd { name, raw }
+                if name == "emph" && raw == r"\emph{A title}")
+        }));
+        let newblock = entries[0]
+            .children
+            .iter()
+            .find(
+                |node| matches!(&node.kind, NodeKind::OpaqueCmd { name, .. } if name == "newblock"),
+            )
+            .unwrap();
+        assert_eq!(newblock.span.end.byte - newblock.span.start.byte, 9);
+        let publisher = entries[0]
+            .children
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Text(text) if text.contains("Publisher")))
+            .unwrap();
+        assert_eq!(
+            &source[publisher.span.start.byte as usize..publisher.span.end.byte as usize],
+            " Publisher, 2020.\n"
+        );
+        assert!(nodes
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if text.contains("After."))));
+    }
+
+    #[test]
+    fn native_bibliography_accepts_comments_and_braced_optional_labels() {
+        let nodes = parse(concat!(
+            "\\begin% begin comment\n{thebibliography}% width comment\n{99}\n",
+            "\\bibitem% item comment\n[\\textbf{A]B}% hidden ]\n21]% key comment\n",
+            "{entry% key continuation\n} Content.\n",
+            "\\end% close comment\n{thebibliography}\n",
+        ));
+        let bibliography = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+            .unwrap();
+        assert!(
+            bibliography.children.iter().any(|node| {
+                matches!(&node.kind, NodeKind::BibliographyItem { key, label: Some(label) }
+                    if key == "entry" && label == r"\textbf{A]B}21")
+            }),
+            "{bibliography:#?}"
+        );
+        assert_eq!(bibliography.span.end.line, 10);
+    }
+
+    #[test]
+    fn native_bibliography_ignores_inert_item_and_end_markers() {
+        let nodes = parse(concat!(
+            "\\begin{thebibliography}{9}\n",
+            "% \\bibitem{commented} Hidden.\n",
+            "\\providecommand{\\unused}{\\bibitem{stored} \\end{thebibliography}}\n",
+            "\\def\\other{\\bibitem{defined}}\n",
+            "\\iffalse \\bibitem{false} Hidden. \\fi\n",
+            "\\bibitem{live} Seen.\n",
+            "\\verb|\\bibitem{literal} \\end{thebibliography}|\n",
+            "\\string\\bibitem{stringified}\n",
+            "\\detokenize{\\bibitem{detokenized}}\n",
+            "\\iftrue \\bibitem{visible} True. \\else \\bibitem{hidden} False. \\fi\n",
+            "\\end{thebibliography}\n",
+        ));
+        let bibliography = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+            .unwrap();
+        let keys: Vec<_> = bibliography
+            .children
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::BibliographyItem { key, .. } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, ["live", "visible"]);
+    }
+
+    #[test]
+    fn native_bibliography_survives_missing_closer_and_incomplete_item() {
+        let nodes = parse(concat!(
+            "\\begin{thebibliography}{99}\n",
+            "\\bibitem{complete} Visible $x$.\n",
+            "\\bibitem[incomplete",
+        ));
+        let bibliography = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+            .unwrap();
+        let entries: Vec<_> = bibliography
+            .children
+            .iter()
+            .filter(|node| matches!(node.kind, NodeKind::BibliographyItem { .. }))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0]
+            .children
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::InlineMath(body) if body == "x")));
+        // Parsing another document must not inherit the unterminated context.
+        assert!(!parse(r"\bibitem{outside} Body.")
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::BibliographyItem { .. })));
+    }
+
+    #[test]
+    fn native_bibliography_nested_in_parent_does_not_leak_context() {
+        let nodes = parse(concat!(
+            "\\begin{quote}\n",
+            "\\begin{thebibliography}{9}\n",
+            "\\bibitem{inside} Author. \\newblock{\\em A title}.\n",
+            "\\end{thebibliography}\n",
+            "After the bibliography.\n",
+            "\\end{quote}\n",
+            "\\bibitem{outside} Not a native entry.\n",
+        ));
+        let quote = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Quote { .. }))
+            .unwrap();
+        let bibliography = quote
+            .children
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+            .unwrap();
+        assert!(bibliography.children.iter().any(|node| {
+            matches!(&node.kind, NodeKind::BibliographyItem { key, .. } if key == "inside")
+                && node.children.iter().any(
+                    |child| matches!(&child.kind, NodeKind::Text(text) if text.contains("A title")),
+                )
+        }));
+        assert!(quote.children.iter().any(|node| {
+            matches!(&node.kind, NodeKind::Text(text) if text.contains("After the bibliography"))
+        }));
+        assert!(!nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::BibliographyItem { .. })));
+    }
+
+    #[test]
+    fn native_bibliography_nesting_obeys_parser_depth_limit() {
+        let repetitions = MAX_NESTING_DEPTH as usize + 100;
+        let source = format!(
+            "{}\\bibitem{{deep}} Body.{}",
+            r"\begin{thebibliography}{9}".repeat(repetitions),
+            r"\end{thebibliography}".repeat(repetitions),
+        );
+        let nodes = parse(&source);
+        let mut level = &nodes;
+        let mut depth = 0;
+        while let Some(bibliography) = level
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+        {
+            depth += 1;
+            level = &bibliography.children;
+        }
+        assert_eq!(depth, MAX_NESTING_DEPTH);
+        assert!(level.iter().any(|node| {
+            matches!(&node.kind, NodeKind::OpaqueEnv { env, .. } if env == "thebibliography")
+        }));
+    }
+
+    #[test]
+    fn bibliography_urls_keep_raw_percent_and_exact_command_boundaries() {
+        let source = concat!(
+            "\\begin{thebibliography}{9}\n\\bibitem{url} ",
+            "\\url{https://example.org/a%20b?x=1&y=2#part} ",
+            "\\href{https://example.org/é%20z}{\\emph{A link}} ",
+            "\\nolinkurl{https://example.org/a\\}b%20c} Tail.\n",
+            "\\end{thebibliography}",
+        );
+        let nodes = parse(source);
+        let item = nodes[0]
+            .children
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::BibliographyItem { .. }))
+            .unwrap();
+        let links: Vec<_> = item
+            .children
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::OpaqueCmd { name, raw }
+                    if matches!(name.as_str(), "url" | "href" | "nolinkurl") =>
+                {
+                    assert_eq!(
+                        &source[node.span.start.byte as usize..node.span.end.byte as usize],
+                        raw
+                    );
+                    Some((name.as_str(), raw.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[0].1, r"\url{https://example.org/a%20b?x=1&y=2#part}");
+        assert_eq!(
+            links[1].1,
+            r"\href{https://example.org/é%20z}{\emph{A link}}"
+        );
+        assert_eq!(links[2].1, r"\nolinkurl{https://example.org/a\}b%20c}");
+        assert!(item
+            .children
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if text.contains("Tail."))));
+    }
+
+    #[test]
+    fn bibliography_url_payloads_are_inert_for_group_and_environment_matching() {
+        let source = concat!(
+            "\\begin{quote}\\emph{See ",
+            "\\url{https://example.org/a%20b?cash=$} today}",
+            "\\href{https://example.org/\\end{quote}%20x}{Link}",
+            "\\end{quote}After.",
+        );
+        let nodes = parse(source);
+        let quote = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Quote { .. }))
+            .unwrap();
+        assert!(quote.children.iter().any(|node| {
+            matches!(&node.kind, NodeKind::OpaqueCmd { name, raw }
+                if name == "emph" && raw.ends_with(" today}"))
+        }));
+        assert!(nodes
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if text == "After.")));
+        assert!(has_balanced_math_delimiters(source, ""));
+    }
+
+    #[test]
+    fn native_bibliography_stitches_entry_only_include_fragments() {
+        let mut project = Project {
+            root: PathBuf::from("root.tex"),
+            preamble: Preamble {
+                source: String::new(),
+                file: PathBuf::from("root.tex"),
+            },
+            preamble_files: vec![],
+            files: vec![],
+            dependency_files: vec![],
+            warnings: vec![],
+        };
+        for (file, source, line) in [
+            ("root.tex", "\\begin{thebibliography}{99}\n", 10),
+            ("entries.tex", "\\bibitem{first} First $x$.\n", 1),
+            ("more.tex", "\\bibitem[AB]{second} Second.\n", 4),
+            ("root.tex", "\\end{thebibliography}\nAfter.\n", 13),
+        ] {
+            project.files.push(ProjectFile {
+                path: PathBuf::from(file),
+                source: source.to_string(),
+                start: Pos {
+                    line,
+                    col: 1,
+                    byte: (line - 1) * 100,
+                },
+                is_root_body: file == "root.tex",
+            });
+        }
+        let thms = TheoremRegistry::from_preamble("");
+        let nodes = parse_body(&project, &thms).unwrap();
+        let bibliography = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::TheBibliography))
+            .unwrap();
+        assert_eq!(bibliography.span.file, PathBuf::from("root.tex"));
+        assert_eq!(bibliography.span.start.line, 10);
+        assert_eq!(bibliography.span.end.line, 13);
+        let entries: Vec<_> = bibliography
+            .children
+            .iter()
+            .filter(|node| matches!(node.kind, NodeKind::BibliographyItem { .. }))
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].span.file, PathBuf::from("entries.tex"));
+        assert_eq!(entries[0].span.start, Pos::ZERO);
+        assert!(entries[0]
+            .children
+            .iter()
+            .all(|node| node.span.file == PathBuf::from("entries.tex")));
+        assert_eq!(entries[1].span.file, PathBuf::from("more.tex"));
+        assert_eq!(entries[1].span.start.line, 4);
+        assert!(nodes
+            .iter()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if text.contains("After."))));
+
+        // A complete environment in an included file uses the same fold,
+        // with the wrapper and entries both anchored to that included file.
+        project.files = vec![ProjectFile {
+            path: PathBuf::from("complete.bbl"),
+            source: "\\begin{thebibliography}{9}\n\\bibitem{only} Title.\n\\end{thebibliography}"
+                .into(),
+            start: Pos::ZERO,
+            is_root_body: false,
+        }];
+        let nodes = parse_body(&project, &thms).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].span.file, PathBuf::from("complete.bbl"));
+        assert!(matches!(nodes[0].kind, NodeKind::TheBibliography));
     }
 
     #[test]

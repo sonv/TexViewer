@@ -36,24 +36,51 @@ pub struct LabelTable {
     /// `label` → kind word alone, e.g. `"thm:main"` → `"Theorem"`. Useful for
     /// `\autoref` / lowercase variants.
     pub kind: HashMap<String, String>,
-    /// `cite key` → bibliography entry number (1-indexed, in citation order).
+    /// `cite key` → unique bibliography target ID (1-indexed). External
+    /// entries follow the selected style's order, followed by inline entries
+    /// in source order. Display labels can differ from this internal ID.
     pub citation_number: HashMap<String, u32>,
     /// `cite key` → in-text display token, e.g. `"1"` (numeric), `"SV06"`
     /// (alphabetic), or `"Stroock and Varadhan, 2006"` (author-year).
     pub citation_display: HashMap<String, String>,
-    /// Cite keys in display order — for numeric style this is first-appearance,
-    /// for alphabetic / author-year it's sorted alphabetically by author/year.
+    /// External bibliography keys in display order — for numeric style this
+    /// is first-appearance, for alphabetic / author-year it's sorted by
+    /// author/year. Inline `\bibitem` entries render at their authored site.
     pub cite_order: Vec<String>,
     /// Bibliography style used to build the citation labels. Inline renderers
     /// without a full `RenderCtx` (notably native table cells) need this to
     /// choose the same citation delimiters as ordinary parsed prose.
     pub bib_style: BibStyle,
+    /// Inline item labels include uncited and duplicate entries. Keeping them
+    /// by source span lets duplicate keys remain visible without duplicating
+    /// their citation target or replacing the first entry's display label.
+    bibliography_item_labels: HashMap<(PathBuf, u32, u32), String>,
+    /// First inline definition of each key owns its citation target.
+    manual_citation_sources: HashMap<String, Span>,
     /// Source start → float/table number, including unlabeled floats. Label
     /// lookup alone cannot supply the caption number when no `\label` exists.
     float_number: HashMap<(PathBuf, u32), String>,
 }
 
 impl LabelTable {
+    /// The authored or automatic label of a particular inline `\bibitem`.
+    pub fn bibliography_item_label(&self, span: &Span) -> Option<&str> {
+        self.bibliography_item_labels
+            .get(&(span.file.clone(), span.start.byte, span.end.byte))
+            .map(String::as_str)
+    }
+
+    /// Whether this inline item owns the unique target for its citation key.
+    pub fn bibliography_item_is_target(&self, key: &str, span: &Span) -> bool {
+        self.manual_citation_sources.get(key) == Some(span)
+    }
+
+    /// Manual labels retain LaTeX formatting rather than external BibTeX's
+    /// generated plain-text display tokens.
+    pub fn is_manual_citation(&self, key: &str) -> bool {
+        self.manual_citation_sources.contains_key(key)
+    }
+
     pub fn float_number_for_span(&self, span: &Span) -> Option<&str> {
         self.float_number
             .get(&(span.file.clone(), span.start.byte))
@@ -146,15 +173,54 @@ pub fn assign_numbers_with_options(
     state.referenced = referenced;
     walk(nodes, &mut state);
 
+    // An inline bibliography is already authored and ordered. Include all of
+    // its entries, even when they are never cited, and let it own keys also
+    // present in an external .bib file. Do not invent a second external entry
+    // for those keys or sort manual labels according to the BibTeX style.
+    let mut manual_items = Vec::new();
+    let (has_manual_bibliography, has_external_bibliography) =
+        collect_bibliography_items(nodes, &mut None, &mut manual_items);
+    let mut manual_citations = Vec::new();
+    for (key, label, span) in manual_items {
+        state.labels.bibliography_item_labels.insert(
+            (span.file.clone(), span.start.byte, span.end.byte),
+            label.clone(),
+        );
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            state.labels.manual_citation_sources.entry(key.clone())
+        {
+            entry.insert(span);
+            manual_citations.push((key, label));
+        }
+    }
+    let manual_sources = &state.labels.manual_citation_sources;
+    if has_manual_bibliography && !has_external_bibliography {
+        // A manual-only document has no external reference section in which
+        // to render unresolved keys. Leave them missing instead of inventing
+        // clickable numbers with nonexistent targets, including during an
+        // edit that renames or temporarily removes the last inline item.
+        state.labels.cite_order.clear();
+    } else {
+        state
+            .labels
+            .cite_order
+            .retain(|key| !manual_sources.contains_key(key));
+    }
+    state.labels.citation_number.clear();
+
     // Finalize citation order + display per style.
     match style {
         BibStyle::Numeric => {
-            // First-appearance order; display = the number we already assigned.
+            // First-appearance order after removing inline keys.
             for (i, k) in state.labels.cite_order.iter().enumerate() {
                 state
                     .labels
                     .citation_display
                     .insert(k.clone(), (i + 1).to_string());
+                state
+                    .labels
+                    .citation_number
+                    .insert(k.clone(), (i + 1) as u32);
             }
         }
         BibStyle::NumericSorted => {
@@ -245,7 +311,56 @@ pub fn assign_numbers_with_options(
         }
     }
 
+    let external_count = state.labels.cite_order.len();
+    for (index, (key, label)) in manual_citations.into_iter().enumerate() {
+        state
+            .labels
+            .citation_number
+            .insert(key.clone(), (external_count + index + 1) as u32);
+        state.labels.citation_display.insert(key, label);
+    }
+
     state.labels
+}
+
+/// Collect authored bibliography labels without borrowing their numbering
+/// from first citation order. Each environment starts a fresh list counter.
+/// An optional `\bibitem[label]` is an explicitly labelled list item, so it
+/// does not consume the automatic counter used by plain `\bibitem{key}`.
+/// Return whether any manual and external bibliography sections exist, even
+/// when a manual section is temporarily empty while its source is edited.
+fn collect_bibliography_items(
+    nodes: &[Node],
+    counter: &mut Option<u32>,
+    items: &mut Vec<(String, String, Span)>,
+) -> (bool, bool) {
+    let mut has_manual = false;
+    let mut has_external = false;
+    for node in nodes {
+        let nested = match &node.kind {
+            NodeKind::TheBibliography => {
+                has_manual = true;
+                collect_bibliography_items(&node.children, &mut Some(0), items)
+            }
+            NodeKind::BibliographyItem { key, label } => {
+                if let Some(counter) = counter {
+                    let label = label.clone().unwrap_or_else(|| {
+                        *counter += 1;
+                        counter.to_string()
+                    });
+                    items.push((key.clone(), label, node.span.clone()));
+                }
+                collect_bibliography_items(&node.children, counter, items)
+            }
+            _ => {
+                has_external |= matches!(node.kind, NodeKind::Bibliography);
+                collect_bibliography_items(&node.children, counter, items)
+            }
+        };
+        has_manual |= nested.0;
+        has_external |= nested.1;
+    }
+    (has_manual, has_external)
 }
 
 struct State<'r> {
@@ -1567,6 +1682,263 @@ mod tests {
             &TheoremRegistry::with_builtin_defaults(),
             None,
         )
+    }
+
+    fn bibliography_items(nodes: &[Node]) -> Vec<&Node> {
+        let mut items = Vec::new();
+        for node in nodes {
+            if matches!(node.kind, NodeKind::BibliographyItem { .. }) {
+                items.push(node);
+            }
+            items.extend(bibliography_items(&node.children));
+        }
+        items
+    }
+
+    #[test]
+    fn inline_bibliography_numbers_follow_items_including_uncited_entries() {
+        let mut parsed = nodes(
+            r"\cite{second,first}
+\begin{thebibliography}{99}
+\bibitem{first} First source.
+\bibitem{second} Second source.
+\bibitem{uncited} Uncited source.
+\end{thebibliography}",
+        );
+        let labels = assign(&mut parsed);
+        assert!(labels.cite_order.is_empty());
+        for (key, expected) in [("first", 1), ("second", 2), ("uncited", 3)] {
+            assert_eq!(labels.citation_display[key], expected.to_string());
+            assert_eq!(labels.citation_number[key], expected);
+            assert!(labels.is_manual_citation(key));
+        }
+        assert!(!labels.is_manual_citation("missing"));
+        let items = bibliography_items(&parsed);
+        assert_eq!(items.len(), 3);
+        for (index, node) in items.into_iter().enumerate() {
+            let NodeKind::BibliographyItem { key, .. } = &node.kind else {
+                unreachable!();
+            };
+            assert_eq!(
+                labels.bibliography_item_label(&node.span),
+                Some((index + 1).to_string().as_str())
+            );
+            assert!(labels.bibliography_item_is_target(key, &node.span));
+        }
+    }
+
+    #[test]
+    fn inline_bibliography_custom_labels_do_not_consume_list_counters() {
+        let mut parsed = nodes(
+            r"\begin{thebibliography}{99}
+\bibitem{one} One.
+\bibitem[\textbf{Custom}]{custom} Custom.
+\bibitem{two} Two.
+\bibitem[]{empty} Explicitly empty label.
+\bibitem{three} Three.
+\end{thebibliography}
+\begin{thebibliography}{9}
+\bibitem{reset} A separate list starts at one.
+\end{thebibliography}",
+        );
+        let labels = assign(&mut parsed);
+        for (key, expected) in [
+            ("one", "1"),
+            ("custom", r"\textbf{Custom}"),
+            ("two", "2"),
+            ("empty", ""),
+            ("three", "3"),
+            ("reset", "1"),
+        ] {
+            assert_eq!(labels.citation_display[key], expected);
+        }
+        let unique_targets: HashSet<_> = labels.citation_number.values().collect();
+        assert_eq!(unique_targets.len(), 6);
+    }
+
+    #[test]
+    fn inline_bibliography_labels_are_independent_of_external_style() {
+        let source = r"\cite{second,first,custom}
+\begin{thebibliography}{99}
+\bibitem{first} First.
+\bibitem[\emph{AB24}]{custom} Custom.
+\bibitem{second} Second.
+\end{thebibliography}";
+        for style in [
+            BibStyle::Numeric,
+            BibStyle::NumericSorted,
+            BibStyle::Alphabetic,
+            BibStyle::AuthorYear,
+        ] {
+            let mut parsed = nodes(source);
+            let labels = assign_numbers(
+                &mut parsed,
+                &HashMap::new(),
+                style,
+                &TheoremRegistry::with_builtin_defaults(),
+                None,
+            );
+            assert!(labels.cite_order.is_empty(), "{style:?}");
+            assert_eq!(labels.citation_display["first"], "1", "{style:?}");
+            assert_eq!(labels.citation_display["second"], "2", "{style:?}");
+            assert_eq!(
+                labels.citation_display["custom"], r"\emph{AB24}",
+                "{style:?}"
+            );
+            assert_eq!(labels.citation_number["first"], 1, "{style:?}");
+            assert_eq!(labels.citation_number["custom"], 2, "{style:?}");
+            assert_eq!(labels.citation_number["second"], 3, "{style:?}");
+        }
+    }
+
+    #[test]
+    fn inline_and_external_bibliographies_have_distinct_targets() {
+        let source = r"\cite{manual-second,external-z,shared,external-a,manual-first}
+\begin{thebibliography}{99}
+\bibitem{manual-first} First manual entry.
+\bibitem{manual-second} Second manual entry.
+\bibitem[Manual]{shared} Overrides the same external key.
+\end{thebibliography}
+\bibliography{refs}";
+        let bib: HashMap<_, _> = [
+            ("external-z", "Zulu", "2020"),
+            ("external-a", "Alpha", "2021"),
+            ("shared", "Shared", "1999"),
+        ]
+        .into_iter()
+        .map(|(key, author, year)| {
+            (
+                key.to_string(),
+                BibEntry {
+                    key: key.to_string(),
+                    entry_type: "book".to_string(),
+                    fields: HashMap::from([
+                        ("author".to_string(), author.to_string()),
+                        ("year".to_string(), year.to_string()),
+                        ("title".to_string(), key.to_string()),
+                    ]),
+                },
+            )
+        })
+        .collect();
+        for style in [
+            BibStyle::Numeric,
+            BibStyle::NumericSorted,
+            BibStyle::Alphabetic,
+            BibStyle::AuthorYear,
+        ] {
+            let mut parsed = nodes(source);
+            let labels = assign_numbers(
+                &mut parsed,
+                &bib,
+                style,
+                &TheoremRegistry::with_builtin_defaults(),
+                None,
+            );
+            let expected_order = if style == BibStyle::Numeric {
+                ["external-z", "external-a"]
+            } else {
+                ["external-a", "external-z"]
+            };
+            assert_eq!(labels.cite_order, expected_order, "{style:?}");
+            for (index, key) in expected_order.iter().enumerate() {
+                assert_eq!(labels.citation_number[*key], index as u32 + 1);
+                assert!(!labels.is_manual_citation(key));
+            }
+            assert_eq!(labels.citation_number["manual-first"], 3, "{style:?}");
+            assert_eq!(labels.citation_number["manual-second"], 4, "{style:?}");
+            assert_eq!(labels.citation_number["shared"], 5, "{style:?}");
+            assert_eq!(labels.citation_display["manual-first"], "1", "{style:?}");
+            assert_eq!(labels.citation_display["manual-second"], "2", "{style:?}");
+            assert_eq!(labels.citation_display["shared"], "Manual", "{style:?}");
+        }
+    }
+
+    #[test]
+    fn inline_bibliography_duplicate_keys_keep_first_target_and_each_item_label() {
+        let mut parsed = nodes(
+            r"\cite{duplicate,after}
+\begin{thebibliography}{99}
+\bibitem[First]{duplicate} First definition.
+\bibitem[Second]{duplicate} Later definition.
+\bibitem{after} Automatic numbering still starts at one.
+\end{thebibliography}",
+        );
+        let labels = assign(&mut parsed);
+        assert_eq!(labels.citation_display["duplicate"], "First");
+        assert_eq!(labels.citation_number["duplicate"], 1);
+        assert_eq!(labels.citation_number["after"], 2);
+        assert_eq!(labels.citation_display["after"], "1");
+        let items = bibliography_items(&parsed);
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            labels.bibliography_item_label(&items[0].span),
+            Some("First")
+        );
+        assert_eq!(
+            labels.bibliography_item_label(&items[1].span),
+            Some("Second")
+        );
+        assert!(labels.bibliography_item_is_target("duplicate", &items[0].span));
+        assert!(!labels.bibliography_item_is_target("duplicate", &items[1].span));
+        assert!(labels.bibliography_item_is_target("after", &items[2].span));
+    }
+
+    #[test]
+    fn manual_only_bibliography_unknown_or_renamed_keys_have_no_target() {
+        let source = r"\cite{original,unknown}
+\begin{thebibliography}{9}
+\bibitem{original} A source.
+\end{thebibliography}";
+        let original = assign(&mut nodes(source));
+        assert_eq!(original.citation_display["original"], "1");
+        assert!(!original.citation_display.contains_key("unknown"));
+        assert!(!original.citation_number.contains_key("unknown"));
+        for edited in [
+            source.replace(r"\bibitem{original}", r"\bibitem{renamed}"),
+            r"\cite{original,unknown}\begin{thebibliography}{9}\end{thebibliography}".to_string(),
+            r"\cite{original,unknown}\begin{thebibliography}{9}".to_string(),
+        ] {
+            for style in [
+                BibStyle::Numeric,
+                BibStyle::NumericSorted,
+                BibStyle::Alphabetic,
+                BibStyle::AuthorYear,
+            ] {
+                let labels = assign_numbers(
+                    &mut nodes(&edited),
+                    &HashMap::new(),
+                    style,
+                    &TheoremRegistry::with_builtin_defaults(),
+                    None,
+                );
+                assert!(labels.cite_order.is_empty(), "{style:?}: {edited}");
+                for missing in ["original", "unknown"] {
+                    assert!(
+                        !labels.citation_display.contains_key(missing),
+                        "{style:?}: {missing}: {edited}"
+                    );
+                    assert!(
+                        !labels.citation_number.contains_key(missing),
+                        "{style:?}: {missing}: {edited}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn external_bibliography_preserves_missing_entry_placeholders() {
+        for source in [
+            r"\cite{missing}\bibliography{refs}",
+            r"\cite{missing}\begin{thebibliography}{9}\end{thebibliography}\bibliography{refs}",
+            r"\cite{missing}",
+        ] {
+            let labels = assign(&mut nodes(source));
+            assert_eq!(labels.cite_order, ["missing"]);
+            assert_eq!(labels.citation_number["missing"], 1);
+            assert_eq!(labels.citation_display["missing"], "1");
+        }
     }
 
     #[test]
