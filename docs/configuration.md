@@ -18,6 +18,7 @@ overrides, applied per field with last-wins semantics:
 font-size = 18                  # body text size in CSS pixels
 hover-preview-scale = 100       # 100..300% of body size for ref/cite previews
 theorem-numbering = "auto"      # | "continuous" | "section" — see below
+equation-numbering = "section"  # | "continuous", independent of theorems
 fancy-theorems = true           # false = plain, PDF-like theorem formatting
 typeset-mode = "local"          # | "background" — see below
 # render-tikz = true             # trusted projects only; invokes local TeX
@@ -253,6 +254,30 @@ branches declare the same environment and MathPreview can see both but cannot
 evaluate which branch TeX selects. Put either setting in the project's
 `.mathpreview.toml`; saving through the config dialog applies it on the next
 live render.
+
+## Equation numbering
+
+Choose **Equation numbering** next to **Theorem numbering** in the config
+dialog's **Viewer** tab. The choices apply to numbered LaTeX displays and
+their references, independently of theorem numbering:
+
+- **Per section** (`"section"`, the default) keeps the viewer's existing
+  numbering, such as 1.1, 1.2, and 2.1.
+- **Continuous** (`"continuous"`) uses one sequence across the document,
+  including the appendix, such as 1, 2, and 3.
+
+The same setting is available in TOML:
+
+```toml
+[viewer]
+equation-numbering = "continuous"
+```
+
+Saving to an active config updates the preview and equation references
+immediately. Manual `\tag` values, `\notag`, starred environments, and
+`showonlyrefs` keep their existing behavior. Subequations retain their letter
+suffixes. This setting does not add numbering to Markdown math or modify the
+LaTeX source used to compile a PDF.
 
 ## Raw MathJax config
 

@@ -3077,6 +3077,13 @@
     if (theme) theme.value = cfg.defaultTheme || 'system';
     var thmNum = document.getElementById('config-theorem-numbering');
     if (thmNum) thmNum.value = cfg.theoremNumbering || 'auto';
+    var eqNum = document.getElementById('config-equation-numbering');
+    if (eqNum) {
+      eqNum.value = cfg.equationNumbering || 'section';
+      // Display the effective value without copying an inherited override to
+      // another scope or overwriting a raw TOML edit unless explicitly changed.
+      eqNum.dataset.dirty = 'false';
+    }
     var fancyTheorems = document.getElementById('config-fancy-theorems');
     if (fancyTheorems) {
       fancyTheorems.checked = cfg.fancyTheorems !== false;
@@ -3342,6 +3349,10 @@
       if (theme) values['viewer.default-theme'] = theme;
       var thmNum = document.getElementById('config-theorem-numbering').value;
       if (thmNum) values['viewer.theorem-numbering'] = thmNum;
+      var eqNum = document.getElementById('config-equation-numbering');
+      if (eqNum && eqNum.dataset.dirty === 'true') {
+        values['viewer.equation-numbering'] = eqNum.value;
+      }
       var fancyTheorems = document.getElementById('config-fancy-theorems');
       if (fancyTheorems && fancyTheorems.dataset.dirty === 'true') {
         values['viewer.fancy-theorems'] = fancyTheorems.checked;
@@ -3532,6 +3543,7 @@
     if (cfg.default_page_mode)   window.__mpConfig.defaultPageMode  = cfg.default_page_mode;
     if (cfg.default_theme)       window.__mpConfig.defaultTheme     = cfg.default_theme;
     if (cfg.theorem_numbering)   window.__mpConfig.theoremNumbering = cfg.theorem_numbering;
+    if (cfg.equation_numbering)  window.__mpConfig.equationNumbering = cfg.equation_numbering;
     if (cfg.keybindings && typeof cfg.keybindings === 'object') {
       window.__mpConfig.keybindings = cfg.keybindings;
     }
@@ -3628,6 +3640,7 @@
     row('default page mode', vc.default_page_mode);
     row('default theme', vc.default_theme);
     row('theorem numbering', vc.theorem_numbering);
+    row('equation numbering', vc.equation_numbering);
     row('fancy theorem boxes', vc.fancy_theorems ? 'on' : 'off');
     row('render TikZ', vc.render_tikz ? 'on' : 'off');
     var mc = snapshot.markdown_config || {};

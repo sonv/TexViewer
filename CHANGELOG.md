@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.50] - 2026-10-01
+
+### Added
+
+- **Equation numbering in the config panel.** Choose per-section or continuous
+  numbering next to the theorem setting, or set `[viewer] equation-numbering`
+  in TOML. Numbered LaTeX displays and references update together, independently
+  of theorem numbering. Per-section numbering remains the default.
+
 ## [2.1.49] - 2026-10-01
 
 ### Fixed

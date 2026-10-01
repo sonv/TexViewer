@@ -10,7 +10,8 @@
 //! * Theorem-like environments share one counter, reset at each `\section`,
 //!   printed as `{section}.{n}`. So in §2 you get `Theorem 2.1`, `Lemma 2.2`,
 //!   `Theorem 2.3`. With no section, you get `1, 2, 3, …`.
-//! * Numbered display math is section-scoped, printed as `{section}.{n}`.
+//! * Numbered display math is section-scoped by default, printed as
+//!   `{section}.{n}`. The viewer can instead select one continuous sequence.
 //!   Single-display environments (`equation`, `multline`) get one number.
 //!   Row environments (`align`, `gather`, `alignat`, `flalign`, `xalignat`,
 //!   `eqnarray`) get one number per top-level row unless that row has `\notag`
@@ -22,6 +23,7 @@ use std::path::PathBuf;
 
 use crate::ast::{Node, NodeKind, RefKind, Span};
 use crate::bibtex::{alphabetic_label, alphabetic_sort_key, authoryear_label, BibEntry, BibStyle};
+use crate::config::EquationNumbering;
 use crate::macros::ExtractedMacro;
 use crate::theorems::TheoremRegistry;
 
@@ -116,7 +118,30 @@ pub fn assign_numbers_with_macros(
     referenced: Option<HashSet<String>>,
     macros: &[ExtractedMacro],
 ) -> LabelTable {
+    assign_numbers_with_options(
+        nodes,
+        bib,
+        style,
+        thms,
+        referenced,
+        macros,
+        EquationNumbering::default(),
+    )
+}
+
+/// As [`assign_numbers_with_macros`], with an explicit equation-numbering
+/// scheme. The older entry points retain section-scoped numbering.
+pub fn assign_numbers_with_options(
+    nodes: &mut [Node],
+    bib: &HashMap<String, BibEntry>,
+    style: BibStyle,
+    thms: &TheoremRegistry,
+    referenced: Option<HashSet<String>>,
+    macros: &[ExtractedMacro],
+    equation_numbering: EquationNumbering,
+) -> LabelTable {
     let mut state = State::new(thms, macros);
+    state.equation_numbering = equation_numbering;
     state.labels.bib_style = style;
     state.referenced = referenced;
     walk(nodes, &mut state);
@@ -230,7 +255,8 @@ struct State<'r> {
     /// counter name → current value. Theorem-like environments may share a
     /// counter (`\newtheorem{lemma}[theorem]{Lemma}`) or have their own.
     thm_counters: HashMap<String, u32>,
-    eq_in_section: u32,
+    equation_counter: u32,
+    equation_numbering: EquationNumbering,
     subequations: Vec<SubequationState>,
     figure: u32,
     table: u32,
@@ -253,7 +279,8 @@ impl<'r> State<'r> {
             section_counters: [0; 7],
             appendix: false,
             thm_counters: HashMap::new(),
-            eq_in_section: 0,
+            equation_counter: 0,
+            equation_numbering: EquationNumbering::default(),
             subequations: Vec::new(),
             figure: 0,
             table: 0,
@@ -447,7 +474,9 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 // (never-reset) counters keep counting across \appendix, as in
                 // a real LaTeX build.
                 reset_theorem_counters(state, 0);
-                state.eq_in_section = 0;
+                if state.equation_numbering == EquationNumbering::Section {
+                    state.equation_counter = 0;
+                }
             }
             NodeKind::Section {
                 level,
@@ -477,7 +506,9 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                         *level,
                         state.appendix,
                     ));
-                    state.eq_in_section = 0;
+                    if state.equation_numbering == EquationNumbering::Section {
+                        state.equation_counter = 0;
+                    }
                 }
                 // Theorem counters reset per their own declared level (which may
                 // be section, chapter, subsection, …) rather than a fixed one.
@@ -533,8 +564,7 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 walk(&mut node.children, state);
             }
             NodeKind::Subequations { label, number } => {
-                state.eq_in_section += 1;
-                let n = format_with_section(state.section_prefix.as_deref(), state.eq_in_section);
+                let n = next_parent_equation_number(state);
                 *number = Some(n.clone());
                 if let Some(l) = label {
                     record_label(&mut state.labels, l.clone(), &n, "Equation");
@@ -1070,8 +1100,17 @@ fn next_equation_number(state: &mut State<'_>) -> String {
         );
     }
 
-    state.eq_in_section += 1;
-    format_with_section(state.section_prefix.as_deref(), state.eq_in_section)
+    next_parent_equation_number(state)
+}
+
+fn next_parent_equation_number(state: &mut State<'_>) -> String {
+    state.equation_counter += 1;
+    match state.equation_numbering {
+        EquationNumbering::Section => {
+            format_with_section(state.section_prefix.as_deref(), state.equation_counter)
+        }
+        EquationNumbering::Continuous => state.equation_counter.to_string(),
+    }
 }
 
 fn alphabetic_suffix(mut n: u32) -> String {
@@ -1528,6 +1567,157 @@ mod tests {
             &TheoremRegistry::with_builtin_defaults(),
             None,
         )
+    }
+
+    #[test]
+    fn equation_numbering_modes_preserve_theorem_counters_and_subequations() {
+        let source = r"\begin{equation}\label{eq:before}x\end{equation}
+\section{One}
+\begin{theorem}\label{thm:one}First.\end{theorem}
+\begin{equation}\label{eq:one}a\end{equation}
+\section*{Interlude}
+\begin{equation}\label{eq:star-section}b\end{equation}
+\section{Two}
+\begin{theorem}\label{thm:two}Second.\end{theorem}
+\begin{subequations}\label{eq:group}
+\begin{equation}\label{eq:child-a}c\end{equation}
+\begin{align}d &= e\label{eq:child-b}\\ f &= g\label{eq:child-c}\end{align}
+\end{subequations}
+\begin{equation}\label{eq:after-group}h\end{equation}
+\appendix
+\begin{equation}\label{eq:before-appendix-section}i\end{equation}
+\section{Details}
+\begin{theorem}\label{thm:appendix}Last.\end{theorem}
+\begin{equation}\label{eq:appendix}j\end{equation}";
+        let keys = [
+            "eq:before",
+            "eq:one",
+            "eq:star-section",
+            "eq:group",
+            "eq:child-a",
+            "eq:child-b",
+            "eq:child-c",
+            "eq:after-group",
+            "eq:before-appendix-section",
+            "eq:appendix",
+        ];
+        for (mode, expected) in [
+            (
+                EquationNumbering::Section,
+                [
+                    "1", "1.1", "1.2", "2.1", "2.1a", "2.1b", "2.1c", "2.2", "1", "A.1",
+                ],
+            ),
+            (
+                EquationNumbering::Continuous,
+                ["1", "2", "3", "4", "4a", "4b", "4c", "5", "6", "7"],
+            ),
+        ] {
+            let mut parsed = nodes(source);
+            let labels = assign_numbers_with_options(
+                &mut parsed,
+                &HashMap::new(),
+                BibStyle::Numeric,
+                &TheoremRegistry::with_builtin_defaults(),
+                None,
+                &[],
+                mode,
+            );
+            for (key, expected) in keys.iter().zip(expected) {
+                assert_eq!(labels.number[*key], expected, "{mode:?}: {key}");
+                assert_eq!(
+                    labels.resolve_ref(RefKind::Eqref, key),
+                    format!("({expected})")
+                );
+            }
+            for (key, expected) in [
+                ("thm:one", "1.1"),
+                ("thm:two", "2.1"),
+                ("thm:appendix", "A.1"),
+            ] {
+                assert_eq!(labels.number[key], expected, "{mode:?}: {key}");
+            }
+            if mode == EquationNumbering::Section {
+                assert_eq!(assign(&mut nodes(source)).number, labels.number);
+            }
+        }
+    }
+
+    #[test]
+    fn equation_numbering_modes_respect_manual_tags_and_showonlyrefs() {
+        let source = r"\section{One}
+\begin{equation}\label{eq:first}a\end{equation}
+\section{Two}
+\begin{align}
+b &= c\label{eq:row}\\
+d &= e\label{eq:hidden}\\
+f &= g\tag{custom}\label{eq:tag}\\
+h &= i\notag\label{eq:notag}\\
+j &= k\label{eq:last}
+\end{align}
+\begin{equation*}\label{eq:star}l\end{equation*}
+\begin{equation}\label{eq:single-tag}m\tag{manual}\end{equation}
+\begin{equation}\label{eq:nonumber}n\nonumber\end{equation}
+\begin{equation}\label{eq:after}o\end{equation}";
+        for (mode, expected) in [
+            (EquationNumbering::Section, ["1.1", "2.1", "2.2", "2.3"]),
+            (EquationNumbering::Continuous, ["1", "2", "3", "4"]),
+        ] {
+            let mut parsed = nodes(source);
+            let referenced = Some(
+                [
+                    "eq:first",
+                    "eq:row",
+                    "eq:notag",
+                    "eq:last",
+                    "eq:star",
+                    "eq:nonumber",
+                    "eq:after",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            );
+            let labels = assign_numbers_with_options(
+                &mut parsed,
+                &HashMap::new(),
+                BibStyle::Numeric,
+                &TheoremRegistry::with_builtin_defaults(),
+                referenced,
+                &[],
+                mode,
+            );
+            for (key, expected) in ["eq:first", "eq:row", "eq:last", "eq:after"]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(labels.number[key], expected, "{mode:?}: {key}");
+            }
+            assert_eq!(labels.number["eq:tag"], "custom");
+            assert_eq!(labels.number["eq:single-tag"], "manual");
+            for key in ["eq:hidden", "eq:notag", "eq:star", "eq:nonumber"] {
+                assert!(!labels.number.contains_key(key), "{mode:?}: {key}");
+            }
+            let rows = parsed
+                .iter()
+                .find_map(|node| match &node.kind {
+                    NodeKind::DisplayMath {
+                        env, row_numbers, ..
+                    } if env.as_deref() == Some("align") => Some(row_numbers),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                rows,
+                &vec![
+                    Some(expected[1].to_string()),
+                    None,
+                    None,
+                    None,
+                    Some(expected[2].to_string())
+                ]
+            );
+        }
     }
 
     #[test]

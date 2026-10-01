@@ -8,6 +8,7 @@ hover-preview-scale = 100 # Percent of document size; range 100..300.
 default-page-mode = "a4"
 default-theme = "system"
 theorem-numbering = "auto"
+equation-numbering = "section" # section | continuous, independent of theorems.
 fancy-theorems = true # false keeps declared theorems in a plain TeX-like style.
 typeset-mode = "local"
 # render-tikz = true # Trusted projects only; runs local TeX with shell escape disabled.

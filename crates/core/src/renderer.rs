@@ -4818,6 +4818,15 @@ mod tests {
         assert!(out
             .html
             .contains("window.__mpConfig.theoremNumbering = cfg.theorem_numbering"));
+        assert!(out.html.contains(r#"id="config-equation-numbering""#));
+        assert!(out.html.contains(r#"equationNumbering: "section""#));
+        assert!(out.html.contains("eqNum.dataset.dirty === 'true'"));
+        assert!(out
+            .html
+            .contains("values['viewer.equation-numbering'] = eqNum.value"));
+        assert!(out
+            .html
+            .contains("window.__mpConfig.equationNumbering = cfg.equation_numbering"));
         assert!(out.html.contains("renderTikz.dataset.dirty === 'true'"));
         assert!(out
             .html

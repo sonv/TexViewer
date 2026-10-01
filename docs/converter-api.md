@@ -505,6 +505,7 @@ The resolved `runtime.viewer` fields are:
 | `source_jump_trigger` | string | `cmd-click`, `ctrl-click`, `alt-click`, or `double-click`. |
 | `render_tikz` | boolean | Whether the viewer may request TikZ assets. |
 | `theorem_numbering` | string | `auto`, `continuous`, or `section`. |
+| `equation_numbering` | string | LaTeX equation numbering: `section` (default) or `continuous`. Older v1 artifacts without this field deserialize as `section`. |
 | `fancy_theorems` | boolean | Whether theorem presentation uses the decorated style. |
 | `typeset_mode` | string | `local` or `background`. |
 | `page_margin_mm` | number or `null` | Effective A4 page margin in millimetres. |

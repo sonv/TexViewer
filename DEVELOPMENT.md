@@ -109,6 +109,11 @@ npm run test:hover
 configuration and clean up their temporary files and daemon processes. They
 cover aliases, commented labels, row ownership, stale math, and hover dismissal.
 
+`npm run test:config` checks equation numbering through the real config panel,
+including live updates, saved settings, TOML edits, and scope inheritance.
+Both browser suites accept `MATHPREVIEW_TEST_BROWSER=webkit` to check WebKit
+instead of the default Chromium engine.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,

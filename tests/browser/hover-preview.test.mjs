@@ -316,7 +316,7 @@ test('the previous viewer shell is asked to reload onto the fixed client', { tim
   const { page, open } = await fixture(t);
   await open();
   const event = await page.evaluate(() => new Promise((resolveEvent, reject) => {
-    const socket = new WebSocket(`ws://${location.host}/ws?v=84`);
+    const socket = new WebSocket(`ws://${location.host}/ws?v=85`);
     const timer = setTimeout(() => { socket.close(); reject(new Error('No reload message')); }, 5000);
     socket.onmessage = ({ data }) => {
       clearTimeout(timer);

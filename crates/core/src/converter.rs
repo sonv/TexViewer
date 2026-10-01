@@ -541,6 +541,9 @@ pub struct ViewerRuntimeRequirements {
     pub source_jump_trigger: String,
     pub render_tikz: bool,
     pub theorem_numbering: String,
+    /// Absent in older version-one payloads, which used section numbering.
+    #[serde(default = "default_equation_numbering")]
+    pub equation_numbering: String,
     pub fancy_theorems: bool,
     pub typeset_mode: String,
     pub page_margin_mm: Option<f64>,
@@ -548,6 +551,10 @@ pub struct ViewerRuntimeRequirements {
     pub keybindings: BTreeMap<String, Vec<String>>,
     pub keybinding_aliases: BTreeMap<String, String>,
     pub key_sequence_timeout_ms: u32,
+}
+
+fn default_equation_numbering() -> String {
+    crate::EquationNumbering::default().as_str().to_string()
 }
 
 impl Default for ViewerRuntimeRequirements {
@@ -563,6 +570,7 @@ impl Default for ViewerRuntimeRequirements {
             source_jump_trigger: viewer.source_jump_trigger.as_str().to_string(),
             render_tikz: viewer.render_tikz,
             theorem_numbering: viewer.theorem_numbering.as_str().to_string(),
+            equation_numbering: viewer.equation_numbering.as_str().to_string(),
             fancy_theorems: viewer.fancy_theorems,
             typeset_mode: viewer.typeset_mode.as_str().to_string(),
             page_margin_mm,
@@ -967,13 +975,14 @@ fn convert_latex(
         }
         keys
     });
-    let labels = crate::numbering::assign_numbers_with_macros(
+    let labels = crate::numbering::assign_numbers_with_options(
         &mut body,
         &bib,
         bib_style,
         &theorems,
         referenced,
         &preamble.macros,
+        opts.viewer_config.equation_numbering,
     );
     let mut sync = crate::SyncIndex::new();
     let render_opts = {
@@ -1192,6 +1201,7 @@ fn runtime_requirements(
             source_jump_trigger: opts.viewer_config.source_jump_trigger.as_str().to_string(),
             render_tikz: opts.viewer_config.render_tikz,
             theorem_numbering: opts.viewer_config.theorem_numbering.as_str().to_string(),
+            equation_numbering: opts.viewer_config.equation_numbering.as_str().to_string(),
             fancy_theorems: opts.viewer_config.fancy_theorems,
             typeset_mode: opts.viewer_config.typeset_mode.as_str().to_string(),
             page_margin_mm: crate::effective_page_margin_mm(
@@ -1567,6 +1577,59 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(json["sync"]["math_rows"][0]["rows"][1]["start_line"], 4);
+    }
+
+    #[test]
+    fn equation_numbering_matches_static_rendering_and_runtime_requirements() {
+        let source = r"\documentclass{article}
+\newtheorem{theorem}{Theorem}[section]
+\begin{document}
+\section{One}
+\begin{theorem}\label{thm:first}First.\end{theorem}
+\begin{equation}\label{eq:first}x\end{equation}
+\section{Two}
+\begin{theorem}\label{thm:last}Last.\end{theorem}
+\begin{equation}\label{eq:last}y\end{equation}
+See \eqref{eq:last} and \ref{thm:last}.
+\end{document}";
+        for (mode, last_equation) in [
+            (crate::EquationNumbering::Section, "2.1"),
+            (crate::EquationNumbering::Continuous, "2"),
+        ] {
+            let mut opts = HtmlOptions::default();
+            opts.viewer_config.equation_numbering = mode;
+            let converted = LatexConverter
+                .convert(ConversionRequest::from_source("paper.tex", source), &opts)
+                .unwrap();
+            let legacy = crate::render_project_from_source(
+                Path::new("paper.tex"),
+                source.to_string(),
+                &opts,
+            )
+            .unwrap();
+            assert_neutral_matches_legacy(&converted, &legacy);
+            assert_eq!(converted.runtime.viewer.equation_numbering, mode.as_str());
+            assert!(converted
+                .body_html
+                .contains(&format!(">({last_equation})</a>")));
+            assert!(converted.body_html.contains(">2.1</a>"));
+
+            let value = serde_json::to_value(&converted).unwrap();
+            assert_eq!(
+                value["runtime"]["viewer"]["equation_numbering"],
+                mode.as_str()
+            );
+            let decoded: ConvertedDocument = serde_json::from_value(value).unwrap();
+            assert_eq!(decoded.runtime.viewer.equation_numbering, mode.as_str());
+        }
+    }
+
+    #[test]
+    fn old_viewer_runtime_payloads_default_to_section_equation_numbering() {
+        let mut value = serde_json::to_value(ViewerRuntimeRequirements::default()).unwrap();
+        value.as_object_mut().unwrap().remove("equation_numbering");
+        let decoded: ViewerRuntimeRequirements = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.equation_numbering, "section");
     }
 
     #[test]

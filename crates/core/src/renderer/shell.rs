@@ -139,11 +139,12 @@ pub(super) fn wrap_in_shell(
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let config_js = format!(
-        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, markdownColonFences: {markdown_colon_fences}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, hoverPreviewScale: {hover_preview_scale}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
+        r#"window.__mpConfig = {{ sourceJumpTrigger: "{trigger}", defaultPageMode: "{page}", defaultTheme: "{theme}", theoremNumbering: "{thm}", equationNumbering: "{eq}", fancyTheorems: {fancy}, typesetMode: "{tsm}", renderTikz: {tikz}, markdownColonFences: {markdown_colon_fences}, mathjaxConfig: {mjx}, mathjaxPackages: {mjx_packages}, pageMarginMm: {margin}, hoverPreviewScale: {hover_preview_scale}, keybindings: {keybindings}, keybindingAliases: {keybinding_aliases}, keySequenceTimeoutMs: {key_sequence_timeout_ms} }};"#,
         trigger = opts.viewer_config.source_jump_trigger.as_str(),
         page = opts.viewer_config.default_page_mode.as_str(),
         theme = opts.viewer_config.default_theme.as_str(),
         thm = opts.viewer_config.theorem_numbering.as_str(),
+        eq = opts.viewer_config.equation_numbering.as_str(),
         fancy = opts.viewer_config.fancy_theorems,
         tsm = opts.viewer_config.typeset_mode.as_str(),
         tikz = opts.viewer_config.render_tikz,
@@ -445,6 +446,12 @@ pub(super) fn wrap_in_shell(
             <option value="auto">Auto (from \newtheorem)</option>
             <option value="continuous">Continuous (1, 2, 3…)</option>
             <option value="section">Per section (1.1, 1.2…)</option>
+          </select>
+        </label>
+        <label title="Numbered LaTeX displays and their references. Per section preserves the viewer's default. This setting is independent of theorem numbering.">Equation numbering
+          <select id="config-equation-numbering">
+            <option value="section">Per section (1.1, 1.2…)</option>
+            <option value="continuous">Continuous (1, 2, 3…)</option>
           </select>
         </label>
         <label class="config-checkbox"

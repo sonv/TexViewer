@@ -269,6 +269,10 @@
   });
   // Macros dialog wiring: file picker + scope radio change.
   document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'config-equation-numbering') {
+      e.target.dataset.dirty = 'true';
+      return;
+    }
     if (e.target && e.target.id === 'macros-dialog-file') {
       onMacrosFilePicked(e);
       return;

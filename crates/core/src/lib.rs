@@ -28,8 +28,8 @@ use serde::{Deserialize, Serialize};
 pub use ast::{Node, NodeKind, Pos, Role, Span};
 pub use config::{
     discover_config_files, effective_page_margin_mm, load_and_merge as load_and_merge_config,
-    Config, MarkdownBlockAppearance, MarkdownBlockReveal, PageMode, ResolvedConfig,
-    ResolvedMarkdownBlock, ResolvedMarkdownBlockSyntax, ResolvedMarkdownConfig,
+    Config, EquationNumbering, MarkdownBlockAppearance, MarkdownBlockReveal, PageMode,
+    ResolvedConfig, ResolvedMarkdownBlock, ResolvedMarkdownBlockSyntax, ResolvedMarkdownConfig,
     ResolvedViewerConfig, SourceJumpTrigger, Theme,
 };
 pub use converter::{
@@ -181,13 +181,14 @@ fn finish_render(
         }
         keys
     });
-    let labels = numbering::assign_numbers_with_macros(
+    let labels = numbering::assign_numbers_with_options(
         &mut body,
         &bib,
         bib_style,
         &thms,
         referenced,
         &preamble.macros,
+        opts.viewer_config.equation_numbering,
     );
     let mut sync = SyncIndex::new();
     // Inject the resolved root path so the topbar can show "title — path".

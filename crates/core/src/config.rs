@@ -613,6 +613,10 @@ pub struct ViewerConfig {
     /// declarations the viewer recognized; it does not invent an undeclared
     /// theorem environment.
     pub theorem_numbering: Option<TheoremNumbering>,
+    /// Number display equations by section (`"section"`, the default) or in
+    /// one document-wide sequence (`"continuous"`). This is independent of
+    /// theorem numbering and does not change explicit tags or unnumbered math.
+    pub equation_numbering: Option<EquationNumbering>,
     /// Render recognized theorem-like environments with MathPreview's
     /// enhanced card treatment. When disabled, the renderer keeps their
     /// semantic heading and numbering but uses a plain, PDF-like layout.
@@ -698,6 +702,26 @@ impl TheoremNumbering {
             TheoremNumbering::Auto => "auto",
             TheoremNumbering::Continuous => "continuous",
             TheoremNumbering::Section => "section",
+        }
+    }
+}
+
+/// How automatically numbered display equations advance their counter.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EquationNumbering {
+    /// Per-section numbering (1.1, 1.2, 2.1), preserving the viewer default.
+    #[default]
+    Section,
+    /// One document-wide sequence (1, 2, 3), including across appendices.
+    Continuous,
+}
+
+impl EquationNumbering {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EquationNumbering::Section => "section",
+            EquationNumbering::Continuous => "continuous",
         }
     }
 }
@@ -803,6 +827,7 @@ pub struct ResolvedViewerConfig {
     pub render_tikz: bool,
     pub mathjax_config: String,
     pub theorem_numbering: TheoremNumbering,
+    pub equation_numbering: EquationNumbering,
     pub fancy_theorems: bool,
     pub typeset_mode: TypesetMode,
     /// Explicit A4 page margin (mm), or `None` to fall back to the document's
@@ -921,6 +946,7 @@ impl Default for ResolvedConfig {
                 render_tikz: false,
                 mathjax_config: String::new(),
                 theorem_numbering: TheoremNumbering::Auto,
+                equation_numbering: EquationNumbering::default(),
                 fancy_theorems: true,
                 typeset_mode: TypesetMode::Local,
                 page_margin_mm: None,
@@ -1036,6 +1062,10 @@ impl Config {
                     .viewer
                     .theorem_numbering
                     .unwrap_or(defaults.viewer.theorem_numbering),
+                equation_numbering: self
+                    .viewer
+                    .equation_numbering
+                    .unwrap_or(defaults.viewer.equation_numbering),
                 fancy_theorems: self
                     .viewer
                     .fancy_theorems
@@ -1512,6 +1542,9 @@ impl ViewerConfig {
         if other.theorem_numbering.is_some() {
             self.theorem_numbering = other.theorem_numbering;
         }
+        if other.equation_numbering.is_some() {
+            self.equation_numbering = other.equation_numbering;
+        }
         if other.fancy_theorems.is_some() {
             self.fancy_theorems = other.fancy_theorems;
         }
@@ -1611,6 +1644,49 @@ mod tests {
         assert_eq!(cfg.viewer.source_jump_trigger, SourceJumpTrigger::CmdClick);
         assert!(!cfg.viewer.render_tikz);
         assert!(cfg.viewer.fancy_theorems);
+        assert_eq!(cfg.viewer.equation_numbering, EquationNumbering::Section);
+    }
+
+    #[test]
+    fn equation_numbering_is_validated_and_cascades_independently() {
+        let mut lower = Config::parse(
+            "[viewer]\nequation-numbering = 'continuous'\ntheorem-numbering = 'section'\n",
+            Path::new("global.toml"),
+        )
+        .unwrap();
+        assert_eq!(
+            lower.clone().resolve().viewer.equation_numbering,
+            EquationNumbering::Continuous
+        );
+        lower
+            .merge(Config::parse("[viewer]\nfont-size = 20\n", Path::new("project.toml")).unwrap());
+        assert_eq!(
+            lower.clone().resolve().viewer.equation_numbering,
+            EquationNumbering::Continuous
+        );
+        lower.merge(
+            Config::parse(
+                "[viewer]\nequation-numbering = 'section'\n",
+                Path::new("explicit.toml"),
+            )
+            .unwrap(),
+        );
+        let resolved = lower.resolve();
+        assert_eq!(
+            resolved.viewer.equation_numbering,
+            EquationNumbering::Section
+        );
+        assert_eq!(resolved.viewer.theorem_numbering, TheoremNumbering::Section);
+        assert_eq!(resolved.viewer.font_size, 20);
+        for value in ["auto", "invalid", "true", "1"] {
+            let source = format!("[viewer]\nequation-numbering = '{value}'\n");
+            assert!(Config::parse(&source, Path::new("invalid.toml")).is_err());
+        }
+        assert!(Config::parse(
+            "[viewer]\nequation-numbering = true\n",
+            Path::new("bool.toml")
+        )
+        .is_err());
     }
 
     #[test]

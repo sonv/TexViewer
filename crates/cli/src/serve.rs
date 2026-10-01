@@ -53,7 +53,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "85";
+const WS_PROTOCOL_VERSION: &str = "86";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -672,6 +672,7 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
             "default_theme": viewer_config.default_theme.as_str(),
             "source_jump_trigger": viewer_config.source_jump_trigger.as_str(),
             "theorem_numbering": viewer_config.theorem_numbering.as_str(),
+            "equation_numbering": viewer_config.equation_numbering.as_str(),
             "fancy_theorems": viewer_config.fancy_theorems,
             "render_tikz": viewer_config.render_tikz,
             "mathjax_config": viewer_config.mathjax_config,
@@ -3813,9 +3814,8 @@ async fn convert_cached_builtin(
     let bib_style = bibtex::detect_project_bib_style(&project);
     t.preamble_ms = t1.elapsed().as_millis();
 
-    // Reload before theorem parsing/numbering as well as rendering. Otherwise
-    // a live `theorem-numbering` edit reaches the CSS/HTML shell but the daemon
-    // has already assigned every theorem number with stale defaults.
+    // Reload before numbering as well as rendering, so live theorem/equation
+    // numbering edits reach both the body and the viewer configuration.
     let mut render_opts = live_render_options(state).await;
     let live_viewer_config = render_opts.viewer_config.clone();
     render_opts.document_format = DocumentFormat::Latex;
@@ -3841,13 +3841,14 @@ async fn convert_cached_builtin(
         }
         keys
     });
-    let labels = numbering::assign_numbers_with_macros(
+    let labels = numbering::assign_numbers_with_options(
         &mut body,
         &bib,
         bib_style,
         &thms,
         referenced,
         &preamble.macros,
+        live_viewer_config.equation_numbering,
     );
     t.number_ms = t3.elapsed().as_millis();
 
@@ -4047,6 +4048,7 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
         "mathjax_packages": &out.viewer.preamble.packages_long,
         "typeset_mode": viewer_config.typeset_mode.as_str(),
         "theorem_numbering": viewer_config.theorem_numbering.as_str(),
+        "equation_numbering": viewer_config.equation_numbering.as_str(),
         "fancy_theorems": viewer_config.fancy_theorems,
         "render_tikz": viewer_config.render_tikz,
         "markdown_colon_fences": markdown_config.colon_fences,
@@ -6577,6 +6579,7 @@ Second paragraph here.
             let mut viewer_config = state.viewer_config.write().await;
             viewer_config.fancy_theorems = false;
             viewer_config.hover_preview_scale = 170;
+            viewer_config.equation_numbering = mathpreview_core::EquationNumbering::Continuous;
         }
         state.markdown_config.write().await.colon_fences = false;
         let debug_response = serve_debug(axum::extract::State(state.clone())).await;
@@ -6587,6 +6590,7 @@ Second paragraph here.
         assert_eq!(debug["viewer_config"]["fancy_theorems"], false);
         assert_eq!(debug["viewer_config"]["hover_preview_scale"], 170);
         assert_eq!(debug["viewer_config"]["theorem_numbering"], "auto");
+        assert_eq!(debug["viewer_config"]["equation_numbering"], "continuous");
         assert_eq!(debug["viewer_config"]["keybinding_aliases"]["J"], "5j");
         assert_eq!(
             debug["viewer_config"]["keybinding_aliases"]["Shift+Space"],
@@ -6603,6 +6607,7 @@ Second paragraph here.
         assert_eq!(payload["viewer_config"]["fancy_theorems"], false);
         assert_eq!(payload["viewer_config"]["hover_preview_scale"], 170);
         assert_eq!(payload["viewer_config"]["theorem_numbering"], "auto");
+        assert_eq!(payload["viewer_config"]["equation_numbering"], "continuous");
         assert_eq!(payload["viewer_config"]["keybinding_aliases"]["K"], "5k");
         assert_eq!(
             payload["viewer_config"]["keybinding_aliases"]["Shift+Space"],
@@ -7285,6 +7290,67 @@ Second paragraph here.
             payload["viewer_config"]["mathjax_packages"],
             serde_json::json!(initial_packages)
         );
+    }
+
+    #[tokio::test]
+    async fn cached_live_conversion_applies_equation_numbering_changes() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mathpreview-live-equation-numbering-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.tex");
+        let config = dir.join("config.toml");
+        let source = r"\documentclass{article}
+\newtheorem{theorem}{Theorem}[section]
+\begin{document}
+\section{One}
+\begin{theorem}First.\end{theorem}
+\begin{equation}\label{eq:first}x\end{equation}
+\section{Two}
+\begin{theorem}\label{thm:last}Last.\end{theorem}
+\begin{equation}\label{eq:last}y\end{equation}
+See \eqref{eq:last} and \ref{thm:last}.
+\end{document}";
+        std::fs::write(&root, source).unwrap();
+        std::fs::write(&config, "[viewer]\nequation-numbering = 'section'\n").unwrap();
+        let initial = mathpreview_core::render_document(&root, &HtmlOptions::default()).unwrap();
+        let mut state = app_state_for_output(initial);
+        state.config_paths = Arc::new(vec![config.clone()]);
+        let canonical_root = state.current.read().await.document.root_file.clone();
+        let mut rx = state.tx.subscribe();
+
+        for (mode, expected, cached) in [
+            ("section", "2.1", false),
+            ("continuous", "2", true),
+            ("section", "2.1", true),
+        ] {
+            std::fs::write(
+                &config,
+                format!("[viewer]\nequation-numbering = '{mode}'\n"),
+            )
+            .unwrap();
+            super::invalidate_cached_path(&state, &config).await;
+            let (rendered, timing) = render_cached(&state, &canonical_root).await.unwrap();
+            assert_eq!(timing.cache_hit, cached);
+            assert_eq!(rendered.document.runtime.viewer.equation_numbering, mode);
+            assert!(rendered
+                .document
+                .body_html
+                .contains(&format!(">({expected})</a>")));
+            assert!(rendered.document.body_html.contains(">2.1</a>"));
+            let seq = begin_render_attempt(&state);
+            broadcast_render(&state, rendered, seq).await;
+            let payload: serde_json::Value =
+                serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+            assert_eq!(payload["viewer_config"]["equation_numbering"], mode);
+        }
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
