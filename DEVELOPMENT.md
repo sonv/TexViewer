@@ -37,10 +37,10 @@ browser tab's cached client JS — from skewing silently:
    use `:MathPreviewStatus` to find the resolved `cmd`, `install_method`, and
    versions before touching code. Re-run the matching Cargo/GitHub installer,
    then `:MathPreviewRestart`.
-2. **Fix, then verify end-to-end** (see cookbook below). Client/plugin code
-   can't be exercised headlessly here — compensate with served-bundle greps,
-   protocol-level WS observation, and adversarial review for anything
-   nontrivial.
+2. **Fix, then verify end-to-end** (see cookbook below). Run the browser
+   regression suite for hover behavior. For other client/plugin paths, add
+   focused interaction checks, served-bundle checks, protocol-level WS
+   observation, and adversarial review as appropriate.
 3. **Quality gates** — all of them, every time:
    - `cargo test --workspace`
    - `cargo clippy --workspace` (zero warnings)
@@ -83,6 +83,18 @@ Only on explicit request — releases are outward-facing. The flow:
    required release binary is still unavailable.
 
 ## Verification cookbook
+
+### Embedded JavaScript
+
+The viewer sources live in `crates/core/src/assets/client/` and the MathJax
+adapter in `crates/core/src/engines/assets/mathjax.js`. Rust embeds them in the
+binary, so changes require rebuilding the CLI.
+
+Run `npm ci` once, then `npm run lint`. The lint script assembles the shared
+client scope in its compile-time order so ESLint can check names across files.
+Node/npm is needed for this development tooling, not to run the live viewer.
+
+### Browser regression tests
 
 The hover regression suite runs the complete viewer against a temporary local
 daemon and bundled MathJax, including delayed rendering and live editor patches:
