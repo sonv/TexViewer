@@ -119,6 +119,10 @@ existing `.bib` styles, including citation hovers, margin pins, included-file
 source jumps, encoded URLs, and live bibliography edits. It accepts the same
 browser selection variable.
 
+`npm run test:paragraph` checks run-in LaTeX paragraph headings, numbering,
+source jumps, and live edits in both browser engines. It also checks that
+Markdown headings keep their block layout.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,

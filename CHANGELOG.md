@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.55] - 2026-10-01
+
+### Fixed
+
+- `\paragraph{...}` and `\subparagraph{...}` now render as bold run-in
+  headings followed by prose on the same line, including inside proofs and
+  lists. Source navigation and live updates remain available.
+- Paragraph headings are unnumbered by default. Set `\setcounter{secnumdepth}{4}`
+  to number paragraphs or use `5` to include subparagraphs. Starred headings
+  stay unnumbered. Markdown headings are unchanged.
+- Existing viewer tabs reload onto the updated heading styles after a daemon
+  upgrade (protocol 91).
+
 ## [2.1.54] - 2026-10-01
 
 ### Fixed

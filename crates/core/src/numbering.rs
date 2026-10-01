@@ -117,6 +117,123 @@ impl LabelTable {
     }
 }
 
+/// Numbering settings shared by batch conversion and live preview.
+#[derive(Debug, Clone, Copy)]
+pub struct NumberingOptions {
+    pub equation_numbering: EquationNumbering,
+    /// LaTeX's `secnumdepth`: section=1, subsection=2, paragraph=4.
+    pub section_numbering_depth: i32,
+}
+
+impl Default for NumberingOptions {
+    fn default() -> Self {
+        Self {
+            equation_numbering: EquationNumbering::default(),
+            section_numbering_depth: 3,
+        }
+    }
+}
+
+impl From<EquationNumbering> for NumberingOptions {
+    fn from(equation_numbering: EquationNumbering) -> Self {
+        Self {
+            equation_numbering,
+            ..Self::default()
+        }
+    }
+}
+
+impl NumberingOptions {
+    /// Read explicit `secnumdepth` changes without executing TeX macros.
+    /// Comments, stored definitions, and literal examples are not settings.
+    pub fn from_preamble(equation_numbering: EquationNumbering, source: &str) -> Self {
+        let mut options = Self::from(equation_numbering);
+        for (add, value) in section_numbering_depth_changes(source) {
+            options.section_numbering_depth = if add {
+                options.section_numbering_depth.saturating_add(value)
+            } else {
+                value
+            };
+        }
+        options
+    }
+}
+
+pub(crate) fn is_section_numbering_depth_command(name: &str, raw: &str) -> bool {
+    matches!(name, "setcounter" | "addtocounter")
+        && !section_numbering_depth_changes(raw).is_empty()
+}
+
+fn section_numbering_depth_changes(source: &str) -> Vec<(bool, i32)> {
+    let source = crate::parser::executable_latex_source(source);
+    let bytes = source.as_bytes();
+    let mut changes = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let word_start = i + 1;
+        let mut word_end = word_start;
+        while word_end < bytes.len()
+            && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+        {
+            word_end += 1;
+        }
+        if word_end == word_start {
+            i = word_start
+                + source[word_start..]
+                    .chars()
+                    .next()
+                    .map_or(0, char::len_utf8);
+            continue;
+        }
+        let name = &source[word_start..word_end];
+        if name == "begin" {
+            if let Some(span) = crate::parser::inert_environment_span_at(&source, i) {
+                i = span.end;
+                continue;
+            }
+        }
+        if crate::parser::is_inline_literal_command(name) {
+            i = crate::parser::inline_literal_payload(&source, name, word_end)
+                .map(|(_, end)| end)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        if name == "string" {
+            i = tex_token_end_for_citations(&source, skip_tex_argument_space(&source, word_end));
+            continue;
+        }
+        if matches!(name, "detokenize" | "unexpanded") {
+            let start = skip_tex_argument_space(&source, word_end);
+            i = crate::parser::tex_group_end(&source, start, b'{', b'}').unwrap_or(bytes.len());
+            continue;
+        }
+        i = word_end;
+        if !matches!(name, "setcounter" | "addtocounter") {
+            continue;
+        }
+        let counter_start = skip_tex_argument_space(&source, word_end);
+        let Some(counter_end) = crate::parser::tex_group_end(&source, counter_start, b'{', b'}')
+        else {
+            continue;
+        };
+        let value_start = skip_tex_argument_space(&source, counter_end);
+        let Some(value_end) = crate::parser::tex_group_end(&source, value_start, b'{', b'}') else {
+            continue;
+        };
+        i = value_end;
+        if source[counter_start + 1..counter_end - 1].trim() == "secnumdepth" {
+            if let Ok(value) = source[value_start + 1..value_end - 1].trim().parse::<i32>() {
+                changes.push((name == "addtocounter", value));
+            }
+        }
+    }
+    changes
+}
+
 /// Walk `nodes` in order, mutating each Section / Theorem / numbered
 /// DisplayMath node's `number` field, and return the populated `LabelTable`.
 /// Citation order and display tokens depend on `style`; missing-from-bib
@@ -157,7 +274,7 @@ pub fn assign_numbers_with_macros(
 }
 
 /// As [`assign_numbers_with_macros`], with an explicit equation-numbering
-/// scheme. The older entry points retain section-scoped numbering.
+/// scheme. Retain this signature for callers using `Default::default()`.
 pub fn assign_numbers_with_options(
     nodes: &mut [Node],
     bib: &HashMap<String, BibEntry>,
@@ -167,8 +284,31 @@ pub fn assign_numbers_with_options(
     macros: &[ExtractedMacro],
     equation_numbering: EquationNumbering,
 ) -> LabelTable {
+    assign_numbers_with_settings(
+        nodes,
+        bib,
+        style,
+        thms,
+        referenced,
+        macros,
+        equation_numbering.into(),
+    )
+}
+
+/// As [`assign_numbers_with_macros`], with explicit equation and section
+/// numbering settings, including the document's `secnumdepth`.
+pub fn assign_numbers_with_settings(
+    nodes: &mut [Node],
+    bib: &HashMap<String, BibEntry>,
+    style: BibStyle,
+    thms: &TheoremRegistry,
+    referenced: Option<HashSet<String>>,
+    macros: &[ExtractedMacro],
+    options: NumberingOptions,
+) -> LabelTable {
     let mut state = State::new(thms, macros);
-    state.equation_numbering = equation_numbering;
+    state.equation_numbering = options.equation_numbering;
+    state.section_numbering_depth = options.section_numbering_depth;
     state.labels.bib_style = style;
     state.referenced = referenced;
     walk(nodes, &mut state);
@@ -366,6 +506,7 @@ fn collect_bibliography_items(
 struct State<'r> {
     section_prefix: Option<String>,
     section_counters: [u32; 7],
+    section_numbering_depth: i32,
     appendix: bool,
     /// counter name → current value. Theorem-like environments may share a
     /// counter (`\newtheorem{lemma}[theorem]{Lemma}`) or have their own.
@@ -392,6 +533,7 @@ impl<'r> State<'r> {
         Self {
             section_prefix: None,
             section_counters: [0; 7],
+            section_numbering_depth: NumberingOptions::default().section_numbering_depth,
             appendix: false,
             thm_counters: HashMap::new(),
             equation_counter: 0,
@@ -600,10 +742,9 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 starred,
                 number,
             } => {
-                if *starred {
-                    // LaTeX's starred sectioning commands are structural
-                    // headings only: they neither consume a section number nor
-                    // reset theorem/equation counters scoped to that level.
+                if *starred || i32::from(*level) - 1 > state.section_numbering_depth {
+                    // Starred headings and levels beyond `secnumdepth` neither
+                    // consume a section number nor reset scoped counters.
                     *number = None;
                     state.pending_labels.clear();
                     continue;
@@ -837,6 +978,15 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 }
             }
             NodeKind::OpaqueCmd { name, .. } if name == "inline-literal" => {}
+            NodeKind::OpaqueCmd { name, raw } if is_section_numbering_depth_command(name, raw) => {
+                for (add, value) in section_numbering_depth_changes(raw) {
+                    state.section_numbering_depth = if add {
+                        state.section_numbering_depth.saturating_add(value)
+                    } else {
+                        value
+                    };
+                }
+            }
             NodeKind::OpaqueCmd { raw, .. } => {
                 record_citations_from_latex(raw, state);
             }
@@ -2250,6 +2400,228 @@ j &= k\label{eq:last}
         assert_eq!(labels.number.get("thm:t2").unwrap(), "2.1");
         assert_eq!(labels.display.get("thm:t1").unwrap(), "Theorem 1.1");
         assert_eq!(labels.display.get("lem:l1").unwrap(), "Lemma 1.2");
+    }
+
+    #[test]
+    fn paragraph_headings_are_unnumbered_by_default() {
+        let mut ns = nodes(concat!(
+            "\\section{Main}\\label{sec:main}\n",
+            "\\paragraph{Plan of the paper.}\\label{par:plan}\n",
+            "\\subparagraph{Detail.}\\label{par:detail}\n",
+            "\\section{Next}\\label{sec:next}\n",
+        ));
+        let labels = assign(&mut ns);
+        assert_eq!(labels.number.get("sec:main").map(String::as_str), Some("1"));
+        assert_eq!(labels.number.get("sec:next").map(String::as_str), Some("2"));
+        assert!(!labels.number.contains_key("par:plan"));
+        assert!(!labels.number.contains_key("par:detail"));
+        assert!(ns
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::Section {
+                    level: 5 | 6,
+                    number,
+                    ..
+                } => Some(number),
+                _ => None,
+            })
+            .all(Option::is_none));
+    }
+
+    #[test]
+    fn preamble_secnumdepth_accepts_only_live_integer_assignments() {
+        let source = concat!(
+            "\\setcounter % continued\n {secnumdepth}{4}\n",
+            "\\addtocounter{secnumdepth}{1}\n",
+            "% \\setcounter{secnumdepth}{0}\n",
+            "\\newcommand{\\later}{\\setcounter{secnumdepth}{0}}\n",
+            "\\newenvironment{laterenv}{\\setcounter{secnumdepth}{0}}{}\n",
+            "\\def\\laterdef{\\setcounter{secnumdepth}{0}}\n",
+            "\\verb|\\setcounter{secnumdepth}{0}|\n",
+            "\\detokenize{\\setcounter{secnumdepth}{0}}\n",
+            "\\string\\setcounter{secnumdepth}{0}\n",
+            "\\begin{verbatim}\n\\setcounter{secnumdepth}{0}\n\\end{verbatim}\n",
+            "\\iffalse\\setcounter{secnumdepth}{0}\\fi\n",
+            "\\setcounter{notsecnumdepth}{0}\n",
+            "\\setcounter{secnumdepth}{\\value{other}}\n",
+            "\\setcounter{secnumdepth}{99999999999999999999}\n",
+            "\\\\setcounter{secnumdepth}{0}\n",
+        );
+        let options = NumberingOptions::from_preamble(EquationNumbering::default(), source);
+        assert_eq!(options.section_numbering_depth, 5);
+        assert!(is_section_numbering_depth_command(
+            "setcounter",
+            r"\setcounter{secnumdepth}{4}"
+        ));
+        assert!(!is_section_numbering_depth_command(
+            "setcounter",
+            r"\setcounter{equation}{4}"
+        ));
+    }
+
+    #[test]
+    fn preamble_secnumdepth_enables_paragraph_and_subparagraph_numbering() {
+        for (depth, detail_number) in [(4, None), (5, Some("1.0.0.1.1"))] {
+            let mut ns = nodes(concat!(
+                "\\section{Main}\\label{sec:main}\n",
+                "\\paragraph{Plan.}\\label{par:plan}\n",
+                "\\subparagraph{Detail.}\\label{par:detail}\n",
+            ));
+            let labels = assign_numbers_with_settings(
+                &mut ns,
+                &HashMap::new(),
+                BibStyle::Numeric,
+                &TheoremRegistry::with_builtin_defaults(),
+                None,
+                &[],
+                NumberingOptions::from_preamble(
+                    EquationNumbering::default(),
+                    &format!(r"\setcounter{{secnumdepth}}{{{depth}}}"),
+                ),
+            );
+            assert_eq!(
+                labels.number.get("par:plan").map(String::as_str),
+                Some("1.0.0.1")
+            );
+            assert_eq!(
+                labels.number.get("par:detail").map(String::as_str),
+                detail_number
+            );
+        }
+    }
+
+    #[test]
+    fn negative_section_depth_preserves_part_and_chapter_hierarchy() {
+        for (depth, expected) in [
+            (-2, [None, None, None]),
+            (-1, [Some("1"), None, None]),
+            (0, [Some("1"), Some("1"), None]),
+        ] {
+            let mut ns = nodes(concat!(
+                "\\part{Part}\\label{part:first}\n",
+                "\\chapter{Chapter}\\label{chapter:first}\n",
+                "\\section{Section}\\label{section:first}\n",
+            ));
+            let labels = assign_numbers_with_settings(
+                &mut ns,
+                &HashMap::new(),
+                BibStyle::Numeric,
+                &TheoremRegistry::with_builtin_defaults(),
+                None,
+                &[],
+                NumberingOptions {
+                    section_numbering_depth: depth,
+                    ..NumberingOptions::default()
+                },
+            );
+            let actual = ["part:first", "chapter:first", "section:first"]
+                .map(|key| labels.number.get(key).map(String::as_str));
+            assert_eq!(actual, expected, "secnumdepth={depth}");
+        }
+    }
+
+    #[test]
+    fn legacy_numbering_options_accept_inferred_default() {
+        let mut ns = nodes(r"\section{Main}\label{main}");
+        let labels = assign_numbers_with_options(
+            &mut ns,
+            &HashMap::new(),
+            BibStyle::Numeric,
+            &TheoremRegistry::with_builtin_defaults(),
+            None,
+            &[],
+            Default::default(),
+        );
+        assert_eq!(labels.number.get("main").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn unsupported_counter_calls_retain_opaque_citation_discovery() {
+        for source in [
+            r"\setcounter{equation}{\cite{source}}",
+            r"\addtocounter{secnumdepth}{\cite{source}}",
+        ] {
+            let mut ns = nodes(source);
+            let labels = assign(&mut ns);
+            assert_eq!(labels.cite_order, ["source"]);
+        }
+    }
+
+    #[test]
+    fn body_secnumdepth_changes_keep_starred_and_suppressed_headings_out_of_counters() {
+        let mut ns = nodes(concat!(
+            "\\section{Main}\n",
+            "\\paragraph{Unnumbered}\\label{par:none}\n",
+            "\\setcounter % counter\n {secnumdepth} % value\n {4}\n",
+            "\\paragraph{First}\\label{par:one}\n",
+            "\\paragraph*{Starred}\\label{par:star}\n",
+            "\\addtocounter{secnumdepth} % decrement\n {-1}\n",
+            "\\paragraph{Unnumbered again}\\label{par:none2}\n",
+            "\\addtocounter{secnumdepth}{1}\n",
+            "\\paragraph{Second}\\label{par:two}\n",
+        ));
+        let labels = assign(&mut ns);
+        assert_eq!(
+            labels.number.get("par:one").map(String::as_str),
+            Some("1.0.0.1")
+        );
+        assert_eq!(
+            labels.number.get("par:two").map(String::as_str),
+            Some("1.0.0.2")
+        );
+        for key in ["par:none", "par:none2", "par:star"] {
+            assert!(!labels.number.contains_key(key));
+        }
+    }
+
+    #[test]
+    fn dormant_body_counter_calls_do_not_enable_paragraph_numbering() {
+        let mut ns = nodes(concat!(
+            "% \\setcounter{secnumdepth}{5}\n",
+            "\\newcommand{\\later}{\\setcounter{secnumdepth}{5}}\n",
+            "\\verb|\\setcounter{secnumdepth}{5}|\n",
+            "\\begin{verbatim}\n\\setcounter{secnumdepth}{5}\n\\end{verbatim}\n",
+            "\\iffalse\\setcounter{secnumdepth}{5}\\fi\n",
+            "\\paragraph{Plan.}\\label{par:plan}\n",
+        ));
+        let labels = assign(&mut ns);
+        assert!(!labels.number.contains_key("par:plan"));
+    }
+
+    #[test]
+    fn suppressed_section_does_not_reset_equation_or_theorem_counters() {
+        let mut ns = nodes(concat!(
+            "\\section{Main}\n",
+            "\\begin{equation}x\\label{eq:one}\\end{equation}\n",
+            "\\begin{theorem}\\label{thm:one}A\\end{theorem}\n",
+            "\\setcounter{secnumdepth}{0}\n",
+            "\\label{sec:pending}\n\\section{Unnumbered}\\label{sec:none}\n",
+            "\\begin{equation}y\\label{eq:two}\\end{equation}\n",
+            "\\begin{theorem}\\label{thm:two}B\\end{theorem}\n",
+            "\\setcounter{secnumdepth}{3}\n",
+            "\\section{Next}\\label{sec:next}\n",
+        ));
+        let labels = assign(&mut ns);
+        for key in ["eq:two", "thm:two"] {
+            assert_eq!(labels.number.get(key).map(String::as_str), Some("1.2"));
+        }
+        assert_eq!(labels.number.get("sec:next").map(String::as_str), Some("2"));
+        assert!(!labels.number.contains_key("sec:none"));
+        assert!(!labels.number.contains_key("sec:pending"));
+    }
+
+    #[test]
+    fn section_depth_integer_updates_saturate_without_overflow() {
+        let options = NumberingOptions::from_preamble(
+            EquationNumbering::default(),
+            r"\setcounter{secnumdepth}{2147483647}\addtocounter{secnumdepth}{1}",
+        );
+        assert_eq!(options.section_numbering_depth, i32::MAX);
+        let options = NumberingOptions::from_preamble(
+            EquationNumbering::default(),
+            r"\setcounter{secnumdepth}{-2147483648}\addtocounter{secnumdepth}{-1}",
+        );
+        assert_eq!(options.section_numbering_depth, i32::MIN);
     }
 
     #[test]

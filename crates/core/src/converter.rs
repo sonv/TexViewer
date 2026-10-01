@@ -975,14 +975,17 @@ fn convert_latex(
         }
         keys
     });
-    let labels = crate::numbering::assign_numbers_with_options(
+    let labels = crate::numbering::assign_numbers_with_settings(
         &mut body,
         &bib,
         bib_style,
         &theorems,
         referenced,
         &preamble.macros,
-        opts.viewer_config.equation_numbering,
+        crate::numbering::NumberingOptions::from_preamble(
+            opts.viewer_config.equation_numbering,
+            &preamble.raw_preamble,
+        ),
     );
     let mut sync = crate::SyncIndex::new();
     let render_opts = {

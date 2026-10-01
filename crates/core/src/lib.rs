@@ -181,14 +181,17 @@ fn finish_render(
         }
         keys
     });
-    let labels = numbering::assign_numbers_with_options(
+    let labels = numbering::assign_numbers_with_settings(
         &mut body,
         &bib,
         bib_style,
         &thms,
         referenced,
         &preamble.macros,
-        opts.viewer_config.equation_numbering,
+        numbering::NumberingOptions::from_preamble(
+            opts.viewer_config.equation_numbering,
+            &preamble.raw_preamble,
+        ),
     );
     let mut sync = SyncIndex::new();
     // Inject the resolved root path so the topbar can show "title — path".

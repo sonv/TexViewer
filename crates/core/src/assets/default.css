@@ -686,6 +686,25 @@ body.page-mode-dynamic main#page {
 .sec-h4,
 .sec-h5,
 .sec-h6 { font-size: 1em; }
+.run-in-heading {
+  display: inline;
+  line-height: inherit;
+  /* Together with the normal word space after the heading, roughly 1em. */
+  margin: 0 0.75em 0 0;
+  font-style: normal;
+}
+.run-in-heading.sec-h6 { margin-left: 1.45em; }
+.run-in-heading-break {
+  display: inline;
+}
+/* End the preceding line with a real <br> before adding vertical space.
+   An empty block span alone makes WebKit justify that short line to the
+   full width. The inline wrapper also keeps one root for sub-block patches. */
+.run-in-heading-break::after {
+  content: "";
+  display: block;
+  height: 1.45em;
+}
 .title-block + .blk .sec-h1,
 .title-block + .blk .sec-h2 { margin-top: 1.1em; }
 .thm {
@@ -1051,6 +1070,7 @@ body.page-mode-dynamic main#page {
 .para.para-indent { text-indent: 1.45em; }
 .para.para-noindent { text-indent: 0; }
 .para.para-flow { margin-top: 0.55em; }
+.para.para-run-in { margin-top: 1.45em; }
 .para-indent-marker {
   display: inline-block;
   width: 1.45em;

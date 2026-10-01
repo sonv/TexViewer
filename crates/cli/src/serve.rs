@@ -53,7 +53,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "90";
+const WS_PROTOCOL_VERSION: &str = "91";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -3841,14 +3841,17 @@ async fn convert_cached_builtin(
         }
         keys
     });
-    let labels = numbering::assign_numbers_with_options(
+    let labels = numbering::assign_numbers_with_settings(
         &mut body,
         &bib,
         bib_style,
         &thms,
         referenced,
         &preamble.macros,
-        live_viewer_config.equation_numbering,
+        numbering::NumberingOptions::from_preamble(
+            live_viewer_config.equation_numbering,
+            &preamble.raw_preamble,
+        ),
     );
     t.number_ms = t3.elapsed().as_millis();
 

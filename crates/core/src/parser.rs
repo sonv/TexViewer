@@ -2801,6 +2801,17 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                if self.parse_section_depth_command(
+                    &cmd,
+                    cmd_name_end,
+                    out,
+                    &mut text_buf,
+                    &mut text_start,
+                    flush_text,
+                ) {
+                    continue;
+                }
+
                 // Sectioning. `command_word_end` includes a trailing star, so
                 // normalize the command name while retaining whether this is
                 // an unnumbered LaTeX heading (`\section*`, etc.).
@@ -3932,6 +3943,50 @@ impl<'a> Parser<'a> {
                 self.advance(1);
             }
         }
+    }
+
+    // Keep this nonrecursive path outside `parse_block_into`: allocating its
+    // temporary command node in that large recursive frame can exhaust the
+    // default test-thread stack before the environment expansion guard runs.
+    fn parse_section_depth_command(
+        &mut self,
+        command: &str,
+        command_end: usize,
+        out: &mut Vec<Node>,
+        text_buf: &mut String,
+        text_start: &mut Option<Pos>,
+        flush_text: fn(&mut String, &mut Option<Pos>, &mut Vec<Node>, Pos, &Path),
+    ) -> bool {
+        if !matches!(command, "setcounter" | "addtocounter") {
+            return false;
+        }
+        // Preserve supported settings across comments and line breaks. Other
+        // counters and malformed values retain generic opaque parsing.
+        let counter_start = skip_tex_space_and_comments(self.src, command_end);
+        let Some(counter_end) = tex_group_end(self.src, counter_start, b'{', b'}') else {
+            return false;
+        };
+        let value_start = skip_tex_space_and_comments(self.src, counter_end);
+        let Some(end) = tex_group_end(self.src, value_start, b'{', b'}') else {
+            return false;
+        };
+        let raw = &self.src[self.byte..end];
+        if !crate::numbering::is_section_numbering_depth_command(command, raw) {
+            return false;
+        }
+        let start = self.pos();
+        flush_text(text_buf, text_start, out, start, &self.file);
+        let raw = raw.to_string();
+        self.advance_to(end);
+        out.push(Node {
+            kind: NodeKind::OpaqueCmd {
+                name: command.to_string(),
+                raw,
+            },
+            span: self.span_from(start),
+            children: vec![],
+        });
+        true
     }
 
     fn skip_optional_arg(&mut self) -> Option<String> {
@@ -7172,6 +7227,41 @@ After $y$.
                 assert!(!starred);
             }
             other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn section_depth_counter_commands_keep_commented_arguments_and_source_span() {
+        for command in ["setcounter", "addtocounter"] {
+            let raw = format!("\\{command} % counter\n{{secnumdepth}} % value\n{{4}}");
+            let source = format!("{raw}\n\\paragraph{{Plan.}} Body.");
+            let parsed = parse(&source);
+            let setter = &parsed[0];
+            assert!(matches!(
+                &setter.kind,
+                NodeKind::OpaqueCmd { name, raw: value } if name == command && value == &raw
+            ));
+            assert_eq!(setter.span.start.line, 1);
+            assert_eq!(setter.span.end.line, 3);
+            assert!(parsed.iter().any(|node| matches!(
+                &node.kind,
+                NodeKind::Section { level: 5, title, .. } if title == "Plan."
+            )));
+        }
+    }
+
+    #[test]
+    fn other_and_malformed_counter_commands_keep_generic_parsing() {
+        for source in [
+            r"\setcounter{equation}{4}",
+            r"\setcounter{secnumdepth}{not-an-integer}",
+            r"\addtocounter{secnumdepth}",
+        ] {
+            let parsed = parse(source);
+            assert!(matches!(
+                &parsed[0].kind,
+                NodeKind::OpaqueCmd { raw, .. } if raw == source
+            ));
         }
     }
 

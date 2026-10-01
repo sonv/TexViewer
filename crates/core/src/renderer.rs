@@ -358,9 +358,9 @@ pub fn render_body_only(
 
     // Top-level inline runs become paragraph blocks. Structural nodes
     // (sections, displays, theorem-likes, lists, etc.) stay as their own
-    // blocks. The wrapper uses `display: contents` in CSS so it doesn't affect
-    // visual layout — it exists purely so the diff/patch path can find and
-    // replace blocks by id.
+    // blocks, except run-in headings, which share their following paragraph.
+    // Each wrapper is also a layout/paint-containment boundary, so a run-in
+    // heading cannot flow into prose placed in a separate block.
     let mut blocks: Vec<RenderedBlock> = Vec::with_capacity(nodes.len());
     let mut paragraph = ParagraphState::default();
     let mut previous_block_was_display = false;
@@ -368,10 +368,26 @@ pub fn render_body_only(
     let ordered = front_matter_order(nodes);
     for (i, node) in ordered.iter().enumerate() {
         if is_blank_separator_node(node) {
+            if paragraph.run_in_heading && paragraph.trim_after_flow_marker {
+                continue;
+            }
             flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
             if previous_block_was_display {
                 blank_after_display = true;
             }
+            continue;
+        }
+
+        if is_run_in_heading(node) {
+            flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
+            paragraph.start = Some(i);
+            paragraph.span = Some(node.span.clone());
+            paragraph.no_indent = true;
+            paragraph.run_in_heading = true;
+            paragraph.trim_after_flow_marker = true;
+            write_node(&mut paragraph.html, node, &mut ctx);
+            previous_block_was_display = false;
+            blank_after_display = false;
             continue;
         }
 
@@ -451,6 +467,9 @@ pub fn render_body_only(
                             blank_after_display = false;
                         }
                         ParagraphTextPart::Break { .. } => {
+                            if paragraph.run_in_heading && paragraph.trim_after_flow_marker {
+                                continue;
+                            }
                             flush_paragraph(&mut blocks, &mut paragraph, &mut ctx);
                             if previous_block_was_display {
                                 blank_after_display = true;
@@ -468,7 +487,11 @@ pub fn render_body_only(
                 paragraph.flow_marker = false;
             }
             extend_paragraph_span(&mut paragraph.span, node.span.clone());
+            let html_len = paragraph.html.len();
             write_node(&mut paragraph.html, node, &mut ctx);
+            if paragraph.html.len() == html_len {
+                continue;
+            }
             paragraph.trim_after_flow_marker = false;
             previous_block_was_display = false;
             blank_after_display = false;
@@ -554,6 +577,7 @@ struct ParagraphState {
     force_indent: bool,
     no_indent: bool,
     flow_marker: bool,
+    run_in_heading: bool,
     trim_after_flow_marker: bool,
 }
 
@@ -571,6 +595,7 @@ fn flush_paragraph(
         paragraph.force_indent = false;
         paragraph.no_indent = false;
         paragraph.flow_marker = false;
+        paragraph.run_in_heading = false;
         paragraph.trim_after_flow_marker = false;
         return;
     }
@@ -584,6 +609,9 @@ fn flush_paragraph(
     if paragraph.flow_marker {
         classes.push("para-flow");
     }
+    if paragraph.run_in_heading {
+        classes.push("para-run-in");
+    }
     let class = classes.join(" ");
     let inner = format!(
         r#"<p class="{class}">{}</p>"#,
@@ -592,6 +620,7 @@ fn flush_paragraph(
     paragraph.force_indent = false;
     paragraph.no_indent = false;
     paragraph.flow_marker = false;
+    paragraph.run_in_heading = false;
     paragraph.trim_after_flow_marker = false;
     push_block(blocks, start, inner, span.as_ref(), ctx);
 }
@@ -741,6 +770,10 @@ fn is_top_level_inline_node(node: &Node) -> bool {
         | NodeKind::MarkdownSubscript => true,
         _ => false,
     }
+}
+
+fn is_run_in_heading(node: &Node) -> bool {
+    matches!(&node.kind, NodeKind::Section { level: 5 | 6, .. })
 }
 
 fn flow_command_name(node: &Node) -> Option<&str> {
@@ -1786,6 +1819,21 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .as_deref()
                 .map(|n| format!(r#"<span class="sec-num">{}</span> "#, escape_html(n)))
                 .unwrap_or_default();
+            if is_run_in_heading(n) {
+                // An h5/h6 inside a p is invalid HTML: browsers close the p
+                // before it. Keep heading semantics without splitting the run.
+                write!(
+                    out,
+                    r#"<span id="{id}" class="sec-h{level} run-in-heading" role="heading" aria-level="{level}" data-src="{src}"{refkey}>{num}{title}</span> "#,
+                    id = escape_attr(&id),
+                    src = escape_attr(&data_src(&n.span)),
+                    refkey = refkey_attr(label.as_deref()),
+                    num = num_html,
+                    title = render_latex_text_with_math(title, ctx.labels),
+                )
+                .unwrap();
+                return;
+            }
             writeln!(
                 out,
                 r#"<h{h} id="{id}" class="sec-h{level}" data-src="{src}"{refkey}>{num}{title}</h{h}>"#,
@@ -3077,6 +3125,9 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             out.push_str("</div></div>\n");
         }
         NodeKind::OpaqueCmd { name, raw } => {
+            if crate::numbering::is_section_numbering_depth_command(name, raw) {
+                return;
+            }
             match name.as_str() {
                 "today" => out.push_str("(today)"),
                 "LaTeX" => out.push_str("LaTeX"),
@@ -3287,8 +3338,21 @@ fn write_children_with_initial_trim(
     let mut previous_was_display = false;
     let mut pending_paragraph_indent = false;
     let mut seen_content = false;
+    let mut awaiting_run_in_text = false;
     for child in children {
         if matches!(&child.kind, NodeKind::Comment(_)) {
+            continue;
+        }
+        if is_run_in_heading(child) {
+            out.push_str(
+                r#"<span class="run-in-heading-break" aria-hidden="true"><br></span>"#,
+            );
+            write_node(out, child, ctx);
+            previous_was_display = false;
+            trim_next_text = true;
+            pending_paragraph_indent = false;
+            seen_content = true;
+            awaiting_run_in_text = true;
             continue;
         }
         if let Some(name) = flow_command_name(child) {
@@ -3306,6 +3370,7 @@ fn write_children_with_initial_trim(
                 trim_next_text = true;
                 pending_paragraph_indent = false;
                 seen_content = true;
+                awaiting_run_in_text = false;
                 continue;
             }
         }
@@ -3351,8 +3416,12 @@ fn write_children_with_initial_trim(
                         previous_was_display = false;
                         pending_paragraph_indent = false;
                         seen_content = true;
+                        awaiting_run_in_text = false;
                     }
                     ParagraphTextPart::Break { start, end } => {
+                        if awaiting_run_in_text {
+                            continue;
+                        }
                         let break_span = paragraph_break_span(&child.span, s, start, end);
                         if seen_content || previous_was_display {
                             out.push_str(r#"<span class="para-break" aria-hidden="true"></span>"#);
@@ -3368,14 +3437,21 @@ fn write_children_with_initial_trim(
             continue;
         }
 
+        let html_len = out.len();
         if pending_paragraph_indent && is_inline_like_node(child) {
             out.push_str(r#"<span class="para-indent-marker" aria-hidden="true"></span>"#);
         }
+        let content_start = out.len();
         write_node(out, child, ctx);
+        if out.len() == content_start {
+            out.truncate(html_len);
+            continue;
+        }
         previous_was_display = matches!(&child.kind, NodeKind::DisplayMath { .. });
         trim_next_text = previous_was_display;
         pending_paragraph_indent = false;
         seen_content = true;
+        awaiting_run_in_text = false;
     }
 }
 
@@ -3468,9 +3544,28 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
     let mut previous_was_display = false;
     let mut pending_paragraph_indent = false;
     let mut seen_content = false;
+    let mut awaiting_run_in_text = false;
 
     for child in children {
         if matches!(&child.kind, NodeKind::Comment(_)) {
+            continue;
+        }
+        if is_run_in_heading(child) {
+            if let Some(seg) = build_chunk(&mut chunk_buf) {
+                record_seg(out, &mut chunks, capture, seg);
+            }
+            record_seg(
+                out,
+                &mut chunks,
+                capture,
+                r#"<span class="run-in-heading-break" aria-hidden="true"><br></span>"#.to_string(),
+            );
+            write_node(&mut chunk_buf, child, ctx);
+            previous_was_display = false;
+            trim_next_text = true;
+            pending_paragraph_indent = false;
+            seen_content = true;
+            awaiting_run_in_text = true;
             continue;
         }
         if let Some(name) = flow_command_name(child) {
@@ -3488,6 +3583,7 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
                 trim_next_text = true;
                 pending_paragraph_indent = false;
                 seen_content = true;
+                awaiting_run_in_text = false;
                 continue;
             }
         }
@@ -3533,8 +3629,12 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
                         previous_was_display = false;
                         pending_paragraph_indent = false;
                         seen_content = true;
+                        awaiting_run_in_text = false;
                     }
                     ParagraphTextPart::Break { start, end } => {
+                        if awaiting_run_in_text {
+                            continue;
+                        }
                         if let Some(seg) = build_chunk(&mut chunk_buf) {
                             record_seg(out, &mut chunks, capture, seg);
                         }
@@ -3577,17 +3677,25 @@ fn write_chunked_children(out: &mut String, children: &[Node], ctx: &mut RenderC
             trim_next_text = previous_was_display;
             pending_paragraph_indent = false;
             seen_content = true;
+            awaiting_run_in_text = false;
             continue;
         }
 
+        let html_len = chunk_buf.len();
         if pending_paragraph_indent && is_inline_like_node(child) {
             chunk_buf.push_str(r#"<span class="para-indent-marker" aria-hidden="true"></span>"#);
         }
+        let content_start = chunk_buf.len();
         write_node(&mut chunk_buf, child, ctx);
+        if chunk_buf.len() == content_start {
+            chunk_buf.truncate(html_len);
+            continue;
+        }
         previous_was_display = false;
         trim_next_text = false;
         pending_paragraph_indent = false;
         seen_content = true;
+        awaiting_run_in_text = false;
     }
     if let Some(seg) = build_chunk(&mut chunk_buf) {
         record_seg(out, &mut chunks, capture, seg);
@@ -7466,6 +7574,130 @@ end = '{% endcall %}'
             "math span should carry the $L^p$ payload; got: {}",
             out.body_html,
         );
+    }
+
+    #[test]
+    fn paragraph_heading_runs_into_prose_and_preserves_source_sync() {
+        let source = "Before.\n\\paragraph{Plan of the paper.}\\label{par:plan}\nWe prove $x=y$.\n\nNext paragraph.";
+        let out = crate::render_project_from_source(
+            Path::new("t.tex"),
+            source.to_string(),
+            &HtmlOptions::default(),
+        )
+        .unwrap();
+        let paragraph = out
+            .body_html
+            .split("<p class=\"para para-noindent para-run-in\">")
+            .nth(1)
+            .unwrap()
+            .split("</p>")
+            .next()
+            .unwrap();
+        assert!(
+            paragraph.contains("Plan of the paper.</span> "),
+            "{paragraph}"
+        );
+        assert!(paragraph.contains(">We</span>"), "{paragraph}");
+        assert!(paragraph.contains(r#"data-tex="\(x=y\)""#));
+        assert!(!paragraph.contains("sec-num"));
+        assert!(!paragraph.contains("<h5"));
+        assert!(!paragraph.contains(">Next</span>"));
+        let heading = out
+            .sync
+            .entries
+            .iter()
+            .find(|entry| entry.start.line == 2 && entry.kind == crate::sync::SyncKind::Block)
+            .expect("heading retains source navigation");
+        assert!(paragraph.contains(&format!(r#"id="{}""#, heading.element_id)));
+        assert!(paragraph.contains(r#"data-refkey="par:plan""#));
+        let body_word = out
+            .sync
+            .lookup_leaf_by_source_position(Path::new("t.tex"), 3, 1)
+            .expect("body word keeps its precise source span");
+        assert_ne!(heading.element_id, body_word.element_id);
+        assert!(paragraph.contains(&format!(r#"id="{}""#, body_word.element_id)));
+    }
+
+    #[test]
+    fn consecutive_and_starred_run_in_headings_start_separate_paragraphs() {
+        let body = render_body(
+            r"\paragraph{First.} One.
+\paragraph*{Second $x$.} Two.
+\subparagraph{Third.} Three.
+\section{Section} Four.",
+        );
+        assert_eq!(body.matches("para-run-in").count(), 3, "{body}");
+        assert_eq!(body.matches(r#"class="sec-h5 run-in-heading""#).count(), 2);
+        assert!(body.contains(r#"class="sec-h6 run-in-heading" role="heading" aria-level="6""#));
+        assert!(body.contains(r#"data-tex="\(x\)""#));
+        assert!(body.contains(r#"class="sec-h2""#));
+        assert_eq!(body.matches("sec-num").count(), 1);
+        assert!(!body.contains("<h5") && !body.contains("<h6"));
+    }
+
+    #[test]
+    fn run_in_headings_work_in_both_nested_child_walkers() {
+        let body = render_body(
+            r"\newtheorem{theorem}{Theorem}
+\begin{document}
+\begin{theorem}Before. \paragraph{Claim.} Theorem text.\end{theorem}
+\begin{proof}Before. \paragraph*{Plan.} Proof text.\end{proof}
+\begin{itemize}\item Before. \subparagraph{Case.} List text.\end{itemize}
+\end{document}",
+        );
+        assert_eq!(body.matches("run-in-heading-break").count(), 3, "{body}");
+        for (title, word) in [("Claim.", "Theorem"), ("Plan.", "Proof")] {
+            let chunk = body
+                .split(r#"<span class="proof-para""#)
+                .find(|part| part.contains(&format!("{title}</span>")))
+                .expect("heading in a paragraph chunk");
+            assert!(chunk.contains(&format!(">{word}</span>")), "{chunk}");
+        }
+        assert!(!body.contains("<h5") && !body.contains("<h6"));
+    }
+
+    #[test]
+    fn markdown_deep_headings_remain_block_headings() {
+        let out = render_markdown(
+            "##### Heading five\n\nText.\n\n###### Heading six\n\nMore.",
+            &HtmlOptions::default(),
+        );
+        assert!(out.body_html.contains("<h5"), "{}", out.body_html);
+        assert!(out.body_html.contains("<h6"));
+        assert!(!out.body_html.contains("run-in-heading"));
+    }
+
+    #[test]
+    fn run_in_heading_ignores_blank_lines_before_its_first_body_text() {
+        for (before, after) in [
+            ("", ""),
+            (r"\begin{proof}", r"\end{proof}"),
+            (r"\begin{itemize}\item ", r"\end{itemize}"),
+        ] {
+            let body = render_body(&format!(
+                "{before}\\paragraph{{Plan.}}\\label{{plan}}\n\n% comment\n\\setcounter{{secnumdepth}}{{4}}\n\nBody text.\n\nNext paragraph.{after}"
+            ));
+            let heading_end = body.find("Plan.</span>").unwrap();
+            let prose_start = body.find(">Body</span>").unwrap();
+            let gap = &body[heading_end..prose_start];
+            assert!(!gap.contains("</p>"), "{body}");
+            assert!(!gap.contains("para-break"), "{body}");
+            assert!(!gap.contains("proof-para"), "{body}");
+            assert!(text_content(&body).contains("Plan. Body"), "{body}");
+        }
+    }
+
+    #[test]
+    fn invisible_counter_settings_do_not_duplicate_nested_paragraph_indents() {
+        for (before, after) in [
+            (r"\begin{proof}", r"\end{proof}"),
+            (r"\begin{itemize}\item ", r"\end{itemize}"),
+        ] {
+            let body = render_body(&format!(
+                "{before}First paragraph.\n\n\\setcounter{{secnumdepth}}{{4}} Body text.{after}"
+            ));
+            assert_eq!(body.matches("para-indent-marker").count(), 1, "{body}");
+        }
     }
 
     #[test]
