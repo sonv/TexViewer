@@ -7,9 +7,9 @@ document update in your browser, without rebuilding a PDF or saving the buffer.
 
 | Introduction · 2:14 | Installation · 1:12 |
 | --- | --- |
-| [![Watch the mathpreview introduction](promo/poster-intro.png)](promo/mathpreview-intro-github.mp4) | [![Watch the installation walkthrough](promo/poster-install.png)](promo/mathpreview-install.mp4) |
+| [![Download the mathpreview introduction](promo/poster-intro.png)](promo/mathpreview-intro-github.mp4?raw=true) | [![Download the installation walkthrough](promo/poster-install.png)](promo/mathpreview-install.mp4?raw=true) |
 
-Click either thumbnail to watch the video on GitHub.
+Click either thumbnail to download the MP4 (about 10 MB each).
 
 ## What it does
 
