@@ -1107,7 +1107,20 @@ body.page-mode-dynamic main#page {
 .bib-label { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
 .bib-entry { margin: 0; }
 .bib-entry em { font-style: italic; }
-.bib-doi, .bib-url { color: var(--supporting); font-size: 0.85em; word-break: break-all; }
+/* Authored TeX links and generated BibTeX links share the theme palette,
+   including visited links and clones in hover/margin/zoom previews. */
+.latex-link, .bib-doi, .bib-url {
+  color: var(--supporting);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.14em;
+}
+.latex-link:hover, .bib-doi:hover, .bib-url:hover { color: var(--accent); }
+.latex-link:focus-visible, .bib-doi:focus-visible, .bib-url:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.bib-doi, .bib-url { font-size: 0.85em; word-break: break-all; }
 .bib-missing { color: var(--omitted); font-style: italic; }
 /* Top-level blocks are real boxes with content-visibility so OFF-SCREEN
    blocks skip style/layout/paint entirely. On a 60-page document this is the
@@ -1165,6 +1178,7 @@ body.print-preparing main#page .blk { content-visibility: visible; contain-intri
      is the printable width so line breaks match the on-screen A4 column. */
   body.page-mode-a4 main#page, main#page {
     width: auto; zoom: 1; transform: none !important; border: 0; box-shadow: none; padding: 0;
+    background: #fff;
     content-visibility: visible;
   }
   main#page .blk { content-visibility: visible; contain-intrinsic-size: none; }
@@ -2801,6 +2815,10 @@ body.theme-dark .math.math-search-active { outline-color: rgba(216, 151, 0, 0.85
   .theme-dark {
     --diagnostic-error: #b42318;
     --diagnostic-error-bg: rgba(180, 35, 24, 0.08);
+  }
+  .latex-link, .bib-doi, .bib-url {
+    --supporting: #2b6cb0;
+    --accent: #5b3ea2;
   }
 }
 /* PDF previews are external bitmaps with a white page — keep their

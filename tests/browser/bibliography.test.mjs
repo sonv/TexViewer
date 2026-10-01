@@ -371,3 +371,91 @@ test('existing biblatex author-year citations retain labels and complete preview
   await hoverCitation(page, 'alpha');
   assert.match(await page.locator('.hover-preview dd').textContent(), /Ann Alpha.*Alpha book/);
 });
+
+async function assertReadableLinks(page, selector, count) {
+  const readings = await page.locator(selector).evaluateAll(links => links.map(link => {
+    const rgb = value => value.match(/[\d.]+/g).map(Number);
+    let background = [255, 255, 255];
+    for (let el = link; el; el = el.parentElement) {
+      const candidate = rgb(getComputedStyle(el).backgroundColor);
+      if (candidate.length === 3 || candidate[3] >= 0.999) {
+        background = candidate.slice(0, 3);
+        break;
+      }
+    }
+    const luminance = channels => channels.slice(0, 3).map(channel => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
+    const style = getComputedStyle(link);
+    const foreground = luminance(rgb(style.color));
+    const behind = luminance(background);
+    return { color: style.color, background, underline: style.textDecorationLine,
+      contrast: (Math.max(foreground, behind) + 0.05) / (Math.min(foreground, behind) + 0.05) };
+  }));
+  assert.equal(readings.length, count, selector);
+  for (const reading of readings) {
+    assert.ok(reading.contrast >= 4.5, `${selector}: ${JSON.stringify(reading)}`);
+    assert.ok(reading.underline.includes('underline'), `${selector} remains visibly underlined`);
+  }
+  return readings;
+}
+
+test('bibliography external links remain readable across themes and preview surfaces', { timeout: 30000 }, async t => {
+  const bibliography = String.raw`\begin{thebibliography}{9}
+\bibitem{manual} Manual Author. \url{https://example.org/manual} and \href{https://example.org/paper}{Paper link}.
+\end{thebibliography}
+\bibliography{links}`;
+  const entries = String.raw`@book{url, author={URL, Alice}, title={Linked book}, year={2026}, url={https://example.org/book}}
+@article{doi, author={DOI, Bob}, title={DOI paper}, year={2026}, doi={10.1234/example}}`;
+  const { page, open } = await fixture(t, documentSource(bibliography,
+    String.raw`See \cite{manual}, \cite{url}, and \cite{doi}.`, ''), { 'links.bib': entries });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await open();
+  assert.equal(await page.locator('body').evaluate(el => el.classList.contains('theme-dark')), true,
+    'first load follows the system dark preference');
+  const allLinks = '#page .latex-link, #page .bib-url, #page .bib-doi';
+  for (const theme of ['light', 'dark']) {
+    await page.locator('#theme-toggle').click();
+    assert.equal(await page.locator('body').evaluate(el => el.classList.contains('theme-dark')), theme === 'dark');
+    await assertReadableLinks(page, allLinks, 4);
+    await screenshot(page, `external-links-${theme}-page`);
+    const links = page.locator(allLinks);
+    for (let i = 0; i < 4; i++) {
+      const link = links.nth(i);
+      await link.hover();
+      await assertReadableLinks(page, allLinks, 4);
+      await page.keyboard.press('Tab');
+      await link.focus();
+      assert.ok(await link.evaluate(el => {
+        const style = getComputedStyle(el);
+        return el.matches(':focus-visible') && style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0;
+      }), 'keyboard focus remains visible');
+      await assertReadableLinks(page, allLinks, 4);
+    }
+    await page.mouse.move(5, 850);
+    await page.locator('#theme-toggle').focus();
+    for (const [key, count] of [['manual', 2], ['url', 1], ['doi', 1]]) {
+      await hoverCitation(page, key);
+      await assertReadableLinks(page, '.hover-preview dd a', count);
+      if (key === 'manual') await screenshot(page, `external-links-${theme}-hover`);
+      await page.locator(`#page a.cite[data-key="${key}"]`).dispatchEvent('mouseout');
+      if (await page.locator('#margin-toggle').getAttribute('aria-pressed') !== 'true') {
+        await page.locator('#margin-toggle').click();
+      }
+      await page.locator(`#page a.cite[data-key="${key}"]`).click();
+      const card = page.locator(`.margin-card[data-pin-key="${key}"]`);
+      await card.waitFor();
+      await assertReadableLinks(page, `.margin-card[data-pin-key="${key}"] dd a`, count);
+      if (key === 'manual') await screenshot(page, `external-links-${theme}-margin`);
+      await card.locator('.margin-card-zoom').click();
+      await page.waitForSelector('#margin-zoom-dialog[open]');
+      await assertReadableLinks(page, '#margin-zoom-body dd a', count);
+      if (key === 'manual') await screenshot(page, `external-links-${theme}-zoom`);
+      await page.locator('#margin-zoom-close').click();
+      await card.locator('.margin-card-close').click();
+    }
+  }
+  await page.emulateMedia({ media: 'print' });
+  await assertReadableLinks(page, allLinks, 4);
+});

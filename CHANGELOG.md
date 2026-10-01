@@ -13,6 +13,18 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.54] - 2026-10-01
+
+### Fixed
+
+- Bibliography links now use readable theme colors instead of browser-default
+  blue. Authored `\url` / `\href` links and generated BibTeX DOI/URL links
+  share pale blue in dark mode, darker blue in light mode, and a violet hover
+  color. Underlines and keyboard-focus outlines keep links identifiable in
+  the page, hover previews, and margin cards.
+- Printed links retain dark colors on white paper. Existing viewer tabs reload
+  onto the new stylesheet after a daemon upgrade (protocol 90).
+
 ## [2.1.53] - 2026-10-01
 
 ### Added
