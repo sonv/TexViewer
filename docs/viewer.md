@@ -51,6 +51,17 @@ popup. The viewer does not infer prefixes: `\label{first}` shows `first`, not
 `e:first`. Manual MathJax `\tag` values are not generated
 equation numbers and do not receive this hover label.
 
+Click a label in that popup to copy its exact key. Each alias has its own
+button. The popup stays open while you move onto it or use its controls. If
+the browser blocks clipboard access, the label is selected so you can press
+Ctrl+C (Cmd+C on macOS). You can also select the text yourself.
+
+For keyboard access, Tab to a labeled equation number, then press Tab, Enter,
+or Space to enter its label popup. Enter or Space copies the focused label,
+and Ctrl+C or Cmd+C also copies it. Escape closes the popup. Clicking the
+equation itself still selects its LaTeX for copying, and source-jump gestures
+are unchanged.
+
 Hovering a reference or citation shows a quick preview without the proof, with
 the label or citation key at the top. References to multi-row equations retain
 the full display and highlight the referenced row. This works whether or not

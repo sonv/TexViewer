@@ -12,6 +12,7 @@
   var themeMode = 'light';
   var pinnedRefs = new Map();
   var hoverPreviewTimer = 0;
+  var hoverPreviewCloseTimer = 0;
   var hoverPreviewEl = null;
   var hoverPreviewSource = null;
   var hoverPreviewObserver = null;

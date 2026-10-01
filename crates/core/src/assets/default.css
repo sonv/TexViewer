@@ -2643,6 +2643,28 @@ body.log-panel-open.side-panel-open #page-shell { margin-left: 664px; }
   padding: 0;
   border: none;
 }
+.equation-label-preview { pointer-events: auto; }
+.equation-label-copy {
+  display: inline-block;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.equation-label-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#page .eq-num:focus-visible,
+#page .eq-num-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.equation-label-copy .margin-card-key { white-space: normal; overflow-wrap: anywhere; }
+.equation-label-copy-status {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.6em;
+  overflow-wrap: anywhere;
+}
 .hover-preview-row-highlight {
   fill: rgba(91, 62, 162, 0.18);
   pointer-events: none;

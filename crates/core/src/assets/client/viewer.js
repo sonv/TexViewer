@@ -4430,7 +4430,23 @@
   // Kept as the render-path entry point (patch/body-updated call it with the
   // touched root): the layer is measured from live geometry, so any render
   // just means "rebuild the layer".
-  function decorateRefkeyChips(_root) {
+  function decorateRefkeyChips(root) {
+    // Only touched blocks are scanned after a patch. Labeled numbers are
+    // keyboard entry points to the same popup used by pointer hover.
+    if (root) root.querySelectorAll('.eq-num, .eq-num-row:not(.empty)').forEach(function(number) {
+      var keys = equationNumberRefkeys(number);
+      if (keys.length) {
+        number.setAttribute('tabindex', '0');
+        number.setAttribute('role', 'button');
+        number.setAttribute('aria-label', 'Equation ' + number.textContent + ': source labels ' + keys.join(', '));
+        var list = number.closest('.eq-num-list');
+        if (list) list.removeAttribute('aria-hidden');
+      } else {
+        number.removeAttribute('tabindex');
+        number.removeAttribute('role');
+        number.removeAttribute('aria-label');
+      }
+    });
     refreshHoverPreviewAfterRender();
     scheduleRefkeys();
   }
@@ -4482,6 +4498,7 @@
   }
 
   function hideHoverPreview() {
+    cancelHoverPreviewClose();
     cancelHoverTypeset();
     if (hoverPreviewTimer) {
       clearTimeout(hoverPreviewTimer);
@@ -4492,10 +4509,99 @@
       hoverPreviewObserver = null;
     }
     if (hoverPreviewEl && hoverPreviewEl.parentNode) {
+      var selection = window.getSelection();
+      if (selection && selection.rangeCount &&
+          hoverPreviewEl.contains(selection.anchorNode) &&
+          hoverPreviewEl.contains(selection.focusNode)) selection.removeAllRanges();
       hoverPreviewEl.parentNode.removeChild(hoverPreviewEl);
     }
     hoverPreviewEl = null;
     hoverPreviewSource = null;
+  }
+
+  function equationLabelPopupContains(target) {
+    return !!(target && hoverPreviewEl &&
+      hoverPreviewEl.classList.contains('equation-label-preview') &&
+      hoverPreviewEl.contains(target));
+  }
+
+  function cancelHoverPreviewClose() {
+    if (hoverPreviewCloseTimer) clearTimeout(hoverPreviewCloseTimer);
+    hoverPreviewCloseTimer = 0;
+  }
+
+  function leaveEquationLabelPreview(related) {
+    if (equationLabelPopupContains(related) ||
+        (related && hoverPreviewSource && hoverPreviewSource.contains(related))) return;
+    cancelHoverPreviewClose();
+    if (!equationLabelPopupContains(hoverPreviewEl)) {
+      hideHoverPreview();
+      return;
+    }
+    var box = hoverPreviewEl;
+    var source = hoverPreviewSource;
+    hoverPreviewCloseTimer = setTimeout(function() {
+      hoverPreviewCloseTimer = 0;
+      if (hoverPreviewEl !== box || hoverPreviewSource !== source) return;
+      if (box.contains(document.activeElement) || source === document.activeElement ||
+          box.matches(':hover') || source.matches(':hover')) return;
+      hideHoverPreview();
+    }, 250);
+  }
+
+  function copyEquationLabel(button) {
+    var box = hoverPreviewEl;
+    if (!equationLabelPopupContains(button)) return;
+    clearSelectedMathRow();
+    // Give manual copy and keyboard navigation a stable target on this
+    // explicit action, independent of browser pointer-focus conventions.
+    button.focus({ preventScroll: true });
+    var source = hoverPreviewSource;
+    var key = button.getAttribute('data-refkey');
+    var request = (box.__mpCopyRequest || 0) + 1;
+    box.__mpCopyRequest = request;
+    function current() {
+      return hoverPreviewEl === box && hoverPreviewSource === source &&
+        source.isConnected && button.isConnected && box.__mpCopyRequest === request;
+    }
+    function status(text) {
+      box.querySelector('.equation-label-copy-status').textContent = text;
+      positionHoverPreview(box, source);
+    }
+    function fallback() {
+      if (!current()) return;
+      button.focus({ preventScroll: true });
+      var range = document.createRange();
+      range.selectNodeContents(button.querySelector('code'));
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      status('Copy unavailable. Selected label: press Ctrl+C or ⌘C.');
+    }
+    // Call directly in the trusted click/keyboard activation, before any
+    // async boundary. Never write to the clipboard merely because of hover.
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(); return; }
+      navigator.clipboard.writeText(key).then(function() {
+        if (current()) status('Copied ' + key);
+      }, fallback);
+    } catch (err) { fallback(); }
+  }
+
+  function copyEquationLabelSelection(e) {
+    var button = document.activeElement && document.activeElement.closest('.equation-label-copy');
+    if (!equationLabelPopupContains(button)) return false;
+    var selection = window.getSelection();
+    // An explicitly selected range keeps the browser's normal copy behavior.
+    if (selection && !selection.isCollapsed) {
+      return equationLabelPopupContains(selection.anchorNode) &&
+        equationLabelPopupContains(selection.focusNode);
+    }
+    if (e.clipboardData) {
+      e.clipboardData.setData('text/plain', button.getAttribute('data-refkey'));
+      e.preventDefault();
+    }
+    return true;
   }
 
   function handleHoverPreviewScroll() {
@@ -4701,11 +4807,38 @@
   }
 
   function showEquationLabelPreviewFor(numberEl) {
+    if (hoverPreviewSource === numberEl && equationLabelPopupContains(hoverPreviewEl)) {
+      cancelHoverPreviewClose();
+      return;
+    }
     hideHoverPreview();
     if (!numberEl.isConnected) return;
     var keys = equationNumberRefkeys(numberEl);
     if (!keys.length) return;
     var box = buildHoverPreview(keys, null, 'equation-label-preview');
+    box.removeAttribute('aria-hidden');
+    box.removeAttribute('inert');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', 'Equation source labels');
+    box.querySelectorAll('.hover-preview-keys code').forEach(function(code) {
+      // WebKit does not allow native text selection inside <button>, even
+      // with user-select:text. This button-role text control supports both
+      // dragging the key and explicit keyboard activation in patch.js.
+      var button = document.createElement('span');
+      button.setAttribute('role', 'button');
+      button.setAttribute('tabindex', '0');
+      button.className = 'equation-label-copy';
+      button.setAttribute('data-refkey', code.textContent);
+      button.setAttribute('aria-label', 'Copy label ' + code.textContent);
+      button.title = 'Copy label';
+      code.replaceWith(button);
+      button.appendChild(code);
+    });
+    var status = document.createElement('div');
+    status.className = 'equation-label-copy-status';
+    status.setAttribute('role', 'status');
+    status.textContent = 'Click a label to copy';
+    box.appendChild(status);
     document.body.appendChild(box);
     positionHoverPreview(box, numberEl);
     hoverPreviewEl = box;
@@ -4761,8 +4894,9 @@
   }
 
   function scheduleHoverPreviewWith(source, show) {
+    cancelHoverPreviewClose();
     if (hoverPreviewSource === source && hoverPreviewEl) return;
-    if (hoverPreviewTimer) clearTimeout(hoverPreviewTimer);
+    hideHoverPreview();
     // Remember pending sources too. The shared post-render hook can then
     // cancel a delayed preview whose anchor was replaced by a live patch.
     hoverPreviewSource = source;

@@ -157,6 +157,7 @@
   }
 
   function copySelectionAsLatex(e) {
+    if (copyEquationLabelSelection(e)) return;
     var selection = window.getSelection ? window.getSelection() : null;
     // A replaced block orphans its row selection (the band may linger inside
     // the stale-typeset placeholder): drop the state so ⌘C falls through to
@@ -257,6 +258,17 @@
   document.addEventListener('copy', copySelectionAsLatex);
   document.addEventListener('mousedown', function(e) {
     clearSelectedMath();
+    if (equationLabelPopupContains(hoverPreviewEl) && !equationLabelPopupContains(e.target) &&
+        !(hoverPreviewSource && hoverPreviewSource.contains(e.target))) hideHoverPreview();
+    if (equationLabelPopupContains(e.target)) {
+      // Beginning another selection/click supersedes a pending copy result,
+      // even if focus stays on the same label throughout a text drag.
+      hoverPreviewEl.__mpCopyRequest = (hoverPreviewEl.__mpCopyRequest || 0) + 1;
+    }
+    var copyButton = e.target.closest('.equation-label-copy');
+    if (equationLabelPopupContains(copyButton)) {
+      copyButton.__mpPointerDown = { x: e.clientX, y: e.clientY };
+    }
   });
   document.addEventListener('input', function(e) {
     if (e.target && (e.target.id === 'macros-dialog-input' ||
@@ -357,6 +369,10 @@
     fn._fnPos = false;
   }
   document.addEventListener('mouseover', function(e) {
+    if (equationLabelPopupContains(e.target)) {
+      cancelHoverPreviewClose();
+      return;
+    }
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn && !fn._fnPos) { fn._fnPos = true; positionFootnotePopover(fn); }
     var equationNumber = equationNumberTarget(e.target);
@@ -368,13 +384,17 @@
     }
   });
   document.addEventListener('mouseout', function(e) {
+    if (equationLabelPopupContains(e.target)) {
+      leaveEquationLabelPreview(e.relatedTarget);
+      return;
+    }
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
     var equationNumber = equationNumberTarget(e.target);
     if (equationNumber) {
       var numberRelated = e.relatedTarget;
       if (numberRelated && equationNumber.contains(numberRelated)) return;
-      hideHoverPreview();
+      leaveEquationLabelPreview(numberRelated);
       return;
     }
     var link = isPinnableLink(e.target);
@@ -384,10 +404,22 @@
     hideHoverPreview();
   });
   document.addEventListener('focusin', function(e) {
+    if (equationLabelPopupContains(e.target)) cancelHoverPreviewClose();
+    var number = equationNumberTarget(e.target);
+    if (number) showEquationLabelPreviewFor(number);
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn) positionFootnotePopover(fn);
   });
   document.addEventListener('focusout', function(e) {
+    if (equationLabelPopupContains(e.target) &&
+        e.target.closest('.equation-label-copy')) {
+      // A late clipboard rejection must not pull focus/selection back after
+      // the reader has moved to another alias or another part of the page.
+      hoverPreviewEl.__mpCopyRequest = (hoverPreviewEl.__mpCopyRequest || 0) + 1;
+    }
+    if (equationLabelPopupContains(e.target) || equationNumberTarget(e.target)) {
+      leaveEquationLabelPreview(e.relatedTarget);
+    }
     var fn = e.target && e.target.closest && e.target.closest('.footnote');
     if (fn && !(e.relatedTarget && fn.contains(e.relatedTarget))) clearFootnotePopover(fn);
   });
@@ -1454,6 +1486,19 @@
 
   document.addEventListener('click', function(e) {
     clearViewerKeyPending();
+    if (equationLabelPopupContains(e.target)) {
+      var copyButton = e.target.closest('.equation-label-copy');
+      if (copyButton) {
+        // A text drag is selection, not an implicit clipboard write.
+        var start = copyButton.__mpPointerDown;
+        delete copyButton.__mpPointerDown;
+        var dragged = start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4;
+        if (!dragged || e.detail === 0) copyEquationLabel(copyButton);
+      }
+      return;
+    }
+    if (equationLabelPopupContains(hoverPreviewEl) &&
+        !(hoverPreviewSource && hoverPreviewSource.contains(e.target))) hideHoverPreview();
     // Any click outside the row-selected block drops the row selection and
     // its band — whichever branch below ends up handling the click.
     if (selectedMathRow &&
@@ -1662,6 +1707,45 @@
     }
   });
   document.addEventListener('keydown', function(e) {
+    if (equationLabelPopupContains(hoverPreviewEl)) {
+      if (e.key === 'Escape') {
+        var source = hoverPreviewSource;
+        var restore = equationLabelPopupContains(document.activeElement);
+        hideHoverPreview();
+        // Focus the existing math wrapper, not the number, so dismissing
+        // does not immediately open another label popup via focusin.
+        if (restore && source.isConnected) source.closest('.math').focus({ preventScroll: true });
+        e.preventDefault();
+        clearViewerKeyPending();
+        return;
+      }
+      if (e.target === hoverPreviewSource &&
+          (e.key === 'Enter' || e.key === ' ' || (e.key === 'Tab' && !e.shiftKey))) {
+        e.preventDefault();
+        hoverPreviewEl.querySelector('.equation-label-copy').focus({ preventScroll: true });
+        return;
+      }
+      // Keep viewer letter bindings and selected equation rows from taking
+      // over interaction with this small, non-modal copy control.
+      if (equationLabelPopupContains(e.target)) {
+        hoverPreviewEl.__mpCopyRequest = (hoverPreviewEl.__mpCopyRequest || 0) + 1;
+        var copyControl = e.target.closest('.equation-label-copy');
+        if (copyControl && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          if (!e.repeat) copyEquationLabel(copyControl);
+        } else if (copyControl && e.key === 'Tab') {
+          // Safari's tab policy may skip native buttons. Traverse aliases
+          // explicitly and return to the number on reverse Tab from first.
+          var controls = Array.from(hoverPreviewEl.querySelectorAll('.equation-label-copy'));
+          var next = controls.indexOf(copyControl) + (e.shiftKey ? -1 : 1);
+          if (next < controls.length) {
+            e.preventDefault();
+            (next < 0 ? hoverPreviewSource : controls[next]).focus({ preventScroll: true });
+          }
+        }
+        return;
+      }
+    }
     var searchInput = searchInputEl();
     if (e.target === searchInput) {
       var hasSuggest = searchSuggestions.length > 0;

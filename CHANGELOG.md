@@ -13,6 +13,20 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.52] - 2026-10-01
+
+### Added
+
+- **Copy source labels from equation-number popups.** Click a label to copy
+  its exact key, with a separate button for each alias and visible feedback.
+  Clipboard writes happen only on explicit activation. If access is blocked,
+  the label is selected for Ctrl+C or Cmd+C instead.
+- Labeled numbers and their copy controls support keyboard navigation. The
+  popup stays open while moving the pointer into it or using its controls,
+  and Escape dismisses it. Equation copying and source jumps are unchanged.
+- Existing tabs reload onto the interactive label popup after a daemon
+  upgrade, through the paired client/server protocol bump to 88.
+
 ## [2.1.51] - 2026-10-01
 
 ### Changed

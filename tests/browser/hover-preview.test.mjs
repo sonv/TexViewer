@@ -136,9 +136,77 @@ async function assertLabelOnly(page, expectedKeys) {
   assert.deepEqual(await keys(page), expectedKeys);
   assert.equal(await page.locator(`${popup}.equation-label-preview`).count(), 1);
   assert.equal(await page.locator(`${popup} .hover-preview-body, ${popup} .math, ${popup} svg`).count(), 0);
-  assert.equal(await page.locator(popup).getAttribute('aria-hidden'), 'true');
-  assert.equal(await page.locator(popup).getAttribute('inert'), '');
-  assert.equal(await page.locator(`${popup} [tabindex]`).count(), 0);
+  assert.equal(await page.locator(popup).getAttribute('aria-hidden'), null);
+  assert.equal(await page.locator(popup).getAttribute('inert'), null);
+  assert.equal(await page.locator(popup).getAttribute('role'), 'group');
+  assert.equal(await page.locator(popup).getAttribute('aria-label'), 'Equation source labels');
+  assert.deepEqual(await page.locator(`${popup} .equation-label-copy`).evaluateAll(buttons =>
+    buttons.map(button => ({ key: button.dataset.refkey, role: button.getAttribute('role'), tabIndex: button.tabIndex }))),
+  expectedKeys.map(key => ({ key, role: 'button', tabIndex: 0 })));
+}
+
+async function stubClipboard(page, behavior = 'resolve') {
+  await page.evaluate(mode => {
+    window.hoverTestCopies = [];
+    window.hoverTestPendingCopies = [];
+    window.hoverTestLastActivationTrusted = false;
+    for (const type of ['click', 'keydown']) {
+      document.addEventListener(type, event => {
+        window.hoverTestLastActivationTrusted = event.isTrusted;
+      }, true);
+    }
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: mode === 'unavailable' ? undefined : {
+        writeText(text) {
+          window.hoverTestCopies.push({ text, trusted: window.hoverTestLastActivationTrusted });
+          if (mode === 'reject') return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
+          if (mode === 'pending') return new Promise((resolveCopy, rejectCopy) => {
+            window.resolveHoverTestCopy = resolveCopy;
+            window.rejectHoverTestCopy = rejectCopy;
+            window.hoverTestPendingCopies.push({ resolveCopy, rejectCopy });
+          });
+          return Promise.resolve();
+        },
+      },
+    });
+  }, behavior);
+}
+
+async function captureKeyboardCopy(page, modifier = process.platform === 'darwin' ? 'Meta' : 'Control') {
+  await page.evaluate(() => {
+    window.hoverTestKeyboardCopy = null;
+    document.addEventListener('copy', event => {
+      window.hoverTestKeyboardCopy = {
+        text: event.clipboardData.getData('text/plain'),
+        selection: window.getSelection().toString(),
+        trusted: event.isTrusted,
+      };
+      // Observe the real key gesture without writing test data to the user's
+      // system clipboard. The viewer's earlier copy listener has already run.
+      event.preventDefault();
+    }, { once: true });
+  });
+  await page.keyboard.press(`${modifier}+c`);
+  await page.waitForFunction(() => window.hoverTestKeyboardCopy !== null);
+  return page.evaluate(() => window.hoverTestKeyboardCopy);
+}
+
+async function pointerIntoLabelPopup(page, numberSelector, key) {
+  await page.locator(numberSelector).hover();
+  await page.waitForSelector(`${popup}.equation-label-preview`);
+  const number = await page.locator(numberSelector).boundingBox();
+  const box = await page.locator(popup).boundingBox();
+  const gapY = box.y >= number.y + number.height
+    ? (number.y + number.height + box.y) / 2
+    : (box.y + box.height + number.y) / 2;
+  await page.mouse.move(number.x + number.width / 2, gapY);
+  await delay(80); // cross the real positioning gap within the 250ms grace
+  const button = page.locator(`${popup} .equation-label-copy[data-refkey="${key}"]`);
+  await button.hover();
+  await delay(300); // staying in the popup cancels the source's leave timer
+  assert.equal(await button.count(), 1);
+  return button;
 }
 
 async function assertHighlightedRow(page, expectedRow, expectedRows = 2) {
@@ -356,7 +424,7 @@ test('the previous viewer shell is asked to reload onto the fixed client', { tim
   const { page, open } = await fixture(t);
   await open();
   const event = await page.evaluate(() => new Promise((resolveEvent, reject) => {
-    const socket = new WebSocket(`ws://${location.host}/ws?v=86`);
+    const socket = new WebSocket(`ws://${location.host}/ws?v=87`);
     const timer = setTimeout(() => { socket.close(); reject(new Error('No reload message')); }, 5000);
     socket.onmessage = ({ data }) => {
       clearTimeout(timer);
@@ -393,6 +461,214 @@ test('a number-only hover never demands a distant equation', { timeout: 30000 },
   await assertLabelOnly(page, ['eq:first', 'eq:alias']);
 });
 
+test('the pointer crosses from a number to its popup and copies only the clicked alias', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await stubClipboard(page);
+  const alias = await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:alias');
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
+  assert.deepEqual(await page.evaluate(() => window.hoverTestCopies), [], 'hovering does not access the clipboard');
+  await alias.click();
+  await page.waitForFunction(() => document.querySelector('.equation-label-copy-status')?.textContent === 'Copied eq:alias');
+  assert.deepEqual(await page.evaluate(() => window.hoverTestCopies), [{ text: 'eq:alias', trusted: true }]);
+  await page.locator(`${popup} .equation-label-copy[data-refkey="eq:first"]`).click();
+  await page.waitForFunction(() => document.querySelector('.equation-label-copy-status')?.textContent === 'Copied eq:first');
+  assert.deepEqual(await page.evaluate(() => window.hoverTestCopies.map(copy => copy.text)), ['eq:alias', 'eq:first']);
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
+});
+
+test('dragging across a visible label selects text without automatically writing the clipboard', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await stubClipboard(page);
+  const alias = await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:alias');
+  const code = await alias.locator('code').boundingBox();
+  await page.mouse.move(code.x + 1, code.y + code.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(code.x + code.width - 1, code.y + code.height / 2, { steps: 12 });
+  await page.mouse.up();
+  const selected = await page.evaluate(() => window.getSelection().toString());
+  assert.deepEqual(await page.evaluate(() => window.hoverTestCopies), [], 'pointer dragging is selection, never a clipboard write');
+  assert.ok(selected.length >= 4 && 'eq:alias'.includes(selected), `expected a label text selection, got ${JSON.stringify(selected)}`);
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
+  // A subsequent deliberate click still copies, even with selected label text.
+  await alias.click();
+  await page.waitForFunction(() => window.hoverTestCopies.length === 1);
+  assert.equal(await page.evaluate(() => window.hoverTestCopies[0].text), 'eq:alias');
+});
+
+for (const clipboardMode of ['reject', 'unavailable']) {
+  test(`clipboard ${clipboardMode} selects the visible label for keyboard copy without copying selected math`, { timeout: 30000 }, async t => {
+    const { page, open } = await fixture(t, `${probabilityAlign}\n${probabilityReferences}`, probabilitySource);
+    await open();
+    await page.waitForSelector('#eq-main-early svg');
+    // MathJax groups deliberately use pointer-events:none; the real SVG
+    // receives this coordinate click and the viewer resolves its row.
+    const row = await page.locator('#eq-main-early svg [data-mml-node="mtable"] > [data-mml-node="mtr"]').first().boundingBox();
+    await page.mouse.click(row.x + row.width / 2, row.y + row.height / 2);
+    assert.equal(await page.locator('#eq-main-early rect.mp-row-select').count(), 1);
+    await stubClipboard(page, clipboardMode);
+    const label = await pointerIntoLabelPopup(page, '#eq-main-early .eq-num-row:nth-child(2)', 'eq:main-late');
+    await label.click();
+    await page.waitForFunction(() => window.getSelection()?.toString() === 'eq:main-late');
+    assert.match(await page.locator(`${popup} [role="status"]`).textContent(), /Selected label.*Ctrl\+C.*⌘C/);
+    await delay(300);
+    await assertLabelOnly(page, ['eq:main-late']);
+    const copy = await captureKeyboardCopy(page);
+    assert.equal(copy.trusted, true);
+    assert.equal(copy.text || copy.selection, 'eq:main-late');
+    assert.ok(!copy.text.includes('\\PP'), 'the earlier math-row selection cannot hijack label copy');
+    assert.deepEqual(await page.evaluate(() => window.hoverTestCopies.map(item => item.text)), clipboardMode === 'reject' ? ['eq:main-late'] : []);
+  });
+}
+
+test('a label popup dismisses after leaving both surfaces, outside click, Escape, and scrolling', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, `${equation}\n\n${distantParagraphs}`);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:first');
+  await page.mouse.move(5, 850);
+  await page.waitForSelector(popup, { state: 'detached' });
+  await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:first');
+  await page.mouse.click(5, 850);
+  await page.waitForSelector(popup, { state: 'detached' });
+  await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:first');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(popup, { state: 'detached' });
+  await page.mouse.move(5, 850);
+  await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:first');
+  await page.evaluate(() => window.scrollBy(0, 150));
+  await page.waitForSelector(popup, { state: 'detached' });
+});
+
+test('labeled numbers and their copy buttons support keyboard focus and activation', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await stubClipboard(page);
+  const number = page.locator('#eq-first .eq-num');
+  assert.equal(await number.getAttribute('tabindex'), '0');
+  await number.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.activeElement?.matches('.equation-label-copy[data-refkey="eq:first"]'));
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#eq-first .eq-num')), true);
+  await page.keyboard.press('Tab');
+  await page.waitForFunction(() => document.activeElement?.matches('.equation-label-copy[data-refkey="eq:first"]'));
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.hoverTestCopies.length === 1);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.refkey), 'eq:alias');
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => window.hoverTestCopies.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.hoverTestCopies.map(copy => copy.text)), ['eq:first', 'eq:alias']);
+  assert.equal(await page.evaluate(() => window.hoverTestCopies.every(copy => copy.trusted)), true, 'keyboard copies run from trusted key activation');
+  await page.mouse.move(5, 850);
+  await delay(300);
+  await assertLabelOnly(page, ['eq:first', 'eq:alias']);
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(popup, { state: 'detached' });
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#eq-first')), true, 'Escape restores the existing math focus target without reopening the popup');
+  // MathJax has its own focusable menu between the math wrapper and number.
+  await number.focus();
+  await page.keyboard.press('Tab');
+  await page.waitForFunction(() => document.activeElement?.matches('.equation-label-copy[data-refkey="eq:first"]'));
+});
+
+test('number clicks still select the equation row for copy and modified clicks still reveal source', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t, `${probabilityAlign}\n${probabilityReferences}`, probabilitySource);
+  const jumps = [];
+  for (const path of ['/jump', '/reveal-source']) {
+    await page.route(`**${path}`, async route => {
+      jumps.push({ path, body: route.request().postDataJSON() });
+      await route.fulfill({ status: 204 });
+    });
+  }
+  await open();
+  await page.waitForSelector('#eq-main-early svg');
+  const number = page.locator('#eq-main-early .eq-num-row:nth-child(2)');
+  await number.click();
+  assert.equal(await page.locator('#eq-main-early rect.mp-row-select').count(), 1);
+  const copy = await captureKeyboardCopy(page);
+  assert.match(copy.text, /\\PP\(T_N>a\+K\\sqrt L\)/);
+  assert.ok(copy.text.includes('eq:main-late'));
+  assert.ok(!copy.text.includes('eq:main-early'));
+  await number.click({ modifiers: ['Meta'] });
+  await page.waitForFunction(() => document.querySelector('#ws-status')?.textContent.includes('editor'));
+  assert.deepEqual(jumps.map(jump => jump.path).sort(), ['/jump', '/reveal-source']);
+  assert.ok(jumps.every(jump => Number.isInteger(jump.body.line) && jump.body.line > 0));
+});
+
+test('a live label change closes a focused copy popup and removes its stale controls', { timeout: 30000 }, async t => {
+  const { page, open, update } = await fixture(t);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await hover(page, '#eq-first .eq-num');
+  await page.locator(`${popup} .equation-label-copy[data-refkey="eq:alias"]`).focus();
+  await update(equation.replace('eq:alias', 'eq:renamed'));
+  await page.waitForSelector(popup, { state: 'detached' });
+  assert.equal(await page.locator('.equation-label-copy').count(), 0);
+  assert.equal(await page.evaluate(() => document.activeElement?.isConnected), true);
+  await hover(page, '#eq-first .eq-num');
+  await assertLabelOnly(page, ['eq:first', 'eq:renamed']);
+});
+
+test('a delayed clipboard failure cannot change a replacement label popup', { timeout: 30000 }, async t => {
+  const math = String.raw`${equation}
+\begin{equation}\label{eq:other}a=b\end{equation}`;
+  const { page, open } = await fixture(t, math);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await stubClipboard(page, 'pending');
+  const alias = await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:alias');
+  await alias.click();
+  await page.waitForFunction(() => typeof window.rejectHoverTestCopy === 'function');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(popup, { state: 'detached' });
+  await pointerIntoLabelPopup(page, '#eq-other .eq-num', 'eq:other');
+  await page.evaluate(() => window.rejectHoverTestCopy(new DOMException('Permission denied', 'NotAllowedError')));
+  await delay(300);
+  await assertLabelOnly(page, ['eq:other']);
+  assert.equal(await page.locator(`${popup} [role="status"]`).textContent(), 'Click a label to copy');
+  assert.notEqual(await page.evaluate(() => window.getSelection().toString()), 'eq:alias');
+});
+
+test('out-of-order clipboard results preserve the latest clicked alias status', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await stubClipboard(page, 'pending');
+  const alias = await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:alias');
+  await alias.click();
+  await page.locator(`${popup} .equation-label-copy[data-refkey="eq:first"]`).click();
+  await page.waitForFunction(() => window.hoverTestPendingCopies.length === 2);
+  await page.evaluate(() => window.hoverTestPendingCopies[1].resolveCopy());
+  await page.waitForFunction(() => document.querySelector('.equation-label-copy-status')?.textContent === 'Copied eq:first');
+  await page.evaluate(() => window.hoverTestPendingCopies[0].rejectCopy(new DOMException('Permission denied', 'NotAllowedError')));
+  await delay(300);
+  assert.equal(await page.locator(`${popup} [role="status"]`).textContent(), 'Copied eq:first');
+  assert.notEqual(await page.evaluate(() => window.getSelection().toString()), 'eq:alias');
+});
+
+test('a late clipboard rejection cannot steal focus after Tab moves to another alias', { timeout: 30000 }, async t => {
+  const { page, open } = await fixture(t);
+  await open();
+  await page.waitForSelector('#eq-first svg');
+  await stubClipboard(page, 'pending');
+  const first = await pointerIntoLabelPopup(page, '#eq-first .eq-num', 'eq:first');
+  await first.click();
+  await page.waitForFunction(() => window.hoverTestPendingCopies.length === 1);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.refkey), 'eq:alias');
+  await page.evaluate(() => window.hoverTestPendingCopies[0].rejectCopy(new DOMException('Permission denied', 'NotAllowedError')));
+  await delay(300);
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.refkey), 'eq:alias');
+  assert.equal(await page.locator(`${popup} [role="status"]`).textContent(), 'Click a label to copy');
+  assert.notEqual(await page.evaluate(() => window.getSelection().toString()), 'eq:first');
+});
+
 test('alias reference hover also follows delayed MathJax', { timeout: 30000 }, async t => {
   const { page, open } = await fixture(t);
   const release = await holdMathJax(page);
@@ -400,6 +676,9 @@ test('alias reference hover also follows delayed MathJax', { timeout: 30000 }, a
   await open();
   await hover(page, '#page a.ref[data-target="eq:alias"]');
   assert.deepEqual(await keys(page), ['eq:alias']);
+  assert.equal(await page.locator(popup).getAttribute('aria-hidden'), 'true');
+  assert.equal(await page.locator(popup).getAttribute('inert'), '');
+  assert.equal(await page.locator(`${popup} .equation-label-copy`).count(), 0);
   release();
   await page.waitForSelector(`${popup} .math.display svg`);
 });
@@ -411,7 +690,7 @@ test('leaving a number dismisses its label without later resurrection', { timeou
   await open();
   await hover(page, '#eq-first .eq-num');
   await page.locator('#eq-first .eq-num').dispatchEvent('mouseout');
-  assert.equal(await page.locator(popup).count(), 0);
+  await page.waitForSelector(popup, { state: 'detached' });
   release();
   await page.waitForSelector('#eq-first svg');
   await delay(350);
