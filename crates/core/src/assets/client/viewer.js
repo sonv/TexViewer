@@ -1458,7 +1458,7 @@
     // siblings, and inverse search must never cross from one into the other.
     var scope = parent.closest(
       '.proof-para, p.para, .item-body, .paper-abstract-body, ' +
-      'td, th, caption, .src-word.text-color'
+      'td, th, caption, figcaption, .src-word.text-color'
     );
     if (!scope || !page.contains(scope)) return null;
     return scope === sourceAnchor || sourceAnchor.contains(scope) ? scope : null;

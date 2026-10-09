@@ -1946,6 +1946,8 @@ pub(crate) struct LiveBracedCommand {
     pub name: String,
     pub value: String,
     pub starred: bool,
+    /// First optional argument, when the caller requests optional scanning.
+    pub optional: Option<String>,
 }
 
 /// Collect live control-word calls with a final required braced argument,
@@ -2011,10 +2013,13 @@ pub(crate) fn live_braced_command_calls(
             continue;
         }
 
-        let starred = bytes.get(word_end) == Some(&b'*');
-        let mut argument_start = word_end + usize::from(starred);
-        argument_start = skip_tex_space_and_comments(&source, argument_start);
+        let mut argument_start = skip_tex_space_and_comments(&source, word_end);
+        let starred = bytes.get(argument_start) == Some(&b'*');
+        if starred {
+            argument_start = skip_tex_space_and_comments(&source, argument_start + 1);
+        }
         let mut valid = true;
+        let mut optional = None;
         for _ in 0..max_optional_args {
             if bytes.get(argument_start) != Some(&b'[') {
                 break;
@@ -2023,6 +2028,9 @@ pub(crate) fn live_braced_command_calls(
                 valid = false;
                 break;
             };
+            if optional.is_none() {
+                optional = Some(source[argument_start + 1..end - 1].to_string());
+            }
             argument_start = skip_tex_space_and_comments(&source, end);
         }
         if !valid {
@@ -2041,6 +2049,7 @@ pub(crate) fn live_braced_command_calls(
             name: word.to_string(),
             value: source[argument_start + 1..end - 1].to_string(),
             starred,
+            optional,
         });
         i = end;
     }
@@ -2111,7 +2120,7 @@ pub fn parse_body_with_overrides(
     BIBLIOGRAPHY_DEPTH.with(|depth| depth.set(0));
     let mut nodes = Vec::new();
     for f in &project.files {
-        let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0);
+        let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0, false);
         p.parse_block_into(&mut nodes, None);
     }
     Ok(fold_native_bibliographies(nodes))
@@ -2244,6 +2253,9 @@ struct Parser<'a> {
     /// Recognized-environment nesting depth, propagated to sub-parsers so the
     /// recursive descent can bail before overflowing the stack.
     depth: u32,
+    /// Opaque float children carry source locations without becoming a second
+    /// independently rendered/numbered document. Keep stored TeX inert here.
+    source_children: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -2253,6 +2265,7 @@ impl<'a> Parser<'a> {
         start: Pos,
         thms: &'a TheoremRegistry,
         depth: u32,
+        source_children: bool,
     ) -> Self {
         Self {
             src,
@@ -2266,6 +2279,7 @@ impl<'a> Parser<'a> {
             col: start.col,
             thms,
             depth,
+            source_children,
         }
     }
 
@@ -2422,6 +2436,7 @@ impl<'a> Parser<'a> {
                             child_start,
                             self.thms,
                             self.depth + 1,
+                            self.source_children,
                         );
                         sub.parse_block_into(&mut children, None);
                     }
@@ -2564,6 +2579,19 @@ impl<'a> Parser<'a> {
                 }
                 let cmd = self.src[self.byte + 1..cmd_name_end].to_string();
                 let cmd_start = self.pos();
+
+                if self.source_children
+                    && self.parse_float_source_command(
+                        &cmd,
+                        cmd_name_end,
+                        out,
+                        &mut text_buf,
+                        &mut text_start,
+                        flush_text,
+                    )
+                {
+                    continue;
+                }
 
                 if BIBLIOGRAPHY_DEPTH.with(|depth| depth.get() > 0) {
                     // BibTeX-generated `.bbl` files often install helper
@@ -2718,6 +2746,7 @@ impl<'a> Parser<'a> {
                             self.pos(),
                             self.thms,
                             self.depth + 1,
+                            self.source_children,
                         );
                         sub.parse_block_into(&mut children, None);
                         self.advance_to(bounds.fi_end);
@@ -2781,6 +2810,7 @@ impl<'a> Parser<'a> {
                                 self.pos(),
                                 self.thms,
                                 self.depth + 1,
+                                self.source_children,
                             );
                             sub.parse_block_into(&mut children, None);
                             self.advance_to(group_end);
@@ -2866,6 +2896,11 @@ impl<'a> Parser<'a> {
                     flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
                     self.advance_to(cmd_name_end);
                     let key = self.balanced_brace_arg().unwrap_or_default();
+                    let key = if self.source_children {
+                        executable_latex_source(&key)
+                    } else {
+                        key
+                    };
                     out.push(Node {
                         kind: NodeKind::Ref { kind, key },
                         span: self.span_from(cmd_start),
@@ -2891,6 +2926,11 @@ impl<'a> Parser<'a> {
                     self.skip_optional_arg();
                     self.skip_optional_arg();
                     let keys_raw = self.balanced_brace_arg().unwrap_or_default();
+                    let keys_raw = if self.source_children {
+                        executable_latex_source(&keys_raw)
+                    } else {
+                        keys_raw
+                    };
                     let keys = keys_raw
                         .split(',')
                         .map(|s| s.trim().to_string())
@@ -3031,7 +3071,7 @@ impl<'a> Parser<'a> {
                 // Drag in trailing args until we hit non-arg content.
                 loop {
                     let saved = self.byte;
-                    self.skip_ws_inline();
+                    self.skip_command_argument_space();
                     let after_ws = self.byte;
                     if let Some(o) = self.optional_arg_raw() {
                         raw.push_str(&o);
@@ -3383,6 +3423,7 @@ impl<'a> Parser<'a> {
                 start,
                 self.thms,
                 self.depth + 1,
+                self.source_children,
             );
             sub.parse_block_into(&mut children, None);
         }
@@ -3390,9 +3431,10 @@ impl<'a> Parser<'a> {
         out.extend(children);
     }
 
-    /// Capture an environment's body verbatim as an `OpaqueEnv` without
-    /// descending into it. Used both for genuinely opaque environments and as
-    /// the depth-cap fallback for recognized-but-too-deeply-nested ones.
+    /// Capture an environment's body verbatim as an `OpaqueEnv`. Floats also
+    /// retain parsed source children for asset/caption sync; their body remains
+    /// authoritative for rendering and numbering. Other opaque environments,
+    /// including the depth-cap fallback, remain unparsed.
     fn capture_opaque_env(&mut self, out: &mut Vec<Node>, start: Pos, env: String) {
         let (body_end, end_after) = if environment_is_line_delimited_literal(&env) {
             literal_environment_bounds(self.src, self.byte, &env)
@@ -3402,11 +3444,25 @@ impl<'a> Parser<'a> {
                 .unwrap_or((self.bytes.len(), self.bytes.len()))
         };
         let body = self.src[self.byte..body_end].to_string();
+        let mut children = Vec::new();
+        if self.depth < MAX_NESTING_DEPTH
+            && matches!(env.as_str(), "figure" | "figure*" | "table" | "table*")
+        {
+            let mut sub = Parser::new_at(
+                &self.src[self.byte..body_end],
+                self.file.clone(),
+                self.pos(),
+                self.thms,
+                self.depth + 1,
+                true,
+            );
+            sub.parse_block_into(&mut children, None);
+        }
         self.advance_to(end_after);
         out.push(Node {
             kind: NodeKind::OpaqueEnv { env, body },
             span: self.span_from(start),
-            children: vec![],
+            children,
         });
     }
 
@@ -3472,6 +3528,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         out.extend(children);
@@ -3507,6 +3564,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
@@ -3536,6 +3594,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
@@ -3557,6 +3616,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
@@ -3584,6 +3644,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
@@ -3608,6 +3669,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
@@ -3641,6 +3703,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         promote_letter_commands(&mut children);
@@ -3669,6 +3732,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         self.advance_to(body_end);
@@ -3736,6 +3800,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
         // Only a label parsed directly in the theorem body belongs to its
@@ -3779,6 +3844,7 @@ impl<'a> Parser<'a> {
                 self.pos_at_byte(self.byte + slice_start),
                 self.thms,
                 self.depth + 1,
+                self.source_children,
             );
             sub.parse_block_into(&mut item_children, None);
             list_children.push(Node {
@@ -3811,6 +3877,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
 
@@ -3858,6 +3925,7 @@ impl<'a> Parser<'a> {
             self.pos(),
             self.thms,
             self.depth + 1,
+            self.source_children,
         );
         sub.parse_block_into(&mut children, None);
 
@@ -3945,6 +4013,100 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // Keep float source parsing outside the large recursive block-parser
+    // frame. Only source children use this path; standalone opaque commands
+    // retain their existing rendering behavior.
+    fn parse_float_source_command(
+        &mut self,
+        command: &str,
+        command_end: usize,
+        out: &mut Vec<Node>,
+        text_buf: &mut String,
+        text_start: &mut Option<Pos>,
+        flush_text: fn(&mut String, &mut Option<Pos>, &mut Vec<Node>, Pos, &Path),
+    ) -> bool {
+        if let Some(end) = stored_definition_end(self.src, self.byte) {
+            flush_text(text_buf, text_start, out, self.pos(), &self.file);
+            self.advance_to(end);
+            return true;
+        }
+        let inert_end = match command {
+            "string" => Some(tex_token_end(
+                self.src,
+                skip_tex_space_and_comments(self.src, command_end),
+            )),
+            "detokenize" | "unexpanded" => tex_inert_group_end(
+                self.src,
+                skip_tex_space_and_comments(self.src, command_end),
+                b'{',
+                b'}',
+            ),
+            _ => None,
+        };
+        if let Some(end) = inert_end {
+            let start = self.pos();
+            flush_text(text_buf, text_start, out, start, &self.file);
+            let raw = self.src[self.byte..end].to_string();
+            self.advance_to(end);
+            out.push(Node {
+                kind: NodeKind::OpaqueCmd {
+                    name: command.to_string(),
+                    raw,
+                },
+                span: self.span_from(start),
+                children: vec![],
+            });
+            return true;
+        }
+
+        let name = command.trim_end_matches('*');
+        if !matches!(name, "caption" | "includegraphics" | "label") {
+            return false;
+        }
+        let mut argument_start = skip_tex_space_and_comments(self.src, command_end);
+        let mut starred = command.ends_with('*');
+        if !starred && self.bytes.get(argument_start) == Some(&b'*') {
+            starred = true;
+            argument_start = skip_tex_space_and_comments(self.src, argument_start + 1);
+        }
+        if self.bytes.get(argument_start) == Some(&b'[') {
+            let Some(end) = tex_group_end(self.src, argument_start, b'[', b']') else {
+                return false;
+            };
+            argument_start = skip_tex_space_and_comments(self.src, end);
+        }
+        let Some(end) = tex_group_end(self.src, argument_start, b'{', b'}') else {
+            return false;
+        };
+
+        let start = self.pos();
+        flush_text(text_buf, text_start, out, start, &self.file);
+        let raw = self.src[self.byte..end].to_string();
+        let mut children = Vec::new();
+        if name == "caption" && self.depth < MAX_NESTING_DEPTH {
+            self.advance_to(argument_start + 1);
+            let mut sub = Parser::new_at(
+                &self.src[self.byte..end - 1],
+                self.file.clone(),
+                self.pos(),
+                self.thms,
+                self.depth + 1,
+                true,
+            );
+            sub.parse_block_into(&mut children, None);
+        }
+        self.advance_to(end);
+        out.push(Node {
+            kind: NodeKind::OpaqueCmd {
+                name: format!("{name}{}", if starred { "*" } else { "" }),
+                raw,
+            },
+            span: self.span_from(start),
+            children,
+        });
+        true
+    }
+
     // Keep this nonrecursive path outside `parse_block_into`: allocating its
     // temporary command node in that large recursive frame can exhaust the
     // default test-thread stack before the environment expansion guard runs.
@@ -3993,12 +4155,26 @@ impl<'a> Parser<'a> {
         self.optional_arg()
     }
 
+    fn skip_command_argument_space(&mut self) {
+        if self.source_children {
+            self.skip_tex_argument_space();
+        } else {
+            self.skip_ws_inline();
+        }
+    }
+
     fn optional_arg(&mut self) -> Option<String> {
-        self.skip_ws_inline();
+        self.skip_command_argument_space();
         if self.peek_byte() != Some(b'[') {
             return None;
         }
         let start = self.byte;
+        if self.source_children {
+            let end = tex_group_end(self.src, start, b'[', b']')?;
+            let inside = self.src[start + 1..end - 1].to_string();
+            self.advance_to(end);
+            return Some(inside);
+        }
         let mut i = self.byte + 1;
         let mut depth: i32 = 0;
         while i < self.bytes.len() {
@@ -4027,7 +4203,7 @@ impl<'a> Parser<'a> {
     }
 
     fn balanced_brace_arg(&mut self) -> Option<String> {
-        self.skip_ws_inline();
+        self.skip_command_argument_space();
         if self.peek_byte() != Some(b'{') {
             return None;
         }
@@ -6670,6 +6846,256 @@ After $y$.
         assert!(!n
             .iter()
             .any(|node| matches!(&node.kind, NodeKind::UnsupportedEnvBoundary { .. })));
+    }
+
+    #[test]
+    fn float_source_children_keep_original_file_positions_and_caption_parts() {
+        let source = concat!(
+            "α \\begin% opening comment\n{figure*}[ht]\n",
+            "\\includegraphics% image comment\n[width=.5\\textwidth]% option comment\n{plot.png}\n",
+            "\\caption% caption comment\n[Short $s$]% title comment\n",
+            "{Résumé $x+1$ and \\emph{words}.}\\label{fig:plot}\n",
+            "\\begin{tikzpicture}\n\\draw (0,0)--(1,1);\n\\end{tikzpicture}\n",
+            "\\end{figure*}\n",
+        );
+        let file = PathBuf::from("chapters/figures.tex");
+        let start = Pos {
+            line: 17,
+            col: 4,
+            byte: 500,
+        };
+        let project = Project {
+            root: PathBuf::from("main.tex"),
+            preamble: Preamble {
+                source: String::new(),
+                file: PathBuf::from("main.tex"),
+            },
+            preamble_files: vec![],
+            files: vec![ProjectFile {
+                path: file.clone(),
+                source: source.into(),
+                start,
+                is_root_body: false,
+            }],
+            dependency_files: vec![],
+            warnings: vec![],
+        };
+        let thms = TheoremRegistry::with_builtin_defaults();
+        let nodes = parse_body(&project, &thms).unwrap();
+        let float = nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind, NodeKind::OpaqueEnv { env, .. } if env == "figure*"
+                )
+            })
+            .unwrap();
+        let cursor = Parser::new_at(source, file.clone(), start, &thms, 0, false);
+        let assert_source = |node: &Node, raw: &str| {
+            let offset = source.find(raw).unwrap();
+            assert_eq!(node.span.file, file);
+            assert_eq!(node.span.start, cursor.pos_at_byte(offset));
+            assert_eq!(node.span.end, cursor.pos_at_byte(offset + raw.len()));
+        };
+        let asset = float
+            .children
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind, NodeKind::OpaqueCmd { name, .. } if name == "includegraphics"
+                )
+            })
+            .unwrap();
+        assert_source(
+            asset,
+            "\\includegraphics% image comment\n[width=.5\\textwidth]% option comment\n{plot.png}",
+        );
+        let caption = float
+            .children
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind, NodeKind::OpaqueCmd { name, .. } if name == "caption"
+                )
+            })
+            .unwrap();
+        assert_source(caption, "\\caption% caption comment\n[Short $s$]% title comment\n{Résumé $x+1$ and \\emph{words}.}");
+        assert_source(&caption.children[0], "Résumé ");
+        let math = caption
+            .children
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind, NodeKind::InlineMath(body) if body == "x+1"
+                )
+            })
+            .unwrap();
+        assert_source(math, "$x+1$");
+        assert!(!caption.children.iter().any(|node| matches!(
+            &node.kind, NodeKind::InlineMath(body) if body == "s"
+        )));
+        let diagram = float
+            .children
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind, NodeKind::OpaqueEnv { env, .. } if env == "tikzpicture"
+                )
+            })
+            .unwrap();
+        assert_source(
+            diagram,
+            "\\begin{tikzpicture}\n\\draw (0,0)--(1,1);\n\\end{tikzpicture}",
+        );
+        assert!(matches!(&float.kind, NodeKind::OpaqueEnv { body, .. }
+            if body == &source[source.find("[ht]").unwrap()..source.rfind("\\end{figure*}").unwrap()]));
+    }
+
+    #[test]
+    fn float_source_children_ignore_dormant_commands_and_keep_starred_captions() {
+        let nodes = parse(concat!(
+            "\\begin{figure}\n",
+            "% \\caption{Comment} \\includegraphics{comment.png}\n",
+            "\\def\\fake#1{\\caption{Definition}\\includegraphics{def.png}}\n",
+            "\\newcommand{\\fakeTwo}{\\caption{Stored}}\n",
+            "\\string\\caption{Stringified}\n",
+            "\\detokenize% continued literal\n{\\caption{Literal}}\n",
+            "\\iffalse\\caption{Hidden}\\else\\includegraphics*{live.png}\\fi\n",
+            "\\begin{center}\\def\\hidden#1{\\caption{Nested definition}}\n",
+            "\\caption % before star\n*% before optional\n[Short]{Long $z$.}\n",
+            "\\end{center}\n",
+            "\\end{figure}\n",
+        ));
+        let mut pending = nodes.iter().collect::<Vec<_>>();
+        let mut captions = Vec::new();
+        let mut assets = Vec::new();
+        while let Some(node) = pending.pop() {
+            if let NodeKind::OpaqueCmd { name, raw } = &node.kind {
+                if name.starts_with("caption") {
+                    captions.push((name, raw, node));
+                }
+                if name.starts_with("includegraphics") {
+                    assets.push((name.as_str(), raw.as_str()));
+                }
+            }
+            pending.extend(&node.children);
+        }
+        assert_eq!(captions.len(), 1, "{captions:?}");
+        assert_eq!(captions[0].0, "caption*");
+        assert!(captions[0].1.ends_with("[Short]{Long $z$.}"));
+        assert!(captions[0].2.children.iter().any(|node| matches!(
+            &node.kind, NodeKind::InlineMath(body) if body == "z"
+        )));
+        assert_eq!(
+            assets,
+            [("includegraphics*", "\\includegraphics*{live.png}")]
+        );
+    }
+
+    #[test]
+    fn deeply_nested_float_source_children_stop_at_the_parser_depth_cap() {
+        for (open, close) in [("\\begin{figure}", "\\end{figure}"), ("\\caption{", "}")] {
+            let depth = MAX_NESTING_DEPTH as usize + 100;
+            let source = format!(
+                "\\begin{{figure}}{}Text{}\\end{{figure}}",
+                open.repeat(depth),
+                close.repeat(depth),
+            );
+            let nodes = parse(&source);
+            let mut node = &nodes[0];
+            let mut retained = 0;
+            while let Some(child) = node.children.first() {
+                node = child;
+                retained += 1;
+            }
+            assert_eq!(retained, MAX_NESTING_DEPTH as usize);
+        }
+    }
+
+    #[test]
+    fn live_braced_calls_preserve_first_option_and_comment_separated_star() {
+        let calls = live_braced_command_calls(
+            concat!(
+                "\\detokenize{\\includegraphics[width=9in]{literal.png}}\n",
+                "\\includegraphics% before star\n *% before option\n[width=.5\\textwidth]{live.png}\n",
+                "\\caption % before star\n* [Short]{Long}\n",
+                "\\cite[see][p.~2]{source}\\label{fig:live}\n",
+            ),
+            &["includegraphics", "caption", "cite", "label"],
+            2,
+        );
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0].value, "live.png");
+        assert!(calls[0].starred);
+        assert_eq!(calls[0].optional.as_deref(), Some(r"width=.5\textwidth"));
+        assert!(calls[1].starred);
+        assert_eq!(calls[1].optional.as_deref(), Some("Short"));
+        assert_eq!(calls[2].optional.as_deref(), Some("see"));
+        assert_eq!(calls[3].optional, None);
+    }
+
+    #[test]
+    fn caption_source_labels_keep_comment_continued_arguments_in_one_node() {
+        let nodes =
+            parse("\\begin{figure}\\caption{A\\label% note\n{fig:inside} caption.}\\end{figure}");
+        let caption = &nodes[0].children[0];
+        let label = caption
+            .children
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.kind, NodeKind::OpaqueCmd { name, .. } if name == "label"
+                )
+            })
+            .unwrap();
+        assert!(matches!(&label.kind, NodeKind::OpaqueCmd { raw, .. }
+            if raw == "\\label% note\n{fig:inside}"));
+        assert!(caption.children.iter().all(|node| !matches!(
+            &node.kind, NodeKind::Text(text) if text.contains("fig:inside")
+        )));
+    }
+
+    #[test]
+    fn caption_source_children_retain_visible_literal_commands_without_parsing_them() {
+        let nodes = parse(concat!(
+            "\\begin{figure}\\caption{",
+            "\\string\\ref ",
+            "\\detokenize% continued\n{\\caption{Literal}} ",
+            "\\unexpanded{\\includegraphics{literal.png}}",
+            "}\\end{figure}",
+        ));
+        let caption = &nodes[0].children[0];
+        let commands = caption
+            .children
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::OpaqueCmd { name, raw } => {
+                    assert!(node.children.is_empty());
+                    Some((name.as_str(), raw.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            commands,
+            [
+                ("string", r"\string\ref"),
+                (
+                    "detokenize",
+                    "\\detokenize% continued\n{\\caption{Literal}}"
+                ),
+                ("unexpanded", r"\unexpanded{\includegraphics{literal.png}}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn standalone_caption_keeps_its_opaque_command_behavior() {
+        let nodes = parse(r"\caption[Short]{Long $x$.}");
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(&nodes[0].kind, NodeKind::OpaqueCmd { name, raw }
+            if name == "caption" && raw == r"\caption[Short]{Long $x$.}"));
+        assert!(nodes[0].children.is_empty());
     }
 
     #[test]

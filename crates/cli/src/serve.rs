@@ -53,7 +53,7 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
-const WS_PROTOCOL_VERSION: &str = "91";
+const WS_PROTOCOL_VERSION: &str = "92";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the

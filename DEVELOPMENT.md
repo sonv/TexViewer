@@ -123,6 +123,11 @@ browser selection variable.
 source jumps, and live edits in both browser engines. It also checks that
 Markdown headings keep their block layout.
 
+`npm run test:figures` checks figure and caption syncing through the real
+cursor and source-jump endpoints in either browser engine. It covers
+offscreen scrolling, caption words and gaps, included files, live edits,
+and nested TikZ placeholders without compiling project TeX.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,

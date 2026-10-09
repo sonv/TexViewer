@@ -1,5 +1,5 @@
 //! Math row splitting, equation numbering, ref resolution, label aliases, and
-//! float placeholders (figure/table with `\includegraphics`). Used by the
+//! float assets (figure/table with `\includegraphics`). Used by the
 //! `write_node` dispatcher in `renderer.rs`.
 
 use std::collections::HashMap;
@@ -11,8 +11,8 @@ use crate::sync::MathRow;
 
 use super::util::{
     asset_url, css_number, escape_attr, escape_html, escape_math, escape_tex_text, fnv_hash,
-    is_relax_option, latex_command_call, latex_optional_arg, parse_latex_number,
-    parse_number_prefix, refkey_attr, sanitize_id, strip_wrapping_braces,
+    is_relax_option, latex_optional_arg, parse_latex_number, parse_number_prefix, sanitize_id,
+    strip_wrapping_braces,
 };
 
 pub(super) fn equation_number_html(number: Option<&str>, row_numbers: &[Option<String>]) -> String {
@@ -875,71 +875,7 @@ pub(super) fn render_latex_text_with_math(s: &str, labels: &LabelTable) -> Strin
     super::render_inline_latex(s, labels)
 }
 
-pub(super) fn write_float_placeholder(
-    out: &mut String,
-    env: &str,
-    body: &str,
-    labels: &LabelTable,
-    float_number: Option<&str>,
-    rendered_asset: Option<&str>,
-) {
-    let live_body = crate::parser::executable_latex_source(body);
-    let kind = if env.trim_end_matches('*') == "table" {
-        "Table"
-    } else {
-        "Figure"
-    };
-    let float_labels = crate::parser::live_braced_command_calls(&live_body, &["label"], 0)
-        .into_iter()
-        .map(|call| call.value)
-        .collect::<Vec<_>>();
-    let primary_label = float_labels.first().map(String::as_str);
-    let id_attr = primary_label
-        .map(|label| format!(r#" id="{}""#, escape_attr(&sanitize_id(label))))
-        .unwrap_or_default();
-    let refkey = refkey_attr(primary_label);
-    let alias_html = label_alias_anchors(&live_body, primary_label);
-    let kind_label = float_number
-        .map(str::to_string)
-        .or_else(|| primary_label.and_then(|label| labels.number.get(label).cloned()))
-        .map(|number| format!("{kind} {}.", escape_html(&number)))
-        .unwrap_or_else(|| format!("{kind}."));
-    let caption = crate::parser::live_braced_command_calls(&live_body, &["caption"], 1)
-        .into_iter()
-        .next();
-    let asset = latex_command_call(&live_body, "includegraphics");
-    let caption_html = caption
-        .as_ref()
-        .map(|call| render_latex_text_with_math(strip_labels(&call.value).trim(), labels))
-        .unwrap_or_else(|| "content omitted from preview".to_string());
-    let caption_prefix = if caption.as_ref().is_some_and(|call| call.starred) {
-        String::new()
-    } else {
-        format!(r#"<span class="float-kind">{kind_label}</span> "#)
-    };
-    let asset_html = rendered_asset
-        .map(str::to_string)
-        .or_else(|| {
-            asset
-                .as_ref()
-                .map(|call| render_float_asset(&call.arg, call.optional.as_deref()))
-        })
-        .unwrap_or_default();
-    writeln!(
-        out,
-        r#"<figure class="float-placeholder float-{env}"{id}{refkey} data-env="{env}">{aliases}{asset}<figcaption>{caption_prefix}{caption}</figcaption></figure>"#,
-        env = escape_attr(env),
-        id = id_attr,
-        refkey = refkey,
-        aliases = alias_html,
-        asset = asset_html,
-        caption_prefix = caption_prefix,
-        caption = caption_html,
-    )
-    .unwrap();
-}
-
-fn render_float_asset(asset: &str, options: Option<&str>) -> String {
+pub(super) fn render_float_asset(asset: &str, options: Option<&str>) -> String {
     let asset = asset.trim();
     if asset.is_empty() {
         return String::new();

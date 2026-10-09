@@ -13,6 +13,20 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.56] - 2026-10-09
+
+### Fixed
+
+- Source syncing now tracks figure images, nested TikZ diagrams, and captions
+  separately. Moving through a multiline caption follows its words and math,
+  and clicking the preview jumps to the corresponding source location.
+  Captions with scoped font or color declarations keep a single target to
+  preserve their formatting.
+- Figure anchors stay current after live edits, including figures in input
+  files. Table floats also distinguish their tabular content from the caption.
+- Existing viewer tabs reload onto the updated source-navigation behavior
+  after a daemon upgrade (protocol 92).
+
 ## [2.1.55] - 2026-10-01
 
 ### Fixed

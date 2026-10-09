@@ -25,21 +25,21 @@ use crate::sync::{SyncIndex, SyncKind};
 
 mod bib;
 mod color;
+mod floats;
 mod math;
 mod shell;
 mod table;
 mod util;
 use bib::format_bib_entry;
 use color::resolve_css as resolve_color_css;
+use floats::write_float_placeholder;
 use math::{
     display_math_rows, equation_number_html, equation_row_refkey_html, label_alias_anchors,
     markdown_standalone_display_environment, render_latex_text_with_math, resolve_math_refs,
-    strip_labels, write_float_placeholder, write_flow_marker, write_inline_math_span,
+    strip_labels, write_flow_marker, write_inline_math_span,
 };
 use shell::wrap_in_shell;
-use table::{
-    first_nested_tabular, is_tabular_environment, render_tabular, render_tabular_with_number,
-};
+use table::{is_tabular_environment, render_tabular_with_number};
 use util::{
     balanced_group_end, capitalize, data_src, escape_attr, escape_html, escape_math, fnv_hash,
     is_blank_line_separator, latex_command_arg, latex_command_call, latex_optional_usize,
@@ -699,7 +699,7 @@ fn starts_generated_id_attr(rest: &str) -> bool {
     // IdGen::next) also lets this stripper match them without ever matching a
     // label-derived id like `thm-2-1` (from `\label{thm:2.1}`), which must
     // NOT be stripped: label ids are stable, meaningful content.
-    const IDGEN_PREFIXES: [&str; 16] = [
+    const IDGEN_PREFIXES: [&str; 20] = [
         r#" id="quote-"#,
         r#" id="callout-"#,
         r#" id="letter-"#,
@@ -716,6 +716,10 @@ fn starts_generated_id_attr(rest: &str) -> bool {
         r#" id="srcs-"#,
         r#" id="srcw-"#,
         r#" id="md-"#,
+        r#" id="float-"#,
+        r#" id="float-asset-"#,
+        r#" id="caption-"#,
+        r#" id="tikz-"#,
     ];
     // Counter-based ids that stay bare-numeric: footnotes keep their visible
     // document-order number (`fn-3` / `fnpop-3`), and `eq-` anchors predate
@@ -2843,53 +2847,27 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             write_children(out, &n.children, ctx);
             writeln!(out, "</div></section>").unwrap();
         }
-        NodeKind::OpaqueEnv { env, body } => {
-            match env.as_str() {
-                tikz if is_tikz_environment(tikz) => {
-                    out.push_str(&tikz_html(tikz, body, &n.span, ctx));
-                }
-                tabular if is_tabular_environment(tabular) => {
-                    let number = (tabular == "longtable")
-                        .then(|| ctx.labels.float_number_for_span(&n.span))
-                        .flatten();
-                    if let Some(table) =
-                        render_tabular_with_number(tabular, body, ctx.labels, number)
-                    {
-                        out.push_str(&table);
-                    } else {
-                        write_opaque_environment(out, tabular, body);
-                    }
-                }
-                "figure" | "figure*" | "table" | "table*" => {
-                    // Tables are retained opaquely so their alignment syntax is
-                    // not mistaken for prose. Recover the first live nested
-                    // tabular here, using the same comment/definition-aware
-                    // environment scanner as TikZ. If a float contains both,
-                    // the table is the primary asset and avoids duplicating a
-                    // diagram that belongs to one of its cells.
-                    let tabular_asset =
-                        first_nested_tabular(body).and_then(|(tabular_env, tabular_body)| {
-                            render_tabular(&tabular_env, &tabular_body, ctx.labels)
-                        });
-                    let rendered_asset = tabular_asset.or_else(|| {
-                        first_nested_tikz(body).map(|(tikz_env, tikz_body)| {
-                            tikz_html(&tikz_env, &tikz_body, &n.span, ctx)
-                        })
-                    });
-                    write_float_placeholder(
-                        out,
-                        env,
-                        body,
-                        ctx.labels,
-                        ctx.labels.float_number_for_span(&n.span),
-                        rendered_asset.as_deref(),
-                    );
-                }
-                _ => {
-                    write_opaque_environment(out, env, body);
+        NodeKind::OpaqueEnv { env, body } => match env.as_str() {
+            tikz if is_tikz_environment(tikz) => {
+                out.push_str(&tikz_html(tikz, body, &n.span, ctx));
+            }
+            tabular if is_tabular_environment(tabular) => {
+                let number = (tabular == "longtable")
+                    .then(|| ctx.labels.float_number_for_span(&n.span))
+                    .flatten();
+                if let Some(table) = render_tabular_with_number(tabular, body, ctx.labels, number) {
+                    out.push_str(&table);
+                } else {
+                    write_opaque_environment(out, tabular, body);
                 }
             }
-        }
+            "figure" | "figure*" | "table" | "table*" => {
+                write_float_placeholder(out, n, env, body, ctx);
+            }
+            _ => {
+                write_opaque_environment(out, env, body);
+            }
+        },
         NodeKind::UnsupportedEnvBoundary { env, boundary } => {
             let id = ctx.idgen.next("unsupported-env");
             record(ctx, &id, &n.span, None);
@@ -8460,7 +8438,7 @@ See \cite{second,custom,first}.
         assert!(out
             .body_html
             .contains(r##"data-target="fig:plot" data-kind="ref">1</a>"##));
-        assert!(out.body_html.contains("A useful plot at "));
+        assert!(text_content(&out.body_html).contains("A useful plot at "));
         assert!(out.body_html.contains(r#"data-tex="\(T=1\)""#));
         assert!(out
             .body_html
@@ -8764,7 +8742,7 @@ See \cite{second,custom,first}.
         assert!(out
             .body_html
             .contains(r#"<span class="float-kind">Table 1.</span>"#));
-        assert!(out.body_html.contains("Scores at "));
+        assert!(text_content(&out.body_html).contains("Scores at "));
         assert_eq!(out.body_html.matches(r#"class="math inline""#).count(), 1);
         assert!(out
             .body_html
@@ -8901,7 +8879,7 @@ See \cite{second,custom,first}.
             "See \\ref{tab:scores}.\n",
             "\\end{document}\n",
         ));
-        assert!(body.contains(r#"<span class="float-kind">Table 1.</span> Scores"#), "{body}");
+        assert!(text_content(&body).contains("Table 1. Scores"), "{body}");
         assert!(body.contains(r#"data-target="tab:scores" data-kind="ref">1</a>"#), "{body}");
         assert!(!body.contains(r#"\label"#), "{body}");
         assert!(!body.contains(">tab:scores<"), "{body}");
@@ -9010,7 +8988,7 @@ See \cite{second,custom,first}.
         assert!(out
             .body_html
             .contains(r#"class="float-placeholder float-figure""#));
-        assert!(out.body_html.contains("A circle."));
+        assert!(text_content(&out.body_html).contains("A circle."));
         assert!(out.body_html.contains("TikZ preview disabled."));
         assert!(out.body_html.contains("render-tikz = true"));
         assert!(!out.body_html.contains(r#"\draw"#));

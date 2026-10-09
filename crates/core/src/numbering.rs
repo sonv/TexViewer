@@ -478,6 +478,9 @@ fn collect_bibliography_items(
     let mut has_external = false;
     for node in nodes {
         let nested = match &node.kind {
+            // Float children are source anchors for a body already handled
+            // opaquely below; they must not discover a second bibliography.
+            NodeKind::OpaqueEnv { env, .. } if is_float_env(env) => (false, false),
             NodeKind::TheBibliography => {
                 has_manual = true;
                 collect_bibliography_items(&node.children, &mut Some(0), items)
@@ -946,6 +949,8 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 }
             }
             NodeKind::OpaqueEnv { env, body } if is_float_env(env) => {
+                // The parsed children only retain precise source locations.
+                // Number labels/citations from the authoritative raw body once.
                 let (n, display_kind) = match env.trim_end_matches('*') {
                     "table" | "longtable" => {
                         state.table += 1;
@@ -2240,6 +2245,28 @@ j &= k\label{eq:last}
                 ]
             );
         }
+    }
+
+    #[test]
+    fn float_source_children_do_not_repeat_numbering_or_leak_pending_labels() {
+        let mut parsed = nodes(concat!(
+            "\\begin{figure}\n",
+            "\\caption{First \\cite{first}\\label{fig:first}}\n",
+            "\\begin{equation}x=1\\label{eq:float}\\end{equation}\n",
+            "\\end{figure}\n",
+            "\\begin{figure}\\caption*{Second \\cite{second}}\\label{fig:second}\\end{figure}\n",
+            "\\begin{equation}y=2\\label{eq:after}\\end{equation}\n",
+            "\\cite{after}\n",
+        ));
+        assert!(parsed.iter().any(|node| matches!(
+            &node.kind, NodeKind::OpaqueEnv { env, .. } if env == "figure"
+        ) && !node.children.is_empty()));
+        let labels = assign(&mut parsed);
+        assert_eq!(labels.number["fig:first"], "1");
+        assert_eq!(labels.number["fig:second"], "2");
+        assert_eq!(labels.number["eq:after"], "1");
+        assert_eq!(labels.kind["fig:first"], "Figure");
+        assert_eq!(labels.cite_order, ["first", "second", "after"]);
     }
 
     #[test]
