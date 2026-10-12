@@ -13,6 +13,19 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.57] - 2026-10-12
+
+### Fixed
+
+- Citation notes are no longer discarded. For example,
+  `\cite[Lemma~7.3, p.~251]{Santambrogio2015}` keeps the lemma and page
+  after the bibliography label. Two optional arguments retain both the
+  prenote and postnote, including inline formatting, math, and nonbreaking
+  spaces.
+- Citation notes also work in headings, captions, tables, and text macros.
+  Bibliography links, hover previews, source navigation, and live edits
+  remain available.
+
 ## [2.1.56] - 2026-10-09
 
 ### Fixed

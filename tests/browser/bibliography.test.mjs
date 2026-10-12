@@ -51,7 +51,8 @@ async function fixture(t, source = documentSource(), files = {}) {
   const port = portProbe.address().port;
   await new Promise(resolveClose => portProbe.close(resolveClose));
   const url = `http://127.0.0.1:${port}`;
-  const daemon = spawn(binary, ['serve', input, '--port', String(port)], {
+  // Keep source navigation live without opening or changing the user's editor.
+  const daemon = spawn(binary, ['serve', input, '--port', String(port), '--editor', ''], {
     env: { ...process.env, XDG_CONFIG_HOME: join(directory, 'config') },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -98,7 +99,7 @@ async function fixture(t, source = documentSource(), files = {}) {
       await delay(50);
     }
   }
-  return { page, open, update, input, directory };
+  return { page, open, update, input, directory, url };
 }
 
 async function hoverCitation(page, key) {
@@ -343,6 +344,112 @@ const bibtex = String.raw`@book{zulu,
   year = {2021}
 }
 `;
+
+const noteBibliography = String.raw`\begin{thebibliography}{9}
+\bibitem{Santambrogio2015} Filippo Santambrogio. \emph{Optimal Transport for Applied Mathematicians}. 2015.
+\bibitem{other} Other Author. A second source.
+\end{thebibliography}`;
+const noteBibtex = String.raw`@book{Santambrogio2015,
+  author = {Santambrogio, Filippo},
+  title = {Optimal Transport for Applied Mathematicians},
+  year = {2015}
+}
+@book{other, author = {Other, Author}, title = {A second source}, year = {2020}}
+`;
+
+for (const sourceType of ['inline', 'BibTeX']) {
+  test(`citation notes survive single and double options with ${sourceType} bibliography`, { timeout: 30000 }, async t => {
+    const citations = String.raw`One note: \cite[Lemma~7.3, p.~251]{Santambrogio2015}.
+
+Two notes: \cite[see][Lemma~7.3, p.~251]{Santambrogio2015}.
+
+Several sources: \cite[compare][pp.~251-253]{Santambrogio2015,other}.
+
+Empty prenote: \cite[][p.~251]{Santambrogio2015}.`;
+    const bibliography = sourceType === 'inline' ? noteBibliography :
+      String.raw`\bibliographystyle{unsrt}\bibliography{references}`;
+    const files = sourceType === 'inline' ? {} : { 'references.bib': noteBibtex };
+    const { page, open } = await fixture(t, documentSource(bibliography, citations), files);
+    await open();
+    assert.deepEqual(await page.locator('#page .cite-group').allTextContents(), [
+      '[1, Lemma\u00a07.3, p.\u00a0251]',
+      '[see 1, Lemma\u00a07.3, p.\u00a0251]',
+      '[compare 1; 2, pp.\u00a0251-253]',
+      '[1, p.\u00a0251]',
+    ]);
+    await assertCitation(page, 'Santambrogio2015', '1');
+    await assertCitation(page, 'other', '2');
+    await hoverCitation(page, 'Santambrogio2015');
+    assert.equal(await page.locator('.hover-preview dt').textContent(), '[1]');
+    assert.match(await page.locator('.hover-preview dd').textContent(), /Filippo Santambrogio.*Optimal Transport/);
+    assert.doesNotMatch(await page.locator('.hover-preview').textContent(), /Lemma|p\.\u00a0251|Other Author/,
+      'the bibliography preview remains entry content, not the citation note');
+    await page.locator('#page a.cite[data-key="Santambrogio2015"]').first().dispatchEvent('mouseout');
+    await screenshot(page, `citation-notes-${sourceType.toLowerCase()}`);
+  });
+}
+
+test('citation notes work in formatting and captions, remain source-linked, and update live', { timeout: 30000 }, async t => {
+  const citations = String.raw`Ordinary: \cite[Lemma~7.3, p.~251]{Santambrogio2015}.
+
+\textbf{Formatted: \cite[see][p.~252]{Santambrogio2015}.}
+
+\begin{figure}
+\caption{Caption cites \cite[Lemma~7.3, p.~251]{Santambrogio2015}.}
+\end{figure}`;
+  const source = documentSource(noteBibliography, citations);
+  const { page, open, update, input, url } = await fixture(t, source);
+  const cursors = [];
+  page.on('websocket', socket => socket.on('framereceived', ({ payload }) => {
+    try {
+      const event = JSON.parse(String(payload));
+      if (event.event === 'source-cursor') cursors.push(event);
+    } catch { /* non-JSON frame */ }
+  }));
+  await open();
+  assert.deepEqual(await page.locator('#page .cite-group').allTextContents(), [
+    '[1, Lemma\u00a07.3, p.\u00a0251]', '[see 1, p.\u00a0252]', '[1, Lemma\u00a07.3, p.\u00a0251]',
+  ]);
+  assert.equal(await page.locator('#page strong .cite-group').count(), 1);
+  assert.equal(await page.locator('#page figcaption .cite-group').count(), 1);
+  const group = page.locator('#page .cite-group').first();
+  const link = group.locator('a.cite');
+  const citationStart = source.indexOf(String.raw`\cite[Lemma`);
+  const preceding = source.slice(0, citationStart);
+  const expectedPosition = { file: await realpath(input), line: preceding.split('\n').length,
+    col: Buffer.byteLength(preceding.slice(preceding.lastIndexOf('\n') + 1)) + 1 };
+  assert.equal(await group.getAttribute('data-src'),
+    `${expectedPosition.file}:${expectedPosition.line}:${expectedPosition.col}`);
+  const notePosition = { ...expectedPosition, col: expectedPosition.col + String.raw`\cite[Le`.length };
+  const cursorResponse = await fetch(`${url}/cursor`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(notePosition),
+  });
+  assert.equal(cursorResponse.status, 204);
+  for (let attempt = 0; !cursors.length; attempt++) {
+    assert.ok(attempt < 100, 'cursor movement within the note reaches the browser');
+    await delay(25);
+  }
+  assert.equal(cursors.at(-1).element_id, await group.getAttribute('id'));
+  assert.equal(cursors.at(-1).scroll_only, false, 'the note belongs to the citation source range');
+  await link.click({ modifiers: ['Meta'] });
+  const response = await fetch(`${url}/jump?after=0&wait=2000`);
+  assert.equal(response.status, 200, 'the citation click reaches the real source-jump endpoint');
+  const jump = await response.json();
+  assert.deepEqual({ file: jump.file, line: jump.line, col: jump.col }, expectedPosition);
+  await hoverCitation(page, 'Santambrogio2015');
+  const revised = source.replaceAll('Lemma~7.3, p.~251', 'Proposition~7.4, pp.~252-254');
+  await update(revised);
+  await page.waitForFunction(() => document.querySelector('#page .cite-group')?.textContent ===
+    '[1, Proposition\u00a07.4, pp.\u00a0252-254]');
+  assert.deepEqual(await page.locator('#page .cite-group').allTextContents(), [
+    '[1, Proposition\u00a07.4, pp.\u00a0252-254]', '[see 1, p.\u00a0252]', '[1, Proposition\u00a07.4, pp.\u00a0252-254]',
+  ]);
+  await assertCitation(page, 'Santambrogio2015', '1');
+  await hoverCitation(page, 'Santambrogio2015');
+  assert.match(await page.locator('.hover-preview dd').textContent(), /Filippo Santambrogio.*Optimal Transport/);
+  assert.doesNotMatch(await page.locator('#page').textContent(), /Lemma|p\.\u00a0251/);
+  await screenshot(page, 'citation-notes-live-edit');
+});
 
 for (const [style, expected] of [['plain', ['2', '1']], ['unsrt', ['1', '2']], ['alpha', ['Zul20', 'Alp21']]]) {
   test(`existing BibTeX ${style} bibliography keeps citation labels and hover content`, { timeout: 30000 }, async t => {

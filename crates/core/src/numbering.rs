@@ -996,7 +996,14 @@ fn walk(nodes: &mut [Node], state: &mut State<'_>) {
                 record_citations_from_latex(raw, state);
             }
             NodeKind::Cite { keys } => {
+                let (prenote, postnote) = citation_notes(&node.children);
+                if let Some(note) = prenote {
+                    record_citations_from_latex(note, state);
+                }
                 record_citation_keys(keys.iter().cloned(), state);
+                if let Some(note) = postnote {
+                    record_citations_from_latex(note, state);
+                }
             }
             _ => {
                 walk(&mut node.children, state);
@@ -1020,33 +1027,86 @@ pub(crate) fn is_citation_command(command: &str) -> bool {
     CITATION_COMMANDS.contains(&command)
 }
 
+pub(crate) const CITATION_PRENOTE: &str = "citation-prenote";
+pub(crate) const CITATION_POSTNOTE: &str = "citation-postnote";
+
+/// Read the internal raw-note metadata without exposing marker names to the
+/// renderer or changing the public `NodeKind::Cite` constructor.
+pub(crate) fn citation_notes(children: &[Node]) -> (Option<&str>, Option<&str>) {
+    let mut prenote = None;
+    let mut postnote = None;
+    for child in children {
+        if let NodeKind::OpaqueCmd { name, raw } = &child.kind {
+            match name.as_str() {
+                CITATION_PRENOTE if prenote.is_none() => prenote = Some(raw.as_str()),
+                CITATION_POSTNOTE if postnote.is_none() => postnote = Some(raw.as_str()),
+                _ => {}
+            }
+        }
+    }
+    (prenote, postnote)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CitationNote<'a> {
+    pub raw: &'a str,
+    /// Inner-argument byte range in the source passed to the call parser.
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct CitationCall<'a> {
+    pub keys: Vec<String>,
+    pub prenote: Option<CitationNote<'a>>,
+    pub postnote: Option<CitationNote<'a>>,
+    pub end: usize,
+}
+
 /// Parse the optional prenote/postnote arguments and required key group after
 /// a citation control word. The returned end is the byte immediately after
-/// the key group.
+/// the key group. A single optional argument is the postnote. Note contents
+/// remain raw so the parser can preserve exact source positions.
 pub(crate) fn citation_call_after_command(
     src: &str,
     after_command: usize,
-) -> Option<(Vec<String>, usize)> {
+) -> Option<CitationCall<'_>> {
     let bytes = src.as_bytes();
     let mut i = skip_tex_argument_space(src, after_command);
-    for _ in 0..2 {
+    let mut notes = [None, None];
+    for note in &mut notes {
         if bytes.get(i) != Some(&b'[') {
             break;
         }
-        i = crate::parser::tex_group_end(src, i, b'[', b']')?;
-        i = skip_tex_argument_space(src, i);
+        let end = crate::parser::citation_optional_arg_end(src, i)?;
+        *note = Some(CitationNote {
+            raw: &src[i + 1..end - 1],
+            start: i + 1,
+            end: end - 1,
+        });
+        i = skip_tex_argument_space(src, end);
     }
     if bytes.get(i) != Some(&b'{') {
         return None;
     }
     let end = crate::parser::tex_group_end(src, i, b'{', b'}')?;
-    let keys = src[i + 1..end - 1]
+    let keys = crate::parser::executable_latex_source(&src[i + 1..end - 1])
         .split(',')
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .map(str::to_string)
         .collect();
-    Some((keys, end))
+    let (prenote, postnote) = if notes[1].is_some() {
+        (notes[0], notes[1])
+    } else {
+        (None, notes[0])
+    };
+    Some(CitationCall {
+        keys,
+        prenote,
+        postnote,
+        end,
+    })
 }
 
 fn record_citations_from_latex(src: &str, state: &mut State<'_>) {
@@ -1147,9 +1207,15 @@ fn collect_expanded_citation_keys(
         }
 
         if is_citation_command(name) {
-            if let Some((citation_keys, end)) = citation_call_after_command(&source, word_end) {
-                keys.extend(citation_keys);
-                i = end;
+            if let Some(call) = citation_call_after_command(&source, word_end) {
+                if let Some(note) = call.prenote {
+                    collect_expanded_citation_keys(note.raw, macros, depth + 1, budget, keys);
+                }
+                keys.extend(call.keys);
+                if let Some(note) = call.postnote {
+                    collect_expanded_citation_keys(note.raw, macros, depth + 1, budget, keys);
+                }
+                i = call.end;
             } else {
                 i = word_end;
             }
@@ -1848,6 +1914,78 @@ mod tests {
             items.extend(bibliography_items(&node.children));
         }
         items
+    }
+
+    #[test]
+    fn citation_note_discovery_uses_prenote_keys_postnote_order() {
+        for source in [
+            r"\cite[see \cite{pre}][p.~2 and \cite{post}]{main-a,main-b}\cite{after}",
+            r"\emph{\cite[see \cite{pre}][p.~2 and \cite{post}]{main-a,main-b}}\cite{after}",
+            r"\begin{figure}\caption{\cite[see \cite{pre}][p.~2 and \cite{post}]{main-a,main-b}}\end{figure}\cite{after}",
+        ] {
+            let labels = assign(&mut nodes(source));
+            assert_eq!(
+                labels.cite_order,
+                ["pre", "main-a", "main-b", "post", "after"],
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn citation_note_macro_discovery_respects_inert_content_and_budgets() {
+        let macros = vec![
+            ExtractedMacro {
+                name: "source".into(),
+                body: r"\cite{#1}".into(),
+                n_args: 1,
+                default: None,
+                source: String::new(),
+                source_file: PathBuf::from("t.tex"),
+            },
+            ExtractedMacro {
+                name: "loop".into(),
+                body: r"\cite[\loop]{recursive}".into(),
+                n_args: 0,
+                default: None,
+                source: String::new(),
+                source_file: PathBuf::from("t.tex"),
+            },
+        ];
+        let source = concat!(
+            "\\cite[\\source{pre}][\\source{post} ",
+            "\\verb|\\cite{literal}| \\iffalse\\cite{hidden}\\fi ",
+            "% \\cite{comment}\n \\loop]{main}\\cite{after}"
+        );
+        let mut parsed = nodes(source);
+        let labels = assign_numbers_with_macros(
+            &mut parsed,
+            &HashMap::new(),
+            BibStyle::Numeric,
+            &TheoremRegistry::with_builtin_defaults(),
+            None,
+            &macros,
+        );
+        assert_eq!(
+            labels.cite_order,
+            ["pre", "main", "post", "recursive", "after"]
+        );
+    }
+
+    #[test]
+    fn citation_call_optional_groups_protect_braces_literals_and_comments() {
+        for source in [
+            r"\cite[see {A]B} and \verb|]|]{key}",
+            "\\cite% after command\n[\\string] \\detokenize{]}% hidden ]\n p.~2]{key}",
+            r"\cite[\iffalse ] hidden\else live\fi]{key}",
+        ] {
+            let call = citation_call_after_command(source, "\\cite".len()).unwrap();
+            assert_eq!(call.keys, ["key"], "{source}");
+            assert_eq!(call.end, source.len(), "{source}");
+            assert!(call.prenote.is_none());
+            let note = call.postnote.unwrap();
+            assert_eq!(note.raw, &source[note.start..note.end]);
+        }
     }
 
     #[test]

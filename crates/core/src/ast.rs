@@ -172,7 +172,11 @@ pub enum NodeKind {
     },
     /// `\ref{key}` / `\eqref{key}` / `\cref{key}` / `\autoref{key}`.
     Ref { kind: RefKind, key: String },
-    /// `\cite{a,b,c}` etc.
+    /// `\cite{a,b,c}` etc. Optional notes are retained in `Node::children`
+    /// as internal `OpaqueCmd` metadata named `citation-prenote` and
+    /// `citation-postnote`, with raw TeX and exact inner-argument spans.
+    /// They are metadata, not independently rendered commands. Keeping them
+    /// there preserves the public keys-only variant for existing callers.
     Cite { keys: Vec<String> },
     /// A raw/special `\begin{env}` ... `\end{env}` whose body must not be
     /// parsed as ordinary TeX (verbatim/code, floats, TikZ, or a recursion

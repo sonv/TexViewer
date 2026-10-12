@@ -2123,10 +2123,11 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             let id = ctx.idgen.next("cite");
             record(ctx, &id, &n.span, None);
             let (l, r) = citation_delimiters(ctx.bib_style);
+            let (prenote, postnote) = crate::numbering::citation_notes(&n.children);
             write!(
                 out,
                 r#"<span class="cite-group" id="{id}" data-src="{src}">{l}{}{r}</span>"#,
-                citation_links_html(keys, ctx.labels),
+                citation_contents_html(keys, prenote, postnote, ctx.labels),
                 id = escape_attr(&id),
                 src = escape_attr(&data_src(&n.span)),
             )
@@ -3711,6 +3712,36 @@ fn citation_delimiters(style: BibStyle) -> (char, char) {
     }
 }
 
+/// Both semantic citations and citations embedded in inline TeX use the same
+/// note rendering. Notes sit outside the bibliography links so hovering a
+/// reference still identifies just that entry, even with several keys.
+fn citation_contents_html(
+    keys: &[String],
+    prenote: Option<&str>,
+    postnote: Option<&str>,
+    labels: &LabelTable,
+) -> String {
+    let render_note = |note: &str| {
+        let source = crate::parser::executable_latex_source(note);
+        render_inline_latex(source.trim(), labels)
+    };
+    let mut out = prenote.map(render_note).unwrap_or_default();
+    let links = citation_links_html(keys, labels);
+    if !links.is_empty() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&links);
+    }
+    if let Some(note) = postnote.map(render_note).filter(|note| !note.is_empty()) {
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(&note);
+    }
+    out
+}
+
 fn citation_links_html(keys: &[String], labels: &LabelTable) -> String {
     // A custom bibitem label may itself contain a citation (or a macro that
     // expands to one). Do not recursively expand labels or nest links there.
@@ -4225,15 +4256,20 @@ pub(super) fn render_inline_latex(s: &str, labels: &LabelTable) -> String {
             }
         }
         if crate::numbering::is_citation_command(name) {
-            if let Some((keys, next)) = crate::numbering::citation_call_after_command(s, cmd_end) {
+            if let Some(call) = crate::numbering::citation_call_after_command(s, cmd_end) {
                 let (left, right) = citation_delimiters(labels.bib_style);
                 write!(
                     out,
                     r#"<span class="cite-group">{left}{}{right}</span>"#,
-                    citation_links_html(&keys, labels),
+                    citation_contents_html(
+                        &call.keys,
+                        call.prenote.as_ref().map(|note| note.raw),
+                        call.postnote.as_ref().map(|note| note.raw),
+                        labels,
+                    ),
                 )
                 .unwrap();
-                i = next;
+                i = call.end;
                 continue;
             }
         }
@@ -8247,6 +8283,130 @@ end = '{% endcall %}'
         assert!(text.contains("Case I: Diagonal. Case text."));
         assert!(!out.body_html.contains(r#"\restartsteps"#));
         assert!(!out.body_html.contains(r#"\begin{proofcases}"#));
+    }
+
+    #[test]
+    fn citation_notes_render_consistently_in_prose_and_inline_contexts() {
+        let citation = r"\cite[see][Lemma~7.3, p.~251]{Santambrogio2015}";
+        for content in [
+            citation.to_string(),
+            format!(r"\emph{{{citation}}}"),
+            format!(r"\section{{{citation}}}"),
+            format!(r"\begin{{figure}}\caption{{{citation}}}\end{{figure}}"),
+            format!(r"\begin{{tabular}}{{l}}{citation}\\\end{{tabular}}"),
+            r"\withnote{Santambrogio2015}".to_string(),
+        ] {
+            let body = render_body(&format!(
+                r"\newcommand{{\withnote}}[1]{{\cite[see][Lemma~7.3, p.~251]{{#1}}}}
+\begin{{document}}
+{content}
+\begin{{thebibliography}}{{9}}
+\bibitem{{Santambrogio2015}} Santambrogio. \emph{{Optimal Transport}}. 2015.
+\end{{thebibliography}}
+\end{{document}}"
+            ));
+            assert!(
+                body.contains(concat!(
+                    "[see <a class=\"cite\" href=\"#bib-1\" ",
+                    "data-key=\"Santambrogio2015\">1</a>, Lemma\u{a0}7.3, p.\u{a0}251]"
+                )),
+                "{content}: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn citation_note_punctuation_handles_one_two_and_empty_arguments() {
+        for (args, expected) in [
+            ("", "[1]"),
+            ("[Lemma~7.3, p.~251]", "[1, Lemma\u{a0}7.3, p.\u{a0}251]"),
+            ("[see][p.~2]", "[see 1, p.\u{a0}2]"),
+            ("[]", "[1]"),
+            ("[see][]", "[see 1]"),
+            ("[][p.~2]", "[1, p.\u{a0}2]"),
+            ("[][]", "[1]"),
+            ("[  ][  ]", "[1]"),
+        ] {
+            let source = format!(r"\cite{args}{{key}}\printbibliography");
+            let body = render_body(&source);
+            assert!(
+                text_content(&body).starts_with(expected),
+                "{source}: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn citation_notes_support_inline_tex_and_escape_html() {
+        for citation in [
+            r"\cite[\emph{see}][\textbf{Lemma}~7.3, $x^2$, \ref{sec:one}, <script>]{key}",
+            r"\emph{\cite[\emph{see}][\textbf{Lemma}~7.3, $x^2$, \ref{sec:one}, <script>]{key}}",
+        ] {
+            let body = render_body(&format!(
+                r"\section{{One}}\label{{sec:one}} {citation}\printbibliography"
+            ));
+            assert!(body.contains("[<em>see</em> <a class=\"cite\""), "{body}");
+            assert!(
+                body.contains("</a>, <strong>Lemma</strong>\u{a0}7.3"),
+                "{body}"
+            );
+            assert!(body.contains(r#"data-tex="\(x^2\)""#), "{body}");
+            assert!(
+                body.contains(r#"data-target="sec:one" data-kind="ref">1</a>"#),
+                "{body}"
+            );
+            assert!(body.contains("&lt;script&gt;]"), "{body}");
+            assert!(!body.contains("<script>"), "{body}");
+        }
+    }
+
+    #[test]
+    fn citation_notes_protect_braced_brackets_and_strip_comments() {
+        let citation = "\\cite% before note\n[see {A]B} \\verb|]|][p.% hidden ]\n~2]{key}";
+        for source in [citation.to_string(), format!(r"\emph{{{citation}}}")] {
+            let body = render_body(&format!(r"{source}\printbibliography"));
+            assert!(
+                text_content(&body).starts_with("[see A]B ] 1, p.\u{a0}2]"),
+                "{body}"
+            );
+            assert!(!body.contains("hidden"), "{body}");
+            assert!(!body.contains("before note"), "{body}");
+        }
+    }
+
+    #[test]
+    fn citation_notes_allow_half_open_math_intervals() {
+        let citation = r"\cite[Lemma on $[0,1)$]{key}";
+        for source in [citation.to_string(), format!(r"\emph{{{citation}}}")] {
+            let body = render_body(&format!(r"{source}\printbibliography"));
+            assert!(
+                body.contains(r#"data-key="key">1</a>, Lemma on "#),
+                "{body}"
+            );
+            assert!(body.contains(r#"data-tex="\([0,1)\)""#), "{body}");
+        }
+    }
+
+    #[test]
+    fn citation_notes_preserve_author_year_delimiters_and_multiple_links() {
+        let mut labels = super::LabelTable::default();
+        labels.bib_style = super::BibStyle::AuthorYear;
+        labels.citation_number.insert("a".into(), 1);
+        labels.citation_number.insert("b".into(), 2);
+        labels
+            .citation_display
+            .insert("a".into(), "Author, 2015".into());
+        labels
+            .citation_display
+            .insert("b".into(), "Other, 2016".into());
+        let html = super::render_inline_latex(r"\cite[compare][p.~2]{a,b}", &labels);
+        assert_eq!(
+            text_content(&html),
+            "(compare Author, 2015; Other, 2016, p.\u{a0}2)"
+        );
+        assert_eq!(html.matches(r#"class="cite""#).count(), 2);
+        assert!(html.contains(r##"href="#bib-1""##));
+        assert!(html.contains(r##"href="#bib-2""##));
     }
 
     #[test]

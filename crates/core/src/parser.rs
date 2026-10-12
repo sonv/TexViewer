@@ -860,6 +860,24 @@ fn read_braced_inert(src: &str, from: usize) -> Option<(String, usize)> {
 /// escaped control symbols, `\string`, and inline verbatim payloads are inert:
 /// braces inside them cannot close the surrounding group.
 pub(crate) fn tex_group_end(src: &str, from: usize, open: u8, close: u8) -> Option<usize> {
+    tex_group_end_inner(src, from, open, close, false)
+}
+
+/// Optional citation arguments end at the first unbraced closing bracket:
+/// opening brackets in text or math do not create nested optional arguments.
+/// Retain the general scanner's comment, literal, and conditional handling
+/// without changing other callers' delimiter rules.
+pub(crate) fn citation_optional_arg_end(src: &str, from: usize) -> Option<usize> {
+    tex_group_end_inner(src, from, b'[', b']', true)
+}
+
+fn tex_group_end_inner(
+    src: &str,
+    from: usize,
+    open: u8,
+    close: u8,
+    protect_braces: bool,
+) -> Option<usize> {
     let bytes = src.as_bytes();
     if bytes.get(from) != Some(&open) {
         return None;
@@ -881,6 +899,10 @@ pub(crate) fn tex_group_end(src: &str, from: usize, open: u8, close: u8) -> Opti
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
+            continue;
+        }
+        if protect_braces && bytes[i] == b'{' {
+            i = tex_group_end(src, i, b'{', b'}')?;
             continue;
         }
         if bytes[i] == b'\\' {
@@ -942,7 +964,7 @@ pub(crate) fn tex_group_end(src: &str, from: usize, open: u8, close: u8) -> Opti
             continue;
         }
         match bytes[i] {
-            byte if byte == open => depth += 1,
+            byte if byte == open && !protect_braces => depth += 1,
             byte if byte == close => {
                 depth -= 1;
                 if depth == 0 {
@@ -2909,38 +2931,15 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                // Citation commands.
-                if matches!(
-                    cmd.as_str(),
-                    "cite"
-                        | "citet"
-                        | "citep"
-                        | "citeauthor"
-                        | "citeyear"
-                        | "parencite"
-                        | "textcite"
-                        | "fullcite"
+                // Keep citation allocations out of this recursive frame.
+                if self.parse_citation_command(
+                    &cmd,
+                    cmd_name_end,
+                    out,
+                    &mut text_buf,
+                    &mut text_start,
+                    flush_text,
                 ) {
-                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
-                    self.advance_to(cmd_name_end);
-                    self.skip_optional_arg();
-                    self.skip_optional_arg();
-                    let keys_raw = self.balanced_brace_arg().unwrap_or_default();
-                    let keys_raw = if self.source_children {
-                        executable_latex_source(&keys_raw)
-                    } else {
-                        keys_raw
-                    };
-                    let keys = keys_raw
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    out.push(Node {
-                        kind: NodeKind::Cite { keys },
-                        span: self.span_from(cmd_start),
-                        children: vec![],
-                    });
                     continue;
                 }
 
@@ -4147,6 +4146,53 @@ impl<'a> Parser<'a> {
             },
             span: self.span_from(start),
             children: vec![],
+        });
+        true
+    }
+
+    fn parse_citation_command(
+        &mut self,
+        command: &str,
+        command_end: usize,
+        out: &mut Vec<Node>,
+        text_buf: &mut String,
+        text_start: &mut Option<Pos>,
+        flush_text: fn(&mut String, &mut Option<Pos>, &mut Vec<Node>, Pos, &Path),
+    ) -> bool {
+        if !crate::numbering::is_citation_command(command) {
+            return false;
+        }
+        let Some(call) = crate::numbering::citation_call_after_command(self.src, command_end)
+        else {
+            // Leave incomplete calls to the ordinary opaque-command path,
+            // so editing an unclosed note never silently discards its text.
+            return false;
+        };
+        let start = self.pos();
+        flush_text(text_buf, text_start, out, start, &self.file);
+        let mut children = Vec::new();
+        for (name, note) in [
+            (crate::numbering::CITATION_PRENOTE, call.prenote),
+            (crate::numbering::CITATION_POSTNOTE, call.postnote),
+        ] {
+            let Some(note) = note else { continue };
+            self.advance_to(note.start);
+            let note_start = self.pos();
+            self.advance_to(note.end);
+            children.push(Node {
+                kind: NodeKind::OpaqueCmd {
+                    name: name.to_string(),
+                    raw: note.raw.to_string(),
+                },
+                span: self.span_from(note_start),
+                children: vec![],
+            });
+        }
+        self.advance_to(call.end);
+        out.push(Node {
+            kind: NodeKind::Cite { keys: call.keys },
+            span: self.span_from(start),
+            children,
         });
         true
     }
@@ -7757,6 +7803,114 @@ After $y$.
         assert!(n
             .iter()
             .any(|n| matches!(&n.kind, NodeKind::Cite { keys } if keys == &["Smith2024"])));
+    }
+
+    #[test]
+    fn citation_optional_notes_preserve_raw_text_and_exact_positions() {
+        let source = concat!(
+            "Résumé \\cite% command comment\n",
+            "[see \\emph{A]B}% hidden closing ]\n",
+            " also \\verb|]|][Lemma~7.3, p.~251]% before keys\n",
+            "{Santambrogio% continued key\n2015, Other} after."
+        );
+        let nodes = parse(source);
+        let cite = nodes
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Cite { .. }))
+            .unwrap();
+        assert!(matches!(&cite.kind, NodeKind::Cite { keys }
+            if keys == &["Santambrogio2015", "Other"]));
+        let (prenote, postnote) = crate::numbering::citation_notes(&cite.children);
+        assert_eq!(
+            prenote,
+            Some("see \\emph{A]B}% hidden closing ]\n also \\verb|]|")
+        );
+        assert_eq!(postnote, Some("Lemma~7.3, p.~251"));
+        assert_eq!(cite.children.len(), 2);
+        for child in &cite.children {
+            let NodeKind::OpaqueCmd { raw, .. } = &child.kind else {
+                panic!("citation note lost metadata representation");
+            };
+            assert_eq!(
+                &source[child.span.start.byte as usize..child.span.end.byte as usize],
+                raw
+            );
+            assert!(child.children.is_empty());
+        }
+        assert_eq!(cite.children[0].span.start.line, 2);
+        assert_eq!(cite.children[0].span.start.col, 2);
+        assert_eq!(cite.children[1].span.start.line, 3);
+        assert_eq!(
+            &source[cite.span.start.byte as usize..cite.span.end.byte as usize],
+            &source[source.find("\\cite").unwrap()..source.find(" after.").unwrap()]
+        );
+    }
+
+    #[test]
+    fn citation_single_empty_and_two_note_arguments_keep_their_roles() {
+        for (source, expected) in [
+            (r"\cite{key}", (None, None)),
+            (r"\cite[p.~2]{key}", (None, Some("p.~2"))),
+            (r"\cite[]{key}", (None, Some(""))),
+            (r"\cite[see][]{key}", (Some("see"), Some(""))),
+            (r"\cite[][p.~2]{key}", (Some(""), Some("p.~2"))),
+            (r"\cite[][]{key}", (Some(""), Some(""))),
+        ] {
+            let nodes = parse(source);
+            assert_eq!(nodes.len(), 1, "{source}: {nodes:?}");
+            assert!(matches!(&nodes[0].kind, NodeKind::Cite { keys } if keys == &["key"]));
+            assert_eq!(
+                crate::numbering::citation_notes(&nodes[0].children),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn citation_note_open_interval_does_not_nest_the_optional_argument() {
+        for (source, note) in [
+            (r"\cite[Lemma on $[0,1)$]{key}", "Lemma on $[0,1)$"),
+            (r"\cite[Lemma on {$[0,1]$}]{key}", "Lemma on {$[0,1]$}"),
+        ] {
+            let nodes = parse(source);
+            assert_eq!(nodes.len(), 1, "{source}: {nodes:?}");
+            assert!(matches!(&nodes[0].kind, NodeKind::Cite { keys } if keys == &["key"]));
+            assert_eq!(
+                crate::numbering::citation_notes(&nodes[0].children),
+                (None, Some(note))
+            );
+            assert_eq!(nodes[0].span.end.byte as usize, source.len());
+        }
+    }
+
+    #[test]
+    fn malformed_citation_notes_do_not_discard_following_text() {
+        for source in [
+            r"\cite[unfinished note after",
+            r"\cite[complete note] after",
+            r"\cite[note]{unfinished key after",
+        ] {
+            let nodes = parse(source);
+            assert!(!nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Cite { .. })));
+            assert!(tree_has_text(&nodes, "after"), "{source}: {nodes:?}");
+        }
+    }
+
+    #[test]
+    fn deeply_nested_citation_notes_are_nonrecursive_metadata() {
+        let depth = MAX_NESTING_DEPTH as usize + 5_000;
+        let source = format!(
+            r"{}inner{}",
+            "\\cite[{".repeat(depth),
+            "}]{key}".repeat(depth)
+        );
+        let nodes = parse(&source);
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(nodes[0].kind, NodeKind::Cite { .. }));
+        assert_eq!(nodes[0].children.len(), 1);
+        assert!(nodes[0].children[0].children.is_empty());
     }
 
     #[test]
