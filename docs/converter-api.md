@@ -434,8 +434,16 @@ Each dependency has this shape:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `path` | path string | Input or prospective input path. |
-| `kind` | string | `root`, `include`, `bibliography`, `config`, `macro`, or a converter-defined value. |
+| `kind` | string | `root`, `include`, `preamble`, `body`, `bibliography`, `config`, `macro`, or a converter-defined value. |
 | `exists` | boolean | Whether that path existed on disk when the result was built. |
+
+The TeX converter adds `preamble` and `body` role records alongside the
+existing dependency records. `preamble` identifies inputs used only before
+the document body, including nested inputs. `body` identifies body includes,
+even when empty. The root is always a body editing target. A path used in
+both places has the body role. Hosts can use these roles to defer preamble
+reloads without guessing from filenames or missing source anchors. Dependency
+kinds remain open strings, and hosts may ignore roles they do not use.
 
 Each asset contains:
 

@@ -369,6 +369,25 @@ buffers. The body AST is rebuilt for each accepted update. The expensive
 LaTeX preamble and bibliography state can be reused when its fingerprint has
 not changed.
 
+Neovim sends focus changes to `POST /editor-state`. A snapshot contains an
+editor `session`, a monotonic `sequence`, the focused `file`, and `buffers`
+with the complete set of modified project sources (`file`, `source`, and an
+optional `cursor` pair of 1-based line and UTF-8 byte column).
+Omitted older overrides revert to disk. This prevents discarded edits or
+stale, unmodified buffers from replacing saved content. Versioned `/buffer`
+requests carry `X-Mathpreview-Editor-Session` and
+`X-Mathpreview-Editor-Sequence`, so a delayed push cannot undo a newer snapshot.
+The plugin keeps this ordering across daemon restarts.
+
+The host reads `preamble` and `body` roles from converter dependencies.
+Focusing a preamble-only input holds the last committed preview. Buffer
+updates and watcher events remain pending until focus returns to that
+document's root or a body include. The host then renders the collected source
+snapshot once. Unrelated focus cannot release the hold, and existing
+incomplete-math checks still apply. Without an editor handshake, standalone
+CLI watching stays live. The additive HTTP endpoint needs no new browser
+messages or WebSocket protocol version.
+
 The cached path bypasses `DocumentConverter::convert` because the public trait
 returns only the portable artifact. The server needs its preamble cache and
 viewer sidecar without a second parse or render. Both built-in cached branches
@@ -385,6 +404,7 @@ snapshots into a responsive editor session:
 | `buffer_overrides` and `buffer_push_seq` | Keep the newest unsaved root and child buffers per file | A matching disk save can remove an override |
 | `render_seq` | Mark stale render attempts before they can commit | Monotonic for the server lifetime |
 | `render_permit` | Allow only one expensive render at a time | At most one holder |
+| `editor_state` | Order editor snapshots and hold preamble edits until body focus resumes | Per-file sequence checks, with up to 32 retired sessions |
 | `PreambleCache` | Reuse extracted preamble and bibliography state by fingerprints of preamble and bibliography inputs plus macro overrides | Fingerprint changes and watcher events clear or replace it |
 | `file_content_cache` | Avoid rereading unchanged config and macro layers, including missing-file lookups | File existence or modification time changes |
 | `last_blocks` | Keep the committed positional diff base | Replaced atomically with each broadcast snapshot |

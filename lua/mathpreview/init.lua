@@ -31,7 +31,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- warned about — the signal that a fix you "released" isn't actually the
 -- binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.57"
+local PLUGIN_VERSION = "2.1.58"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -182,8 +182,26 @@ local cursor_timer = nil
 local selection_timer = nil
 -- `vim.system` handles keyed by bufnr. A newer snapshot of the SAME buffer can
 -- supersede its older upload, while different buffers remain independent.
--- Values are nil on the jobstart fallback path (no cancellable handle).
+-- Both process backends return cancellable handles.
 local push_jobs = {}
+-- Forward declarations: buffer pushes can race the first /debug response.
+-- Role discovery is authoritative, so don't guess from a child's filename.
+local fetch_watched, sync_editor_state, deferred_preamble, schedule_role_refresh
+local activate_for_current_buffer
+-- Keep ordering across a restart that reuses the same port. A late request
+-- from the old process must not retire the replacement's editor session.
+local editor_sessions = {}
+
+local function next_editor_sequence(entry)
+  local state = editor_sessions[entry.root]
+  if not state then
+    state = { session = tostring(vim.fn.getpid()) .. ":" .. tostring(uv.hrtime()), sequence = 0 }
+    editor_sessions[entry.root] = state
+  end
+  state.sequence = state.sequence + 1
+  entry.editor_session, entry.editor_sequence = state.session, state.sequence
+  return entry.editor_sequence
+end
 local last_jump_seq = 0
 -- When each buffer last changed (ms, keyed by bufnr). Cursor posts within
 -- TYPING_WINDOW_MS of an edit IN THE SAME BUFFER are tagged `typing: true`
@@ -472,6 +490,7 @@ local function run_system(args, opts, on_done)
     vim.fn.chansend(job, opts.stdin)
     vim.fn.chanclose(job, "stdin")
   end
+  return { kill = function() if not exited then pcall(vim.fn.jobstop, job) end end }
 end
 
 -- Parse "0.1.27" → { 0, 1, 27 }; returns nil on anything unexpected so the
@@ -986,6 +1005,7 @@ local function push_buffer(buf, edit_cursor, entry)
     last_status.last_error = "preview buffer has no name"
     return
   end
+  if deferred_preamble and deferred_preamble(entry, buf) then return end
   local ok, lines = pcall(vim.api.nvim_buf_get_lines, buf, 0, -1, false)
   if not ok then return end
   local body = table.concat(lines, "\n")
@@ -1001,6 +1021,13 @@ local function push_buffer(buf, edit_cursor, entry)
     "-X", "POST",
     "http://127.0.0.1:" .. tostring(entry.port) .. "/buffer",
   }
+  if entry.editor_state_supported then
+    local sequence = next_editor_sequence(entry)
+    table.insert(args, 2, "--header")
+    table.insert(args, 3, "X-Mathpreview-Editor-Session: " .. entry.editor_session)
+    table.insert(args, 4, "--header")
+    table.insert(args, 5, "X-Mathpreview-Editor-Sequence: " .. tostring(sequence))
+  end
   -- One in-flight push per buffer. A newer snapshot of this buffer supersedes
   -- the older one entirely (the daemon renders whole buffers, never deltas),
   -- but an update for another buffer or daemon must still arrive.
@@ -1028,6 +1055,7 @@ local function push_buffer(buf, edit_cursor, entry)
         res.code or -1, (res.stderr or ""):gsub("%s+$", ""))
     else
       last_status.last_error = nil
+      if schedule_role_refresh then schedule_role_refresh(entry) end
     end
   end)
   push_jobs[buf] = job
@@ -1564,9 +1592,12 @@ end
 -- Refresh a daemon entry's watched-file set (root + \input/\include + bib) from
 -- its /debug, so routing knows which daemon owns which file. Async, best-effort;
 -- ignored if the daemon was replaced/stopped meanwhile.
-local function fetch_watched(entry)
+fetch_watched = function(entry)
+  if entry.fetching_watched then return end
+  entry.fetching_watched = true
   local debug_url = "http://127.0.0.1:" .. tostring(entry.port) .. "/debug"
   run_system({ "curl", "--silent", "--max-time", "2", debug_url }, {}, function(res)
+    entry.fetching_watched = false
     if daemons[entry.root] ~= entry then return end
     if not (res and res.code == 0 and res.stdout and res.stdout ~= "") then return end
     local ok, data = pcall(vim.json.decode, res.stdout)
@@ -1579,7 +1610,160 @@ local function fetch_watched(entry)
       end
     end
     entry.watched = set
+    entry.document_root = type(data.root) == "string" and canon(data.root) or canon(entry.root)
+    entry.editor_state_supported = data.editor_state_supported == true
+    entry.preamble_files, entry.body_files = {}, {}
+    for _, p in ipairs(data.preamble_files or {}) do
+      if type(p) == "string" then entry.preamble_files[canon(p)] = true end
+    end
+    for _, p in ipairs(data.body_files or {}) do
+      if type(p) == "string" then entry.body_files[canon(p)] = true end
+    end
+    entry.body_files[entry.document_root] = true
+    if set[canon(vim.api.nvim_buf_get_name(0))] then activate_for_current_buffer() end
+    -- Includes can change after a body edit. Re-evaluate focus using the new
+    -- roles, even if the active daemon itself has not changed.
+    sync_editor_state(entry, vim.api.nvim_buf_get_name(0))
+    local waiting = entry.role_waiting or {}
+    entry.role_waiting = {}
+    for buf, cursor in pairs(waiting) do
+      if vim.api.nvim_buf_is_valid(buf) then
+        if not entry.editor_state_supported or set[canon(vim.api.nvim_buf_get_name(buf))] then
+          push_buffer(buf, cursor, entry)
+        else
+          -- A parent render may still be discovering a newly added include.
+          -- Its completion refresh will retry; unrelated buffers stay local.
+          entry.role_waiting[buf] = cursor
+        end
+      end
+    end
   end)
+end
+
+schedule_role_refresh = function(entry)
+  if daemons[entry.root] ~= entry then return end
+  local old = entry.role_timer
+  if old then old:stop(); old:close() end
+  local timer = uv.new_timer()
+  entry.role_timer = timer
+  timer:start(350, 0, vim.schedule_wrap(function()
+    if entry.role_timer ~= timer then return end
+    entry.role_timer = nil
+    if not timer:is_closing() then timer:close() end
+    if daemons[entry.root] == entry then fetch_watched(entry) end
+  end))
+end
+
+local function cancel_buffer_push(buf)
+  local timer = push_timers[buf]
+  if timer then
+    push_timers[buf] = nil
+    timer:stop()
+    if not timer:is_closing() then timer:close() end
+  end
+  local job = push_jobs[buf]
+  push_jobs[buf] = nil
+  if job and job.kill and not (job.is_closing and job:is_closing()) then
+    pcall(job.kill, job, 15)
+  end
+end
+
+-- A focus transition is a single snapshot, not one render per open preamble.
+-- Prefer a modified alias over a stale canonical duplicate, as inverse search
+-- does. This is the complete modified set: omitted buffers revert to disk,
+-- including discarded edits and unmodified buffers stale after external writes.
+local function editor_snapshot(entry)
+  local selected = {}
+  local current = vim.api.nvim_get_current_buf()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) then
+      local path = vim.api.nvim_buf_get_name(buf)
+      local key = canon(path)
+      if key and entry.watched[key] then
+        cancel_buffer_push(buf)
+      end
+      if key and entry.watched[key] and vim.bo[buf].modified then
+        if not selected[key] or buf == current then
+          selected[key] = buf
+        end
+      end
+    end
+  end
+  local buffers = {}
+  for key, buf in pairs(selected) do
+    local ok, lines = pcall(vim.api.nvim_buf_get_lines, buf, 0, -1, false)
+    if ok then
+      local cursor = buffer_cursor(buf)
+      buffers[#buffers + 1] = { file = key, source = table.concat(lines, "\n"),
+        cursor = { cursor[1], cursor[2] + 1 } }
+    end
+  end
+  table.sort(buffers, function(a, b) return a.file < b.file end)
+  return buffers
+end
+
+sync_editor_state = function(entry, file, force, synchronous)
+  if not entry or daemons[entry.root] ~= entry or not entry.editor_state_supported then return end
+  local key = canon(file)
+  local preamble = entry.preamble_files[key] == true
+  if not preamble and not entry.body_files[key] then return end
+  -- BufEnter and BufWinEnter commonly arrive together. The second must not
+  -- trigger a duplicate reload, nor should a metadata refresh render again.
+  if not force and entry.editor_focus_path == key and entry.editor_focus_preamble == preamble then
+    return
+  end
+  local buffers = editor_snapshot(entry)
+  local sequence = next_editor_sequence(entry)
+  local payload = json_encode({ session = entry.editor_session, sequence = sequence,
+    file = key, buffers = buffers })
+  entry.editor_focus_path, entry.editor_focus_preamble = key, preamble
+  entry.editor_focus_sequence = sequence
+  entry.editor_jobs = entry.editor_jobs or {}
+  local args = {
+    "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "5",
+    "--header", "content-type: application/json", "--data-binary", "@-", "-X", "POST",
+    "http://127.0.0.1:" .. tostring(entry.port) .. "/editor-state",
+  }
+  local function finished(res)
+    entry.editor_jobs[sequence] = nil
+    if daemons[entry.root] ~= entry then return end
+    if res and res.code ~= 0 then
+      if entry.editor_focus_sequence == sequence then entry.editor_focus_path = nil end
+      last_status.last_error = "editor-state: " .. (res.stderr or "request failed")
+    else
+      last_status.last_error = nil
+      schedule_role_refresh(entry)
+    end
+  end
+  if synchronous then
+    -- A detached daemon can outlive nvim. Commit the final snapshots before
+    -- VimLeavePre ends instead of leaving that daemon permanently paused.
+    if vim.system then
+      finished(vim.system(args, { stdin = payload }):wait(5000))
+    else
+      vim.fn.system(args, payload)
+    end
+  else
+    entry.editor_jobs[sequence] = run_system(args, { stdin = payload }, finished)
+  end
+end
+
+deferred_preamble = function(entry, buf)
+  local key = canon(vim.api.nvim_buf_get_name(buf))
+  if key ~= canon(entry.root) and (entry.editor_state_supported == nil
+      or (entry.editor_state_supported and not entry.watched[key])) then
+    entry.role_waiting = entry.role_waiting or {}
+    entry.role_waiting[buf] = buffer_cursor(buf)
+    fetch_watched(entry)
+    return true
+  end
+  if not entry.editor_state_supported or not entry.preamble_files[key] then return false end
+  cancel_buffer_push(buf)
+  -- No source bytes are discarded: nvim keeps them, and the next focus
+  -- snapshot includes all modified project buffers, with saved files on disk.
+  local focused = vim.api.nvim_buf_get_name(0)
+  sync_editor_state(entry, focused, not entry.preamble_files[canon(focused)])
+  return true
 end
 
 -- The registry entry whose daemon is currently "active" (mirrored by the
@@ -1597,6 +1781,8 @@ local function daemon_for_file(path)
   local entry = daemons[path]
   if entry then return entry end
   local c = canon(path)
+  local active = active_entry()
+  if active and active.watched and active.watched[c] then return active end
   for _, d in pairs(daemons) do
     if d.watched and d.watched[c] then return d end
   end
@@ -1645,7 +1831,7 @@ end
 -- still push — and even an unrelated buffer is harmless (the daemon ignores
 -- pushes for files it doesn't watch, as before). We never deactivate here;
 -- a daemon only goes inactive when it actually stops (on_exit / stop_all).
-local function activate_for_current_buffer()
+activate_for_current_buffer = function()
   if in_jump then return end
   -- Route to the daemon that OWNS this buffer (its root, or a project whose
   -- \input/\include set contains it). If none owns it, keep the current active
@@ -1682,7 +1868,14 @@ end
 -- Tear down on nvim exit (VimLeavePre). With `close_on_exit = false` the
 -- detached daemon outlives nvim and the browser tab stays usable.
 local function stop_all()
-  if not config.close_on_exit then return end
+  if not config.close_on_exit then
+    for _, entry in pairs(daemons) do
+      if entry.editor_focus_preamble then
+        sync_editor_state(entry, entry.document_root, true, true)
+      end
+    end
+    return
+  end
   for root, d in pairs(daemons) do
     stopping[root] = true
     pcall(vim.fn.jobstop, d.job)
@@ -1781,7 +1974,18 @@ local function attach_autocmds()
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
     group = "mathpreview",
     pattern = "*",
-    callback = function() activate_for_current_buffer() end,
+    callback = function()
+      activate_for_current_buffer()
+      local path = vim.api.nvim_buf_get_name(0)
+      for _, entry in pairs(daemons) do
+        -- Also runs during inverse search, when in_jump deliberately keeps
+        -- activate_for_current_buffer from changing the jump's target daemon.
+        if entry.watched and entry.watched[canon(path)] then
+          sync_editor_state(entry, path)
+        end
+        fetch_watched(entry)
+      end
+    end,
   })
   -- `:bd` / `:bw` on the previewed document closes its preview (daemon +
   -- browser tab) — deleting the buffer is an explicit "done with this file".
@@ -1789,7 +1993,7 @@ local function attach_autocmds()
   -- keeps the preview, which renders the root document, alive. This is
   -- deliberate regardless of `close_on_exit` (that option is about nvim
   -- exiting; this is an in-session action on the document itself).
-  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+  vim.api.nvim_create_autocmd({ "BufUnload", "BufDelete", "BufWipeout" }, {
     group = "mathpreview",
     pattern = "*",
     callback = function(args)
@@ -1797,11 +2001,16 @@ local function attach_autocmds()
       if file == "" then return end
       local c = canon(file)
       for root, d in pairs(daemons) do
-        if canon(root) == c then
+        if canon(root) == c and args.event ~= "BufUnload" then
           stop_entry(d)
           return
         end
       end
+      vim.schedule(function()
+        for _, entry in pairs(daemons) do
+          sync_editor_state(entry, vim.api.nvim_buf_get_name(0), true)
+        end
+      end)
     end,
   })
   vim.api.nvim_create_autocmd("VimLeavePre", {
@@ -1822,6 +2031,17 @@ function stop_entry(entry, opts)
   if not entry or not daemons[entry.root] then return end
   stopping[entry.root] = true
   daemons[entry.root] = nil
+  for _, job in pairs(entry.editor_jobs or {}) do
+    if job.kill and not (job.is_closing and job:is_closing()) then
+      pcall(job.kill, job, 15)
+    end
+  end
+  entry.editor_jobs = {}
+  if entry.role_timer then
+    entry.role_timer:stop()
+    entry.role_timer:close()
+    entry.role_timer = nil
+  end
   if daemon_root == entry.root then
     stop_jump_poll()
     daemon_job = nil
@@ -2323,6 +2543,7 @@ function M.status()
     install_dir_on_path = managed_binary_on_path(spec),
     plugin_version = PLUGIN_VERSION,
     binary_version = last_status.binary_version,  -- nil until first :MathPreview
+    preamble_edit_paused = active_entry() and active_entry().editor_focus_preamble or false,
     nvim_version = vim.version() and (vim.version().major .. "." .. vim.version().minor) or "?",
   }
 end

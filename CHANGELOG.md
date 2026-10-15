@@ -13,6 +13,18 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.58] - 2026-10-15
+
+### Fixed
+
+- Editing a separate TeX preamble in Neovim now holds the last preview,
+  including during saves. Returning to the document's main file or a body
+  include applies the latest saved and unsaved preamble changes together.
+  Ordinary body editing, Markdown, and standalone CLI watching stay live.
+- Preamble updates preserve discarded-buffer and disk-edit behavior, reject
+  stale requests, and survive preview restarts. Nested inputs and symlink
+  paths are supported without relying on preamble filenames.
+
 ## [2.1.57] - 2026-10-12
 
 ### Fixed

@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.1.57"
+version = "2.1.58"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/sonv/TexViewer"

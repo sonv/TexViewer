@@ -33,16 +33,17 @@ pub use config::{
     ResolvedViewerConfig, SourceJumpTrigger, Theme,
 };
 pub use converter::{
-    collect_builtin_dependencies, convert as convert_document, converter_for_path,
-    finalize_builtin_document, split_render_output, AssetEncoding, AssetKind, BuiltinConversion,
-    BuiltinConverter, ConversionDiagnostic, ConversionRequest, ConvertedAsset, ConvertedBlock,
-    ConvertedDependency, ConvertedDocument, ConvertedMathRow, ConvertedMathRowsEntry,
-    ConvertedSourceAnchor, ConvertedSourcePosition, ConvertedSubBlocks, ConvertedSubChunk,
-    ConvertedSyncEntry, ConvertedSyncKind, ConvertedSyncMap, ConverterCapabilities,
-    ConverterMetadata, DependencyKind, DiagnosticSeverity, DocumentConverter, LatexConverter,
-    LegacyViewerSidecar, MarkdownConverter, MathMacroRequirement, MathRuntimeRequirements,
-    RuntimeRequirements, ViewerRuntimeRequirements, CONVERTER_API_VERSION,
-    MAX_ADDITIONAL_DEPENDENCIES, MAX_CONVERSION_OVERRIDE_BYTES, MAX_CONVERSION_OVERRIDE_FILES,
+    collect_builtin_dependencies, collect_latex_edit_dependencies, convert as convert_document,
+    converter_for_path, finalize_builtin_document, split_render_output, AssetEncoding, AssetKind,
+    BuiltinConversion, BuiltinConverter, ConversionDiagnostic, ConversionRequest, ConvertedAsset,
+    ConvertedBlock, ConvertedDependency, ConvertedDocument, ConvertedMathRow,
+    ConvertedMathRowsEntry, ConvertedSourceAnchor, ConvertedSourcePosition, ConvertedSubBlocks,
+    ConvertedSubChunk, ConvertedSyncEntry, ConvertedSyncKind, ConvertedSyncMap,
+    ConverterCapabilities, ConverterMetadata, DependencyKind, DiagnosticSeverity,
+    DocumentConverter, LatexConverter, LegacyViewerSidecar, MarkdownConverter,
+    MathMacroRequirement, MathRuntimeRequirements, RuntimeRequirements, ViewerRuntimeRequirements,
+    CONVERTER_API_VERSION, MAX_ADDITIONAL_DEPENDENCIES, MAX_CONVERSION_OVERRIDE_BYTES,
+    MAX_CONVERSION_OVERRIDE_FILES,
 };
 pub use engines::{Engine, MathEngine, MathJaxEngine};
 pub use macros::{

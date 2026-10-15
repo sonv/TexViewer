@@ -941,7 +941,7 @@ fn convert_latex(
         path,
         source,
         file_overrides,
-        additional_dependencies,
+        mut additional_dependencies,
     } = request;
     let has_root_override = source.is_some() || override_matches_path(&file_overrides, &path);
     let root = if has_root_override {
@@ -960,6 +960,7 @@ fn convert_latex(
     };
     let project_warnings = project.warnings.clone();
     let project_files: Vec<PathBuf> = project.included_files().map(PathBuf::from).collect();
+    additional_dependencies.extend(collect_latex_edit_dependencies(&project));
     let macro_overrides = crate::load_macro_overrides(opts);
     let preamble = crate::macros::extract_preamble_with_overrides(&project, &macro_overrides)?;
     let (bib_paths, bib) =
@@ -1310,6 +1311,81 @@ pub fn collect_builtin_dependencies(
     additional: Vec<ConvertedDependency>,
 ) -> Vec<ConvertedDependency> {
     collect_dependencies(root, project_files, bib_paths, macro_files, additional)
+}
+
+/// Additive source roles used by live hosts to defer preamble-only edits.
+/// Ordinary `include` records remain unchanged for existing API consumers.
+/// A file used in both the preamble and the body is always a body dependency.
+#[doc(hidden)]
+pub fn collect_latex_edit_dependencies(
+    project: &crate::project::Project,
+) -> Vec<ConvertedDependency> {
+    let root = crate::project::normalize_source_path(&project.root);
+    let known: HashSet<_> = project
+        .dependency_files
+        .iter()
+        .map(|path| crate::project::normalize_source_path(path))
+        .collect();
+    let mut preamble: HashSet<_> = project
+        .preamble_files
+        .iter()
+        .map(|file| crate::project::normalize_source_path(&file.path))
+        .collect();
+    // Existing sources also retain prospective local inputs/packages. Only
+    // classify references the loader actually followed, preserving its bounds
+    // and depth limits without rereading file contents from disk.
+    for (source, path) in std::iter::once((&project.preamble.source, &project.preamble.file)).chain(
+        project
+            .preamble_files
+            .iter()
+            .map(|file| (&file.source, &file.path)),
+    ) {
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        for reference in crate::macros::collect_referenced_file_candidates(source, base) {
+            let path = crate::project::normalize_source_path(&reference.path);
+            if known.contains(&path) {
+                preamble.insert(path);
+            }
+        }
+    }
+
+    let mut body: HashSet<_> = project
+        .files
+        .iter()
+        .map(|file| crate::project::normalize_source_path(&file.path))
+        .collect();
+    // Successfully expanded includes are represented by their ProjectFile,
+    // including empty inputs. Missing inputs keep their original command in
+    // the parent chunk, so discover those with the loader's exact grammar.
+    static INCLUDE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(crate::project::INCLUDE_RE).unwrap());
+    for file in &project.files {
+        let base = file.path.parent().unwrap_or_else(|| Path::new("."));
+        for capture in INCLUDE.captures_iter(&file.source) {
+            let name = capture.get(1).unwrap().as_str();
+            if !crate::root::path_within_bounds(name) {
+                continue;
+            }
+            let path =
+                crate::project::normalize_source_path(&crate::root::resolve_include(base, name));
+            if known.contains(&path) {
+                body.insert(path);
+            }
+        }
+    }
+
+    preamble.retain(|path| path != &root && !body.contains(path));
+    body.remove(&root);
+    let mut dependencies: Vec<_> = preamble
+        .into_iter()
+        .map(|path| ConvertedDependency::new(path, DependencyKind::custom("preamble")))
+        .chain(
+            body.into_iter()
+                .map(|path| ConvertedDependency::new(path, DependencyKind::custom("body"))),
+        )
+        .collect();
+    dependencies.sort_by(|left, right| left.path.cmp(&right.path));
+    dependencies
 }
 
 fn push_dependency(
@@ -1972,6 +2048,129 @@ See \eqref{eq:last} and \ref{thm:last}.
                 path.display()
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn latex_edit_dependency_roles_preserve_includes_and_prefer_body_use() {
+        let dir = temp_dir("latex-edit-dependencies");
+        let root = dir.join("paper.tex");
+        for (name, source) in [
+            ("defs.tex", "\\input{nested}\\newcommand{\\place}{Here}"),
+            ("nested.tex", "\\newcommand{\\RR}{\\mathbb{R}}"),
+            ("local.sty", "\\RequirePackage{nested-package}"),
+            ("nested-package.sty", ""),
+            ("empty-preamble.tex", ""),
+            ("body.tex", "Body text."),
+            ("shared.tex", "Shared text."),
+            ("empty-shared.tex", ""),
+            ("wrapper.tex", "\\input{body}"),
+        ] {
+            std::fs::write(dir.join(name), source).unwrap();
+        }
+        std::fs::write(
+            &root,
+            concat!(
+                "\\documentclass{article}\n\\input{defs}\\usepackage{local}\n",
+                "\\input{empty-preamble}\\input{future-preamble}\n",
+                "\\input{shared}\\input{empty-shared}\\input{missing-shared}\n",
+                "% \\input{commented-preamble}\n",
+                "\\begin{document}\n\\input{body}\\input{shared}\n",
+                "\\input{empty-shared}\\input{missing-shared}\n",
+                "\\input{wrapper}\\subfile{future-body}\n\\end{document}\n",
+            ),
+        )
+        .unwrap();
+        let converted = LatexConverter
+            .convert(ConversionRequest::from_path(&root), &HtmlOptions::default())
+            .unwrap();
+        let roles = |name: &str| {
+            let path = crate::project::normalize_source_path(&dir.join(name));
+            let mut roles: Vec<_> = converted
+                .dependencies
+                .iter()
+                .filter(|dependency| same_path(&dependency.path, &path))
+                .map(|dependency| dependency.kind.as_str())
+                .collect();
+            roles.sort_unstable();
+            roles
+        };
+        assert_eq!(roles("paper.tex"), ["root"]);
+        for name in [
+            "defs.tex",
+            "nested.tex",
+            "local.sty",
+            "nested-package.sty",
+            "empty-preamble.tex",
+            "future-preamble.tex",
+        ] {
+            assert_eq!(roles(name), ["include", "preamble"], "{name}");
+        }
+        for name in [
+            "body.tex",
+            "shared.tex",
+            "empty-shared.tex",
+            "missing-shared.tex",
+            "wrapper.tex",
+            "future-body.tex",
+        ] {
+            assert_eq!(roles(name), ["body", "include"], "{name}");
+        }
+        assert!(roles("commented-preamble.tex").is_empty());
+        for name in [
+            "future-preamble.tex",
+            "missing-shared.tex",
+            "future-body.tex",
+        ] {
+            assert!(converted
+                .dependencies
+                .iter()
+                .filter(|dependency| { same_path(&dependency.path, &dir.join(name)) })
+                .all(|dependency| !dependency.exists));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn latex_edit_dependency_roles_use_canonical_paths_for_aliases_and_missing_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("aliased-edit-dependencies");
+        let real = dir.join("real");
+        let alias = dir.join("alias");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &alias).unwrap();
+        std::fs::write(real.join("shared.tex"), "").unwrap();
+        symlink(real.join("shared.tex"), real.join("shared-alias.tex")).unwrap();
+        let root = alias.join("paper.tex");
+        let converted = LatexConverter
+            .convert(
+                ConversionRequest::from_source(
+                    &root,
+                    concat!(
+                        "\\input{shared-alias}\\input{future}\n",
+                        "\\begin{document}\\input{shared}\\end{document}",
+                    ),
+                ),
+                &HtmlOptions::default(),
+            )
+            .unwrap();
+        let roles: Vec<_> = converted
+            .dependencies
+            .iter()
+            .filter(|dependency| matches!(dependency.kind.as_str(), "preamble" | "body"))
+            .collect();
+        assert_eq!(roles.len(), 2);
+        assert!(roles.iter().any(|dependency| {
+            dependency.kind.as_str() == "body"
+                && dependency.path == real.join("shared.tex").canonicalize().unwrap()
+        }));
+        assert!(roles.iter().any(|dependency| {
+            dependency.kind.as_str() == "preamble"
+                && dependency.path == real.canonicalize().unwrap().join("future.tex")
+                && !dependency.exists
+        }));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -36,6 +36,15 @@ a child file therefore updates the root preview without writing to disk. A new
 named buffer can preview before its first save. Neovim 0.10+ uses `vim.system`
 and `vim.uv`, with `jobstart` and `vim.loop` fallbacks on older versions.
 
+Separate TeX preamble files pause the preview while you edit them, including
+when you save. Return to the same document's main file or a body include to
+apply the latest preamble edits together. Unsaved changes are included, so
+there is no need to save first. Switching to an unrelated file does not resume
+that document. This behavior is automatic and follows the input graph, not
+filenames. A file used in both the preamble and body stays live, as do edits
+to the main file itself and Markdown documents. Standalone CLI watching is
+unchanged.
+
 Cursor movement scrolls to and highlights the nearest rendered word, math, or
 reference. Movement caused by recent typing follows without flashing the
 highlight. The viewer does not scroll while the target is between 25% and 75%

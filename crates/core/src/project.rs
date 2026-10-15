@@ -38,6 +38,7 @@ pub struct PreambleFile {
 #[derive(Debug, Clone)]
 pub struct ProjectFile {
     pub path: PathBuf,
+    /// An empty source retains an empty or include-only body participant.
     pub source: String,
     /// Source position of `source[0]` within `path`.
     pub start: Pos,
@@ -79,7 +80,7 @@ impl Project {
     }
 }
 
-const INCLUDE_RE: &str = r"\\(?:input|include|subfile)\s*\{\s*([^}]+?)\s*\}";
+pub(crate) const INCLUDE_RE: &str = r"\\(?:input|include|subfile)\s*\{\s*([^}]+?)\s*\}";
 
 /// Load a project from its resolved root file.
 pub fn load_project(root: &Path) -> Result<Project> {
@@ -318,6 +319,8 @@ fn append_with_includes(
     }
     static RE: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(INCLUDE_RE).unwrap());
+    let output_start = out.len();
+    let source_path = path.clone();
     let mut last = 0usize;
     for cap in RE.captures_iter(src) {
         let m = cap.get(0).unwrap();
@@ -391,6 +394,22 @@ fn append_with_includes(
         offset_pos(src, start_pos, last),
         is_root_body,
     );
+    // A body input can be empty or consist entirely of other inputs. Retain
+    // its participation even when expansion leaves no visible source chunk:
+    // live hosts must not mistake a file also used in the preamble for a
+    // preamble-only dependency. An empty chunk contributes no AST content.
+    if !is_root_body
+        && !out[output_start..]
+            .iter()
+            .any(|file| file.path == source_path)
+    {
+        out.push(ProjectFile {
+            path: source_path,
+            source: String::new(),
+            start: start_pos,
+            is_root_body,
+        });
+    }
 }
 
 fn push_chunk(
@@ -446,6 +465,40 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mathpreview-{name}-{nonce}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn empty_body_participants_do_not_change_rendering_or_numbering() {
+        let dir = temp_dir("empty-body-participants");
+        let root = dir.join("main.tex");
+        fs::write(dir.join("empty.tex"), "").unwrap();
+        fs::write(dir.join("wrapper.tex"), "\\input{empty}").unwrap();
+        fs::write(
+            &root,
+            concat!(
+                "\\input{empty}\n\\begin{document}\n",
+                "\\section{First}\\label{sec:first}\\input{wrapper}\n",
+                "\\section{Second}\\label{sec:second}\n",
+                "See \\ref{sec:first} and \\ref{sec:second}.\\end{document}",
+            ),
+        )
+        .unwrap();
+        let project = load_project(&root).unwrap();
+        for name in ["empty.tex", "wrapper.tex"] {
+            let path = dir.join(name).canonicalize().unwrap();
+            assert!(project
+                .files
+                .iter()
+                .any(|file| file.path == path && file.source.is_empty()));
+        }
+        let mut without_empty = project.clone();
+        without_empty.files.retain(|file| !file.source.is_empty());
+        let opts = crate::HtmlOptions::default();
+        let with = crate::finish_render(root.clone(), project, &opts).unwrap();
+        let without = crate::finish_render(root, without_empty, &opts).unwrap();
+        assert_eq!(with.body_html, without.body_html);
+        assert_eq!(with.sync.entries.len(), without.sync.entries.len());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

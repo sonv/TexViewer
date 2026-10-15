@@ -53,6 +53,9 @@ use mathpreview_core::{
     DocumentFormat, HtmlOptions, RuntimeRequirements,
 };
 
+mod editor;
+use editor::{serve_editor_state, EditorState};
+
 const WS_PROTOCOL_VERSION: &str = "92";
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
@@ -316,6 +319,9 @@ struct AppState {
     /// exists (that attempt renders everything stored). Guarded by the
     /// `buffer_overrides` lock — always take them together.
     buffer_push_seq: Arc<RwLock<HashMap<PathBuf, u64>>>,
+    /// Editor focus and per-file client ordering. Also gates snapshot commits
+    /// so a render already in flight cannot cross a preamble-edit pause.
+    editor_state: Arc<Mutex<EditorState>>,
     /// Single render permit. At most one full render is ever in flight;
     /// pushes that arrive during a render wait here, then re-check
     /// staleness — every one that has meanwhile been superseded returns
@@ -624,12 +630,23 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
     // Document root + the files this daemon watches (for LaTeX, this also
     // includes \input/\include + bib). The nvim plugin uses this to route an
     // edit to the daemon that owns it.
-    let (root_file, document_format) = {
+    let (root_file, document_format, preamble_files, body_files) = {
         let current = state.current.read().await;
+        let (preamble, body) = editor::file_roles(&current);
+        let mut preamble: Vec<_> = preamble.into_iter().collect();
+        let mut body: Vec<_> = body.into_iter().collect();
+        preamble.sort();
+        body.sort();
         (
             current.document.root_file.display().to_string(),
             current.document.format.clone(),
+            preamble,
+            body,
         )
+    };
+    let (preamble_edit_paused, preamble_edit_pending) = {
+        let editor = state.editor_state.lock().await;
+        (editor.paused, editor.pending)
     };
     let watched: Vec<String> = {
         let w = state.watched.read().await;
@@ -648,6 +665,11 @@ async fn serve_debug(State(state): State<AppState>) -> Response {
         "root": root_file,
         "format": document_format,
         "watched": watched,
+        "editor_state_supported": true,
+        "preamble_files": preamble_files,
+        "body_files": body_files,
+        "preamble_edit_paused": preamble_edit_paused,
+        "preamble_edit_pending": preamble_edit_pending,
         // Number of connected browser tabs (live WebSocket subscribers). The
         // nvim plugin reads this to reuse an already-open tab instead of opening
         // a duplicate on a repeat :MathPreview.
@@ -1025,6 +1047,7 @@ pub async fn run(
         preamble_cache: Arc::new(RwLock::new(None)),
         buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
         buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+        editor_state: Arc::new(Mutex::new(EditorState::default())),
         render_permit: Arc::new(Mutex::new(())),
         last_blocks: Arc::new(RwLock::new(last_blocks)),
         render_seq: Arc::new(AtomicU64::new(0)),
@@ -1073,6 +1096,7 @@ pub async fn run(
         .route("/vendor/newcm-text/*path", get(serve_vendor_newcm_text))
         .route("/ws", get(serve_ws))
         .route("/buffer", axum::routing::post(serve_buffer_push))
+        .route("/editor-state", post(serve_editor_state))
         .route("/cursor", post(serve_cursor))
         .route("/selection", post(serve_selection))
         .route("/search", post(serve_search))
@@ -3085,10 +3109,17 @@ fn append_macro_line(target: &Path, line: &str) -> std::io::Result<()> {
 /// file-change handler but driven by an HTTP action (the dialog's Save
 /// button) instead of a filesystem event.
 async fn trigger_rerender(state: &AppState, root_file: &Path) -> anyhow::Result<()> {
-    let seq = begin_render_attempt(state);
+    let seq = {
+        let mut editor = state.editor_state.lock().await;
+        editor.pending = true;
+        if editor.paused {
+            return Ok(());
+        }
+        begin_render_attempt(state)
+    };
     // Same single-render discipline as buffer pushes (see render_permit).
     let _render_permit = state.render_permit.lock().await;
-    if !is_latest_render_attempt(state, seq) {
+    if !is_latest_render_attempt(state, seq) || editor::defer_render(state).await {
         return Ok(());
     }
     let (out, _timing) = render_cached(state, root_file).await?;
@@ -3438,23 +3469,24 @@ async fn serve_buffer_push(
 
     let t0 = std::time::Instant::now();
     let body_len = body.len();
+    let version = match editor::buffer_version(&headers) {
+        Ok(version) => version,
+        Err(status) => return status,
+    };
+    let mut editor = state.editor_state.lock().await;
+    if !editor.accept_buffer(version, &pushed_path) {
+        return axum::http::StatusCode::NO_CONTENT;
+    }
     let seq = begin_render_attempt(&state);
     let cursor = buffer_cursor_from_headers(&headers);
-    let is_renderable = if current_format == DocumentFormat::Markdown {
-        true
-    } else {
-        let preamble_context = {
-            let current = state.current.read().await;
-            current.viewer.preamble.raw_preamble.clone()
-        };
-        is_buffer_renderable_with_preamble(&body, cursor, &preamble_context)
-    };
-    if !is_renderable {
-        elog!(
-            "mathpreview: buffer-push #{seq} {} bytes — incomplete, deferring",
-            body_len
-        );
-        return axum::http::StatusCode::ACCEPTED;
+    if version.is_some() && current_format == DocumentFormat::Latex {
+        let current = state.current.read().await;
+        let (preamble, _) = editor::file_roles(&current);
+        if preamble.contains(&pushed_path) {
+            // A newly discovered preamble can receive a scheduled upload
+            // before the plugin's next /debug role refresh. Hold it here too.
+            editor.paused = true;
+        }
     }
 
     // Coalesce a typing burst. Before this gate every concurrent push ran a
@@ -3481,6 +3513,12 @@ async fn serve_buffer_push(
         if newest_for_file {
             overrides.insert(pushed_path.clone(), body);
             push_seq.insert(pushed_path.clone(), seq);
+            if let Some(cursor) = cursor {
+                editor.cursors.insert(pushed_path.clone(), cursor);
+            } else {
+                editor.cursors.remove(&pushed_path);
+            }
+            editor.pending = true;
         }
         if !is_latest_render_attempt(&state, seq) {
             log_event_verbose(
@@ -3498,6 +3536,10 @@ async fn serve_buffer_push(
             return axum::http::StatusCode::NO_CONTENT;
         }
     }
+    if editor.paused {
+        return axum::http::StatusCode::ACCEPTED;
+    }
+    drop(editor);
 
     // One render at a time. A push that waited here while another render ran
     // is very likely superseded by now (its keystroke has successors) — the
@@ -3511,6 +3553,10 @@ async fn serve_buffer_push(
             format!("buffer-push #{seq} {body_len}b superseded while waiting for render — coalesced"),
         );
         return axum::http::StatusCode::NO_CONTENT;
+    }
+    if editor::defer_render(&state).await {
+        elog!("mathpreview: buffer-push #{seq} {body_len} bytes — incomplete or held, deferring");
+        return axum::http::StatusCode::ACCEPTED;
     }
 
     match render_cached(&state, &current_root).await {
@@ -3870,12 +3916,13 @@ async fn convert_cached_builtin(
     t.render_ms = t4.elapsed().as_millis();
 
     let project_files: Vec<_> = project.included_files().map(PathBuf::from).collect();
-    let additional_dependencies = state
+    let mut additional_dependencies: Vec<_> = state
         .config_paths
         .iter()
         .cloned()
         .map(|path| ConvertedDependency::new(path, DependencyKind::config()))
         .collect();
+    additional_dependencies.extend(mathpreview_core::collect_latex_edit_dependencies(&project));
     let dependencies = mathpreview_core::collect_builtin_dependencies(
         root,
         &project_files,
@@ -3985,6 +4032,14 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
     // the broadcast lock to avoid nesting lock acquisitions.
     let viewer_config = state.viewer_config.read().await.clone();
     let markdown_config = state.markdown_config.read().await.clone();
+    // This lock linearizes focus transitions with snapshot commits. A paused
+    // preamble must never install half-edited MathJax configuration, including
+    // when a render started before the editor entered that buffer.
+    let mut editor = state.editor_state.lock().await;
+    if editor.paused {
+        editor.pending = true;
+        return (0, "deferred");
+    }
 
     // Hold the `last_blocks` write lock across the whole diff → commit →
     // broadcast critical section. This serializes concurrent renders so one
@@ -4026,6 +4081,7 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
         let mut current = state.current.write().await;
         *last_blocks = out.document.blocks.clone();
         *current = out;
+        editor.pending = false;
         let _ = state.tx.send(payload);
         return (0, "reload");
     }
@@ -4132,6 +4188,7 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
     let mut current = state.current.write().await;
     *last_blocks = out.document.blocks.clone();
     *current = out;
+    editor.pending = false;
     let _ = state.tx.send(payload);
     (op_count, kind)
 }
@@ -5001,6 +5058,43 @@ fn literal_environment_end(source: &str, from: usize, env: &[u8], limit: usize) 
     None
 }
 
+/// Reconcile saves even while a preamble hold is active, without replacing
+/// newer unsaved sources. Shared by the watcher and its focused regression.
+async fn prepare_file_changes(state: &AppState, changed_paths: &HashSet<PathBuf>) -> u64 {
+    let mut editor = state.editor_state.lock().await;
+    let seq = begin_render_attempt(state);
+    let (format, preamble) = {
+        let current = state.current.read().await;
+        (
+            current.format(),
+            current.viewer.preamble.raw_preamble.clone(),
+        )
+    };
+    let mut overrides = state.buffer_overrides.write().await;
+    for path in changed_paths {
+        let drop_override = match std::fs::read_to_string(path) {
+            Ok(disk) => overrides.get(path).is_none_or(|buffer| {
+                *buffer == disk
+                    && (format == DocumentFormat::Markdown
+                        || is_buffer_renderable_with_preamble(
+                            buffer,
+                            editor.cursors.get(path).copied(),
+                            &preamble,
+                        ))
+            }),
+            Err(_) => true,
+        };
+        if drop_override {
+            overrides.remove(path);
+        }
+    }
+    editor.pending = true;
+    drop(overrides);
+    drop(editor);
+    *state.preamble_cache.write().await = None;
+    seq
+}
+
 fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>) {
     // notify-debouncer is sync; bridge into tokio via a std::sync::mpsc-style
     // channel polled from a dedicated thread that posts work back to a Tokio
@@ -5126,25 +5220,10 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             while let Ok(more) = file_rx.try_recv() {
                 changed_paths.extend(more);
             }
-            let seq = begin_render_attempt(&state);
-            {
-                let mut overrides = state.buffer_overrides.write().await;
-                for path in &changed_paths {
-                    // Only drop the in-memory buffer override if the file on disk
-                    // now matches it — i.e. the editor saved and there is no
-                    // newer unsaved push. Otherwise a save racing a keystroke
-                    // would revert the preview to the on-disk version and lose
-                    // the just-typed edit.
-                    let drop_override = match std::fs::read_to_string(path) {
-                        Ok(disk) => overrides.get(path).is_none_or(|buf| *buf == disk),
-                        Err(_) => true,
-                    };
-                    if drop_override {
-                        overrides.remove(path);
-                    }
-                }
+            let seq = prepare_file_changes(&state, &changed_paths).await;
+            if editor::defer_render(&state).await {
+                continue;
             }
-            *state.preamble_cache.write().await = None;
             let root = {
                 let current = state.current.read().await;
                 current.document.root_file.clone()
@@ -5154,7 +5233,7 @@ fn spawn_watcher(state: AppState, watch_rx: std_mpsc::Receiver<HashSet<PathBuf>>
             // a concurrent render either. Note the drain above already made
             // this tick the newest of the queued watcher ticks.
             let _render_permit = state.render_permit.lock().await;
-            if !is_latest_render_attempt(&state, seq) {
+            if !is_latest_render_attempt(&state, seq) || editor::defer_render(&state).await {
                 continue;
             }
             match render_cached(&state, &root).await.map(|(out, _)| out) {
@@ -5215,6 +5294,7 @@ fn watched_event_paths(
 
 #[cfg(test)]
 mod tests {
+    use super::EditorState;
     use super::{
         begin_render_attempt, broadcast_render, diff_blocks, host_is_loopback,
         is_buffer_renderable, is_buffer_renderable_with_preamble, is_latest_render_attempt,
@@ -6546,6 +6626,7 @@ Second paragraph here.
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            editor_state: Arc::new(Mutex::new(EditorState::default())),
             render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
@@ -6952,7 +7033,7 @@ Second paragraph here.
         }
     }
 
-    fn app_state_for_output(current: RenderOutput) -> AppState {
+    pub(super) fn app_state_for_output(current: RenderOutput) -> AppState {
         let (tx, _) = broadcast::channel(8);
         let (watch_tx, _) = std_mpsc::channel();
         let converter = LiveConverterAdapter::for_format(current.format);
@@ -6969,6 +7050,7 @@ Second paragraph here.
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            editor_state: Arc::new(Mutex::new(EditorState::default())),
             render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(last_blocks)),
             render_seq: Arc::new(AtomicU64::new(0)),
@@ -7894,6 +7976,7 @@ See \eqref{eq:last} and \ref{thm:last}.
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            editor_state: Arc::new(Mutex::new(EditorState::default())),
             render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
@@ -8090,6 +8173,7 @@ See \eqref{eq:last} and \ref{thm:last}.
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            editor_state: Arc::new(Mutex::new(EditorState::default())),
             render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
@@ -8265,6 +8349,7 @@ See \eqref{eq:last} and \ref{thm:last}.
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            editor_state: Arc::new(Mutex::new(EditorState::default())),
             render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),
@@ -8405,6 +8490,7 @@ See \eqref{eq:last} and \ref{thm:last}.
             preamble_cache: Arc::new(RwLock::new(None)),
             buffer_overrides: Arc::new(RwLock::new(HashMap::new())),
             buffer_push_seq: Arc::new(RwLock::new(HashMap::new())),
+            editor_state: Arc::new(Mutex::new(EditorState::default())),
             render_permit: Arc::new(Mutex::new(())),
             last_blocks: Arc::new(RwLock::new(Vec::new())),
             render_seq: Arc::new(AtomicU64::new(0)),

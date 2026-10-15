@@ -84,6 +84,22 @@ Only on explicit request — releases are outward-facing. The flow:
 
 ## Verification cookbook
 
+### Preamble editing and buffer sync
+
+After `cargo build`, run the headless Neovim checks from the repository root:
+
+```sh
+MATHPREVIEW_CLI=target/debug/mathpreview-cli nvim --headless -u NONE -i NONE -l tests/nvim/buffer_sync.lua
+MATHPREVIEW_CLI=target/debug/mathpreview-cli nvim --headless -u NONE -i NONE -l tests/nvim/preamble_sync.lua
+node --test tests/server/preamble-sync.test.mjs
+```
+
+The server test requires Node 22 or later for its built-in WebSocket client.
+It checks that preamble edits and saves emit no render events during a hold,
+then emit one reload for the complete resumed snapshot. It also checks that
+standalone file watching stays live. The Neovim tests exercise buffer routing,
+unsaved sources, discarded edits, restarts, symlinks, and incomplete math.
+
 ### Embedded JavaScript
 
 The viewer sources live in `crates/core/src/assets/client/` and the MathJax
