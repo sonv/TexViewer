@@ -1979,6 +1979,32 @@ See \eqref{eq:last} and \ref{thm:last}.
     }
 
     #[test]
+    fn bbm_from_unsaved_preamble_is_exposed_in_the_converter_runtime() {
+        let dir = temp_dir("bbm-runtime");
+        let source = concat!(
+            "\\input{defs}\n\\begin{document}\n",
+            "$\\mathbbm{1}$\n\\end{document}\n",
+        );
+        let converted = LatexConverter
+            .convert(
+                ConversionRequest::from_source(dir.join("paper.tex"), source)
+                    .with_file_override(dir.join("defs.tex"), "\\RequirePackage{bbm}\n"),
+                &HtmlOptions::default(),
+            )
+            .unwrap();
+        let math = converted.runtime.math.as_ref().unwrap();
+        assert!(math.packages.iter().any(|package| package == "bbm"));
+        assert!(math
+            .loader_packages
+            .iter()
+            .any(|package| package == "[tex]/bbm"));
+        assert!(!converted.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("bbm") && diagnostic.message.contains("no MathJax mapping")
+        }));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn runtime_and_additional_dependencies_are_complete() {
         let dir = temp_dir("runtime");
         let config = dir.join("future.toml");

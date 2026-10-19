@@ -21,6 +21,7 @@ pub const PACKAGE_TO_MATHJAX: &[(&str, &str)] = &[
     ("siunitx", "[tex]/textmacros"),
     ("bm", "[tex]/boldsymbol"),
     ("boldsymbol", "[tex]/boldsymbol"),
+    ("bbm", "[tex]/bbm"),
     ("enclose", "[tex]/enclose"),
     ("verb", "[tex]/verb"),
     ("centernot", "[tex]/centernot"),

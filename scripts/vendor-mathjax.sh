@@ -3,8 +3,9 @@
 #
 # Pulls MathJax from npm and trims alternates we don't ship (a11y,
 # SRE, CHTML/MML output, AsciiMath/MML input, plus the alternate
-# top-level bundles like tex-chtml*.js). Defaults to MathJax 4; pass
-# a different version as the first argument (e.g. `bash
+# top-level bundles like tex-chtml*.js). Includes the matching NewCM
+# SVG fonts and, when available, the bbm SVG font extension. Defaults to
+# MathJax 4; pass a different version as the first argument (e.g. `bash
 # scripts/vendor-mathjax.sh 3` to roll back).
 #
 # MathJax 4 ships bundles at the package root; the old `es5/`
@@ -50,6 +51,7 @@ tar -xzf "$TARBALL" -C "$TMP_DIR"
 PKG="$TMP_DIR/package"
 MATHJAX_VERSION="$(node -p "require('$PKG/package.json').version")"
 FONT_PKG=""
+BBM_FONT_PKG=""
 
 # Detect package layout: MathJax 3 puts bundles under `es5/`,
 # MathJax 4 puts them at the package root.
@@ -66,6 +68,18 @@ else
   mkdir -p "$TMP_DIR/font"
   tar -xzf "$FONT_TARBALL" -C "$TMP_DIR/font"
   FONT_PKG="$TMP_DIR/font/package"
+  # The bbm TeX extension loads a separate font package. Keep its SVG
+  # output local too, or offline previews fail after the extension loads.
+  # Older MathJax releases do not have bbm and need no extra package.
+  if [ -f "$ROOT/input/tex/extensions/bbm.js" ]; then
+    echo "fetching @mathjax/mathjax-bbm-font-extension@$MATHJAX_VERSION from npm"
+    (cd "$TMP_DIR" && npm pack "@mathjax/mathjax-bbm-font-extension@$MATHJAX_VERSION" >/dev/null)
+    BBM_FONT_TARBALL="$TMP_DIR/mathjax-mathjax-bbm-font-extension-$MATHJAX_VERSION.tgz"
+    verify_tarball "bbm-font-extension@$MATHJAX_VERSION" "$BBM_FONT_TARBALL" "${BBM_FONT_SHA256:-}"
+    mkdir -p "$TMP_DIR/bbm-font"
+    tar -xzf "$BBM_FONT_TARBALL" -C "$TMP_DIR/bbm-font"
+    BBM_FONT_PKG="$TMP_DIR/bbm-font/package"
+  fi
 fi
 
 echo "trimming bundles we do not use"
@@ -106,6 +120,14 @@ if [ -n "$FONT_PKG" ]; then
   cp "$FONT_PKG/svg.js" "$VENDOR_DIR/mathjax-newcm-font/svg.js"
   mv "$FONT_PKG/svg" "$VENDOR_DIR/mathjax-newcm-font/"
   cp "$FONT_PKG/package.json" "$VENDOR_DIR/mathjax-newcm-font/package.json"
+fi
+if [ -n "$BBM_FONT_PKG" ]; then
+  mkdir -p "$VENDOR_DIR/mathjax-bbm-font-extension"
+  cp "$BBM_FONT_PKG/svg.js" "$VENDOR_DIR/mathjax-bbm-font-extension/svg.js"
+  cp "$BBM_FONT_PKG/package.json" "$VENDOR_DIR/mathjax-bbm-font-extension/package.json"
+  if [ -d "$BBM_FONT_PKG/svg" ]; then
+    cp -R "$BBM_FONT_PKG/svg" "$VENDOR_DIR/mathjax-bbm-font-extension/"
+  fi
 fi
 
 echo "vendored $(du -sh "$VENDOR_DIR" | awk '{print $1}') under $VENDOR_DIR"

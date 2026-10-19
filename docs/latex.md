@@ -23,6 +23,12 @@ The [macro guide](macros.md) explains preview overrides, environment
 replacements, paired-delimiter approximations, and the narrower set of macros
 that expand in regular text.
 
+`\usepackage{bbm}` loads MathJax's BBM extension automatically. Use
+`\mathbbm{1}`, `\mathbbmss{R}`, or `\mathbbmtt{R}` inside math for its
+blackboard-bold variants. `\RequirePackage{bbm}` in an included preamble or
+local style file works too. The live viewer bundles the required SVG fonts,
+so no extra installation or Internet connection is needed.
+
 ## Theorems, equations, and references
 
 Theorem environments follow the document's `\newtheorem` declarations,

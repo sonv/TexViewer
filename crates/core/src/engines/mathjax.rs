@@ -51,7 +51,7 @@ impl MathEngine for MathJaxEngine {
         preamble: &ExtractedPreamble,
         viewer: &crate::config::ResolvedViewerConfig,
     ) -> String {
-        let config = mathjax_config(preamble, mathjax_local_font_path(&self.script_url));
+        let config = mathjax_config(preamble, &self.script_url);
         let url = escape_attr(&self.script_url);
         // User-supplied `mathjax-config` JS runs after the generated config and
         // before the (async) library load, so it can mutate `window.MathJax`.
@@ -73,7 +73,7 @@ impl MathEngine for MathJaxEngine {
     }
 }
 
-fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>) -> String {
+fn mathjax_config(preamble: &ExtractedPreamble, script_url: &str) -> String {
     let mut macros = String::new();
     let mut first = true;
     let mut write_entry =
@@ -113,9 +113,18 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
     let mut package_long_set = BTreeSet::from(["[tex]/ams".to_string()]);
     package_long_set.extend(preamble.packages_long.iter().cloned());
     let package_long: Vec<String> = package_long_set.iter().map(|s| json_string(s)).collect();
-    let loader_paths = local_font_path
-        .as_deref()
-        .map(|path| format!("paths: {{ 'mathjax-newcm': {} }}, ", json_string(path)))
+    let loader_paths = mathjax_local_asset_path(script_url, "mathjax-newcm-font")
+        .map(|path| {
+            // BBM's TeX extension loads a separate SVG font extension. Keep
+            // both on the local server. Declaring a path does not preload it.
+            let bbm = mathjax_local_asset_path(script_url, "mathjax-bbm-font-extension")
+                .expect("same local MathJax script");
+            format!(
+                "paths: {{ 'mathjax-newcm': {}, 'mathjax-bbm-extension': {} }}, ",
+                json_string(&path),
+                json_string(&bbm),
+            )
+        })
         .unwrap_or_default();
     format!(
         r#"window.MathJax = {{
@@ -175,15 +184,15 @@ fn mathjax_config(preamble: &ExtractedPreamble, local_font_path: Option<String>)
     )
 }
 
-fn mathjax_local_font_path(script_url: &str) -> Option<String> {
-    if script_url.contains("://") {
+fn mathjax_local_asset_path(script_url: &str, asset: &str) -> Option<String> {
+    if script_url.contains("://") || script_url.starts_with("//") {
         return None;
     }
     let base = script_url.rsplit_once('/').map(|(base, _)| base)?;
     if base.is_empty() {
-        Some("mathjax-newcm-font".to_string())
+        Some(asset.to_string())
     } else {
-        Some(format!("{base}/mathjax-newcm-font"))
+        Some(format!("{base}/{asset}"))
     }
 }
 
@@ -224,6 +233,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bbm_configuration_loads_tex_and_local_svg_font_extensions() {
+        let preamble =
+            crate::macros::extract_preamble_from_overrides(&[crate::macros::MacroOverride {
+                label: "preamble.tex".into(),
+                source: r"\usepackage{bbm}".into(),
+            }]);
+        let config = mathjax_config(&preamble, "/vendor/mathjax/tex-svg.js");
+        assert!(config.contains(r#"packages: { '[+]': ['noerrors', "ams", "bbm"] }"#));
+        assert!(config.contains(r#"load: ['[tex]/noerrors', "[tex]/ams", "[tex]/bbm"]"#));
+        assert!(config
+            .contains(r#"'mathjax-bbm-extension': "/vendor/mathjax/mathjax-bbm-font-extension""#));
+        assert!(config.contains(r#"'mathjax-newcm': "/vendor/mathjax/mathjax-newcm-font""#));
+        for remote in [
+            "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+            "//cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+        ] {
+            let config = mathjax_config(&preamble, remote);
+            assert!(config.contains(r#""[tex]/bbm""#));
+            assert!(!config.contains("mathjax-bbm-extension"));
+        }
+    }
+
+    #[test]
     fn inline_math_breaks_and_wide_displays_scroll() {
         let preamble = ExtractedPreamble {
             macros: Vec::new(),
@@ -247,7 +279,10 @@ mod tests {
             show_only_refs: false,
             geometry_margin_mm: None,
         };
-        let config = mathjax_config(&preamble, None);
+        let config = mathjax_config(
+            &preamble,
+            "https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js",
+        );
         assert!(
             config.contains("displayOverflow: 'scroll'"),
             "wide displays must use MathJax's horizontal scrolling mode"

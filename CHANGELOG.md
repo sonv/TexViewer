@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.59] - 2026-10-19
+
+### Fixed
+
+- `\usepackage{bbm}` and `\RequirePackage{bbm}` now load MathJax's BBM
+  extension, including declarations in input files and local styles.
+  `\mathbbm`, `\mathbbmss`, and `\mathbbmtt` use the proper blackboard-bold
+  glyphs. The required SVG font extension is bundled for offline previews.
+
 ## [2.1.58] - 2026-10-15
 
 ### Fixed

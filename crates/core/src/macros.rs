@@ -1841,6 +1841,24 @@ mod tests {
     }
 
     #[test]
+    fn bbm_package_declarations_request_the_explicit_extension_once() {
+        for source in [
+            r"\usepackage{bbm}",
+            r"\RequirePackage{bbm}",
+            "\\usepackage[]{bbm, bbm}\n\\RequirePackage{bbm}",
+            "\\usepackage{% continued package name\n bbm}",
+        ] {
+            let extracted = preamble(source);
+            assert_eq!(extracted.packages_short, ["bbm"], "{source}");
+            assert_eq!(extracted.packages_long, ["[tex]/bbm"], "{source}");
+            assert!(extracted.unmapped_packages.is_empty());
+        }
+        let commented = preamble("% \\usepackage{bbm}\n% \\RequirePackage{bbm}");
+        assert!(commented.packages_short.is_empty());
+        assert!(commented.packages_long.is_empty());
+    }
+
+    #[test]
     fn geometry_margin_parses_common_forms() {
         // margin=1in → 25.4mm (the user's real paper).
         assert_eq!(geom(r"\usepackage[margin=1in]{geometry}"), Some(25.4));

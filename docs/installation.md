@@ -282,7 +282,8 @@ executable commands.
 ## MathJax and offline setup
 
 The live server works offline by default. The binary embeds MathJax 4
-(`tex-svg.js`, TeX extensions, and New Computer Modern SVG font shards), about
+(`tex-svg.js`, TeX extensions, New Computer Modern SVG font shards, and the
+BBM SVG font extension), about
 14 MB in total, plus the four NCM body-text WOFF2 files. It serves them from
 `/vendor/mathjax/` and uses:
 
