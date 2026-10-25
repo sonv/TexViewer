@@ -5094,70 +5094,80 @@ fn list_kind_for(env: &str) -> Option<ListKind> {
 }
 
 /// Split an enumerate/itemize body into `(marker, slice_start, slice_end)`
-/// chunks per `\item`. Skips over any nested `\begin{X}...\end{X}` so
-/// nested lists don't trigger a top-level split.
+/// chunks per live `\item`. Scan the original source so comments and literal
+/// payloads cannot create items or change nesting, without shifting sync spans.
 fn split_list_items(src: &str) -> Vec<(Option<String>, usize, usize)> {
     let bytes = src.as_bytes();
-    let mut depth = 0i32;
     let mut i = 0;
     let mut items: Vec<(Option<String>, usize, usize)> = Vec::new();
     let mut current: Option<(Option<String>, usize)> = None;
 
     while i < bytes.len() {
+        if bytes[i] == b'%' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
         if bytes[i] == b'\\' {
-            if bytes[i..].starts_with(b"\\begin{") {
-                depth += 1;
-                i += b"\\begin{".len();
+            let word_start = i + 1;
+            let mut word_end = word_start;
+            while word_end < bytes.len()
+                && (bytes[word_end].is_ascii_alphabetic() || bytes[word_end] == b'@')
+            {
+                word_end += 1;
+            }
+            if word_end == word_start {
+                // Consume a whole control symbol: \% is literal, but the %
+                // after a \\ line break still begins a comment.
+                i = word_start + src[word_start..].chars().next().map_or(0, char::len_utf8);
                 continue;
             }
-            if bytes[i..].starts_with(b"\\end{") {
-                depth -= 1;
-                i += b"\\end{".len();
+            let word = &src[word_start..word_end];
+            if is_inline_literal_command(word) {
+                i = inline_literal_payload(src, word, word_end)
+                    .map(|(_, end)| end)
+                    .unwrap_or(bytes.len());
                 continue;
             }
-            if depth == 0 && bytes[i..].starts_with(b"\\item") {
-                let after = i + b"\\item".len();
-                let next = bytes.get(after).copied();
-                let is_word_boundary = match next {
-                    Some(c) => !c.is_ascii_alphabetic(),
-                    None => true,
-                };
-                if is_word_boundary {
-                    if let Some((m, s)) = current.take() {
-                        items.push((m, s, i));
-                    }
-                    let mut j = after;
-                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                        j += 1;
-                    }
-                    let marker = if j < bytes.len() && bytes[j] == b'[' {
-                        let start_b = j + 1;
-                        let mut k = start_b;
-                        let mut bd = 0i32;
-                        while k < bytes.len() {
-                            match bytes[k] {
-                                b'\\' if k + 1 < bytes.len() => {
-                                    k += 2;
-                                    continue;
-                                }
-                                b'{' => bd += 1,
-                                b'}' => bd -= 1,
-                                b']' if bd == 0 => break,
-                                _ => {}
-                            }
-                            k += 1;
-                        }
-                        let m = src[start_b..k.min(bytes.len())].to_string();
-                        j = (k + 1).min(bytes.len());
-                        Some(m)
-                    } else {
-                        None
-                    };
-                    current = Some((marker, j));
-                    i = j;
-                    continue;
+            if let Some(token) = environment_token_at(src, i) {
+                if token.kind == EnvironmentTokenKind::Begin {
+                    // Skip an entire nested environment, including verbatim
+                    // bodies whose fake \end commands must remain literal.
+                    i = inert_environment_span_at(src, i)
+                        .map(|span| span.end)
+                        .or_else(|| {
+                            find_matching_end_lexical_in(src, token.end, &token.name)
+                                .map(|(_, end)| end)
+                        })
+                        .unwrap_or(bytes.len());
+                } else {
+                    i = token.end;
                 }
+                continue;
             }
+            if word == "item" {
+                if let Some((m, s)) = current.take() {
+                    items.push((m, s, i));
+                }
+                let mut j = skip_tex_space_and_comments(src, word_end);
+                let marker = if bytes.get(j) == Some(&b'[') {
+                    // Like citation notes, item markers end at the first
+                    // unbraced ] outside comments and literal payloads.
+                    let end = citation_optional_arg_end(src, j);
+                    let marker_end = end.map_or(bytes.len(), |end| end - 1);
+                    let marker = src[j + 1..marker_end].to_string();
+                    j = end.unwrap_or(bytes.len());
+                    Some(marker)
+                } else {
+                    None
+                };
+                current = Some((marker, j));
+                i = j;
+                continue;
+            }
+            i = word_end;
+            continue;
         }
         i += 1;
     }
@@ -5382,6 +5392,85 @@ mod tests {
             .collect();
         let thms = TheoremRegistry::from_preamble(&project.preamble.source);
         parse_body_with_overrides(&project, &thms, &layers).unwrap()
+    }
+
+    #[test]
+    fn list_items_ignore_comments_without_changing_source_offsets() {
+        for newline in ["\n", "\r\n"] {
+            let source = [
+                r"% \item hidden before the first item",
+                r"\item First café % \item hidden trailing item",
+                r"% \begin{itemize}",
+                r"\item Second",
+                r"% \end{enumerate} \item hidden at EOF",
+            ]
+            .join(newline);
+            let items = split_list_items(&source);
+            assert_eq!(items.len(), 2, "{source}");
+            assert_eq!(items[0].1, source.find("First").unwrap());
+            assert_eq!(items[0].2, source.find(r"\item Second").unwrap());
+            assert_eq!(items[1].1, source.find("Second").unwrap());
+            assert_eq!(items[1].2, source.len());
+        }
+    }
+
+    #[test]
+    fn list_items_respect_control_symbols_and_literal_percent_signs() {
+        for literal in [
+            r"\%",
+            r"\\item not a command",
+            r"\itemize not an item",
+            r"\item@private not an item",
+            r"\verb|% \item \begin{itemize}|",
+            r"\verb*|% \item|",
+            r"\lstinline{% \item}",
+            r"\url{https://example.org/a%20b}",
+            r"\href{https://example.org/a%20b}{Link}",
+        ] {
+            let source = format!(r"\item First {literal} \item Second");
+            let items = split_list_items(&source);
+            assert_eq!(items.len(), 2, "{source}");
+            assert_eq!(&source[items[1].1..items[1].2], "Second");
+        }
+        let source = "\\item First \\\\% \\item hidden\n\\item Second";
+        let items = split_list_items(source);
+        assert_eq!(items.len(), 2);
+        assert_eq!(&source[items[1].1..items[1].2], "Second");
+    }
+
+    #[test]
+    fn list_items_keep_nested_and_literal_environments_inert() {
+        let source = concat!(
+            "\\item First\n",
+            "% \\begin{itemize}\n",
+            "\\begin% environment argument\n{itemize}\n",
+            "\\item Nested\n",
+            "% \\end{itemize} \\item hidden\n",
+            "\\end{itemize}\n",
+            "\\begin{verbatim}\n",
+            "% \\end{verbatim}\n",
+            "\\end{itemize} \\item literal\n",
+            "\\end{verbatim}\n",
+            "\\item Second",
+        );
+        let items = split_list_items(source);
+        assert_eq!(items.len(), 2);
+        assert_eq!(&source[items[1].1..items[1].2], "Second");
+    }
+
+    #[test]
+    fn list_items_accept_comment_continued_markers() {
+        let source = concat!(
+            "\\item% hidden \\item\n",
+            "[Term% hidden ] \\item\n",
+            "{]}] First\n",
+            "\\item[Other] Second",
+        );
+        let items = split_list_items(source);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0.as_deref(), Some("Term% hidden ] \\item\n{]}"));
+        assert_eq!(&source[items[0].1..items[0].2], " First\n");
+        assert_eq!(items[1].0.as_deref(), Some("Other"));
     }
 
     #[test]

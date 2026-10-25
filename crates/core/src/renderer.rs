@@ -7248,6 +7248,34 @@ end = '{% endcall %}'
     }
 
     #[test]
+    fn latex_list_comments_do_not_create_items_or_shift_source_sync() {
+        for env in ["enumerate", "itemize", "description"] {
+            let source = format!(
+                "\\begin{{{env}}}\n\\item first\n% \\item hidden café\n\\item second $x$\n\\end{{{env}}}\n"
+            );
+            let out = crate::render_project_from_source(
+                Path::new("list.tex"),
+                source.clone(),
+                &HtmlOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(out.body_html.matches(r#"class="item-body""#).count(), 2);
+            let text = text_content(&out.body_html);
+            assert!(text.contains("first"), "{text}");
+            assert!(text.contains("second"), "{text}");
+            assert!(!text.contains("hidden"), "{text}");
+            assert!(out.body_html.contains(r#"data-src="list.tex:4:7""#));
+            let math = out
+                .sync
+                .lookup_by_source_position(Path::new("list.tex"), 4, 15)
+                .expect("math after comment remains a source target");
+            assert_eq!(math.start.line, 4);
+            assert_eq!(math.start.col, 14);
+            assert_eq!(math.start.byte as usize, source.find("$x$").unwrap());
+        }
+    }
+
+    #[test]
     fn blank_line_after_display_renders_indented_paragraph_without_extra_break() {
         let out = crate::render_project_from_source(
             Path::new("t.tex"),

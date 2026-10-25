@@ -144,6 +144,10 @@ cursor and source-jump endpoints in either browser engine. It covers
 offscreen scrolling, caption words and gaps, included files, live edits,
 and nested TikZ placeholders without compiling project TeX.
 
+`npm run test:lists` checks commented-out items, nested list boundaries,
+escaped percent signs, and live comment toggles. It verifies cursor and
+click-to-source positions after Unicode comments in either browser engine.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,

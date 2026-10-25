@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.60] - 2026-10-25
+
+### Fixed
+
+- Commented-out `\item` commands no longer appear as list items. Comments
+  containing `\begin` or `\end` also leave nested lists intact. Escaped
+  percent signs, literal code, URLs, and comment-continued item labels retain
+  their meaning, and source syncing keeps the original line and byte positions.
+
 ## [2.1.59] - 2026-10-19
 
 ### Fixed
