@@ -394,6 +394,19 @@ viewer sidecar without a second parse or render. Both built-in cached branches
 still converge on `finalize_builtin_document`, so downstream watch, diff,
 sync, and broadcast code consumes the same document shape.
 
+Custom style discovery belongs to the LaTeX project loader in `core`. It
+tries optional `kpsewhich` lookup only after local files and live overrides.
+The lookup runs without a shell, disables file generation, and excludes
+distribution styles. Each subprocess has a one-second deadline and a 16 KiB
+output limit. One project load permits at most 32 uncached queries within a
+two-second budget. A process-wide cache holds up to 256 lookup results for
+30 seconds, keyed by directory, query, and TeX environment. Timeouts are not
+cached. Cached results
+remain usable after the load budget is spent. File contents are not cached
+here. Both the resolved style and its prospective local replacement are
+dependencies, so external edits and local shadow files reach the normal
+watching and preamble-cache paths. See [LaTeX support](latex.md#projects-and-macros).
+
 ### Live state and caches
 
 The live host owns the mutable state needed to turn complete conversion

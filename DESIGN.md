@@ -383,6 +383,12 @@ If the currently-viewed file is a chapter/include file with its own preamble-lik
 
 **Step 3: Scan local `.sty` and `.tex` macro files.** Follow `\usepackage{name}`, `\RequirePackage{name}`, `\input{name}`, and `\include{name}` directives in the root preamble. When a matching local file exists within the configured parent search depth (default 4 directories up from the project root), scan it for definitions too. This is how project-specific macro packages get picked up automatically.
 
+Missing custom styles also use an optional, bounded `kpsewhich` fallback on
+macOS and Linux. Project-local files and unsaved buffers win. Distribution
+styles under `TEXMFDIST` or `TEXMFMAIN` remain opaque to avoid importing TeX
+internals over MathJax implementations. Only lookup results are cached,
+not style contents. See [LaTeX support](docs/latex.md#projects-and-macros).
+
 **Step 4: Normalize for MathJax.** MathJax's macro support has quirks:
 - `\providecommand` becomes a no-op when MathJax already has a built-in with the same name. Rewrite to `\newcommand` to force the user's definition.
 - `\edef` does expand-at-definition, which MathJax doesn't implement. Rewrite to `\def`.
@@ -623,10 +629,10 @@ mathpreview/
 │       └── Cargo.toml
 ```
 
-Crate `core` is pure rendering — no async, no IO beyond reading files
-the caller passes paths to. Crate `cli` is the only place tokio / axum
-/ notify live. This keeps the door open for embedding `core` in a
-future Tauri shell or LSP server without dragging in a runtime.
+Crate `core` loads project files and renders synchronously. Its LaTeX loader
+may invoke `kpsewhich` for missing custom styles, with bounded time and output.
+It does not run a TeX compiler. Crate `cli` is the only place tokio, axum, and
+notify live, so embedding `core` does not require an async runtime.
 
 ## 11. Build order
 

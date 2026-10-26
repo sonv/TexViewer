@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.61] - 2026-10-26
+
+### Fixed
+
+- Custom style files outside the project can now be found through `kpsewhich`
+  on macOS and Linux. Local files and unsaved buffers take priority, and
+  discovered styles participate in macro extraction and live reloading.
+  Lookup is optional, cached, and bounded. Standard distribution packages
+  remain handled by MathJax rather than importing their TeX internals.
+
 ## [2.1.60] - 2026-10-25
 
 ### Fixed

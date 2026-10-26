@@ -13,6 +13,7 @@
     "test:bbm": "cargo build -p mathpreview-cli && node --test tests/browser/bbm.test.mjs",
     "test:paragraph": "cargo build -p mathpreview-cli && node --test tests/browser/paragraph.test.mjs",
     "test:lists": "cargo build -p mathpreview-cli && node --test tests/browser/list-comments.test.mjs",
+    "test:styles": "cargo build -p mathpreview-cli && node --test tests/server/kpsewhich.test.mjs",
     "test:figures": "cargo build -p mathpreview-cli && node --test tests/browser/figure-sync.test.mjs"
   },
   "devDependencies": {

@@ -112,8 +112,8 @@ Math macros are expanded by MathJax inside `$…$`. In **regular text**, the
 renderer also handles macros, in three ways:
 
 1. **Your `\newcommand`s expand in text.** A macro defined in the preamble,
-   in a **local `\usepackage`'d / `\input`'d `.sty` or `.tex`** (these are
-   scanned — see [Override macros](#override-macros-for-the-viewer)), or in
+   in a **local `\usepackage`'d / `\input`'d `.sty` or `.tex`**, in a custom
+   style found through [TeX's search path](latex.md#projects-and-macros), or in
    any override file is substituted with its body, arguments and all, then
    re-rendered — so `\newcommand{\hello}{world}` makes `\hello` render as
    *world*, and `\newcommand{\SV}[1]{\textcolor{red}{#1}}` makes `\SV{note}`

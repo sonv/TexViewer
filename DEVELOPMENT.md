@@ -110,6 +110,13 @@ Run `npm ci` once, then `npm run lint`. The lint script assembles the shared
 client scope in its compile-time order so ESLint can check names across files.
 Node/npm is needed for this development tooling, not to run the live viewer.
 
+### Style discovery regression tests
+
+`npm run test:styles` checks custom style discovery with an isolated fake
+`kpsewhich`, including local precedence, unsaved buffers, lookup caching,
+timeouts, no-TeX fallback, and live file watching. It does not change the
+user's TeX installation or search configuration.
+
 ### Browser regression tests
 
 The hover regression suite runs the complete viewer against a temporary local

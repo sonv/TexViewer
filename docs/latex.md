@@ -15,6 +15,20 @@ Open the root or a child file in a multi-file project. The renderer follows
 included buffer without saving it to disk. Local `.sty` files loaded through
 `\usepackage` are scanned for declarations too.
 
+On macOS and Linux, if a custom style is not found locally, mathpreview tries
+`kpsewhich` on `PATH`. This honors TeX's search configuration, including
+`TEXINPUTS`, `TEXMFHOME`, and `TEXMFLOCAL`. `\RequirePackage` and explicit
+`\input{file.sty}` references use the same fallback. Project-local files and
+their unsaved buffers take priority. Discovered styles and their nested local
+inputs participate in macro extraction, live watching, and preamble editing.
+
+TeX remains optional. If `kpsewhich` is unavailable or a lookup fails, local
+discovery still works. Standard styles under `TEXMFDIST` or `TEXMFMAIN` are
+not imported, since their internals can conflict with MathJax. The fallback
+also skips styles when distribution roots cannot be reliably identified.
+Lookup results are cached for up to 30 seconds, but style contents are reread
+for each conversion. Restart the preview after changing Neovim's TeX environment.
+
 Math macro extraction covers `\newcommand`, `\DeclareMathOperator`,
 `\NewDocumentCommand`, `\def`, `\let`, `\DeclarePairedDelimiter`,
 `\DeclarePairedDelimiterX` / `XPP`, and the `\newdelim` / `\newdelimX`

@@ -1296,6 +1296,9 @@ fn command_brace_arg(
 /// One local file candidate referenced from a preamble.
 pub(crate) struct ReferencedFile {
     pub path: PathBuf,
+    /// Optional style lookup name, used only after the local source and live
+    /// buffer override are both absent. Ordinary .tex inputs stay local.
+    pub tex_search_name: Option<PathBuf>,
     /// Missing explicit inputs are useful diagnostics. A missing local
     /// package candidate is not: it usually names a TeX-distribution package.
     pub warn_if_missing: bool,
@@ -1320,17 +1323,18 @@ pub(crate) fn collect_referenced_file_candidates(src: &str, base: &Path) -> Vec<
             if n.is_empty() || !crate::root::path_within_bounds(n) {
                 continue;
             }
+            let package = Path::new(n);
+            let search_name = if package.extension().is_some() {
+                package.to_path_buf()
+            } else {
+                package.with_extension("sty")
+            };
             // Walk up to MAX_PARENT_DEPTH dirs looking for a local .sty match.
             let mut dir = Some(base.to_path_buf());
             let mut local_match = None;
             for _ in 0..=crate::root::MAX_PARENT_DEPTH {
                 let Some(d) = dir.clone() else { break };
-                let package = Path::new(n);
-                let cand = if package.extension().is_some() {
-                    d.join(package)
-                } else {
-                    d.join(package).with_extension("sty")
-                };
+                let cand = d.join(&search_name);
                 if cand.is_file() {
                     local_match = Some(cand);
                     break;
@@ -1338,14 +1342,9 @@ pub(crate) fn collect_referenced_file_candidates(src: &str, base: &Path) -> Vec<
                 dir = d.parent().map(Path::to_path_buf);
             }
             out.push(ReferencedFile {
-                path: local_match.unwrap_or_else(|| {
-                    let package = Path::new(n);
-                    if package.extension().is_some() {
-                        base.join(package)
-                    } else {
-                        base.join(package).with_extension("sty")
-                    }
-                }),
+                path: local_match.unwrap_or_else(|| base.join(&search_name)),
+                tex_search_name: (search_name.extension().is_some_and(|ext| ext == "sty"))
+                    .then_some(search_name),
                 warn_if_missing: false,
             });
         }
@@ -1370,6 +1369,8 @@ pub(crate) fn collect_referenced_file_candidates(src: &str, base: &Path) -> Vec<
         };
         out.push(ReferencedFile {
             path: withext,
+            tex_search_name: (p.extension().is_some_and(|ext| ext == "sty"))
+                .then(|| p.to_path_buf()),
             warn_if_missing: true,
         });
     }
@@ -2009,6 +2010,37 @@ mod tests {
         assert!(collect_referenced_files("\\input{/etc/hostname}\n", &dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preamble_candidates_only_offer_styles_for_tex_path_lookup() {
+        let base = Path::new("project");
+        let candidates = collect_referenced_file_candidates(
+            concat!(
+                "\\usepackage[option]{custom,other.sty,local.tex}\n",
+                "\\RequirePackage{nested/style}\n",
+                "\\input{definitions}\n",
+                "\\input{explicit.sty}\n",
+                "% \\usepackage{commented}\n",
+                "\\usepackage{/absolute,../../../../../outside}\n",
+            ),
+            base,
+        );
+        let names: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate.tex_search_name.as_deref())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                Some(Path::new("custom.sty")),
+                Some(Path::new("other.sty")),
+                None,
+                Some(Path::new("nested/style.sty")),
+                None,
+                Some(Path::new("explicit.sty")),
+            ]
+        );
     }
 
     #[test]

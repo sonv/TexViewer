@@ -8,7 +8,7 @@ homepage.workspace = true
 authors.workspace = true
 readme.workspace = true
 rust-version.workspace = true
-description = "LaTeX and Markdown parser, macro extractor, numbering, and HTML renderer used by the mathpreview-cli preview daemon. Pure rendering — no async, no I/O beyond reading files the caller passes paths to."
+description = "LaTeX and Markdown project loading, macro extraction, numbering, and HTML rendering for mathpreview-cli, with optional kpsewhich discovery of custom styles. No async runtime required."
 keywords = ["latex", "markdown", "parser", "mathjax", "rendering"]
 categories = ["parser-implementations", "rendering"]
 

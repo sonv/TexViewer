@@ -9,6 +9,7 @@ pub mod bibtex;
 pub mod config;
 pub mod converter;
 pub mod engines;
+mod kpsewhich;
 pub mod macros;
 pub mod markdown;
 pub mod numbering;

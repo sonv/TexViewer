@@ -39,6 +39,12 @@ Automatic selection keeps the existing compatibility rule. `.md` and
 LaTeX project converter. A protocol request can explicitly select `latex` or
 `markdown` when its logical path uses another extension.
 
+LaTeX project loading can invoke optional `kpsewhich` to find custom styles
+outside the project. It uses bounded time and output and inherits the host's
+TeX environment. These files are emitted as dependencies and accept live
+overrides. See [style discovery](latex.md#projects-and-macros) for precedence
+and distribution-package exclusions. Markdown does not use this lookup.
+
 ## Rust API
 
 The in-process contract lives in `mathpreview_core::converter`:

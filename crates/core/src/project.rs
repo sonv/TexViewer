@@ -25,7 +25,7 @@ pub struct Preamble {
     pub file: PathBuf,
 }
 
-/// One local `.tex` / `.sty` file referenced by the root preamble. These are
+/// One `.tex` / `.sty` file referenced by the root preamble. These are
 /// kept separate from body files: they affect macro/package configuration but
 /// must never be parsed as visible document content.
 #[derive(Debug, Clone)]
@@ -53,16 +53,16 @@ pub struct ProjectFile {
 pub struct Project {
     pub root: PathBuf,
     pub preamble: Preamble,
-    /// Local preamble dependencies in discovery order, including nested
-    /// `\input` / `\usepackage` references. Sources honor live buffer
-    /// overrides just like body includes.
+    /// Preamble dependencies in discovery order, including local and TeX-path
+    /// custom styles and their nested `\input` / `\usepackage` references.
+    /// Sources honor live buffer overrides just like body includes.
     pub preamble_files: Vec<PreambleFile>,
     /// Files in body-include order. `files[0]` is the root file's body slice
     /// up to the first `\input/\include/\subfile`; subsequent entries are the
     /// included files, recursively. Order matches the order content would
     /// appear when LaTeX flattens the project.
     pub files: Vec<ProjectFile>,
-    /// Existing and prospective local inputs that should trigger a reload.
+    /// Existing and prospective inputs that should trigger a reload.
     /// Missing paths are retained so creating a referenced file is observable.
     pub dependency_files: Vec<PathBuf>,
     pub warnings: Vec<String>,
@@ -124,13 +124,14 @@ fn load_project_with_source_and_overrides(
     let mut dependency_files = Vec::new();
     let mut warnings = Vec::new();
 
-    // Resolve local preamble dependencies separately from body includes. They
+    // Resolve preamble dependencies separately from body includes. They
     // participate in package/macro extraction, watching, cache invalidation,
     // and unsaved-buffer overrides, but not visible body parsing.
     let root_key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut preamble_files = Vec::new();
     let mut preamble_visited = HashSet::from([root_key.clone()]);
     let base = root.parent().unwrap_or_else(|| Path::new("."));
+    let mut style_resolver = crate::kpsewhich::StyleResolver::new(base);
     append_preamble_files(
         preamble_src,
         base,
@@ -139,6 +140,7 @@ fn load_project_with_source_and_overrides(
         &mut preamble_visited,
         &mut warnings,
         overrides,
+        &mut style_resolver,
         0,
     );
 
@@ -236,6 +238,7 @@ fn append_preamble_files(
     visited: &mut HashSet<PathBuf>,
     warnings: &mut Vec<String>,
     overrides: &HashMap<PathBuf, String>,
+    style_resolver: &mut crate::kpsewhich::StyleResolver,
     depth: usize,
 ) {
     if depth > 16 {
@@ -246,12 +249,29 @@ fn append_preamble_files(
         return;
     }
     for reference in crate::macros::collect_referenced_file_candidates(src, base) {
-        let canonical = override_key(&reference.path);
+        let mut canonical = override_key(&reference.path);
+        // Retain the local candidate even when a TeX-path style is selected:
+        // creating a project-local shadow file must trigger rediscovery.
         dependencies.push(canonical.clone());
+        let mut source = read_source_with_overrides(&canonical, overrides);
+        if source
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            if let Some(path) = reference
+                .tex_search_name
+                .as_deref()
+                .and_then(|name| style_resolver.resolve_style(name))
+            {
+                canonical = override_key(&path);
+                dependencies.push(canonical.clone());
+                source = read_source_with_overrides(&canonical, overrides);
+            }
+        }
         if !visited.insert(canonical.clone()) {
             continue;
         }
-        match read_source_with_overrides(&canonical, overrides) {
+        match source {
             Ok(source) => {
                 out.push(PreambleFile {
                     path: canonical.clone(),
@@ -266,6 +286,7 @@ fn append_preamble_files(
                     visited,
                     warnings,
                     overrides,
+                    style_resolver,
                     depth + 1,
                 );
             }
