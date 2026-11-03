@@ -146,6 +146,9 @@ browser selection variable.
 source jumps, and live edits in both browser engines. It also checks that
 Markdown headings keep their block layout.
 
+`npm run test:revtex` checks the REVTeX title block, shared author notes,
+and click-to-source navigation before and after a live edit.
+
 `npm run test:figures` checks figure and caption syncing through the real
 cursor and source-jump endpoints in either browser engine. It covers
 offscreen scrolling, caption words and gaps, included files, live edits,

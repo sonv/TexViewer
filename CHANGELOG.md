@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.62] - 2026-11-03
+
+### Fixed
+
+- REVTeX papers that declare their title and authors after `\begin{document}`
+  now display a title block above the abstract. Affiliations and email addresses
+  appear with their authors. Authors who share a contribution note point to
+  the same note, including when its text comes from a front-matter macro.
+
 ## [2.1.61] - 2026-10-26
 
 ### Fixed

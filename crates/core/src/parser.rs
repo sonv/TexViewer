@@ -20,6 +20,9 @@ use crate::macros::MacroOverride;
 use crate::project::Project;
 use crate::theorems::TheoremRegistry;
 
+mod revtex;
+pub(crate) use revtex::revtex_title_argument;
+
 /// A user `\newenvironment{name}[nargs][default]{begin}{end}` definition.
 #[derive(Clone)]
 struct EnvMacro {
@@ -2140,10 +2143,15 @@ pub fn parse_body_with_overrides(
     ENV_EXPANSIONS_LEFT.with(|budget| budget.set(MAX_USER_ENV_EXPANSIONS));
     ENV_EXPANSION_ACTIVE.with(|active| active.set(0));
     BIBLIOGRAPHY_DEPTH.with(|depth| depth.set(0));
+    let front = revtex::FrontMatter::for_project(project);
     let mut nodes = Vec::new();
     for f in &project.files {
         let mut p = Parser::new_at(&f.source, f.path.clone(), f.start, thms, 0, false);
+        p.front_matter_ends = front.as_ref().and_then(|plan| plan.ends.get(&f.path));
         p.parse_block_into(&mut nodes, None);
+    }
+    if let Some(front) = front {
+        front.attach(&mut nodes);
     }
     Ok(fold_native_bibliographies(nodes))
 }
@@ -2278,6 +2286,8 @@ struct Parser<'a> {
     /// Opaque float children carry source locations without becoming a second
     /// independently rendered/numbered document. Keep stored TeX inert here.
     source_children: bool,
+    /// Source-absolute byte ranges for live REVTeX front matter fields.
+    front_matter_ends: Option<&'a HashMap<u32, u32>>,
 }
 
 impl<'a> Parser<'a> {
@@ -2302,6 +2312,7 @@ impl<'a> Parser<'a> {
             thms,
             depth,
             source_children,
+            front_matter_ends: None,
         }
     }
 
@@ -2602,6 +2613,26 @@ impl<'a> Parser<'a> {
                 let cmd = self.src[self.byte + 1..cmd_name_end].to_string();
                 let cmd_start = self.pos();
 
+                if let Some(end) = self
+                    .front_matter_ends
+                    .and_then(|ends| ends.get(&cmd_start.byte))
+                    .map(|end| (end - self.byte_base) as usize)
+                    .filter(|end| *end <= self.src.len())
+                {
+                    flush_text(&mut text_buf, &mut text_start, out, self.pos(), &self.file);
+                    let raw = self.src[self.byte..end].to_string();
+                    self.advance_to(end);
+                    out.push(Node {
+                        kind: NodeKind::OpaqueCmd {
+                            name: cmd.trim_end_matches('*').into(),
+                            raw,
+                        },
+                        span: self.span_from(cmd_start),
+                        children: vec![],
+                    });
+                    continue;
+                }
+
                 if self.source_children
                     && self.parse_float_source_command(
                         &cmd,
@@ -2770,6 +2801,7 @@ impl<'a> Parser<'a> {
                             self.depth + 1,
                             self.source_children,
                         );
+                        sub.front_matter_ends = self.front_matter_ends;
                         sub.parse_block_into(&mut children, None);
                         self.advance_to(bounds.fi_end);
                         out.extend(children);

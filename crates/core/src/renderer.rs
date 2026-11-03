@@ -526,7 +526,12 @@ pub fn render_body_only(
 fn front_matter_order(nodes: &[Node]) -> Vec<&Node> {
     let Some(title_index) = nodes
         .iter()
-        .position(|node| matches!(node.kind, NodeKind::MakeTitle))
+        .position(|node| matches!(node.kind, NodeKind::MakeTitle) && !node.children.is_empty())
+        .or_else(|| {
+            nodes
+                .iter()
+                .position(|node| matches!(node.kind, NodeKind::MakeTitle))
+        })
     else {
         return nodes.iter().collect();
     };
@@ -1763,6 +1768,70 @@ fn write_markdown_table_cells(
     }
 }
 
+fn title_source_attrs(span: Option<&Span>, ctx: &mut RenderCtx) -> String {
+    let Some(span) = span else {
+        return String::new();
+    };
+    let id = ctx.idgen.next("srcw");
+    record(ctx, &id, span, None);
+    format!(r#" id="{id}" data-src="{}""#, escape_attr(&data_src(span)))
+}
+
+fn write_title_email(
+    out: &mut String,
+    email: &str,
+    prefix: Option<&str>,
+    span: Option<&Span>,
+    ctx: &mut RenderCtx,
+) {
+    writeln!(
+        out,
+        r#"<div class="paper-email"{src}>{prefix}<a href="mailto:{href}">{display}</a></div>"#,
+        src = title_source_attrs(span, ctx),
+        prefix = prefix
+            .map(|p| render_inline_latex(p, ctx.labels))
+            .unwrap_or_default(),
+        href = escape_attr(email),
+        display = escape_html(email),
+    )
+    .unwrap();
+}
+
+fn write_revtex_entry(
+    out: &mut String,
+    entry: &crate::revtex::Entry<'_>,
+    tag: &str,
+    class: &str,
+    ctx: &mut RenderCtx,
+) {
+    write!(
+        out,
+        r#"<{tag} class="{class}"{src}>{text}"#,
+        src = title_source_attrs(Some(entry.field.span), ctx),
+        text = render_inline_latex(&entry.field.text, ctx.labels),
+    )
+    .unwrap();
+    for (i, (number, span)) in entry.note_numbers.iter().enumerate() {
+        let separator = if i == 0 { "" } else { "," };
+        write!(
+            out,
+            r#"<sup class="paper-note-ref"{src}>{separator}{number}</sup>"#,
+            src = title_source_attrs(Some(span), ctx),
+        )
+        .unwrap();
+    }
+    writeln!(out, "</{tag}>").unwrap();
+    for email in &entry.emails {
+        write_title_email(
+            out,
+            &email.field.text,
+            email.prefix.as_deref(),
+            Some(email.field.span),
+            ctx,
+        );
+    }
+}
+
 fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
     match &n.kind {
         NodeKind::Document => {
@@ -2761,25 +2830,54 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
             out.push_str("</pre>");
         }
         NodeKind::MakeTitle => {
-            let title = ctx.preamble.title.as_deref();
+            let front = crate::revtex::title_details(&n.children);
             let author_details = &ctx.preamble.author_details;
             let authors = &ctx.preamble.authors;
             let fallback_author = ctx.preamble.author.as_deref();
-            let date = ctx.preamble.date.as_deref();
-            if title.is_none() && authors.is_empty() && fallback_author.is_none() && date.is_none()
+            let date = front
+                .date
+                .as_ref()
+                .map(|field| field.text.as_str())
+                .or(ctx.preamble.date.as_deref());
+            if front.title.is_none()
+                && ctx.preamble.title.is_none()
+                && front.authors.is_empty()
+                && front.notes.is_empty()
+                && authors.is_empty()
+                && fallback_author.is_none()
+                && date.is_none()
             {
                 return;
             }
             out.push_str(r#"<div class="title-block">"#);
-            if let Some(t) = title {
+            if let Some(title) = &front.title {
+                write_revtex_entry(out, title, "h1", "paper-title", ctx);
+            } else if let Some(title) = &ctx.preamble.title {
                 writeln!(
                     out,
                     r#"<h1 class="paper-title">{}</h1>"#,
-                    render_inline_latex(t, ctx.labels)
+                    render_inline_latex(title, ctx.labels),
                 )
                 .unwrap();
             }
-            if !author_details.is_empty() {
+            if !front.authors.is_empty() {
+                out.push_str(r#"<div class="paper-authors">"#);
+                for author in &front.authors {
+                    out.push_str(r#"<div class="paper-author">"#);
+                    write_revtex_entry(out, &author.name, "div", "paper-author-name", ctx);
+                    for &index in &author.affiliations {
+                        write_revtex_entry(
+                            out,
+                            &front.affiliations[index],
+                            "div",
+                            "paper-address",
+                            ctx,
+                        );
+                    }
+                    out.push_str("</div>");
+                }
+                out.push_str("</div>");
+            } else if !author_details.is_empty() {
                 out.push_str(r#"<div class="paper-authors">"#);
                 for author in author_details {
                     out.push_str(r#"<div class="paper-author">"#);
@@ -2798,13 +2896,7 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                         .unwrap();
                     }
                     for email in &author.emails {
-                        let display = escape_html(email);
-                        let href = escape_attr(email);
-                        writeln!(
-                            out,
-                            r#"<div class="paper-email"><a href="mailto:{href}">{display}</a></div>"#
-                        )
-                        .unwrap();
+                        write_title_email(out, email, None, None, ctx);
                     }
                     out.push_str("</div>");
                 }
@@ -2829,12 +2921,30 @@ fn write_node(out: &mut String, n: &Node, ctx: &mut RenderCtx) {
                 .unwrap();
             }
             if let Some(d) = date {
+                let mut date_html = render_inline_latex(d, ctx.labels);
+                if front.date.is_some() && date_html.is_empty() && d.trim() == r"\today" {
+                    date_html.push_str("(today)");
+                }
                 writeln!(
                     out,
-                    r#"<div class="paper-date">{}</div>"#,
-                    render_inline_latex(d, ctx.labels)
+                    r#"<div class="paper-date"{src}>{date_html}</div>"#,
+                    src = title_source_attrs(front.date.as_ref().map(|f| f.span), ctx),
                 )
                 .unwrap();
+            }
+            if !front.notes.is_empty() {
+                out.push_str(r#"<div class="paper-notes">"#);
+                for (i, note) in front.notes.iter().enumerate() {
+                    writeln!(
+                        out,
+                        r#"<div class="paper-note"{src}><sup>{number}</sup> {note}</div>"#,
+                        src = title_source_attrs(Some(note.span), ctx),
+                        number = i + 1,
+                        note = render_inline_latex(&note.text, ctx.labels),
+                    )
+                    .unwrap();
+                }
+                out.push_str("</div>");
             }
             out.push_str("</div>\n");
         }
@@ -9294,6 +9404,77 @@ See \cite{second,custom,first}.
         assert!(abstract_pos < section_pos);
         assert!(out.body_html.contains("<h2>Abstract</h2>"));
         assert!(out.body_html.contains(r#"data-tex="\(x\)""#));
+    }
+
+    #[test]
+    fn revtex_notes_stay_with_the_title_author_or_affiliation_that_declared_them() {
+        let source = r"\documentclass{revtex4-2}
+\begin{document}
+\title{Paper title}\thanks{Title funding note.}
+\author{Ada}\thanks{Shared author note.}
+\email[Correspondence: ]{ada@example.test}
+\affiliation{First institute}\thanks{Affiliation funding note.}
+\author{Bob}\thanks{Shared author note.}
+\affiliation{Second institute}
+\maketitle
+\end{document}";
+        let html = crate::render_project_from_source(
+            Path::new("notes.tex"),
+            source.into(),
+            &HtmlOptions::default(),
+        )
+        .unwrap()
+        .body_html;
+        for (text, end_tag, number) in [
+            ("Paper title", "</h1>", 1),
+            (">Ada", "</div>", 2),
+            ("First institute", "</div>", 3),
+            (">Bob", "</div>", 2),
+        ] {
+            let field = html
+                .split_once(text)
+                .unwrap()
+                .1
+                .split_once(end_tag)
+                .unwrap()
+                .0;
+            assert!(
+                field.contains(&format!(">{number}</sup>")),
+                "wrong note marker for {text}: {field}"
+            );
+        }
+        for text in [
+            "Title funding note.",
+            "Shared author note.",
+            "Affiliation funding note.",
+        ] {
+            assert_eq!(html.matches(text).count(), 1, "{text}");
+        }
+        let email = html.split_once(r#"class="paper-email""#).unwrap().1;
+        let email = email.split_once("</div>").unwrap().0;
+        assert!(email.contains("Correspondence:"));
+        assert!(email.contains(r#"href="mailto:ada@example.test""#));
+
+        // Ordinary preamble author/address metadata still uses the existing
+        // title block for article and AMS classes.
+        for (class, address) in [("article", ""), ("amsart", r"\address{Institute}")] {
+            let source = format!(
+                "\\documentclass{{{class}}}\n\\title{{Article title}}\\author{{Ada}}\n{address}\n\\begin{{document}}\\maketitle\\end{{document}}"
+            );
+            let html = crate::render_project_from_source(
+                Path::new("article.tex"),
+                source,
+                &HtmlOptions::default(),
+            )
+            .unwrap()
+            .body_html;
+            assert!(html.contains(r#"<h1 class="paper-title">Article title</h1>"#));
+            assert!(html.contains(r#"<div class="paper-author-name">Ada</div>"#));
+            if class == "amsart" {
+                assert!(html.contains(r#"<div class="paper-address">Institute</div>"#));
+            }
+            assert!(!html.contains("paper-note-ref"));
+        }
     }
 
     #[test]

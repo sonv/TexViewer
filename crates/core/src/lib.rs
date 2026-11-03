@@ -17,6 +17,7 @@ pub mod packages;
 pub mod parser;
 pub mod project;
 pub mod renderer;
+mod revtex;
 pub mod root;
 pub mod sync;
 pub mod theorems;
@@ -53,6 +54,7 @@ pub use macros::{
 };
 pub use packages::PackageMap;
 pub use renderer::{HtmlOptions, RenderOutput, RenderedBlock};
+pub use revtex::parse_latex_body;
 pub use sync::SyncIndex;
 pub use theorems::TheoremRegistry;
 
@@ -161,7 +163,7 @@ fn finish_render(
     // is allowed to point at "would-be" paths (e.g. `.mathpreview-macros.tex`
     // that doesn't exist yet) without failing the render.
     let overrides = load_macro_overrides(opts);
-    let preamble = macros::extract_preamble_with_overrides(&project, &overrides)?;
+    let mut preamble = macros::extract_preamble_with_overrides(&project, &overrides)?;
     let (bib_paths, bib) =
         bibtex::discover_project_bib_with_overrides(&project, &std::collections::HashMap::new())?;
     let bib_style = bibtex::detect_project_bib_style(&project);
@@ -172,7 +174,7 @@ fn finish_render(
     // Config override (`[viewer] theorem-numbering`): force continuous/section
     // numbering when the `\newtheorem` declarations aren't visible to detection.
     thms.apply_numbering_scheme(opts.viewer_config.theorem_numbering);
-    let mut body = parser::parse_body_with_overrides(&project, &thms, &overrides)?;
+    let mut body = parse_latex_body(&project, &thms, &overrides, &mut preamble)?;
     // mathtools `showonlyrefs`: collect every referenced key up front so the
     // numbering pass can suppress numbers on unreferenced equations. The scan
     // covers every body file (include order) and skips comments itself.

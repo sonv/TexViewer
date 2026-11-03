@@ -290,6 +290,36 @@ pub fn extract_preamble_from_overrides(overrides: &[MacroOverride]) -> Extracted
     extractor.finish()
 }
 
+/// Apply definitions from the REVTeX title area after the project preamble.
+/// Explicit macro overrides retain their usual priority.
+pub(crate) fn apply_title_definitions<'a>(
+    preamble: &mut ExtractedPreamble,
+    definitions: impl Iterator<Item = (&'a Path, &'a str)>,
+    overrides: &[MacroOverride],
+) {
+    let mut extra = Extractor::new();
+    for (file, definition) in definitions {
+        extra.scan(definition, file);
+    }
+    preamble.warnings.extend(extra.warnings);
+    for definition in extra.macros {
+        if let Some(previous) = preamble
+            .macros
+            .iter_mut()
+            .find(|m| m.name == definition.name)
+        {
+            let overridden = overrides
+                .iter()
+                .any(|layer| layer.label == previous.source_file);
+            if !overridden {
+                *previous = definition;
+            }
+        } else {
+            preamble.macros.push(definition);
+        }
+    }
+}
+
 struct Extractor {
     macros: Vec<ExtractedMacro>,
     packages: PackageMap,

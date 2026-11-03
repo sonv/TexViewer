@@ -45,7 +45,7 @@ use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 use mathpreview_core::{
     bibtex::{self, BibEntry, BibStyle},
     macros::{self, ExtractedPreamble},
-    numbering, parser, project, renderer,
+    numbering, project, renderer,
     sync::SyncIndex,
     theorems::TheoremRegistry,
     BuiltinConversion, BuiltinConverter, ConversionDiagnostic, ConversionRequest, ConvertedAsset,
@@ -3831,7 +3831,7 @@ async fn convert_cached_builtin(
     let overrides = load_override_layers(state, &effective_paths).await;
     let overrides_hash = fingerprint_overrides(&effective_paths, &overrides);
     let t1 = std::time::Instant::now();
-    let (preamble, bib) = {
+    let (mut preamble, bib) = {
         let guard = state.preamble_cache.read().await;
         if let Some(c) = guard
             .as_ref()
@@ -3873,7 +3873,7 @@ async fn convert_cached_builtin(
     thms.apply_numbering_scheme(live_viewer_config.theorem_numbering);
 
     let t2 = std::time::Instant::now();
-    let mut body = parser::parse_body_with_overrides(&project, &thms, &overrides)?;
+    let mut body = mathpreview_core::parse_latex_body(&project, &thms, &overrides, &mut preamble)?;
     t.body_parse_ms = t2.elapsed().as_millis();
 
     let t3 = std::time::Instant::now();

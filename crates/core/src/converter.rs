@@ -962,13 +962,13 @@ fn convert_latex(
     let project_files: Vec<PathBuf> = project.included_files().map(PathBuf::from).collect();
     additional_dependencies.extend(collect_latex_edit_dependencies(&project));
     let macro_overrides = crate::load_macro_overrides(opts);
-    let preamble = crate::macros::extract_preamble_with_overrides(&project, &macro_overrides)?;
+    let mut preamble = crate::macros::extract_preamble_with_overrides(&project, &macro_overrides)?;
     let (bib_paths, bib) =
         crate::bibtex::discover_project_bib_with_overrides(&project, &source_overrides)?;
     let bib_style = crate::bibtex::detect_project_bib_style(&project);
     let mut theorems = crate::theorems::TheoremRegistry::from_project(&project);
     theorems.apply_numbering_scheme(opts.viewer_config.theorem_numbering);
-    let mut body = crate::parser::parse_body_with_overrides(&project, &theorems, &macro_overrides)?;
+    let mut body = crate::parse_latex_body(&project, &theorems, &macro_overrides, &mut preamble)?;
     let referenced = preamble.show_only_refs.then(|| {
         let mut keys = HashSet::new();
         for file in &project.files {

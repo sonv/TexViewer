@@ -70,6 +70,9 @@ for theorem presentation and numbering overrides.
 - Title blocks support `\title`, `\author`, `\date`, and `\maketitle`,
   along with repeated authors, `\and`, `\address`, `\curraddr`, `\email`,
   and AMS-style abstracts.
+- REVTeX 4 papers can declare their title, authors, affiliations, and author
+  notes between `\begin{document}` and `\maketitle`. The preview places the
+  title above the abstract and shows a shared `\thanks` note once.
 - Native `letter` layout positions the sender, recipient, opening, closing,
   and signature while continuing to parse prose and math.
 - Lists include `enumerate`, `itemize`, `description`, and paralist variants.
