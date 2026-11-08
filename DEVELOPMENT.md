@@ -90,6 +90,7 @@ After `cargo build`, run the headless Neovim checks from the repository root:
 
 ```sh
 MATHPREVIEW_CLI=target/debug/mathpreview-cli nvim --headless -u NONE -i NONE -l tests/nvim/buffer_sync.lua
+MATHPREVIEW_CLI=target/debug/mathpreview-cli nvim --headless -u NONE -i NONE -l tests/nvim/completion_sync.lua
 MATHPREVIEW_CLI=target/debug/mathpreview-cli nvim --headless -u NONE -i NONE -l tests/nvim/preamble_sync.lua
 node --test tests/server/preamble-sync.test.mjs
 ```
@@ -99,6 +100,9 @@ It checks that preamble edits and saves emit no render events during a hold,
 then emit one reload for the complete resumed snapshot. It also checks that
 standalone file watching stays live. The Neovim tests exercise buffer routing,
 unsaved sources, discarded edits, restarts, symlinks, and incomplete math.
+The completion test drives real insert-mode keystrokes in a child Neovim.
+It checks live text and cursor updates during an open completion menu and
+during continuous typing faster than the configured update intervals.
 
 ### Embedded JavaScript
 

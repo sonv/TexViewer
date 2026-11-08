@@ -271,10 +271,45 @@ assert(vim.deep_equal(vim.api.nvim_buf_get_lines(alias_buf, 0, -1, false), alias
 assert(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { 3, 8 }),
   "alias-preference Markdown jump did not land at the requested source position")
 
--- A uv timer can fire (queueing its schedule_wrap callback) immediately before
--- a newer CursorMoved replaces it. Replaying that precise ordering verifies
--- that the stale callback neither posts nor closes the replacement timer. The
--- cursor and visual-selection debouncers are separate, so exercise both.
+-- A cursor timer can expire just before another move. Keep its deadline and
+-- sample the latest caret even when its scheduled Lua callback is still queued.
+local function assert_cursor_coalesces_latest_move()
+  local original_schedule_wrap = vim.schedule_wrap
+  local original_system = vim.system
+  local queued, posts = {}, {}
+  vim.schedule_wrap = function(callback)
+    return function(...)
+      queued[#queued + 1] = { callback = callback, args = { ... } }
+    end
+  end
+  vim.system = function(args, opts, on_exit)
+    if args[#args]:sub(-7) == "/cursor" then
+      posts[#posts + 1] = vim.json.decode(opts.stdin)
+      return nil
+    end
+    return original_system(args, opts, on_exit)
+  end
+  local ok, err = xpcall(function()
+    vim.api.nvim_win_set_cursor(0, { 3, 2 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = alias_buf })
+    assert(vim.wait(1000, function() return #queued >= 1 end, 5),
+      "cursor timer did not fire")
+    vim.api.nvim_win_set_cursor(0, { 3, 7 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = alias_buf })
+    queued[1].callback(unpack(queued[1].args))
+    assert(#posts == 1 and posts[1].line == 3 and posts[1].col == 8,
+      "pending cursor update did not send the latest position at its deadline")
+    vim.wait(100, function() return false end, 5)
+    assert(#queued == 1, "cursor move restarted the pending timer")
+  end, debug.traceback)
+  vim.schedule_wrap = original_schedule_wrap
+  vim.system = original_system
+  if not ok then error(err, 0) end
+end
+
+-- Visual selections still debounce. A uv timer can fire (queueing its Lua
+-- callback) immediately before a newer move replaces it. That stale callback
+-- must neither post nor close the replacement timer.
 local function assert_stale_debounce_is_ignored(label, route, trigger)
   local original_schedule_wrap = vim.schedule_wrap
   local original_system = vim.system
@@ -317,7 +352,7 @@ local function fire_cursor_moved()
   vim.api.nvim_exec_autocmds("CursorMoved", { buffer = alias_buf })
 end
 
-assert_stale_debounce_is_ignored("cursor debounce", "/cursor", fire_cursor_moved)
+assert_cursor_coalesces_latest_move()
 
 vim.cmd("normal! v")
 assert(vim.fn.mode():sub(1, 1) == "v", "could not enter visual mode for debounce test")

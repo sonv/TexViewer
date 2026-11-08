@@ -13,7 +13,7 @@
 --     :MathPreviewDebug    echo resolved settings + config/macro paths
 --
 -- The plugin spawns the daemon as a background job, finds the first free
--- port starting at 23636, opens the viewer, then debounces buffer pushes
+-- port starting at 23636, opens the viewer, then coalesces buffer pushes
 -- on TextChanged. By default VimLeavePre kills the spawned daemon so quitting
 -- nvim doesn't leave a stray server bound to
 -- the port; set `close_on_exit = false` to deliberately let the preview
@@ -31,7 +31,7 @@ local PORT_SCAN_RANGE = 16  -- try 23636..23651 before giving up
 -- warned about — the signal that a fix you "released" isn't actually the
 -- binary you're running.
 -- RELEASE: bump this in lockstep with Cargo.toml / Cargo.lock / CHANGELOG.
-local PLUGIN_VERSION = "2.1.62"
+local PLUGIN_VERSION = "2.1.63"
 
 local config = {
   cmd = nil,                              -- resolved at start; "mathpreview-cli" by default
@@ -48,6 +48,8 @@ local config = {
   -- so e.g. `viewer_host = "thesis.localhost"` separates one project's
   -- preview from the rest. Plugin-internal requests always use 127.0.0.1.
   viewer_host = "mathpreview.localhost",
+  -- Coalescing intervals. New edits/moves update the pending snapshot without
+  -- restarting its timer, so continuous typing still reaches the preview.
   debounce_ms = 40,
   cursor_debounce_ms = 80,
   -- Source-jump (browser → editor) is a long-poll, not a fixed-interval
@@ -1554,13 +1556,14 @@ end
 
 local function debounced_cursor()
   if not daemon_job or not config.sync then return end
-  if cursor_timer then cursor_timer:stop(); cursor_timer:close() end
+  -- Sample the latest caret at a fixed deadline. Resetting this timer on
+  -- every move would hold forward sync until a fast typing burst ends.
+  if cursor_timer then return end
   local pending = uv.new_timer()
   cursor_timer = pending
   pending:start(config.cursor_debounce_ms, 0, vim.schedule_wrap(function()
-    -- The uv expiry and scheduled Lua callback are separate turns. A newer
-    -- cursor event may replace this timer between them; a stale callback must
-    -- never close that replacement or post the superseded position.
+    -- The uv expiry and scheduled Lua callback are separate turns. A
+    -- cancelled callback must not close a replacement or post stale state.
     if cursor_timer ~= pending then return end
     cursor_timer = nil
     if not pending:is_closing() then pending:close() end
@@ -1655,11 +1658,11 @@ schedule_role_refresh = function(entry)
 end
 
 local function cancel_buffer_push(buf)
-  local timer = push_timers[buf]
-  if timer then
+  local pending = push_timers[buf]
+  if pending then
     push_timers[buf] = nil
-    timer:stop()
-    if not timer:is_closing() then timer:close() end
+    pending.timer:stop()
+    if not pending.timer:is_closing() then pending.timer:close() end
   end
   local job = push_jobs[buf]
   push_jobs[buf] = nil
@@ -1851,17 +1854,27 @@ local function debounced_push(buf)
   if not entry then return end
   local edit_cursor = buffer_cursor(buf)
   local previous = push_timers[buf]
-  if previous then previous:stop(); previous:close() end
-  local pending = uv.new_timer()
+  if previous and previous.entry == entry then
+    -- Keep the first edit's deadline, but pair the latest buffer contents
+    -- with the caret from its latest edit. Continuous input must not starve
+    -- rendering, and a later cursor-only move must not replace this caret.
+    previous.cursor = edit_cursor
+    return
+  end
+  if previous then
+    previous.timer:stop()
+    if not previous.timer:is_closing() then previous.timer:close() end
+  end
+  local pending = { timer = uv.new_timer(), entry = entry, cursor = edit_cursor }
   push_timers[buf] = pending
-  pending:start(config.debounce_ms, 0, vim.schedule_wrap(function()
+  pending.timer:start(config.debounce_ms, 0, vim.schedule_wrap(function()
     -- The uv timer callback and its scheduled Lua callback are separate turns.
     -- An edit can supersede/close this timer in between; then this stale
     -- callback must neither close the replacement nor push an old snapshot.
     if push_timers[buf] ~= pending then return end
     push_timers[buf] = nil
-    if not pending:is_closing() then pending:close() end
-    push_buffer(buf, edit_cursor, entry)
+    if not pending.timer:is_closing() then pending.timer:close() end
+    push_buffer(buf, pending.cursor, pending.entry)
   end))
 end
 
@@ -1895,13 +1908,17 @@ local stop_entry
 -- activate(), not here. Idempotent — clears the augroup before re-creating it.
 local function attach_autocmds()
   vim.api.nvim_create_augroup("mathpreview", { clear = true })
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "TextChangedP" }, {
     group = "mathpreview",
     pattern = "*",
     callback = function(args)
       if vim.tbl_contains(config.filetypes, vim.bo[args.buf].filetype) then
         last_text_change[args.buf] = uv.now()
         debounced_push(args.buf)
+        -- Neovim suppresses both TextChangedI and CursorMovedI while its
+        -- completion popup is visible. Keep the text and caret live through
+        -- the replacement event instead of waiting for the menu to close.
+        if args.event == "TextChangedP" then debounced_cursor() end
       end
     end,
   })

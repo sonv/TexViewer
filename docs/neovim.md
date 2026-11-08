@@ -115,8 +115,12 @@ require("mathpreview").setup({
 `~/.cargo`. GitHub binaries always live in versioned directories under
 `stdpath("data")/mathpreview`. Both are run by absolute path.
 
-`debounce_ms` sets the delay before a buffer push. `cursor_debounce_ms`
-throttles forward source sync and visual-selection updates. Set `sync = false`
+`debounce_ms` sets the buffer update interval (40 ms by default).
+`cursor_debounce_ms` sets the forward source sync interval (80 ms by default)
+and the debounce delay for visual selections. Text and cursor updates use the
+latest state when each timer fires. Continuous typing does not restart these
+timers, and updates continue while the completion popup is open. Rendering and
+browser layout add to these intervals. Set `sync = false`
 to disable bidirectional cursor sync. Set `auto_open_browser = false` to start
 the daemon without opening a viewer.
 

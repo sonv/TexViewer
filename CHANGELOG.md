@@ -13,6 +13,14 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.63] - 2026-11-08
+
+### Fixed
+
+- Preview text and cursor tracking keep updating during continuous typing.
+  New keystrokes no longer postpone the next update until typing pauses.
+  Updates also continue while Neovim's completion popup is open.
+
 ## [2.1.62] - 2026-11-03
 
 ### Fixed
