@@ -36,12 +36,15 @@ local function wait_for(predicate, message)
   ]])))
 end
 
-local function page(port)
+local function request(port, route)
   local res = vim.system({ "curl", "--silent", "--show-error", "--fail-with-body",
-    "--max-time", "1", "http://127.0.0.1:" .. tostring(port) .. "/" }, { text = true }):wait()
-  if res.code ~= 0 then return "" end
+    "--max-time", "1", "http://127.0.0.1:" .. tostring(port) .. (route or "/") }, { text = true }):wait()
+  return res.code == 0 and res.stdout or ""
+end
+
+local function page(port)
   local paragraphs = {}
-  for paragraph in res.stdout:gmatch("<p[^>]*>(.-)</p>") do
+  for paragraph in request(port):gmatch("<p[^>]*>(.-)</p>") do
     paragraphs[#paragraphs + 1] = paragraph:gsub("<[^>]*>", ""):gsub("%s+$", "")
   end
   return table.concat(paragraphs, "\n") .. "\n"
@@ -66,7 +69,8 @@ local ok, err = xpcall(function()
     local system = vim.system
     vim.system = function(args, opts, done)
       local url = args[#args]
-      if type(url) == "string" and (url:sub(-7) == "/buffer" or url:sub(-7) == "/cursor") then
+      if type(url) == "string" and (url:sub(-7) == "/buffer" or url:sub(-7) == "/cursor"
+          or url:sub(-13) == "/editor-state") then
         posts[#posts + 1] = { args = args, body = opts.stdin, url = url,
           cursor = vim.api.nvim_win_get_cursor(0), popup = vim.fn.pumvisible(),
           edit_cursor = vim.api.nvim_buf_get_mark(0, "."),
@@ -227,6 +231,156 @@ local ok, err = xpcall(function()
     wait_for(function() return lua("return vim.fn.mode() == 'n'") end, "could not leave Insert mode")
     lua("mp.stop()")
   end
+
+  -- Faster scheduling must still leave an included preamble frozen until
+  -- focus returns to the document, including popup edits and invalid saves.
+  local root, preamble = scratch .. "/preamble-main.tex", scratch .. "/preamble.tex"
+  local initial_preamble = {
+    [[\newcommand{\PreviewA}{InitialAlpha}]],
+    [[\newcommand{\PreviewB}{InitialBeta}]],
+  }
+  assert(vim.fn.writefile(initial_preamble, preamble) == 0)
+  assert(vim.fn.writefile({ [[\documentclass{article}]], [[\input{preamble}]],
+    [[\begin{document}]], [[Preamble probe $\PreviewA + \PreviewB$.]],
+    [[\end{document}]] }, root) == 0)
+  lua([[
+    vim.cmd("edit " .. vim.fn.fnameescape(...))
+    vim.bo.filetype = "tex"
+    root_buf = vim.api.nvim_get_current_buf()
+    mp.start()
+  ]], root)
+  wait_for(function()
+    return lua([[return mp.status().daemon_root == ... and mp.status().daemon_port ~= nil]], root)
+  end, "preamble fixture daemon did not start")
+  local port = lua("return mp.status().daemon_port")
+  wait_for(function()
+    local raw = request(port)
+    return raw:find("InitialAlpha", 1, true) and raw:find("InitialBeta", 1, true)
+  end, "initial preamble definitions did not render")
+  local baseline = request(port)
+  lua([[
+    vim.cmd("edit " .. vim.fn.fnameescape(...))
+    vim.bo.filetype = "tex"
+    preamble_buf = vim.api.nvim_get_current_buf()
+  ]], preamble)
+  wait_for(function()
+    local ok_debug, state = pcall(vim.json.decode, request(port, "/debug"))
+    return ok_debug and state.preamble_edit_paused == true
+  end, "entering the included preamble did not hold rendering")
+  lua("events, posts = {}, {}")
+
+  local function expect_frozen(ms, label, expected_page)
+    local deadline = (vim.uv or vim.loop).hrtime() + ms * 1e6
+    repeat
+      assert(request(port) == (expected_page or baseline), label .. " changed the rendered page")
+      for _, post in ipairs(lua("return posts")) do
+        assert(not (post.url:sub(-7) == "/buffer"
+          and vim.tbl_contains(post.args, "X-Mathpreview-Path: " .. preamble)),
+          label .. " pushed a preamble through the live buffer route")
+      end
+      vim.wait(25, function() return false end, 5)
+    until (vim.uv or vim.loop).hrtime() >= deadline
+  end
+
+  lua([[vim.api.nvim_win_set_cursor(0, { 1, assert(vim.api.nvim_get_current_line():find("InitialAlpha", 1, true)) - 1 })]])
+  input("ci{")
+  wait_for(function() return lua([[return vim.fn.mode():sub(1, 1) == "i"]]) end,
+    "could not edit the preamble definition")
+  lua([[vim.fn.complete(vim.api.nvim_win_get_cursor(0)[2] + 1, { "FinalAlpha", "FinalAlpine" })]])
+  wait_for(function() return lua("return vim.fn.pumvisible() == 1") end,
+    "preamble completion popup did not open")
+  input("Fi")
+  wait_for(function()
+    return lua([[
+      for _, event in ipairs(events) do
+        if event.name == "TextChangedP" and event.popup == 1 then return vim.fn.pumvisible() == 1 end
+      end
+      return false
+    ]])
+  end, "preamble edit did not produce a real popup change")
+  expect_frozen(250, "preamble completion typing")
+  input("<C-n><C-y><Esc>")
+  wait_for(function()
+    return lua([[return vim.fn.mode() == "n" and vim.api.nvim_get_current_line() == ...]],
+      [[\newcommand{\PreviewA}{FinalAlpha}]])
+  end, "preamble completion selection did not finish")
+  input("$x")
+  wait_for(function()
+    return lua([[return vim.api.nvim_get_current_line() == ...]], [[\newcommand{\PreviewA}{FinalAlpha]])
+  end, "could not leave the preamble definition incomplete")
+  lua([[vim.cmd("write")]])
+  assert(vim.fn.readfile(preamble)[1] == [[\newcommand{\PreviewA}{FinalAlpha]],
+    "incomplete preamble save did not reach disk")
+  expect_frozen(500, "saving an incomplete preamble")
+  input("A}<Esc>")
+  wait_for(function()
+    return lua([[return vim.fn.mode() == "n" and vim.api.nvim_get_current_line() == ...]],
+      [[\newcommand{\PreviewA}{FinalAlpha}]])
+  end, "could not restore the preamble definition in memory")
+
+  lua([[
+    local line = vim.api.nvim_buf_get_lines(0, 1, 2, false)[1]
+    vim.api.nvim_win_set_cursor(0, { 2, assert(line:find("InitialBeta", 1, true)) - 1 })
+  ]])
+  input("ci{Stream")
+  wait_for(function() return lua([[return vim.fn.mode():sub(1, 1) == "i"]]) end,
+    "could not start continuous preamble typing")
+  lua([[
+    stream = { sent = 0, total = 60, finished = false }
+    local timer = (vim.uv or vim.loop).new_timer()
+    timer:start(10, 10, vim.schedule_wrap(function()
+      stream.sent = stream.sent + 1
+      vim.api.nvim_input("z")
+      if stream.sent == stream.total then
+        stream.finished = true
+        timer:stop()
+        timer:close()
+      end
+    end))
+  ]])
+  expect_frozen(900, "continuous preamble typing")
+  local final_beta = "Stream" .. string.rep("z", 60)
+  wait_for(function()
+    return lua([[return stream.finished and vim.api.nvim_get_current_line() == ...]],
+      [[\newcommand{\PreviewB}{]] .. final_beta .. "}")
+  end, "continuous preamble typing did not reach its final text")
+  input("<Esc>")
+  wait_for(function() return lua("return vim.fn.mode() == 'n'") end, "could not leave preamble Insert mode")
+  lua([[posts = {}; stream = nil; vim.api.nvim_set_current_buf(root_buf)]])
+  wait_for(function()
+    local raw = request(port)
+    return raw:find("FinalAlpha", 1, true) and raw:find(final_beta, 1, true)
+      and not raw:find("InitialAlpha", 1, true) and not raw:find("InitialBeta", 1, true)
+  end, "returning to the document did not apply both final unsaved definitions")
+  expect_frozen(250, "a late preamble callback after resume", request(port))
+  local resumes = 0
+  for _, post in ipairs(lua("return posts")) do
+    if post.url:sub(-13) == "/editor-state" then
+      local snapshot = vim.json.decode(post.body)
+      if snapshot.file == root then
+        resumes = resumes + 1
+        local found = false
+        for _, buffer in ipairs(snapshot.buffers or {}) do
+          if buffer.file == preamble then
+            found = buffer.source == [[\newcommand{\PreviewA}{FinalAlpha}]] .. "\n"
+              .. [[\newcommand{\PreviewB}{]] .. final_beta .. "}"
+          end
+        end
+        assert(found, "resume snapshot omitted or split the final preamble definitions")
+      end
+    end
+  end
+  assert(resumes == 1, "returning to the document did not send exactly one atomic resume snapshot")
+  assert(lua("return vim.bo[preamble_buf].modified"), "resuming saved the preamble unexpectedly")
+  assert(vim.fn.readfile(preamble)[1] == [[\newcommand{\PreviewA}{FinalAlpha]],
+    "resuming overwrote the saved incomplete preamble")
+  lua("vim.api.nvim_win_set_cursor(0, { 4, 0 })")
+  input("ABodyStillLive")
+  wait_for(function() return page(port):find("BodyStillLive", 1, true) ~= nil end,
+    "body typing stopped updating after the preamble resumed")
+  input("<Esc>")
+  wait_for(function() return lua("return vim.fn.mode() == 'n'") end, "could not leave body Insert mode")
+  lua("mp.stop()")
 end, debug.traceback)
 
 -- Stop only daemons spawned by this isolated editor, even if an assertion

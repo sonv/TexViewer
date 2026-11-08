@@ -102,7 +102,9 @@ standalone file watching stays live. The Neovim tests exercise buffer routing,
 unsaved sources, discarded edits, restarts, symlinks, and incomplete math.
 The completion test drives real insert-mode keystrokes in a child Neovim.
 It checks live text and cursor updates during an open completion menu and
-during continuous typing faster than the configured update intervals.
+during continuous typing faster than the configured update intervals. It also
+checks that these events keep included preamble files deferred, even when an
+unfinished definition is saved, until the editor returns to the document.
 
 ### Embedded JavaScript
 
