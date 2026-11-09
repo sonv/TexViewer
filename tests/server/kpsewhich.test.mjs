@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -109,7 +110,7 @@ esac
     for (const response of responses) assert.equal(response.status, 'ok', JSON.stringify(response));
     return responses.map(response => response.result);
   }
-  return { root, style, child, nested, localStyle, project, external, distribution, emptyTools,
+  return { root, style, child, nested, localStyle, project, external, distribution, emptyTools, executable,
     launch, lookups, convert };
 }
 
@@ -198,6 +199,84 @@ test('a stalled kpsewhich cannot hold conversion indefinitely', { timeout: 15000
     { MATHPREVIEW_TEST_KPSE_MODE: 'hang' });
   assert.ok(Date.now() - start < 5000, 'lookup deadline should fail closed promptly');
   assert.ok(!result.runtime.math.macros.some(macro => macro.name === 'PreviewCustom'));
+});
+
+test('expired style lookups do not stall sentence deletion or lose macros after refresh failure', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  // Keep one converter alive across the real 30-second lookup expiry. This
+  // uses the same process-local cache as a live daemon, without a test TTL.
+  const { childProcess } = f.launch(['convert']);
+  let logs = '';
+  childProcess.stderr.on('data', data => { logs += data; });
+  const output = createInterface({ input: childProcess.stdout });
+  t.after(() => output.close());
+  let sequence = 0;
+  async function convert(source) {
+    const id = `expiry-${sequence++}`;
+    const response = once(output, 'line');
+    childProcess.stdin.write(JSON.stringify({
+      protocol: 'mathpreview.converter/v1', id, path: f.root, source,
+    }) + '\n');
+    let timeout;
+    let line;
+    try {
+      [line] = await Promise.race([response, new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Conversion timed out: ${logs}`)), 5000);
+      })]);
+    } finally { clearTimeout(timeout); }
+    const parsed = JSON.parse(line);
+    assert.equal(parsed.id, id);
+    assert.equal(parsed.status, 'ok', JSON.stringify(parsed));
+    return parsed.result;
+  }
+  const body = 'Keep this sentence. DeleteThisSentence. Keep another sentence.\n\n'
+    + String.raw`$\PreviewCustom + \PreviewNested + \PreviewChild$`;
+  const source = tex('\\usepackage{custom-notes}', body);
+  const first = await convert(source);
+  assertMacro(first, 'PreviewCustom', 'ExternalValue');
+  assertMacro(first, 'PreviewNested', 'NestedValue');
+  assertMacro(first, 'PreviewChild', 'ChildValue');
+  const failedQueries = [...new Set((await f.lookups()).map(line =>
+    'refresh-failed|' + line.slice(line.indexOf('|') + 1)))];
+  assert.ok(failedQueries.length > 0, 'warm conversion did not discover an external style');
+  await writeFile(f.executable, String.raw`#!/bin/sh
+/bin/sleep 0.8
+printf 'refresh-failed|%s\n' "$*" >> "$MATHPREVIEW_TEST_LOG"
+exit 2
+`);
+  await delay(31000);
+  const editedSource = source.replace('DeleteThisSentence. ', '');
+  const start = performance.now();
+  const edited = await convert(editedSource);
+  const elapsed = performance.now() - start;
+  assert.ok(elapsed < 700, `Sentence deletion blocked on an expired lookup for ${elapsed.toFixed(0)} ms`);
+  assertMacro(edited, 'PreviewCustom', 'ExternalValue');
+  assertMacro(edited, 'PreviewNested', 'NestedValue');
+  assertMacro(edited, 'PreviewChild', 'ChildValue');
+  assert.ok(!edited.blocks.some(block => block.html.includes('DeleteThisSentence')));
+
+  for (let i = 0; ; i++) {
+    const refreshFailures = await f.lookups();
+    if (failedQueries.every(query => refreshFailures.includes(query))) break;
+    assert.ok(i < 100, `Background lookup refreshes did not finish: ${refreshFailures}`);
+    await delay(50);
+  }
+  // The marker is written just before exit. Allow the worker to consume the
+  // failed status before checking that it retained the cached location.
+  await delay(100);
+  // A failed refresh must preserve the location, and cached locations must
+  // still read fresh style contents and remain dependencies for file watching.
+  const styleSource = await readFile(f.style, 'utf8');
+  await writeFile(f.style, styleSource.replace('ExternalValue', 'EditedAfterRefresh'));
+  const refreshed = await convert(editedSource);
+  assertMacro(refreshed, 'PreviewCustom', 'EditedAfterRefresh');
+  assertMacro(refreshed, 'PreviewNested', 'NestedValue');
+  assertMacro(refreshed, 'PreviewChild', 'ChildValue');
+  for (const path of [f.style, f.child, f.nested]) {
+    assertDependency(refreshed, path, 'include');
+    assertDependency(refreshed, path, 'preamble');
+  }
+  childProcess.stdin.end();
 });
 
 test('external style changes reload live and creating a local style shadows the cached path', { timeout: 20000 }, async t => {

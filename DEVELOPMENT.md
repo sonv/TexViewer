@@ -120,8 +120,10 @@ Node/npm is needed for this development tooling, not to run the live viewer.
 
 `npm run test:styles` checks custom style discovery with an isolated fake
 `kpsewhich`, including local precedence, unsaved buffers, lookup caching,
-timeouts, no-TeX fallback, and live file watching. It does not change the
-user's TeX installation or search configuration.
+timeouts, no-TeX fallback, and live file watching. The cache-expiry case waits
+for the 30-second refresh interval and checks that a slow, failing lookup
+does not delay a body edit or discard the last known style. The tests do not
+change the user's TeX installation or search configuration.
 
 ### Browser regression tests
 

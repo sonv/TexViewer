@@ -13,6 +13,16 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.64] - 2026-11-09
+
+### Fixed
+
+- Editing after a pause no longer waits for expired `kpsewhich` searches.
+  Cached style locations refresh in the background, avoiding a delay of up
+  to two seconds before an ordinary sentence deletion reaches the preview.
+  Style contents and unsaved preamble changes still follow the existing
+  reload rules.
+
 ## [2.1.63] - 2026-11-08
 
 ### Fixed

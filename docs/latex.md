@@ -26,8 +26,10 @@ TeX remains optional. If `kpsewhich` is unavailable or a lookup fails, local
 discovery still works. Standard styles under `TEXMFDIST` or `TEXMFMAIN` are
 not imported, since their internals can conflict with MathJax. The fallback
 also skips styles when distribution roots cannot be reliably identified.
-Lookup results are cached for up to 30 seconds, but style contents are reread
-for each conversion. Restart the preview after changing Neovim's TeX environment.
+After 30 seconds, cached lookups refresh in the background while edits keep
+using the previous result. Refreshed locations apply on a subsequent conversion.
+Style contents are reread for each conversion. Restart the preview after
+changing Neovim's TeX environment.
 
 Math macro extraction covers `\newcommand`, `\DeclareMathOperator`,
 `\NewDocumentCommand`, `\def`, `\let`, `\DeclarePairedDelimiter`,
