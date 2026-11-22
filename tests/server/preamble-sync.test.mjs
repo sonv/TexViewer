@@ -59,7 +59,10 @@ $\PreviewA + \PreviewB$
   }
   const debug = async () => (await fetch(`${url}/debug`)).json();
   const state = await debug();
-  socket = new WebSocket(`ws://127.0.0.1:${port}/ws?v=${state.ws_protocol}`);
+  const html = await (await fetch(url)).text();
+  const live = JSON.parse(html.match(/window\.__mpLiveState=(\{[^<]+\});<\/script>/)[1]);
+  const query = new URLSearchParams({ v: state.ws_protocol, ...live });
+  socket = new WebSocket(`ws://127.0.0.1:${port}/ws?${query}`);
   const events = [];
   socket.addEventListener('message', ({ data }) => events.push(JSON.parse(data)));
   await new Promise((resolveOpen, reject) => {

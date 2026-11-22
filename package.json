@@ -15,7 +15,8 @@
     "test:revtex": "cargo build -p mathpreview-cli && node --test tests/browser/revtex-title.test.mjs",
     "test:lists": "cargo build -p mathpreview-cli && node --test tests/browser/list-comments.test.mjs",
     "test:styles": "cargo build -p mathpreview-cli && node --test tests/server/kpsewhich.test.mjs",
-    "test:figures": "cargo build -p mathpreview-cli && node --test tests/browser/figure-sync.test.mjs"
+    "test:figures": "cargo build -p mathpreview-cli && node --test tests/browser/figure-sync.test.mjs",
+    "test:reconnect": "cargo build -p mathpreview-cli && node --test tests/browser/wake-reconnect.test.mjs"
   },
   "devDependencies": {
     "eslint": "^9.0.0",

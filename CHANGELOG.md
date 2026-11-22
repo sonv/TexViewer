@@ -13,6 +13,15 @@ reverted — live in [`CHANGELOG-claude.md`](./CHANGELOG-claude.md) and
 [`CHANGELOG-GPT.md`](./CHANGELOG-GPT.md). This file is the user-facing
 summary.
 
+## [2.1.65] - 2026-11-22
+
+### Fixed
+
+- Reconnecting after sleep or a screensaver keeps the rendered equations and
+  reading position when the server and document are unchanged. Missed edits or
+  a server restart still trigger a reload, so the preview cannot silently fall
+  out of sync. Updates are applied in order before reconnecting.
+
 ## [2.1.64] - 2026-11-09
 
 ### Fixed

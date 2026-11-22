@@ -306,7 +306,10 @@ test('external style changes reload live and creating a local style shadows the 
   assert.ok(debug.preamble_files.includes(f.style));
   assert.ok(debug.watched.includes(f.style));
   assert.ok(debug.watched.includes(f.localStyle));
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?v=${debug.ws_protocol}`);
+  const html = await (await fetch(url)).text();
+  const live = JSON.parse(html.match(/window\.__mpLiveState=(\{[^<]+\});<\/script>/)[1]);
+  const query = new URLSearchParams({ v: debug.ws_protocol, ...live });
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?${query}`);
   t.after(() => socket.close());
   const events = [];
   socket.addEventListener('message', ({ data }) => events.push(JSON.parse(data)));

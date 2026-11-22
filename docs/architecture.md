@@ -369,6 +369,23 @@ buffers. The body AST is rebuilt for each accepted update. The expensive
 LaTeX preamble and bibliography state can be reused when its fingerprint has
 not changed.
 
+Each committed preview also has a revision, separate from the sequence used
+to discard superseded render attempts. The served HTML embeds that revision
+and a unique daemon session in `window.__mpLiveState`. The browser includes
+both in its WebSocket query alongside the protocol version. Under the same
+snapshot lock used by render commits, the server subscribes to future events
+and checks this identity. A match receives `hello`; a mismatch receives
+`full-reload`. This also closes the race between fetching the HTML and opening
+its socket.
+
+Block patches and body replacements carry `previous_revision` and `revision`.
+The browser applies messages in order, checks the base revision, and advances
+its revision only after applying the update. Reconnect waits for already
+received updates to finish. A temporary disconnect can therefore keep the
+existing DOM and typeset equations without hiding missed edits. Restarts,
+missed commits, and incompatible protocols still reload the page. This
+transport state belongs to the live server, not the converter API.
+
 Neovim sends focus changes to `POST /editor-state`. A snapshot contains an
 editor `session`, a monotonic `sequence`, the focused `file`, and `buffers`
 with the complete set of modified project sources (`file`, `source`, and an

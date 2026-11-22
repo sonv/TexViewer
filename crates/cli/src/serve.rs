@@ -56,7 +56,20 @@ use mathpreview_core::{
 mod editor;
 use editor::{serve_editor_state, EditorState};
 
-const WS_PROTOCOL_VERSION: &str = "92";
+const WS_PROTOCOL_VERSION: &str = "93";
+
+fn new_viewer_session() -> Arc<String> {
+    static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
+    let started = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Arc::new(format!(
+        "{}-{started}-{}",
+        std::process::id(),
+        NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 
 /// stderr logging that survives a closed pipe. The nvim plugin can spawn the
 /// daemon detached (`close_on_exit = false`) so the preview outlives the
@@ -190,6 +203,10 @@ struct ViewerSidecar {
 struct LiveSnapshot {
     document: LiveDocument,
     viewer: ViewerSidecar,
+    /// Increments only when the snapshot is committed and broadcast. Render
+    /// attempts may be deferred or superseded, so `render_seq` cannot serve
+    /// as the browser's patch-base revision.
+    revision: u64,
 }
 
 impl LiveSnapshot {
@@ -228,6 +245,7 @@ impl LiveSnapshot {
         Ok(Self {
             document: document.try_into()?,
             viewer,
+            revision: 0,
         })
     }
 
@@ -241,6 +259,7 @@ impl LiveSnapshot {
             mathpreview_core::split_render_output(output, opts, converter.metadata(), Vec::new());
         Self {
             document: document.try_into().unwrap(),
+            revision: 0,
             viewer: ViewerSidecar {
                 html: legacy.html,
                 format: legacy.format,
@@ -302,6 +321,7 @@ struct AppState {
     converter: LiveConverterAdapter,
     opts: HtmlOptions,
     current: Arc<RwLock<LiveSnapshot>>,
+    viewer_session: Arc<String>,
     tx: broadcast::Sender<String>,
     watched: Arc<RwLock<HashSet<PathBuf>>>,
     watch_tx: std_mpsc::Sender<HashSet<PathBuf>>,
@@ -1041,6 +1061,7 @@ pub async fn run(
         converter,
         opts,
         current: Arc::new(RwLock::new(initial)),
+        viewer_session: new_viewer_session(),
         tx,
         watched: Arc::new(RwLock::new(watched)),
         watch_tx,
@@ -1291,6 +1312,17 @@ fn origin_is_loopback(origin: &str) -> bool {
 
 async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
     let current = state.current.read().await;
+    // The token belongs to this exact HTML snapshot. Using the first WS hello
+    // as the initial token would miss an edit between GET / and WS subscribe.
+    let live_state = serde_json::json!({
+        "session": state.viewer_session.as_str(),
+        "revision": current.revision,
+    });
+    let html = current.viewer.html.replacen(
+        "<head>",
+        &format!("<head><script>window.__mpLiveState={live_state};</script>"),
+        1,
+    );
     (
         [
             (
@@ -1299,7 +1331,7 @@ async fn serve_index(State(state): State<AppState>) -> impl IntoResponse {
             ),
             (header::PRAGMA, HeaderValue::from_static("no-cache")),
         ],
-        Html(current.viewer.html.clone()),
+        Html(html),
     )
 }
 
@@ -1805,8 +1837,7 @@ async fn serve_ws(
     State(state): State<AppState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let needs_reload = websocket_needs_reload(&query);
-    ws.on_upgrade(move |socket| handle_ws(socket, state, needs_reload))
+    ws.on_upgrade(move |socket| handle_ws(socket, state, query))
 }
 
 fn websocket_needs_reload(query: &HashMap<String, String>) -> bool {
@@ -3951,11 +3982,52 @@ async fn convert_cached_builtin(
     Ok((snapshot, t))
 }
 
-async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
+struct ViewerSubscription {
+    receiver: broadcast::Receiver<String>,
+    hello: String,
+    needs_reload: bool,
+}
+
+async fn subscribe_viewer(state: &AppState, query: &HashMap<String, String>) -> ViewerSubscription {
+    // A render commits its snapshot AND sends its patch while holding the
+    // current write guard. Subscribing and reading its revision under one read
+    // guard therefore places this connection exactly between two commits:
+    // nothing can be missed during the hello send, nor queued from before it.
+    let current = state.current.read().await;
+    let receiver = state.tx.subscribe();
+    let needs_reload = websocket_needs_reload(query)
+        || query.get("session").map(String::as_str) != Some(state.viewer_session.as_str())
+        || query
+            .get("revision")
+            .and_then(|value| value.parse::<u64>().ok())
+            != Some(current.revision);
+    ViewerSubscription {
+        receiver,
+        hello: serde_json::json!({
+            "event": "hello",
+            "session": state.viewer_session.as_str(),
+            "revision": current.revision,
+        })
+        .to_string(),
+        needs_reload,
+    }
+}
+
+async fn handle_ws(socket: WebSocket, state: AppState, query: HashMap<String, String>) {
     let (mut sender, mut receiver) = socket.split();
-    if needs_reload {
+    let subscription = subscribe_viewer(&state, &query).await;
+    if subscription.needs_reload {
         let payload = serde_json::json!({ "event": "full-reload" }).to_string();
         let _ = sender.send(Message::Text(payload)).await;
+        return;
+    }
+    let mut rx = subscription.receiver;
+    if sender
+        .send(Message::Text(subscription.hello))
+        .await
+        .is_err()
+    {
+        return;
     }
     // Replay the editor's active search so a freshly-(re)loaded tab shows the
     // highlight — it missed the original broadcast, and the plugin's dedup
@@ -3967,7 +4039,6 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
             let _ = sender.send(Message::Text(payload)).await;
         }
     }
-    let mut rx = state.tx.subscribe();
     loop {
         tokio::select! {
             recv = rx.recv() => match recv {
@@ -3983,7 +4054,7 @@ async fn handle_ws(socket: WebSocket, state: AppState, needs_reload: bool) {
                     if sender.send(Message::Text(payload)).await.is_err() {
                         break;
                     }
-                    continue;
+                    break;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -4024,7 +4095,11 @@ fn semantic_macro_definitions(
 /// `body-updated` event (when too much changed to be worth a patch), and
 /// update `last_blocks` and `current`. Returns the operation count and a short
 /// update-kind label for logging.
-async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usize, &'static str) {
+async fn broadcast_render(
+    state: &AppState,
+    mut out: LiveSnapshot,
+    seq: u64,
+) -> (usize, &'static str) {
     // The current viewer and Markdown config ride along with every render so
     // the client can re-apply font/hover sizing and `__mpConfig` values
     // live — `.mathpreview.toml` edits or `POST /config/set` no
@@ -4055,9 +4130,9 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
     // cannot be updated by a body patch. Compare their effective semantics
     // under the same broadcast lock that serializes commits; provenance-only
     // changes must not cause a reload.
-    let macros_changed = {
+    let (macros_changed, previous_revision) = {
         let current = state.current.read().await;
-        semantic_macro_definitions(
+        let changed = semantic_macro_definitions(
             current
                 .document
                 .runtime
@@ -4070,8 +4145,10 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
                 .math
                 .as_ref()
                 .map_or(&[], |math| math.macros.as_slice()),
-        )
+        );
+        (changed, current.revision)
     };
+    out.revision = previous_revision + 1;
 
     if macros_changed {
         let payload = serde_json::json!({ "event": "full-reload" }).to_string();
@@ -4124,6 +4201,8 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
     let (payload, op_count, kind) = if fallback_full {
         let payload = serde_json::json!({
             "event": "body-updated",
+            "previous_revision": previous_revision,
+            "revision": out.revision,
             "html": out.document.body_html,
             "rss_mib": rss,
             "viewer_config": viewer_config_json,
@@ -4167,6 +4246,8 @@ async fn broadcast_render(state: &AppState, out: LiveSnapshot, seq: u64) -> (usi
             .collect();
         let payload = serde_json::json!({
             "event": "patch",
+            "previous_revision": previous_revision,
+            "revision": out.revision,
             "ops": ops_json,
             "blocks": blocks_json,
             "rss_mib": rss,
@@ -6588,6 +6669,7 @@ Second paragraph here.
         let state = AppState {
             converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
+            viewer_session: super::new_viewer_session(),
             current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
@@ -7043,6 +7125,7 @@ Second paragraph here.
         AppState {
             converter,
             opts: HtmlOptions::default(),
+            viewer_session: super::new_viewer_session(),
             current: Arc::new(RwLock::new(current)),
             tx,
             watched: Arc::new(RwLock::new(watched)),
@@ -7077,6 +7160,131 @@ Second paragraph here.
             last_jump_poll_ms: Arc::new(AtomicU64::new(0)),
             last_editor_contact_ms: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn viewer_query(state: &AppState, revision: u64) -> HashMap<String, String> {
+        HashMap::from([
+            ("v".to_string(), WS_PROTOCOL_VERSION.to_string()),
+            ("session".to_string(), state.viewer_session.to_string()),
+            ("revision".to_string(), revision.to_string()),
+        ])
+    }
+
+    #[tokio::test]
+    async fn viewer_reconnect_requires_the_served_snapshot_and_daemon() {
+        use axum::response::IntoResponse;
+
+        let source = r"\newcommand{\foo}[1]{#1}";
+        let state = app_state_for_output(render_macro_document(source));
+        let response = super::serve_index(axum::extract::State(state.clone()))
+            .await
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        let embedded = html
+            .split_once("window.__mpLiveState=")
+            .unwrap()
+            .1
+            .split_once(";</script>")
+            .unwrap()
+            .0;
+        let live: serde_json::Value = serde_json::from_str(embedded).unwrap();
+        assert_eq!(live["session"], state.viewer_session.as_str());
+        assert_eq!(live["revision"], 0);
+
+        let query = viewer_query(&state, 0);
+        let initial = super::subscribe_viewer(&state, &query).await;
+        assert!(!initial.needs_reload);
+        let hello: serde_json::Value = serde_json::from_str(&initial.hello).unwrap();
+        assert_eq!(hello["event"], "hello");
+        assert_eq!(hello["session"], live["session"]);
+        assert_eq!(hello["revision"], live["revision"]);
+
+        // This also models an edit between GET / and the very first socket.
+        let seq = begin_render_attempt(&state);
+        broadcast_render(&state, live_snapshot(render_macro_document(source)), seq).await;
+        assert!(super::subscribe_viewer(&state, &query).await.needs_reload);
+        assert!(
+            !super::subscribe_viewer(&state, &viewer_query(&state, 1))
+                .await
+                .needs_reload
+        );
+        assert!(
+            super::subscribe_viewer(&state, &HashMap::new())
+                .await
+                .needs_reload
+        );
+
+        let restarted = app_state_for_output(render_macro_document(source));
+        assert_ne!(state.viewer_session, restarted.viewer_session);
+        assert!(
+            super::subscribe_viewer(&restarted, &query)
+                .await
+                .needs_reload
+        );
+    }
+
+    #[tokio::test]
+    async fn viewer_subscription_queues_updates_while_hello_is_in_flight() {
+        let source = r"\newcommand{\foo}[1]{#1}";
+        let state = app_state_for_output(render_macro_document(source));
+        let mut subscription = super::subscribe_viewer(&state, &viewer_query(&state, 0)).await;
+        assert!(!subscription.needs_reload);
+        // No socket send has happened yet; a commit here must still be queued.
+        let seq = begin_render_attempt(&state);
+        broadcast_render(&state, live_snapshot(render_macro_document(source)), seq).await;
+        let event: serde_json::Value =
+            serde_json::from_str(&subscription.receiver.try_recv().unwrap()).unwrap();
+        assert_eq!(event["event"], "patch");
+        assert_eq!(event["previous_revision"], 0);
+        assert_eq!(event["revision"], 1);
+        assert_eq!(state.current.read().await.revision, 1);
+    }
+
+    #[tokio::test]
+    async fn viewer_subscription_cannot_queue_an_already_committed_patch() {
+        let state = app_state_for_output(render_macro_document(r"\newcommand{\foo}[1]{#1}"));
+        let mut current = state.current.write().await;
+        let connection_state = state.clone();
+        let query = viewer_query(&state, 1);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let connection = tokio::spawn(async move {
+            started_tx.send(()).unwrap();
+            super::subscribe_viewer(&connection_state, &query).await
+        });
+        started_rx.await.unwrap();
+        current.revision = 1;
+        let _ = state.tx.send(
+            serde_json::json!({ "event": "patch", "previous_revision": 0, "revision": 1 })
+                .to_string(),
+        );
+        drop(current);
+        let mut subscription = connection.await.unwrap();
+        assert!(!subscription.needs_reload);
+        assert!(matches!(
+            subscription.receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn viewer_revision_ignores_deferred_attempts_but_tracks_head_reload() {
+        let state = app_state_for_output(render_macro_document(r"\newcommand{\foo}[1]{OLD-#1}"));
+        let query = viewer_query(&state, 0);
+        let seq = begin_render_attempt(&state);
+        state.editor_state.lock().await.paused = true;
+        let new = live_snapshot(render_macro_document(r"\newcommand{\foo}[1]{NEW-#1}"));
+        assert_eq!(
+            broadcast_render(&state, new.clone(), seq).await,
+            (0, "deferred")
+        );
+        assert!(!super::subscribe_viewer(&state, &query).await.needs_reload);
+        state.editor_state.lock().await.paused = false;
+        assert_eq!(broadcast_render(&state, new, seq).await, (0, "reload"));
+        assert_eq!(state.current.read().await.revision, 1);
+        assert!(super::subscribe_viewer(&state, &query).await.needs_reload);
     }
 
     #[test]
@@ -7959,6 +8167,7 @@ See \eqref{eq:last} and \ref{thm:last}.
         let state = AppState {
             converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
+            viewer_session: super::new_viewer_session(),
             current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
@@ -8156,6 +8365,7 @@ See \eqref{eq:last} and \ref{thm:last}.
         let state = AppState {
             converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
+            viewer_session: super::new_viewer_session(),
             current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
@@ -8332,6 +8542,7 @@ See \eqref{eq:last} and \ref{thm:last}.
         let state = AppState {
             converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
+            viewer_session: super::new_viewer_session(),
             current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),
@@ -8473,6 +8684,7 @@ See \eqref{eq:last} and \ref{thm:last}.
         let state = AppState {
             converter: LiveConverterAdapter::for_format(DocumentFormat::Latex),
             opts: HtmlOptions::default(),
+            viewer_session: super::new_viewer_session(),
             current: Arc::new(RwLock::new(live_snapshot(RenderOutput {
                 format: DocumentFormat::Latex,
                 html: String::new(),

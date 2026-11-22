@@ -7,40 +7,41 @@
     return ' · ' + mib.toFixed(1) + ' MiB';
   }
 
-  // Live-reload WebSocket. Reconnects with backoff if the server restarts.
+  // Reconnect without discarding rendered math after a suspended tab wakes.
   // MUST match WS_PROTOCOL_VERSION in crates/cli/src/serve.rs — a mismatch makes
   // the server full-reload every connect (an infinite reload loop). The
   // `client_ws_protocol_matches_server` test guards this.
-  var WS_PROTOCOL_VERSION = '92';
+  var WS_PROTOCOL_VERSION = '93';
   var status = document.getElementById('ws-status');
   function setStatus(cls, text) {
     if (!status) return;
     status.className = 'status ' + cls;
     status.textContent = text;
   }
-  // Set once we've had a live connection. A *second* onopen means the
-  // server went away and came back — almost always a `:MathPreviewRestart`.
-  var everConnected = false;
+  // This identifies the snapshot served with this page, then advances only
+  // AFTER each update is applied. The server can distinguish a dropped socket
+  // from a restart or missed edits, including the initial GET → WS interval.
+  var liveState = window.__mpLiveState || {};
+  var liveMessageQueue = Promise.resolve();
+  var liveReloadPending = false;
+  function reloadLiveViewer() {
+    if (liveReloadPending) return;
+    liveReloadPending = true;
+    location.reload();
+  }
   // The daemon said goodbye (deliberate editor-driven teardown: quitting nvim,
   // :MathPreviewStop, :bd). Close the viewer and don't try to reconnect.
   var serverSaidBye = false;
   function connect() {
-    if (!window.WebSocket) return;
+    if (!window.WebSocket || liveReloadPending || serverSaidBye || manualStopRequested) return;
     var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
-      location.host + '/ws?v=' + encodeURIComponent(WS_PROTOCOL_VERSION);
+      location.host + '/ws?v=' + encodeURIComponent(WS_PROTOCOL_VERSION) +
+      '&session=' + encodeURIComponent(liveState.session || '') +
+      '&revision=' + encodeURIComponent(liveState.revision);
     var ws;
     try { ws = new WebSocket(url); } catch (e) { return; }
     ws.onopen  = function() {
-      if (everConnected) {
-        // The page in front of us was rendered by the *old* daemon, so its
-        // <head> — MathJax config, baked-in macros, client assets — is
-        // stale; a WS reconnect only resumes body patches. Hard-reload to
-        // pull the freshly served page from the restarted daemon.
-        location.reload();
-        return;
-      }
-      everConnected = true;
-      setStatus('live', '● live');
+      setStatus('updating', '↻ connecting');
     };
     ws.onclose = function() {
       if (serverSaidBye) {
@@ -52,12 +53,31 @@
         return;
       }
       setStatus('dead', '○ disconnected');
-      setTimeout(connect, 1000);
+      // A received patch may still be awaiting its DOM work when the socket
+      // closes. Finish accepted messages before choosing the resume revision.
+      setTimeout(function() { liveMessageQueue.then(connect); }, 1000);
     };
     ws.onerror = function() { setStatus('dead', '○ error'); };
-    ws.onmessage = async function(ev) {
+    var processMessage = async function(ev) {
+      if (liveReloadPending) return;
       try {
         var msg = JSON.parse(ev.data);
+        if (msg.event === 'hello') {
+          if (msg.session !== liveState.session || msg.revision !== liveState.revision) {
+            reloadLiveViewer();
+            return;
+          }
+          setStatus('live', '● live');
+          return;
+        }
+        var isRender = msg.event === 'patch' || msg.event === 'body-updated';
+        if (isRender && (msg.previous_revision !== liveState.revision ||
+            !Number.isSafeInteger(msg.revision) || msg.revision <= liveState.revision ||
+            (msg.event === 'patch' && !Array.isArray(msg.ops)) ||
+            (msg.event === 'body-updated' && typeof msg.html !== 'string'))) {
+          reloadLiveViewer();
+          return;
+        }
         // Deliberate teardown (quit nvim / :MathPreviewStop / :bd): close the
         // viewer like peek.nvim does. A browser tab closes itself with
         // window.close(), which the HTML spec allows for a tab whose session
@@ -270,11 +290,22 @@
             msg.case_sensitive === true
           );
         } else if (msg.event === 'full-reload') {
-          location.reload();
+          reloadLiveViewer();
         } else if (msg.event === 'error') {
           setStatus('dead', '○ ' + (msg.message || 'render error'));
         }
-      } catch (e) { console.error('mathpreview WS:', e); }
+        if (isRender) liveState.revision = msg.revision;
+      } catch (e) {
+        console.error('mathpreview WS:', e);
+        // A partially applied update is not a safe base for another delta or
+        // reconnect. Recover the committed snapshot instead of acknowledging it.
+        reloadLiveViewer();
+      }
+    };
+    ws.onmessage = function(ev) {
+      // async event handlers otherwise overlap: a later patch can mutate the
+      // DOM before the preceding patch has finished applying its metadata.
+      liveMessageQueue = liveMessageQueue.then(function() { return processMessage(ev); });
     };
   }
   try {

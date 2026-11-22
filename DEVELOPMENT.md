@@ -166,6 +166,12 @@ and nested TikZ placeholders without compiling project TeX.
 escaped percent signs, and live comment toggles. It verifies cursor and
 click-to-source positions after Unicode comments in either browser engine.
 
+`npm run test:reconnect` checks that a dropped socket preserves rendered math
+and the reading position when the daemon snapshot is unchanged, and that
+missed edits and daemon restarts still resynchronize. It also covers edits
+between the initial HTML and socket connection and missing patch predecessors.
+It accepts the same browser selection variable.
+
 Patterns that have proven out, with the traps that motivated them:
 
 - **Serve a scratch doc**: write to a scratch dir, `mathpreview-cli serve … --port 277xx`,
@@ -175,8 +181,10 @@ Patterns that have proven out, with the traps that motivated them:
   interprets `\n`/`\a` inside LaTeX like `\newcommand{\alpha…}` and silently
   mangles the file (this produced a spectacular false lead once).
 - **Observe the protocol, not the pixels**: connect a `websocket-client`
-  Python client to `ws://…/ws?v=<WS_PROTOCOL_VERSION>` (with matching
-  `host=`/`origin=`) and assert on broadcast events (`source-cursor`,
+  Python client to `ws://…/ws?v=<WS_PROTOCOL_VERSION>&session=<session>&revision=<revision>`
+  (with matching `host=`/`origin=`). Read the session and revision from
+  `window.__mpLiveState` in a fresh `GET /`; expect `hello` before subsequent
+  broadcast events. Assert on events (`source-cursor`,
   `search-sync`, `patch` payload composition, timing).
 - **`POST /buffer` takes the RAW buffer text** with the path in the
   `x-mathpreview-path` header — it is *not* JSON. Pushing JSON silently renders
